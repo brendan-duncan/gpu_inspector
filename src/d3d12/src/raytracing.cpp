@@ -13,6 +13,7 @@
 #include "tracker.h"
 
 #include <algorithm>
+#include <atomic>
 #include <array>
 #include <cstring>
 #include <memory>
@@ -292,6 +293,66 @@ void AddLibraryBlobs(ID3D12StateObject* stateObject, const D3D12_STATE_OBJECT_DE
 // the object the UI needs: one tracked ID3D12RaytracingAccelerationStructure per destination
 // address, keyed by a sentinel of its own so it can never collide with an interface pointer.
 
+/**
+ * One input a build reads: which field of which geometry, and the GPU range it reads. A top level's
+ * instances have no geometry index, and are written without one.
+ */
+struct InputRange {
+    const char* field = "";
+    int geometry = -1;
+    D3D12_GPU_VIRTUAL_ADDRESS address = 0;
+    UINT64 size = 0;
+};
+
+/** Every range a build reads, sized the way the build reads them. */
+std::vector<InputRange> InputRangesOf(const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& in) {
+    std::vector<InputRange> out;
+    if (in.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
+        // An array of pointers is a list of addresses rather than of instances; what they point at
+        // is not followed, so only the pointers themselves are read.
+        const UINT64 stride = in.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS
+                            ? sizeof(D3D12_GPU_VIRTUAL_ADDRESS) : sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+        if (in.InstanceDescs && in.NumDescs) out.push_back({"InstanceDescs", -1, in.InstanceDescs, (UINT64)in.NumDescs * stride});
+        return out;
+    }
+    if (in.Type != D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL) return out;
+    for (UINT i = 0; i < in.NumDescs; ++i) {
+        const D3D12_RAYTRACING_GEOMETRY_DESC* g = in.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS
+                                                ? (in.ppGeometryDescs ? in.ppGeometryDescs[i] : nullptr)
+                                                : (in.pGeometryDescs ? &in.pGeometryDescs[i] : nullptr);
+        if (!g) continue;
+        if (g->Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES) {
+            const auto& tri = g->Triangles;
+            if (tri.VertexBuffer.StrideInBytes && tri.VertexCount) {
+                out.push_back({"VertexBuffer", (int)i, tri.VertexBuffer.StartAddress, (UINT64)tri.VertexCount * tri.VertexBuffer.StrideInBytes});
+            }
+            if (tri.IndexBuffer && tri.IndexCount && tri.IndexFormat != DXGI_FORMAT_UNKNOWN) {
+                const UINT64 indexSize = tri.IndexFormat == DXGI_FORMAT_R16_UINT ? 2 : 4;
+                out.push_back({"IndexBuffer", (int)i, tri.IndexBuffer, (UINT64)tri.IndexCount * indexSize});
+            }
+            // A 3x4 row-major float matrix applied to the geometry before it is built in.
+            if (tri.Transform3x4) out.push_back({"Transform3x4", (int)i, tri.Transform3x4, 48});
+        } else if (g->Type == D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS) {
+            const auto& aabbs = g->AABBs;
+            if (aabbs.AABBs.StrideInBytes && aabbs.AABBCount) {
+                out.push_back({"AABBs", (int)i, aabbs.AABBs.StartAddress, (UINT64)aabbs.AABBCount * aabbs.AABBs.StrideInBytes});
+            }
+        }
+    }
+    return out;
+}
+
+/** One input's entry in `buildData` or `captureInputs`: where it resolved, and its read-back when there is one. */
+void AppendInput(std::string& out, uint32_t& count, const InputRange& r, uint64_t buffer, UINT64 offset, uint32_t capture) {
+    if (!buffer) return;
+    out += count++ ? "," : "";
+    out += "{";
+    if (r.geometry >= 0) out += "\"geometry\":" + std::to_string(r.geometry) + ",";
+    out += std::string("\"field\":\"") + r.field + "\",\"buffer\":" + std::to_string(buffer) + ",\"offset\":" + std::to_string(offset);
+    if (capture) out += ",\"capture\":" + std::to_string(capture);
+    out += "}";
+}
+
 struct StructureObject {
     /** The tracker's key: this object's own address, which no COM object can also have. */
     std::unique_ptr<uint8_t> sentinel = std::make_unique<uint8_t>(0);
@@ -299,6 +360,12 @@ struct StructureObject {
     D3D12_GPU_VIRTUAL_ADDRESS address = 0;
     /** The buffer the build wrote it into, so a read-back of that buffer can be refused. */
     ID3D12Resource* buffer = nullptr;
+    /**
+     * What its last build read, so a capture that begins after the build can read the same ranges
+     * back (ReadBackEarlierStructures). An engine builds its bottom levels once, at load, and without
+     * these a capture of any later frame knows what a structure is but not what is in it.
+     */
+    std::vector<InputRange> inputs;
 };
 
 std::mutex g_structureMutex;
@@ -376,45 +443,6 @@ ResolvedInput CaptureInput(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS addre
     if (size > remaining) size = remaining;
     if (rec && size) out.capture = Cap().QueueAddressCapture(rec, address, size);
     return out;
-}
-
-/** The bytes one geometry description's build reads, per input, so they can be read back. */
-void CaptureGeometry(CommandRecorder* rec, const D3D12_RAYTRACING_GEOMETRY_DESC& g, uint32_t index, std::string& out,
-                     uint32_t& captured) {
-    auto note = [&](const char* field, const ResolvedInput& r) {
-        if (!r.buffer) return;
-        out += captured++ ? "," : "";
-        out += "{\"geometry\":" + std::to_string(index) + ",\"field\":\"" + field
-             + "\",\"buffer\":" + std::to_string(r.buffer) + ",\"offset\":" + std::to_string(r.offset);
-        if (r.capture) out += ",\"capture\":" + std::to_string(r.capture);
-        out += "}";
-    };
-    switch (g.Type) {
-        case D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES: {
-            const auto& tri = g.Triangles;
-            if (tri.VertexBuffer.StrideInBytes && tri.VertexCount) {
-                note("VertexBuffer", CaptureInput(rec, tri.VertexBuffer.StartAddress,
-                                                  (UINT64)tri.VertexCount * tri.VertexBuffer.StrideInBytes));
-            }
-            if (tri.IndexBuffer && tri.IndexCount && tri.IndexFormat != DXGI_FORMAT_UNKNOWN) {
-                const UINT64 indexSize = tri.IndexFormat == DXGI_FORMAT_R16_UINT ? 2 : 4;
-                note("IndexBuffer", CaptureInput(rec, tri.IndexBuffer, (UINT64)tri.IndexCount * indexSize));
-            }
-            // A 3x4 row-major float matrix applied to the geometry before it is built in.
-            if (tri.Transform3x4) note("Transform3x4", CaptureInput(rec, tri.Transform3x4, 48));
-            break;
-        }
-        case D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS: {
-            const auto& aabbs = g.AABBs;
-            if (aabbs.AABBs.StrideInBytes && aabbs.AABBCount) {
-                note("AABBs", CaptureInput(rec, aabbs.AABBs.StartAddress,
-                                           (UINT64)aabbs.AABBCount * aabbs.AABBs.StrideInBytes));
-            }
-            break;
-        }
-        default:
-            break;
-    }
 }
 
 }  // namespace
@@ -533,22 +561,8 @@ std::string NoteAccelerationStructureBuild(CommandRecorder* rec,
 
     std::string inputs;
     uint32_t captured = 0;
-    uint64_t primitives = 0;
-    if (in.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL) {
-        primitives = in.NumDescs;
-        // An array of pointers is a list of addresses rather than of instances; what they point at
-        // is not followed, so only the pointers themselves are read.
-        const UINT64 stride = in.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS
-                            ? sizeof(D3D12_GPU_VIRTUAL_ADDRESS) : sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
-        const ResolvedInput r = CaptureInput(rec, in.InstanceDescs, (UINT64)in.NumDescs * stride);
-        if (r.buffer) {
-            inputs += "{\"field\":\"InstanceDescs\",\"buffer\":" + std::to_string(r.buffer)
-                    + ",\"offset\":" + std::to_string(r.offset);
-            if (r.capture) inputs += ",\"capture\":" + std::to_string(r.capture);
-            inputs += "}";
-            captured = 1;
-        }
-    } else if (in.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL) {
+    uint64_t primitives = in.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL ? in.NumDescs : 0;
+    if (in.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL) {
         for (UINT i = 0; i < in.NumDescs; ++i) {
             const D3D12_RAYTRACING_GEOMETRY_DESC* g = in.DescsLayout == D3D12_ELEMENTS_LAYOUT_ARRAY_OF_POINTERS
                                                     ? (in.ppGeometryDescs ? in.ppGeometryDescs[i] : nullptr)
@@ -557,8 +571,16 @@ std::string NoteAccelerationStructureBuild(CommandRecorder* rec,
             primitives += g->Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES
                         ? (g->Triangles.IndexCount ? g->Triangles.IndexCount / 3 : g->Triangles.VertexCount / 3)
                         : g->Type == D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS ? g->AABBs.AABBCount : 0;
-            CaptureGeometry(rec, *g, i, inputs, captured);
         }
+    }
+    std::vector<InputRange> ranges = InputRangesOf(in);
+    for (const InputRange& r : ranges) {
+        const ResolvedInput resolved = CaptureInput(rec, r.address, r.size);
+        AppendInput(inputs, captured, r, resolved.buffer, resolved.offset, resolved.capture);
+    }
+    {
+        std::lock_guard<std::mutex> lock(g_structureMutex);
+        structure->inputs = std::move(ranges);
     }
 
     // The build on the structure, so selecting it in the Inspect panel says what it holds. This is
@@ -589,6 +611,18 @@ std::string NoteAccelerationStructureBuild(CommandRecorder* rec,
             }
         }
         w.EndArray();
+        // What the driver says the build needs, which is what the structure costs in memory: the
+        // application's buffer only has to be at least this big.
+        ID3D12Device5* device5 = nullptr;
+        if (device && SUCCEEDED(device->QueryInterface(__uuidof(ID3D12Device5), (void**)&device5)) && device5) {
+            D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO prebuild{};
+            device5->GetRaytracingAccelerationStructurePrebuildInfo(&in, &prebuild);
+            device5->Release();
+            if (prebuild.ResultDataMaxSizeInBytes) {
+                w.Key("resultSize"); w.Uint(prebuild.ResultDataMaxSizeInBytes);
+                w.Key("scratchSize"); w.Uint(prebuild.ScratchDataSizeInBytes);
+            }
+        }
         w.EndObject();
         w.EndObject();
         t.UpdateById(structure->id, "build", w.str());
@@ -683,6 +717,54 @@ void OnResourceNamed(ID3D12Resource* resource, const std::string& name) {
     if (!g_structureBuffers.count(Key(resource))) return;
     for (auto& [address, object] : g_structures) {
         if (object->buffer == resource) Tracker::Get().SetLabel(object->sentinel.get(), StructureLabel(name, address, resource));
+    }
+}
+
+void ReadBackEarlierStructures(CommandRecorder* rec, uint64_t captureSerial) {
+    static std::atomic<uint64_t> done{0};
+    if (!rec || !captureSerial) return;
+    uint64_t expected = done.load();
+    // Once per capture, whichever thread submits first.
+    do {
+        if (expected == captureSerial) return;
+    } while (!done.compare_exchange_weak(expected, captureSerial));
+
+    // Copied out under the lock, since the read-backs take the capture's own locks.
+    struct Pending {
+        uint64_t id;
+        std::vector<InputRange> inputs;
+    };
+    std::vector<Pending> pending;
+    {
+        std::lock_guard<std::mutex> lock(g_structureMutex);
+        for (const auto& [address, object] : g_structures) {
+            if (!object->inputs.empty()) pending.push_back({object->id, object->inputs});
+        }
+    }
+    Tracker& t = Tracker::Get();
+    for (const Pending& p : pending) {
+        std::string list;
+        uint32_t count = 0;
+        for (const InputRange& r : p.inputs) {
+            ID3D12Resource* buffer = nullptr;
+            UINT64 offset = 0, remaining = 0;
+            if (!AddressMap::Get().Resolve(r.address, buffer, offset, remaining)) continue;
+            const uint32_t capture = Cap().QueueAddressCaptureAfterSubmit(rec, r.address, std::min(r.size, remaining));
+            AppendInput(list, count, r, t.IdOf(buffer), offset, capture);
+        }
+        if (!count) continue;
+        // On the structure rather than a command: no command of the capture built it. `serial`
+        // tells a capture's ids from an earlier one's, which a later capture overwrites.
+        JsonWriter w(&t);
+        w.BeginObject();
+        w.Key("action"); w.String("ObjectUpdate");
+        w.Key("id"); w.Uint(p.id);
+        w.Key("captureInputs"); w.BeginObject();
+        w.Key("serial"); w.Uint(captureSerial);
+        w.Key("inputs"); w.Raw("[" + list + "]");
+        w.EndObject();
+        w.EndObject();
+        t.UpdateById(p.id, "captureInputs", w.str());
     }
 }
 

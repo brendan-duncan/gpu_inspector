@@ -1,8 +1,10 @@
 // A draw's mesh in a tab of its own, after RenderDoc's Mesh Viewer: VS In (the vertices the draw read,
 // decoded from the captured buffers: mesh_input.ts) and VS Out (what its vertex shader wrote, from a
-// replay of a Vulkan capture: mesh_output.ts), each as a turnable wireframe (mesh_preview.ts) over a
-// table of its vertices. Clicking a row marks that vertex in the preview. The draw list steps through
-// the draws of the pass, keeping the view so their meshes line up.
+// replay of a Vulkan capture: mesh_output.ts), each as a turnable mesh (mesh_preview.ts) over a
+// table of its vertices. Clicking a row marks that vertex in the preview, and clicking a primitive in
+// the preview selects its first vertex's row. Any attribute can colour the mesh or give it its
+// normals, and VS In can take its positions from any attribute. The draw list steps through the
+// draws of the pass, keeping the view so their meshes line up.
 import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { Select } from "./widget/select.js";
@@ -11,7 +13,7 @@ import type { CaptureData } from "./capture_data.js";
 import { listPositions, meshInput, type MeshInput } from "./mesh_input.js";
 import { clipPositions, clipStats, meshSummary, outputValues, primitiveKind, type MeshOutput } from "./mesh_output.js";
 import { MeshControls } from "./mesh_controls.js";
-import { MeshPreview } from "./mesh_preview.js";
+import { MeshPreview, type PreviewAttribute, type PreviewHit } from "./mesh_preview.js";
 import type { OverdrawPassKey } from "./overdraw.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { CaptureCommand } from "../shared/protocol.js";
@@ -64,6 +66,10 @@ export class MeshView {
   private _input: MeshInput | null = null;
   /** VS In: the first preview vertex each draw-order position became. */
   private _inputListIndex = new Map<number, number>();
+  /** VS In: the draw-order position each preview vertex came from. */
+  private _inputOrder: Uint32Array<ArrayBufferLike> = new Uint32Array(0);
+  /** VS In: the attribute the positions come from when the user chose one, by name. */
+  private _positionName: string | null = null;
   private _token = 0;
 
   private _preview: MeshPreview | null = null;
@@ -185,7 +191,12 @@ export class MeshView {
 
     const body = new Div(this.root, { class: "mesh-view-body" });
     this._preview = new MeshPreview(body);
-    this._controls = new MeshControls(cameraBar, this._preview);
+    // One set of bookmarks for the draws of a pass: they share a space, and stepping keeps the view.
+    this._controls = new MeshControls(cameraBar, this._preview, {
+      bookmarkKey: `mesh:${pass ? `${pass.frame}:${pass.commandBuffer}:${pass.passIndex}` : draw.index}:${this._stage}`,
+    });
+    this._preview.describe = (hit) => this._describeHit(hit);
+    this._preview.onPick = (hit) => this._picked(hit);
     const bottom = new Div(body, { class: "mesh-view-bottom" });
     this._pager = new Div(bottom, { class: "mesh-view-pager" });
     this._table = new Div(bottom, { class: "mesh-view-table" });
@@ -202,11 +213,19 @@ export class MeshView {
     if (token !== this._token) return;
     const input = meshInput(this.host.data, this.host.db, this._draw, names);
     this._input = input;
+    // The position a user chose outlives stepping to the next draw, when that draw has it too.
+    const chosen = this._positionName ? input.attributes.findIndex((a) => a.name === this._positionName) : -1;
+    if (chosen >= 0) input.position = chosen;
+    this._positionPicker(input);
     const { positions, order } = listPositions(input);
+    this._inputOrder = order;
     this._inputListIndex = new Map();
     order.forEach((o, i) => { if (!this._inputListIndex.has(o)) this._inputListIndex.set(o, i); });
     const kind = primitiveKind(input.topology);
-    this._preview?.setMesh(positions.length ? { positions, kind, clip: false } : null, this._keepView);
+    const attributes: PreviewAttribute[] = input.attributes.map((a, k) => ({
+      name: a.name, components: a.components, isPosition: k === input.position, read: (v: number) => input.values(order[v], k),
+    }));
+    this._preview?.setMesh(positions.length ? { positions, kind, clip: false, attributes } : null, this._keepView);
     const name = input.position >= 0 ? input.attributes[input.position].name : "";
     this._setStatus(`${input.ids.length.toLocaleString()} vertices${name ? `, positions from ${name}` : ""}${input.topology ? `, ${input.topology.replace(/^VK_PRIMITIVE_TOPOLOGY_/, "")}` : ""}`);
     const notes = [...input.notes];
@@ -266,7 +285,10 @@ export class MeshView {
       return;
     }
     const clip = clipPositions(o);
-    this._preview?.setMesh(clip ? { positions: clip, kind: primitiveKind(o.topology), clip: true } : null, this._keepView);
+    const attributes: PreviewAttribute[] = o.outputs.filter((out) => out.builtin !== "Position").map((out) => ({
+      name: out.name, components: out.components, read: (v: number) => outputValues(o, out, v),
+    }));
+    this._preview?.setMesh(clip ? { positions: clip, kind: primitiveKind(o.topology), clip: true, attributes } : null, this._keepView);
     this._setStatus(meshSummary(o));
     const stats = clipStats(o);
     const notes: string[] = [];
@@ -277,6 +299,45 @@ export class MeshView {
     }
     this._setNotes(notes);
     this._renderTable();
+  }
+
+  /** VS In: a choice of the attribute the positions come from, beside the camera controls. */
+  private _positionPicker(input: MeshInput): void {
+    const bar = this._controls?.root;
+    if (!bar || input.attributes.length < 2) return;
+    const holder = new Div(null, { class: "mesh-controls-position" });
+    new Span(holder, { text: "Position", class: "text-muted font-sm" });
+    const select = new Select(holder, {
+      options: input.attributes.map((a) => a.name),
+      index: Math.max(0, input.position),
+      onChange: (_v: string, index: number) => {
+        this._positionName = input.attributes[index]?.name ?? null;
+        this._keepView = false;
+        this._rebuild();
+      },
+    });
+    select.tooltip = "The attribute drawn as the position: the one that looks like a position, unless you choose another";
+    bar.element.insertBefore(holder.element, bar.element.firstChild);
+  }
+
+  /** The table row a preview vertex is: the draw-order position for VS In, the vertex itself for VS Out. */
+  private _rowOf(listVertex: number): number {
+    return this._stage === "in" ? this._inputOrder[listVertex] ?? listVertex : listVertex;
+  }
+
+  private _describeHit(hit: PreviewHit): string {
+    const kind = this._preview?.canFill ? "triangle" : "primitive";
+    return `${kind} ${hit.primitive} · vertex ${this._rowOf(hit.vertex)}`;
+  }
+
+  /** A click in the preview selects its primitive's first vertex in the table, on whatever page it is. */
+  private _picked(hit: PreviewHit | null): void {
+    if (!hit) return;
+    const row = this._rowOf(hit.vertex);
+    this._selected = row;
+    this._page = Math.floor(row / ROWS_PER_PAGE);
+    this._renderTable();
+    this._table?.element.querySelector("tr.selected")?.scrollIntoView({ block: "nearest" });
   }
 
   private _setStatus(text: string): void {

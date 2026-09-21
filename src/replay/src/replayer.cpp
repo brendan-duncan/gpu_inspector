@@ -1440,26 +1440,31 @@ void Replayer::BuildGroups() {
     }
 }
 
+bool Replayer::UploadCapturedBuffer(uint64_t dataId) {
+    auto it = _bufferData.find(dataId);
+    if (it == _bufferData.end()) return false;
+    const JValue* info = it->second->Get("info");
+    if (!info || info->Get("error")) return false;
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    if (!_capture->Payload(it->second->Get("payload"), data, size) || !size) return false;
+    auto bit = _buffers.find(info->Get("buffer")->Uint());
+    if (bit == _buffers.end()) return false;
+    VkDeviceSize offset = info->Get("offset")->Uint();
+    if (offset + size > bit->second.size) size = (size_t)(bit->second.size - offset);
+    UploadToBuffer(bit->second.buffer, offset, data, size);
+    if (_exporter) _exporter->UploadBuffer(bit->first, bit->second.buffer, offset, data, size);
+    _report->bufferUploads++;
+    return true;
+}
+
 void Replayer::ApplyBufferData(const CommandGroup& group) {
     const JValue* commands = _capture->Commands();
     std::unordered_set<uint64_t> applied;
     auto apply = [&](uint64_t dataId) {
         if (!dataId || applied.count(dataId)) return;
         applied.insert(dataId);
-        auto it = _bufferData.find(dataId);
-        if (it == _bufferData.end()) return;
-        const JValue* info = it->second->Get("info");
-        if (!info || info->Get("error")) return;
-        const uint8_t* data = nullptr;
-        size_t size = 0;
-        if (!_capture->Payload(it->second->Get("payload"), data, size) || !size) return;
-        auto bit = _buffers.find(info->Get("buffer")->Uint());
-        if (bit == _buffers.end()) return;
-        VkDeviceSize offset = info->Get("offset")->Uint();
-        if (offset + size > bit->second.size) size = (size_t)(bit->second.size - offset);
-        UploadToBuffer(bit->second.buffer, offset, data, size);
-        if (_exporter) _exporter->UploadBuffer(bit->first, bit->second.buffer, offset, data, size);
-        _report->bufferUploads++;
+        UploadCapturedBuffer(dataId);
     };
     for (uint32_t i = group.first; i <= group.last && i < commands->count; ++i) {
         const JValue& c = commands->items[i];
@@ -1651,7 +1656,9 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
         Problem("left out: the build names objects the replay does not have");
         return;
     }
-    const JValue* ranges = args.Get("ppBuildRangeInfos");
+    // Every geometry's range, where the capture library listed them (`buildRanges`); the arguments
+    // hold only each info's first.
+    const JValue* ranges = command.Get("buildRanges") ? command.Get("buildRanges") : args.Get("ppBuildRangeInfos");
     // Where the layer put what it resolved: one entry per address it could tie to a buffer
     // (src/vulkan/src/hooks.cpp). The addresses in the arguments themselves are the captured
     // process's and are not translatable on their own.
@@ -1692,9 +1699,12 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
     VkDeviceSize scratchNeeded = 0;
     std::vector<VkDeviceSize> scratchAt(a.infoCount, 0);
 
+    // One range per geometry, from the JSON: the decoder keeps only one per info.
+    std::vector<std::vector<VkAccelerationStructureBuildRangeInfoKHR>> rangesOut(a.infoCount);
     for (uint32_t i = 0; i < a.infoCount; ++i) {
         VkAccelerationStructureBuildGeometryInfoKHR& info = built[i];
         geometries[i].assign(info.geometryCount, VkAccelerationStructureGeometryKHR{});
+        rangesOut[i].assign(info.geometryCount, VkAccelerationStructureBuildRangeInfoKHR{});
         std::vector<uint32_t> counts(info.geometryCount, 0);
         for (uint32_t g = 0; g < info.geometryCount; ++g) {
             const VkAccelerationStructureGeometryKHR* source = info.pGeometries ? &info.pGeometries[g]
@@ -1706,6 +1716,11 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
             const JValue* range = rangeList && rangeList->IsArray() ? ItemAt(rangeList, g) : rangeList;
             const JValue* count = range ? range->Get("primitiveCount") : nullptr;
             counts[g] = count ? (uint32_t)count->Uint() : 0;
+            auto field = [&](const char* key) -> uint32_t {
+                const JValue* v = range ? range->Get(key) : nullptr;
+                return v ? (uint32_t)v->Uint() : 0;
+            };
+            rangesOut[i][g] = {counts[g], field("primitiveOffset"), field("firstVertex"), field("transformOffset")};
             VkAccelerationStructureGeometryKHR geometry = *source;
             if (geometry.geometryType == VK_GEOMETRY_TYPE_TRIANGLES_KHR) {
                 geometry.geometry.triangles.vertexData.deviceAddress = addressFor(i, g, "vertexData");
@@ -1764,7 +1779,156 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
     }
     for (uint32_t i = 0; i < a.infoCount; ++i) built[i].scratchData.deviceAddress = scratchBase + scratchAt[i];
 
-    _fns.CmdBuildAccelerationStructuresKHR(cb, a.infoCount, built.data(), a.ppBuildRangeInfos);
+    std::vector<const VkAccelerationStructureBuildRangeInfoKHR*> rangePointers(a.infoCount);
+    for (uint32_t i = 0; i < a.infoCount; ++i) rangePointers[i] = rangesOut[i].data();
+    _fns.CmdBuildAccelerationStructuresKHR(cb, a.infoCount, built.data(), rangePointers.data());
+}
+
+namespace {
+
+/** A string member of `v` as JSON text, "0" when absent (an empty flags value). */
+std::string QuotedMember(const JValue& v, const char* key) {
+    const JValue* m = v.Get(key);
+    return "\"" + std::string(m && m->IsString() ? m->Str() : std::string_view("0")) + "\"";
+}
+
+std::string NumberMember(const JValue& v, const char* key) {
+    const JValue* m = v.Get(key);
+    return std::to_string(m ? m->Uint() : 0);
+}
+
+/**
+ * The arguments of a vkCmdBuildAccelerationStructuresKHR that repeats a structure's last build, as
+ * the layer recorded it on the structure (src/vulkan/src/hooks.cpp, NoteAccelerationStructureBuilds):
+ * its geometries' fields flat, where a command nests them. Every address is left 0, for
+ * BuildAccelerationStructures to fill in from the read-backs.
+ */
+std::string EarlierBuildArgs(uint64_t structureId, const JValue& build) {
+    const JValue* geometries = build.Get("geometries");
+    const uint32_t count = geometries && geometries->IsArray() ? geometries->count : 0;
+    std::string list, ranges;
+    for (uint32_t g = 0; g < count; ++g) {
+        const JValue& geometry = geometries->items[g];
+        const JValue* typeValue = geometry.Get("geometryType");
+        const std::string_view type = typeValue ? typeValue->Str() : std::string_view();
+        std::string data;
+        if (type == "VK_GEOMETRY_TYPE_TRIANGLES_KHR") {
+            data = "{\"triangles\":{\"sType\":\"VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR\",\"pNext\":null,"
+                   "\"vertexFormat\":" + QuotedMember(geometry, "vertexFormat") + ",\"vertexData\":{\"deviceAddress\":0},"
+                   "\"vertexStride\":" + NumberMember(geometry, "vertexStride") + ",\"maxVertex\":" + NumberMember(geometry, "maxVertex")
+                 + ",\"indexType\":" + QuotedMember(geometry, "indexType") + ",\"indexData\":{\"deviceAddress\":0},"
+                   "\"transformData\":{\"deviceAddress\":0}}}";
+        } else if (type == "VK_GEOMETRY_TYPE_AABBS_KHR") {
+            data = "{\"aabbs\":{\"sType\":\"VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_AABBS_DATA_KHR\",\"pNext\":null,"
+                   "\"data\":{\"deviceAddress\":0},\"stride\":" + NumberMember(geometry, "stride") + "}}";
+        } else if (type == "VK_GEOMETRY_TYPE_INSTANCES_KHR") {
+            const JValue* pointers = geometry.Get("arrayOfPointers");
+            data = "{\"instances\":{\"sType\":\"VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR\",\"pNext\":null,"
+                   "\"arrayOfPointers\":" + std::string(pointers && pointers->IsBool() && pointers->boolean ? "true" : "false")
+                 + ",\"data\":{\"deviceAddress\":0}}}";
+        } else {
+            return "";
+        }
+        list += g ? "," : "";
+        list += "{\"sType\":\"VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR\",\"pNext\":null,\"geometryType\":\""
+              + std::string(type) + "\",\"geometry\":" + data + ",\"flags\":" + QuotedMember(geometry, "flags") + "}";
+        ranges += g ? "," : "";
+        ranges += "{\"primitiveCount\":" + NumberMember(geometry, "primitiveCount")
+                + ",\"primitiveOffset\":0,\"firstVertex\":0,\"transformOffset\":0}";
+    }
+    if (!count) return "";
+    return "{\"infoCount\":1,\"pInfos\":[{\"sType\":\"VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR\",\"pNext\":null,"
+           "\"type\":" + QuotedMember(build, "type") + ",\"flags\":" + QuotedMember(build, "flags")
+         + ",\"mode\":\"VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR\",\"srcAccelerationStructure\":null,"
+           "\"dstAccelerationStructure\":{\"__id\":" + std::to_string(structureId) + ",\"__class\":\"VkAccelerationStructureKHR\"},"
+           "\"geometryCount\":" + std::to_string(count) + ",\"pGeometries\":[" + list + "],\"ppGeometries\":null,"
+           "\"scratchData\":{\"deviceAddress\":0}}],\"ppBuildRangeInfos\":[[" + ranges + "]]}";
+}
+
+}  // namespace
+
+void Replayer::BuildEarlierStructures() {
+    const JValue* objects = _capture->Objects();
+    const JValue* commands = _capture->Commands();
+    if (!objects || !objects->IsArray() || !_fns.CmdBuildAccelerationStructuresKHR) return;
+
+    // A structure the frame builds itself needs nothing from before it.
+    std::unordered_set<uint64_t> builtInFrame;
+    for (uint32_t i = 0; commands && i < commands->count; ++i) {
+        const JValue& c = commands->items[i];
+        const JValue* method = c.Get("method");
+        if (!method || method->Str().find("BuildAccelerationStructures") == std::string_view::npos) continue;
+        const JValue* args = c.Get("args");
+        const JValue* infos = args ? args->Get("pInfos") : nullptr;
+        for (uint32_t k = 0; infos && infos->IsArray() && k < infos->count; ++k)
+            builtInFrame.insert(IdOf(infos->items[k].Get("dstAccelerationStructure")));
+    }
+
+    struct Earlier {
+        uint64_t id;
+        bool topLevel;
+        std::string command;   // a build command's JSON: its args and buildData
+    };
+    std::vector<Earlier> earlier;
+    for (uint32_t i = 0; i < objects->count; ++i) {
+        const JValue& o = objects->items[i];
+        const JValue* type = o.Get("type");
+        if (!type || type->Str() != "VkAccelerationStructureKHR") continue;
+        const uint64_t id = o.Get("id") ? o.Get("id")->Uint() : 0;
+        if (!id || builtInFrame.count(id) || !Handle(id)) continue;
+        const JValue* updates = o.Get("updates");
+        const JValue* build = updates ? updates->Get("build") : nullptr;
+        const JValue* read = updates ? updates->Get("captureInputs") : nullptr;
+        const JValue* inputs = read ? read->Get("inputs") : nullptr;
+        if (!build || !inputs || !inputs->IsArray()) continue;
+        // Only this capture's read-backs: captureInputs is overwritten by each capture, and an id
+        // from another one names some other range entirely.
+        std::string buildData;
+        uint32_t taken = 0;
+        for (uint32_t k = 0; k < inputs->count; ++k) {
+            const JValue& input = inputs->items[k];
+            const uint64_t capture = input.Get("capture") ? input.Get("capture")->Uint() : 0;
+            auto it = _bufferData.find(capture);
+            const JValue* info = it != _bufferData.end() ? it->second->Get("info") : nullptr;
+            if (!info || info->Get("error") || !info->Get("buffer") || info->Get("buffer")->Uint() != (input.Get("buffer") ? input.Get("buffer")->Uint() : 0)) continue;
+            if (!UploadCapturedBuffer(capture)) continue;
+            const JValue* field = input.Get("field");
+            buildData += taken++ ? "," : "";
+            buildData += "{\"info\":0,\"geometry\":" + NumberMember(input, "geometry") + ",\"field\":\""
+                       + std::string(field ? field->Str() : std::string_view()) + "\",\"buffer\":" + NumberMember(input, "buffer")
+                       + ",\"offset\":" + NumberMember(input, "offset") + ",\"capture\":" + std::to_string(capture) + "}";
+        }
+        if (!taken) continue;
+        const std::string args = EarlierBuildArgs(id, *build);
+        if (args.empty()) continue;
+        const JValue* buildType = build->Get("type");
+        earlier.push_back({id, buildType && buildType->Str().find("TOP_LEVEL") != std::string_view::npos,
+                           "{\"method\":\"vkCmdBuildAccelerationStructuresKHR\",\"args\":" + args + ",\"buildData\":[" + buildData + "]}"});
+    }
+    if (earlier.empty()) return;
+
+    for (const bool topLevel : {false, true}) {
+        // Each structure in a submission of its own: the problems it reports stay its own, and a
+        // top level's instances only name bottom levels that are finished.
+        for (const Earlier& e : earlier) {
+            if (e.topLevel != topLevel) continue;
+            JsonDocument doc;
+            std::string error;
+            if (!doc.Parse(e.command.data(), e.command.size(), error)) {
+                Problem("structure " + std::to_string(e.id) + " built before the capture: " + error);
+                continue;
+            }
+            const JValue* args = doc.Root().Get("args");
+            const size_t problemsBefore = _report->problems.size();
+            _scratchUsed = 0;
+            RunOneTime([&](VkCommandBuffer cb) { BuildAccelerationStructures(doc.Root(), *args, cb); });
+            if (_report->problems.size() == problemsBefore) {
+                _report->earlierStructuresBuilt++;
+            } else {
+                _report->problems.back() += " (structure " + std::to_string(e.id) + ", built before the capture)";
+            }
+        }
+    }
 }
 
 
@@ -2855,6 +3019,7 @@ bool Replayer::Setup(const CaptureFile& capture, const ReplayOptions& options, R
             if (const JValue* info = buffers->items[i].Get("info")) _bufferData[info->Get("id")->Uint()] = &buffers->items[i];
     CreateObjects();
     ComputeInitialLayouts();
+    BuildEarlierStructures();
     for (auto& p : _ctx.problems) report.problems.push_back(p);
     _ctx.problems.clear();
     _setupReport = report;

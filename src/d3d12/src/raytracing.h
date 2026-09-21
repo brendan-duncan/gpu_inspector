@@ -139,6 +139,15 @@ void ForgetStructuresIn(ID3D12Resource* buffer);
  */
 void OnResourceNamed(ID3D12Resource* resource, const std::string& name);
 
+/**
+ * Reads back what every known structure's last build read, behind `rec`'s submission, once per
+ * capture (`captureSerial`). A structure an engine built at load has no build in any later frame,
+ * so without this a capture knows what it is but not what is in it. What comes back is what those
+ * buffers hold now: what the build read for static geometry, and not for a buffer the application
+ * has rewritten since. Posted on the structure as `captureInputs`.
+ */
+void ReadBackEarlierStructures(CommandRecorder* rec, uint64_t captureSerial);
+
 /** Drops what a released state object exported; its properties interface's vtable stays patched. */
 void ForgetStateObject(ID3D12StateObject* stateObject);
 

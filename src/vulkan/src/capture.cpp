@@ -14,6 +14,7 @@
 #include "format_info.h"
 
 #include <algorithm>
+#include <functional>
 #include <cstring>
 
 namespace vkinsp {
@@ -69,6 +70,7 @@ void CaptureManager::Start(DeviceData* dev) {
     // The CPU side of the frame starts its clock here, so its events share the capture's origin.
     BeginCpuTimeline();
     _armedAtFrame.store(UINT64_MAX, std::memory_order_release);
+    _captureSerial.fetch_add(1, std::memory_order_acq_rel);
     _capturing.store(true, std::memory_order_release);
     g_captureActive.store(true, std::memory_order_release);
     {
@@ -202,6 +204,7 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
     sub.args = std::move(args);
     sub.result = result;
     sub.frame = FrameOf(dev);
+    ReadBackEarlierStructures(dev, queue, sub.frame);
     for (VkCommandBuffer cb : commandBuffers) {
         SubmittedCommandBuffer scb;
         scb.commandBufferId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
@@ -1056,6 +1059,16 @@ void CaptureManager::FlushImageCopies(DeviceData* dev, CommandRecorder* rec) {
 uint32_t CaptureManager::QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer,
                                             VkDeviceSize offset, VkDeviceSize size, bool whole) {
     if (!rec || !buffer || !IsCapturing() || !_options.captureBuffers) return 0;
+    PendingBufferCopy copy;
+    const uint32_t id = PrepareBufferCopy(dev, buffer, offset, size, whole, &rec->pendingCopies(), copy);
+    if (!copy.staging) return id;
+    rec->pendingCopies().push_back(copy);
+    if (!rec->InsidePass()) FlushBufferCopies(dev, rec);
+    return id;
+}
+
+uint32_t CaptureManager::PrepareBufferCopy(DeviceData* dev, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size,
+                                           bool whole, const std::vector<PendingBufferCopy>* reuse, PendingBufferCopy& copy) {
     BufferInfo bi;
     if (!ResourceRegistry::Get().GetBuffer(buffer, bi)) return 0;
     if (offset >= bi.size) return 0;
@@ -1075,8 +1088,10 @@ uint32_t CaptureManager::QueueBufferCapture(DeviceData* dev, CommandRecorder* re
     // The same range bound again before the pending copies are flushed reuses the first copy,
     // provided that copy covers everything this binding needs (a shorter earlier binding of the
     // same offset must not stand in for a longer one).
-    for (const PendingBufferCopy& p : rec->pendingCopies()) {
-        if (p.buffer == buffer && p.offset == offset && p.size >= bc.size) return p.captureId;
+    if (reuse) {
+        for (const PendingBufferCopy& p : *reuse) {
+            if (p.buffer == buffer && p.offset == offset && p.size >= bc.size) return p.captureId;
+        }
     }
     auto fail = [&](const char* why) {
         bc.failed = true;
@@ -1111,8 +1126,7 @@ uint32_t CaptureManager::QueueBufferCapture(DeviceData* dev, CommandRecorder* re
         _bufferBytes += bc.size;
         _buffers.push_back(bc);
     }
-    rec->pendingCopies().push_back({bc.id, buffer, offset, bc.size, staging, stagingOffset});
-    if (!rec->InsidePass()) FlushBufferCopies(dev, rec);
+    copy = {bc.id, buffer, offset, bc.size, staging, stagingOffset};
     return bc.id;
 }
 
@@ -1121,13 +1135,27 @@ void CaptureManager::FlushBufferCopies(DeviceData* dev, CommandRecorder* rec) {
     if (pending.empty()) return;
     VkCommandBuffer cb = rec->commandBuffer();
 
+    RecordBufferCopies(dev, cb, pending);
+
+    uint64_t cbId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
+    std::lock_guard lock(_mutex);
+    for (const PendingBufferCopy& p : pending) {
+        if (p.captureId == 0 || p.captureId > _buffers.size()) continue;
+        BufferCapture& bc = _buffers[p.captureId - 1];   // ids are 1-based indices
+        bc.recorded = true;
+        bc.commandBufferId = cbId;
+    }
+    pending.clear();
+}
+
+void CaptureManager::RecordBufferCopies(DeviceData* dev, VkCommandBuffer cb, const std::vector<PendingBufferCopy>& copies) {
     // Whatever wrote the buffers (host, transfers, shaders) must be visible to the copies.
     VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
     before.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     before.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
     dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0,
                                      1, &before, 0, nullptr, 0, nullptr);
-    for (const PendingBufferCopy& p : pending) {
+    for (const PendingBufferCopy& p : copies) {
         VkBufferCopy region{p.offset, p.stagingOffset, p.size};
         dev->dispatch.CmdCopyBuffer(cb, p.buffer, p.staging, 1, &region);
     }
@@ -1139,16 +1167,6 @@ void CaptureManager::FlushBufferCopies(DeviceData* dev, CommandRecorder* rec) {
     dev->dispatch.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT,
                                      VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0,
                                      1, &after, 0, nullptr, 0, nullptr);
-
-    uint64_t cbId = Tracker::Get().Resolve(HT_VkCommandBuffer, (uint64_t)(uintptr_t)cb);
-    std::lock_guard lock(_mutex);
-    for (const PendingBufferCopy& p : pending) {
-        if (p.captureId == 0 || p.captureId > _buffers.size()) continue;
-        BufferCapture& bc = _buffers[p.captureId - 1];   // ids are 1-based indices
-        bc.recorded = true;
-        bc.commandBufferId = cbId;
-    }
-    pending.clear();
 }
 
 void CaptureManager::SendBuffers(DeviceData* dev) {
@@ -1588,12 +1606,24 @@ void CaptureManager::ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, Command
     }
     if (copies.empty()) return;
 
+    const VkResult res = SubmitReadBack(dev, queue, [&](VkCommandBuffer cb) {
+        for (auto& c : copies) RecordImageCopy(dev, cb, c.second);
+    });
+    std::lock_guard lock(_mutex);
+    for (auto& c : copies) {
+        if (res != VK_SUCCESS) { c.first.failed = true; c.first.note = "read-back after submission failed"; }
+        _textures.push_back(c.first);
+    }
+    if (res == VK_SUCCESS) _postSubmitReadbacks.fetch_add((uint32_t)copies.size(), std::memory_order_relaxed);
+}
+
+VkResult CaptureManager::SubmitReadBack(DeviceData* dev, VkQueue queue, const std::function<void(VkCommandBuffer)>& record) {
     // A command buffer of the layer's on the same queue, right behind the application's submission.
     uint32_t family = 0;
     {
         std::lock_guard lock(dev->queueMutex);
         auto it = dev->queueFamilies.find(queue);
-        if (it == dev->queueFamilies.end()) return;
+        if (it == dev->queueFamilies.end()) return VK_ERROR_INITIALIZATION_FAILED;
         family = it->second;
     }
     const DeviceDispatch& d = dev->dispatch;
@@ -1607,7 +1637,7 @@ void CaptureManager::ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, Command
         VkCommandPoolCreateInfo pci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         pci.flags = VK_COMMAND_POOL_CREATE_TRANSIENT_BIT;
         pci.queueFamilyIndex = family;
-        if (d.CreateCommandPool(dev->device, &pci, nullptr, &pool) != VK_SUCCESS) return;
+        if (d.CreateCommandPool(dev->device, &pci, nullptr, &pool) != VK_SUCCESS) return VK_ERROR_INITIALIZATION_FAILED;
         std::lock_guard lock(dev->queueMutex);
         dev->readbackPools[family] = pool;
     }
@@ -1616,13 +1646,13 @@ void CaptureManager::ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, Command
     ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
     ai.commandBufferCount = 1;
     VkCommandBuffer cb = VK_NULL_HANDLE;
-    if (d.AllocateCommandBuffers(dev->device, &ai, &cb) != VK_SUCCESS) return;
+    if (d.AllocateCommandBuffers(dev->device, &ai, &cb) != VK_SUCCESS) return VK_ERROR_INITIALIZATION_FAILED;
     // The loader's dispatch pointer, which a command buffer allocated by a layer lacks (see image_readback.cpp).
     *reinterpret_cast<void**>(cb) = *reinterpret_cast<void**>(dev->device);
     VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
     d.BeginCommandBuffer(cb, &bi);
-    for (auto& c : copies) RecordImageCopy(dev, cb, c.second);
+    record(cb);
     d.EndCommandBuffer(cb);
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VkFence fence = VK_NULL_HANDLE;
@@ -1634,12 +1664,64 @@ void CaptureManager::ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, Command
     if (res == VK_SUCCESS) res = d.WaitForFences(dev->device, 1, &fence, VK_TRUE, 5000000000ull);
     d.DestroyFence(dev->device, fence, nullptr);
     d.FreeCommandBuffers(dev->device, pool, 1, &cb);
-    std::lock_guard lock(_mutex);
-    for (auto& c : copies) {
-        if (res != VK_SUCCESS) { c.first.failed = true; c.first.note = "read-back after submission failed"; }
-        _textures.push_back(c.first);
+    return res;
+}
+
+void CaptureManager::ReadBackEarlierStructures(DeviceData* dev, VkQueue queue, uint32_t frame) {
+    if (!_options.captureBuffers) return;
+    DeviceCapture* dc = CaptureFor(dev);
+    if (!dc || dc->earlierStructuresRead.exchange(true)) return;
+    ResourceRegistry& reg = ResourceRegistry::Get();
+    Tracker& t = Tracker::Get();
+    std::vector<PendingBufferCopy> copies;
+    std::vector<std::pair<uint64_t, std::string>> updates;
+    for (const auto& [id, inputs] : reg.StructureInputs(dev->device, CaptureSerial())) {
+        std::string list;
+        uint32_t count = 0;
+        for (const ResourceRegistry::StructureInput& in : inputs) {
+            VkBuffer buffer = VK_NULL_HANDLE;
+            VkDeviceSize offset = 0, remaining = 0;
+            if (!reg.ResolveAddress(in.address, buffer, offset, remaining)) continue;
+            PendingBufferCopy copy;
+            const uint32_t capture = PrepareBufferCopy(dev, buffer, offset, std::min(in.size, remaining), false, &copies, copy);
+            if (copy.staging) copies.push_back(copy);
+            // Shaped like a build command's buildData, as the one info of a build of its own.
+            list += count++ ? "," : "";
+            list += "{\"info\":0,\"geometry\":" + std::to_string(in.geometry) + ",\"field\":\"" + in.field
+                  + "\",\"buffer\":" + std::to_string(t.Resolve(HT_VkBuffer, (uint64_t)(uintptr_t)buffer))
+                  + ",\"offset\":" + std::to_string(offset);
+            if (capture) list += ",\"capture\":" + std::to_string(capture);
+            list += "}";
+        }
+        if (count) updates.emplace_back(id, std::move(list));
     }
-    if (res == VK_SUCCESS) _postSubmitReadbacks.fetch_add((uint32_t)copies.size(), std::memory_order_relaxed);
+    if (updates.empty()) return;
+    VkResult res = VK_SUCCESS;
+    if (!copies.empty()) res = SubmitReadBack(dev, queue, [&](VkCommandBuffer cb) { RecordBufferCopies(dev, cb, copies); });
+    {
+        std::lock_guard lock(_mutex);
+        for (const PendingBufferCopy& p : copies) {
+            if (p.captureId == 0 || p.captureId > _buffers.size()) continue;
+            BufferCapture& bc = _buffers[p.captureId - 1];
+            bc.recorded = true;
+            bc.frame = frame;
+            if (res != VK_SUCCESS) { bc.failed = true; bc.note = "read-back of a structure's build inputs failed"; }
+        }
+    }
+    Log("capture: read back the build inputs of %zu acceleration structures built before it", updates.size());
+    for (const auto& [id, list] : updates) {
+        // On the structure rather than a command: no command of the capture built it.
+        JsonWriter w;
+        w.BeginObject();
+        w.Key("action"); w.String("ObjectUpdate");
+        w.Key("id"); w.Uint(id);
+        w.Key("captureInputs"); w.BeginObject();
+        w.Key("serial"); w.Uint(CaptureSerial());
+        w.Key("inputs"); w.Raw("[" + list + "]");
+        w.EndObject();
+        w.EndObject();
+        t.Update(id, "captureInputs", w.str());
+    }
 }
 
 void CaptureManager::SendTextures(DeviceData* dev) {

@@ -198,3 +198,72 @@ test("every API's structure type is listed", () => {
   assert.ok(STRUCTURE_TYPES.includes("VkAccelerationStructureKHR"));
   assert.ok(STRUCTURE_TYPES.includes("ID3D12RaytracingAccelerationStructure"));
 });
+
+// ------------------------------------------------------------------------------------------
+// A structure built before the capture began: no build command, but its last build recorded on it
+// and its inputs read back as the capture started (captureInputs).
+
+test("a bottom level built before the capture is drawn from what was read back at its start", () => {
+  const early = structure(BLAS, blasAddress, BLAS_BUFFER, {
+    Type: "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL", Flags: "", NumDescs: 1,
+    geometries: blasBuild.args.pDesc.Inputs.pGeometryDescs,
+  });
+  early.updates.captureInputs = { serial: 1, inputs: [{ geometry: 0, field: "VertexBuffer", buffer: VERTICES, offset: 0, capture: 9 }] };
+  const earlyDb = database([early, structures[1]]);
+  const data = { commands: [], buffer: (id) => (id === 9 ? { info: { id: 9, buffer: VERTICES }, data: triangleBytes() } : null) };
+  const d = structureDrawing(data, earlyDb, BLAS);
+  assert.equal(d.shape, "triangles");
+  assert.equal(d.positions.length, 9);
+  assert.equal(d.fromCaptureStart, true, "the view has to say the geometry was read at the capture's start");
+});
+
+test("a read-back id from an earlier capture is not taken for this one's", () => {
+  // captureInputs is overwritten by each capture; an id this capture read back from another
+  // buffer is some other range entirely.
+  const early = structure(BLAS, blasAddress, BLAS_BUFFER, {
+    Type: "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL", Flags: "", NumDescs: 1,
+    geometries: blasBuild.args.pDesc.Inputs.pGeometryDescs,
+  });
+  early.updates.captureInputs = { serial: 1, inputs: [{ geometry: 0, field: "VertexBuffer", buffer: VERTICES, offset: 0, capture: 9 }] };
+  const data = { commands: [], buffer: (id) => (id === 9 ? { info: { id: 9, buffer: 999 }, data: triangleBytes() } : null) };
+  const d = structureDrawing(data, database([early]), BLAS);
+  assert.equal(d.positions.length, 0);
+});
+
+test("a build in the frame wins over what was read back at the capture's start", () => {
+  const early = structure(BLAS, blasAddress, BLAS_BUFFER, {
+    Type: "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL", Flags: "", NumDescs: 1,
+    geometries: blasBuild.args.pDesc.Inputs.pGeometryDescs,
+  });
+  early.updates.captureInputs = { serial: 1, inputs: [{ geometry: 0, field: "VertexBuffer", buffer: VERTICES, offset: 0, capture: 9 }] };
+  const contents = new Map([[7, triangleBytes()], [9, triangleBytes()]]);
+  const data = { commands: [blasBuild], buffer: (id) => (contents.has(id) ? { info: { id, buffer: VERTICES }, data: contents.get(id) } : null) };
+  const d = structureDrawing(data, database([early]), BLAS);
+  assert.equal(d.fromCaptureStart, false);
+});
+
+test("a Vulkan bottom level built before the capture is drawn from what the layer read back at its start", () => {
+  const VK_BLAS = 70, VK_VERTICES = 71;
+  const early = {
+    id: VK_BLAS, type: "VkAccelerationStructureKHR", name: "blas",
+    updates: {
+      // The layer's build update writes a geometry's fields flat, not nested as the command's are.
+      build: {
+        method: "vkCmdBuildAccelerationStructuresKHR", type: "VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR",
+        mode: "VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR", flags: "",
+        geometries: [{ geometryType: "VK_GEOMETRY_TYPE_TRIANGLES_KHR", flags: "", primitiveCount: 1,
+          vertexFormat: "VK_FORMAT_R32G32B32_SFLOAT", vertexStride: 12, maxVertex: 2, indexType: "VK_INDEX_TYPE_NONE_KHR",
+          vertexData: { deviceAddress: 1234, buffer: { __id: VK_VERTICES }, offset: 0 } }],
+        primitiveCount: 1,
+      },
+      captureInputs: { serial: 2, inputs: [{ info: 0, geometry: 0, field: "vertexData", buffer: VK_VERTICES, offset: 0, capture: 4 }] },
+    },
+  };
+  const byId = new Map([[VK_BLAS, early]]);
+  const vkDb = { getObject: (id) => byId.get(id) ?? null, getObjectsOfType: (type) => (type === "VkAccelerationStructureKHR" ? byId : null) };
+  const data = { commands: [], buffer: (id) => (id === 4 ? { info: { id: 4, buffer: VK_VERTICES }, data: triangleBytes() } : null) };
+  const d = structureDrawing(data, vkDb, VK_BLAS);
+  assert.equal(d.shape, "triangles");
+  assert.equal(d.positions.length, 9);
+  assert.equal(d.fromCaptureStart, true);
+});

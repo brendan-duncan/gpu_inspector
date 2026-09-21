@@ -9,6 +9,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -150,6 +151,13 @@ public:
 
     void Request(const CaptureOptions& options);
     bool IsCapturing() const { return _capturing.load(std::memory_order_relaxed); }
+    // Reads back what every acceleration structure of `dev` was last built from, once per device
+    // per capture, by a command buffer of the layer's submitted behind `queue`'s submission. A
+    // structure an engine built at load has no build in any captured frame, so without this a
+    // capture knows what it is but not what is in it. What comes back is what those buffers hold
+    // now: what the build read for static geometry, and not for a buffer the application has
+    // rewritten since. Posted on each structure as `captureInputs`.
+    void ReadBackEarlierStructures(DeviceData* dev, VkQueue queue, uint32_t frame);
     /** A pass of the capture began its store-everything copy (hooks.cpp), for the finishing log. */
     void NoteStoreAllPass() { _storeAllPasses.fetch_add(1, std::memory_order_relaxed); }
 
@@ -225,6 +233,9 @@ public:
     // `whole`: not truncated to maxBufferSize (the source of a copy, which a replay must write whole).
     uint32_t QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer, VkDeviceSize offset,
                                 VkDeviceSize size, bool whole = false);
+    // Which capture this is, counting from 1; a structure's build inputs remember the one they were
+    // recorded in (ResourceRegistry::NoteStructureInputs).
+    uint64_t CaptureSerial() const { return _captureSerial.load(std::memory_order_acquire); }
     // Queues a readback of the subresource an image view covers (its base mip, all its layers),
     // once per view per capture. Returns the texture capture id to reference from the descriptor
     // JSON, or 0 when nothing is captured. `layout` is the layout the descriptor promises.
@@ -318,6 +329,7 @@ private:
         std::mutex suspendedMutex;
         std::vector<PendingBufferCopy> suspendedCopies;
         std::vector<PendingImageCopy> suspendedImages;
+        std::atomic<bool> earlierStructuresRead{false};
     };
     void CreateQueryPools(DeviceCapture& dc);
     // Maps every device's staging chunks, once the GPU is done, for SendTextures and SendBuffers.
@@ -351,12 +363,22 @@ private:
     // Attachments of the passes a submitted command buffer recorded before the capture began,
     // copied by a command buffer of the layer's submitted right after the application's.
     void ReadBackAfterSubmit(DeviceData* dev, VkQueue queue, CommandRecorder* rec, uint64_t commandBufferId, uint32_t frame);
+    // Records into a command buffer of the layer's and submits it on `queue`, waiting for it.
+    VkResult SubmitReadBack(DeviceData* dev, VkQueue queue, const std::function<void(VkCommandBuffer)>& record);
+    // The capture record and staging for one buffer range: the id (a failed record included, 0
+    // when nothing is captured), with `copy` filled in when there is a copy to record. A pending
+    // copy in `reuse` that covers the range stands in for it.
+    uint32_t PrepareBufferCopy(DeviceData* dev, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, bool whole,
+                               const std::vector<PendingBufferCopy>* reuse, PendingBufferCopy& copy);
+    // Buffer copies into staging, with the barriers around them.
+    void RecordBufferCopies(DeviceData* dev, VkCommandBuffer cb, const std::vector<PendingBufferCopy>& copies);
     // Single-sampled images that multisampled captures are resolved into; freed with the staging.
     bool AllocateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* out);
     bool PrepareDepthResolve(DeviceData* dev, PendingImageCopy& p);
 
     mutable std::mutex _mutex;
     std::atomic<bool> _capturing{false};
+    std::atomic<uint64_t> _captureSerial{0};
     std::atomic<uint32_t> _storeAllPasses{0};
     std::atomic<uint32_t> _postSubmitReadbacks{0};
     std::atomic<uint32_t> _suspendedPasses{0};

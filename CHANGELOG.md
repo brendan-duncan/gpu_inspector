@@ -13,6 +13,16 @@
 - The object list says which acceleration structures the open capture can draw, and why not for the others.
 - A Direct3D 12 acceleration structure is named after the buffer it lives in.
 - The mesh preview frames on where the geometry is, so one huge primitive does not shrink the rest to a speck.
+- An acceleration structure built before the capture is read back as the capture starts, drawn, and built again by both replays.
+- The acceleration structure tab has a tree of instances, bottom levels and geometries with their primitives, surface area and memory.
+- The tree hides any row, searches by name, and draws every instance's bounding box.
+- **Overlaps** lists the instances whose bounding boxes overlap and colours the scene by it.
+- Both capture libraries record the size the driver gives each acceleration structure build.
+- The mesh view has Points, Wireframe + Solid and Smooth shading, and flat or smooth shading from a normal attribute.
+- The mesh view colours the vertices by any attribute, draws the normals, and takes its positions from any VS In attribute.
+- Clicking a primitive in the mesh preview selects it, and hovering names it.
+- **Zoom to Selected** and camera bookmarks (Ctrl+1-9 to keep, 1-9 to return) in the mesh and structure views.
+- `test/triangle --static-blas` builds the bottom level once, at start-up.
 - **Attach...** on the main bar lists the applications already running with a capture library in them -- name, API, process id, port -- and attaches to the one picked, in place of the bar's port box and **Connect**.
 - A capture library with no port set listens on the first free port of a small range, so several applications started by hand are all reachable at once.
 - `--list-targets` names every application a capture library is serving right now, for attaching to one without knowing its port.
@@ -49,6 +59,9 @@
 - The primitive a draw's pixel history reports is the one that won the pixel: the primitive-id pass tested against the depth the draw started from, so a draw whose own fragments hid one another named the wrong one.
 - A Direct3D 12 draw overlay opens on the draw's own render target, not on whichever image of the capture came first, which could be one the frame only sampled.
 - A Direct3D 12 mesh view draws its vertices: the records arrive after the layout they belong to, and the view only drew on the first of the two.
+- A top level's scene draws the stand-in boxes of instances with no captured geometry beside the ones with triangles, instead of leaving them out.
+- A scene draws every geometry of a bottom level, not only its first.
+- A Vulkan build of several geometries keeps each one's primitive count: the layer recorded only the first, and the replay and the scene used it for all.
 
 ## v0.18.0
 

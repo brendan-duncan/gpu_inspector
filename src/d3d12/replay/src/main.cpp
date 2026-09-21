@@ -462,6 +462,7 @@ int main(int argc, char** argv) {
     std::printf("device: %s\n", report.device.c_str());
     std::printf("objects: %zu created, %zu left out\n", report.objectsCreated, report.objectsSkipped);
     std::printf("uploads: %zu sampled textures, %zu buffer ranges; %zu descriptors written\n", report.texturesUploaded, report.bufferUploads, report.descriptorsWritten);
+    if (report.earlierStructuresBuilt) std::printf("acceleration structures built before the capture: %zu, built again from what was read back when it began\n", report.earlierStructuresBuilt);
     std::printf("commands: %zu recorded in %zu submissions\n", report.commandsRecorded, report.submissions);
     size_t differing = 0, skipped = 0;
     std::printf("render targets: %zu\n", report.targets.size());

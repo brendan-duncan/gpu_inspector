@@ -10,6 +10,7 @@
 #include <mutex>
 #include <shared_mutex>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include "vk_commands.gen.h"
@@ -150,6 +151,25 @@ public:
     /** The acceleration structure at `address`, or null. This is how a top level names its bottom levels. */
     VkAccelerationStructureKHR StructureAt(VkDeviceAddress address) const;
 
+    /** One range a structure's build read: which field of which geometry, and the device range. */
+    struct StructureInput {
+        const char* field = "";     // a string literal: vertexData, indexData, transformData, data
+        uint32_t geometry = 0;
+        VkDeviceAddress address = 0;
+        VkDeviceSize size = 0;
+    };
+    /**
+     * What a structure's last recorded build read, so a capture that begins after the build can
+     * read the same ranges back (CaptureManager::ReadBackEarlierStructures). An engine builds its
+     * bottom levels once, at load, and without these a capture of any later frame knows what a
+     * structure is but not what is in it. `capture` is the capture the build was recorded in (0
+     * outside one): that capture has the build itself, and needs no second read-back of it.
+     */
+    void NoteStructureInputs(VkAccelerationStructureKHR structure, VkDevice device, uint64_t id, uint64_t capture,
+                             std::vector<StructureInput> inputs);
+    /** The structures of `device` with recorded inputs, by object id, less those built in capture `capture`. */
+    std::vector<std::pair<uint64_t, std::vector<StructureInput>>> StructureInputs(VkDevice device, uint64_t capture) const;
+
     // ---------------------------------------------------------------------------------------
     // Memory, and reading a buffer's bytes on the host.
 
@@ -189,6 +209,13 @@ private:
     };
     std::vector<AddressRange> _addresses;
     std::unordered_map<uint64_t, VkAccelerationStructureKHR> _structureAddresses;
+    struct StructureInputSet {
+        VkDevice device = VK_NULL_HANDLE;
+        uint64_t id = 0;
+        uint64_t capture = 0;
+        std::vector<StructureInput> inputs;
+    };
+    std::unordered_map<uint64_t, StructureInputSet> _structureInputs;   // by structure handle
     std::unordered_map<uint64_t, MemoryInfo> _memory;
 };
 

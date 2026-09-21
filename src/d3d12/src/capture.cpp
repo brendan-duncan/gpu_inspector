@@ -1448,7 +1448,8 @@ uint32_t ElementStride(uint32_t structureByteStride, bool raw, DXGI_FORMAT forma
 
 }  // namespace
 
-uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole) {
+uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole,
+                                            bool afterSubmit) {
     if (!rec || !buffer) return 0;
     Impl& i = impl();
     ResourceInfo info;
@@ -1531,12 +1532,39 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
         list->CopyBufferRegion(staging, stagingOffset, buffer, copyOffset, copySize);
         if (barrier) Transition(list, buffer, 0, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
     };
+    // Asked for after the submission: the list is closed, so the copy goes in the library's own list
+    // behind it (RunAfterSubmitCopies).
+    if (afterSubmit) {
+        {
+            std::shared_lock lock(i.recorderMutex);
+            auto it = i.recorders.find(list);
+            if (it != i.recorders.end() && it->second.rec.get() == rec) {
+                it->second.afterSubmit.push_back(std::move(copy));
+                return e.id;
+            }
+        }
+        // Nothing will make the copy, so nothing may pretend it was made.
+        std::lock_guard lock(i.mutex);
+        if (e.id && e.id <= i.buffers.size()) {
+            i.buffers[e.id - 1].failed = true;
+            i.buffers[e.id - 1].note = "the list it was to follow has no recorder";
+        }
+        return e.id;
+    }
     // A bundle cannot copy: its copies go into the list that executes it. Inside a BeginRenderPass
     // region they wait for its end.
     // A suspended pass takes nothing at all, so there they wait for the submission (HeldCopiesOf).
     if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec)) held->push_back(std::move(copy));
     else if (!rec->bundle()) copy(list);
     return e.id;
+}
+
+uint32_t CaptureManager::QueueAddressCaptureAfterSubmit(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size) {
+    if (!rec || !address || rec->bundle()) return 0;
+    ID3D12Resource* buffer = nullptr;
+    UINT64 offset = 0, remaining = 0;
+    if (!AddressMap::Get().Resolve(address, buffer, offset, remaining)) return 0;
+    return QueueBufferCapture(rec, buffer, offset, size ? std::min<UINT64>(size, remaining) : remaining, true, true);
 }
 
 uint32_t CaptureManager::QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size, bool whole) {
@@ -1942,6 +1970,18 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
 
     // Record the submission (only while capturing), into the frame the home boundary is on.
     if (IsCapturing()) {
+        // The acceleration structures built before the capture began: their inputs are read back
+        // behind the first submission of it, so a structure an engine built at load can still be
+        // drawn (raytracing.h). Before the submission is noted below, so the reads count as its.
+        if (queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
+            for (UINT k = 0; k < count; ++k) {
+                auto* list = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
+                CommandRecorder* rec = list ? LookupRecorder(list) : nullptr;
+                if (!rec || rec->bundle()) continue;
+                ReadBackEarlierStructures(rec, CaptureSerial());
+                break;
+            }
+        }
         Submission s;
         s.objectId = Tracker::Get().IdOf(queue);
         {
@@ -2152,6 +2192,7 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 // The host calls the frame spends its time in, from here until Finish
                 // (cpu_timeline.h).
                 BeginCpuTimeline();
+                _captureSerial.fetch_add(1, std::memory_order_acq_rel);
                 _capturing.store(true, std::memory_order_release);
                 _recordActive.store(true, std::memory_order_relaxed);
                 started = true;

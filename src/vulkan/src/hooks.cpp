@@ -1374,6 +1374,8 @@ struct ResolvedAddress {
     uint64_t buffer = 0;        // the buffer's object id, 0 when the address resolved to none
     VkDeviceSize offset = 0;
     uint32_t capture = 0;       // the contents read back, 0 when none were
+    VkDeviceAddress address = 0;
+    VkDeviceSize size = 0;      // what the build reads, within the buffer
 };
 
 static ResolvedAddress WriteBuildAddress(JsonWriter& w, const char* key, VkDeviceAddress address, VkDeviceSize size,
@@ -1390,6 +1392,8 @@ static ResolvedAddress WriteBuildAddress(JsonWriter& w, const char* key, VkDevic
         w.Key("offset"); w.Uint(offset);
         // A size the build implies can run past the buffer when the application over-declared it.
         if (size > remaining) size = remaining;
+        out.address = address;
+        out.size = size;
         if (rec && size) out.capture = CaptureManager::Get().QueueBufferCapture(dev, rec, buffer, offset, size);
         if (out.capture) { w.Key("capture"); w.Uint(out.capture); }
     }
@@ -1413,6 +1417,19 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
     // because nothing was capturing then. The command belongs to the captured frame and keeps them.
     std::string captures;
     uint32_t captured = 0;
+    // Every geometry's range, per info. The arguments carry only each info's first: a range array's
+    // length is the info's geometryCount, which the generated serializer does not follow.
+    std::string buildRanges;
+    for (uint32_t i = 0; i < infoCount; ++i) {
+        buildRanges += i ? ",[" : "[";
+        for (uint32_t g = 0; ranges && ranges[i] && g < infos[i].geometryCount; ++g) {
+            const VkAccelerationStructureBuildRangeInfoKHR& r = ranges[i][g];
+            buildRanges += (g ? ",{" : "{") + std::string("\"primitiveCount\":") + std::to_string(r.primitiveCount)
+                         + ",\"primitiveOffset\":" + std::to_string(r.primitiveOffset) + ",\"firstVertex\":" + std::to_string(r.firstVertex)
+                         + ",\"transformOffset\":" + std::to_string(r.transformOffset) + "}";
+        }
+        buildRanges += "]";
+    }
     for (uint32_t i = 0; i < infoCount; ++i) {
         const VkAccelerationStructureBuildGeometryInfoKHR& info = infos[i];
         const uint64_t id = t.Resolve(HT_VkAccelerationStructureKHR, (uint64_t)(uintptr_t)info.dstAccelerationStructure);
@@ -1429,12 +1446,15 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
         uint64_t primitives = 0;
         w.Key("geometries"); w.BeginArray();
         uint32_t g = 0;
+        std::vector<ResourceRegistry::StructureInput> inputs;
+        std::vector<uint32_t> counts(info.geometryCount, 0);
         // Every address the layer resolved, on the command: the buffer and offset are what lets a
         // replay turn the captured process's address into one of its own (docs/REPLAY.md), and the
         // capture id is the contents for the UI. On the command rather than on the structure because
         // a structure's update is last-write-wins (see above).
         auto note = [&](const char* what, const ResolvedAddress& r) {
             if (!r.buffer) return;
+            if (r.size) inputs.push_back({what, g, r.address, r.size});
             captures += captured++ ? "," : "";
             captures += "{\"info\":" + std::to_string(i) + ",\"geometry\":" + std::to_string(g)
                       + ",\"field\":\"" + what + "\",\"buffer\":" + std::to_string(r.buffer)
@@ -1449,6 +1469,7 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
             const uint32_t count = ranges && ranges[i] ? ranges[i][g].primitiveCount
                                  : maxPrimitiveCounts && maxPrimitiveCounts[i] ? maxPrimitiveCounts[i][g] : 0;
             primitives += count;
+            counts[g] = count;
             w.BeginObject();
             w.Key("geometryType"); w.Enum(ToString_VkGeometryTypeKHR(geometry->geometryType), (int64_t)geometry->geometryType);
             w.Key("flags"); Flags_VkGeometryFlagsKHR(w, geometry->flags);
@@ -1488,11 +1509,31 @@ static void NoteAccelerationStructureBuilds(const char* method, uint32_t infoCou
         }
         w.EndArray();
         w.Key("primitiveCount"); w.Uint(primitives);
+        // What the driver says the build needs, which is what the structure costs in memory.
+        if (dev && dev->dispatch.GetAccelerationStructureBuildSizesKHR) {
+            VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+            dev->dispatch.GetAccelerationStructureBuildSizesKHR(dev->device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR,
+                                                                &info, counts.data(), &sizes);
+            if (sizes.accelerationStructureSize) {
+                w.Key("resultSize"); w.Uint(sizes.accelerationStructureSize);
+                w.Key("scratchSize"); w.Uint(info.mode == VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR ? sizes.updateScratchSize : sizes.buildScratchSize);
+            }
+        }
         w.EndObject();
         w.EndObject();
         t.Update(id, "build", w.str());
+        // A host build's addresses are host pointers, which a later capture has no way to read.
+        if (dev) {
+            CaptureManager& cm = CaptureManager::Get();
+            ResourceRegistry::Get().NoteStructureInputs(info.dstAccelerationStructure, dev->device, id,
+                                                        cm.IsCapturing() ? cm.CaptureSerial() : 0, std::move(inputs));
+        }
     }
-    if (rec && captured) rec->SetExtraOnLast(",\"buildData\":[" + captures + "]");
+    if (rec) {
+        std::string extra = ranges ? ",\"buildRanges\":[" + buildRanges + "]" : std::string();
+        if (captured) extra += ",\"buildData\":[" + captures + "]";
+        if (!extra.empty()) rec->SetExtraOnLast(std::move(extra));
+    }
 }
 
 void Hook_vkCmdBuildAccelerationStructuresKHR(VkCommandBuffer commandBuffer, uint32_t infoCount, const VkAccelerationStructureBuildGeometryInfoKHR* pInfos,

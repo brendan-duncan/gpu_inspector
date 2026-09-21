@@ -145,6 +145,9 @@ export class InspectorWindow extends Window {
         // once the capture has fully arrived rather than on a guessed timer, and whatever it
         // fetches is in the dump. It replaces clicking a screen coordinate, which any change to
         // the panel's layout silently broke.
+        // An acceleration structure tab's row, checkbox or tab, driven the way a click would.
+        (window as unknown as { __inspectorDebugAccel?: (action: string, arg: string) => boolean }).__inspectorDebugAccel = (action, arg) =>
+          [...this._sessions.values()].some((panel) => panel.capturePanel.debugAccelAction(action, arg));
         (window as unknown as { __inspectorDebugExpand?: (text: string) => boolean }).__inspectorDebugExpand = (text: string) => {
           for (const panel of this._sessions.values()) {
             if (panel.capturePanel.activeView?.expandSection(text)) return true;

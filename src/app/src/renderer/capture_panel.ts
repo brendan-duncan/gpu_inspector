@@ -275,6 +275,19 @@ export class CapturePanel {
     }));
   }
 
+  /** The UI tests' hands on the acceleration structure tabs: a row clicked, a box checked (AccelerationView.debugAction). */
+  debugAccelAction(action: string, arg: string): boolean {
+    let done = false;
+    for (const v of this._views) {
+      const tab = this._subTab(v, "accel")?.tab as { debugAction?: (a: string, b: string) => void } | undefined;
+      if (tab?.debugAction) {
+        tab.debugAction(action, arg);
+        done = true;
+      }
+    }
+    return done;
+  }
+
   /** The capture shown in the active tab: its own tab, or a tab it opened beside it. */
   get activeView(): CaptureView | null {
     const index = this._tabs.activeTab;

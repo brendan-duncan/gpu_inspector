@@ -464,9 +464,9 @@ application with injected state. Route (a) is the general one and is the prerequ
     grew, so a frame of several builds replayed them into each other and, once the buffer grew,
     into memory the driver had taken back. It is now handed out a stretch at a time within a
     submission, and an outgrown buffer is retired rather than freed (`Replayer::ReserveScratch`).
-  - A bottom level built before the capture cannot be rebuilt by the replay, so its rays miss
-    (docs/REPLAY.md). Reading the structure back with `vkCmdCopyAccelerationStructureToMemoryKHR`
-    at capture time is the only way to carry one that was never built while watching.
+  - [x] A bottom level built before the capture is built by the replay from what the layer read
+    back when the capture began (`Replayer::BuildEarlierStructures`). A structure the application
+    built on the host, or whose input buffers it has rewritten since, still is not.
   - `vkCmdTraceRaysIndirect*`, the NV ray tracing commands and the acceleration structure copies
     (`vkCmdCopyAccelerationStructure*`) are still left out.
   - Editing a ray tracing stage.
@@ -599,11 +599,29 @@ vendor's driver is listed at the end so nobody spends time on it.
       the bottom level it names, and the scene drawn in the mesh preview — the geometry where the
       bottom level's build is in the capture, a box where it is not. Verified on an RTX 4080 with
       `vkinsp_triangle --ray-tracing`.
-- [ ] Acceleration structure viewer, the rest: overlap heatmaps (instances whose boxes intersect,
-      which is what makes a top level slow to traverse); AABB geometry drawn as boxes rather than
-      only counted; and a bottom level built before the capture, whose geometry no capture holds —
-      re-reading it would need the build re-run or the structure serialized
-      (`vkCmdCopyAccelerationStructureToMemoryKHR`).
+- [x] Mesh and acceleration structure views against Nsight Graphics' Geometry Viewer and Ray
+      Tracing Inspector (docs.nvidia.com/nsight-graphics/UserGuide/graphics-capture-ui.html):
+  - [x] **A bottom level built before the capture.** Each structure keeps the ranges its last build
+        read, and the first submission of a capture reads them back (`ReadBackEarlierStructures` in
+        `src/d3d12/src/raytracing.h` and `src/vulkan/src/capture.h`), posted on the structure as
+        `captureInputs`. The views draw it with a note that it is what those buffers hold now, and
+        both replays build it before the frame (`BuildEarlierStructures`). Verified on an RTX 4080
+        with `dxinsp_triangle --ray-tracing`, `dxinsp_path_tracer` (4 structures) and
+        `vkinsp_triangle --ray-tracing --static-blas`: every target identical, 0 problems.
+  - [x] **Instance overlap** (`renderer/acceleration_tree.ts`, **Overlaps** in the structure tab):
+        the instances' world boxes swept for overlaps, the pairs most overlapped first, and an
+        **Overlap heat** colouring of the scene and of the instance boxes.
+  - [x] **The structure tree** (**Tree** in the structure tab): top level, instances, bottom levels
+        and geometries with primitives, world-space surface area and memory rolled up (the driver's
+        size for the build, recorded by both capture libraries as `resultSize`), a checkbox per
+        row, search by name, **Boxes** for the instance bounding boxes.
+  - [x] **Mesh view parity** (`renderer/mesh_preview.ts`, `renderer/mesh_controls.ts`): Points,
+        Wireframe + Solid and Smooth shading, flat and smooth shading from a normal attribute or the
+        geometry's own, any attribute as the colour, a Position picker on VS In, normals drawn as
+        lines, hover and click picking that selects the vertex's row, Zoom to Selected (F), and
+        camera bookmarks (Ctrl+1-9, 1-9).
+  - Not planned: Nsight's traversal-cycles-per-ray and intersections-per-pixel heatmaps. They read
+    what the RT cores did per ray, which only NVIDIA's driver can see; no API exposes it.
 - [x] Memory per heap (`renderer/memory_heaps.ts`, **Memory Use** on the physical device): what the
       application allocated from each heap and type, its share of the heap, and the driver's own
       residency and budget through `VK_EXT_memory_budget` (added at device creation, sampled with
@@ -1195,11 +1213,9 @@ library does not read back yet.
       own arguments, which the capture already holds, so a table the runtime would drop is named
       with nothing turned on. Verified against a real capture taken with the fault present.
 - [ ] Ray tracing, the rest:
-  - A bottom level built before the capture cannot be filled by the replay, which is how every real
-    engine builds them. The capture records that build on the structure but not the *contents* of
-    the buffers it read, so there is nothing to build from; reading those back when a capture starts
-    would close it. The replay reports it against the instance that named the structure rather than
-    tracing an empty scene in silence. The Vulkan side has the same gap for the same reason.
+  - [x] A bottom level built before the capture is filled by the replay: the capture library reads
+    back what its last build read when the capture starts, and `dxinsp_replay` builds it before
+    the frame (`DxReplayer::BuildEarlierStructures`). The Vulkan side does the same.
   - A binding table record's local root arguments are copied as they were, so a descriptor handle or
     a GPU address among them points at the captured process's memory. Nothing in the capture says
     which of a record's bytes are which.

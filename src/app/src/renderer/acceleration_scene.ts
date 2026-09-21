@@ -12,11 +12,11 @@
 // VkAccelerationStructureInstanceKHR (d3d12/raytracing.ts).
 import {
   aabbBoxes, instanceScene, parseBuild, parseInstances, triangleMesh,
-  type AccelerationBuild, type AccelerationInstance,
+  type AccelerationBuild, type AccelerationInstance, type GeometryPart, type SceneGroup,
 } from "./acceleration_structure.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import type { CaptureData } from "./capture_data.js";
-import type { CaptureCommand } from "../shared/protocol.js";
+import type { ArgObject, ArgValue, CaptureCommand } from "../shared/protocol.js";
 import { buildCapture, d3d12StructureAddresses, parseD3D12Build } from "./d3d12/raytracing.js";
 import { isObject, num, type VulkanObject } from "./vulkan/vulkan_object.js";
 
@@ -30,6 +30,88 @@ interface CapturedBuild {
   command: CaptureCommand;
   info: number;
   build: AccelerationBuild;
+  /**
+   * Not a command of the capture: the structure's last build, recorded before the capture began,
+   * with its inputs read back as the capture started (captureInputs). What those buffers hold
+   * then is what the build read for static geometry, and not for a buffer rewritten since.
+   */
+  fromCaptureStart?: boolean;
+}
+
+/**
+ * Builds of the structures this capture holds no build command for, from what the capture library
+ * read back of their last build when the capture began (src/d3d12/src/raytracing.h and
+ * src/vulkan/src/capture.h, ReadBackEarlierStructures). The usual way a bottom level is built — once, at load — leaves no
+ * build in any later frame, and without these nothing of it could be drawn.
+ *
+ * A structure's `captureInputs` is overwritten by each capture, so an id is only taken when this
+ * capture's read-back of it is of the buffer the input names.
+ */
+function earlierBuilds(data: CaptureData, db: StructureDatabase, built: Set<number>): CapturedBuild[] {
+  const out: CapturedBuild[] = [];
+  for (const o of db.getObjectsOfType("ID3D12RaytracingAccelerationStructure")?.values() ?? []) {
+    if (built.has(o.id)) continue;
+    const build = isObject(o.updates.build) ? o.updates.build : null;
+    const ours = ourInputs(data, o.updates.captureInputs);
+    if (!build || !ours.length) continue;
+    const command = {
+      index: -1, frame: 0, slot: 0, method: "BuildRaytracingAccelerationStructure",
+      args: { pDesc: { Inputs: {
+        Type: build.Type, Flags: build.Flags, NumDescs: build.NumDescs, DescsLayout: "D3D12_ELEMENTS_LAYOUT_ARRAY",
+        pGeometryDescs: Array.isArray(build.geometries) ? build.geometries : [],
+      } } },
+      destStructure: o.id,
+      buildData: ours,
+    } as unknown as CaptureCommand;
+    const parsed = parseD3D12Build(command);
+    if (parsed) out.push({ command, info: 0, build: parsed, fromCaptureStart: true });
+  }
+  for (const o of db.getObjectsOfType("VkAccelerationStructureKHR")?.values() ?? []) {
+    if (built.has(o.id)) continue;
+    const build = isObject(o.updates.build) ? o.updates.build : null;
+    const ours = ourInputs(data, o.updates.captureInputs);
+    if (!build || !ours.length) continue;
+    // The structure's build update in the shape of the command's arguments: the layer writes a
+    // geometry's fields flat, where the command nests them under geometry.triangles and the like.
+    const geometries = (Array.isArray(build.geometries) ? build.geometries : []).filter(isObject);
+    const info = {
+      dstAccelerationStructure: { __id: o.id }, type: build.type, mode: build.mode, flags: build.flags,
+      pGeometries: geometries.map((g) => ({
+        geometryType: g.geometryType, flags: g.flags, stride: g.stride,
+        geometry: {
+          triangles: {
+            vertexFormat: g.vertexFormat, vertexStride: g.vertexStride, maxVertex: g.maxVertex, indexType: g.indexType,
+          },
+        },
+      })),
+    };
+    const ranges = geometries.map((g) => ({ primitiveCount: num(g.primitiveCount) }));
+    const command = {
+      index: -1, frame: 0, slot: 0, method: "vkCmdBuildAccelerationStructuresKHR",
+      args: { pInfos: [info], ppBuildRangeInfos: [ranges] },
+      buildData: ours,
+    } as unknown as CaptureCommand;
+    const parsed = parseBuild(info as unknown as ArgValue, ranges as unknown as ArgValue);
+    if (parsed) out.push({ command, info: 0, build: parsed, fromCaptureStart: true });
+  }
+  return out;
+}
+
+/** The inputs of a structure's `captureInputs` that this capture read back, rather than an earlier one. */
+function ourInputs(data: CaptureData, captureInputs: ArgValue | undefined): ArgObject[] {
+  const read = isObject(captureInputs) ? captureInputs : null;
+  const inputs = read && Array.isArray(read.inputs) ? read.inputs.filter(isObject) : [];
+  return inputs.filter((i) => {
+    const b = data.buffer(num(i.capture));
+    return !!b && !b.info.error && num(b.info.buffer) === num(i.buffer);
+  });
+}
+
+/** The capture's own builds, after the ones read back at its start so a build in the frame wins. */
+function allBuilds(data: CaptureData, db: StructureDatabase): CapturedBuild[] {
+  const own = buildsIn(data);
+  const built = new Set(own.map((b) => b.build.target));
+  return [...earlierBuilds(data, db, built), ...own];
 }
 
 /** Every acceleration structure build the capture recorded, in command order. */
@@ -46,7 +128,9 @@ function buildsIn(data: CaptureData): CapturedBuild[] {
     const args = c.args;
     if (!isObject(args)) continue;
     const infos = Array.isArray(args.pInfos) ? args.pInfos : [];
-    const ranges = Array.isArray(args.ppBuildRangeInfos) ? args.ppBuildRangeInfos : [];
+    // Every geometry's range where the capture library listed them; the arguments hold each info's first.
+    const listed = (c as { buildRanges?: unknown }).buildRanges;
+    const ranges = Array.isArray(listed) ? listed as ArgValue[] : Array.isArray(args.ppBuildRangeInfos) ? args.ppBuildRangeInfos : [];
     infos.forEach((info, i) => {
       const build = parseBuild(info, ranges[i]);
       if (build) out.push({ command: c, info: i, build });
@@ -108,7 +192,7 @@ function addressesOf(db: StructureDatabase): Map<string, number> {
  * has no scene: its geometry is shown against the build itself.
  */
 export function accelerationScene(data: CaptureData, db: StructureDatabase, structureId: number): AccelerationScene | null {
-  const builds = buildsIn(data);
+  const builds = allBuilds(data, db);
   // The last build of this structure in the capture is the one that decided its contents.
   const target = [...builds].reverse().find((b) => b.build.target === structureId && b.build.topLevel);
   if (!target) return null;
@@ -173,7 +257,34 @@ export function accelerationScene(data: CaptureData, db: StructureDatabase, stru
     return mesh;
   };
 
-  return { instances, meshOf, boxesOf };
+  const parts = new Map<number, GeometryPart[] | null>();
+  const partsOf = (blas: number): GeometryPart[] | null => {
+    const hit = parts.get(blas);
+    if (hit !== undefined) return hit;
+    const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
+    const found = source ? geometryParts(data, source) : [];
+    const result = found.length ? found : null;
+    parts.set(blas, result);
+    return result;
+  };
+
+  return { instances, meshOf, boxesOf, partsOf };
+}
+
+/** Every geometry of a bottom-level build that was read back, apart, in its own space. */
+function geometryParts(data: CaptureData, source: CapturedBuild): GeometryPart[] {
+  const out: GeometryPart[] = [];
+  source.build.geometries.forEach((g, index) => {
+    const mesh = triangleMesh(
+      g,
+      bytesOf(data, captureIdOf(source.command, source.info, index, "vertexData")),
+      bytesOf(data, captureIdOf(source.command, source.info, index, "indexData")),
+    );
+    if (mesh) out.push({ geometry: index, lines: false, positions: mesh });
+    const boxes = aabbBoxes(g, bytesOf(data, captureIdOf(source.command, source.info, index, "aabbData")));
+    if (boxes) out.push({ geometry: index, lines: true, positions: boxes });
+  });
+  return out;
 }
 
 /** Re-exported so a caller can draw a scene without importing both modules. */
@@ -193,6 +304,14 @@ export interface StructureDrawing {
   /** What the preview draws: positions per vertex, already expanded into primitives. Empty when there is nothing. */
   positions: Float32Array;
   kind: "triangles" | "lines";
+  /**
+   * Every triangle and every line apart, and which geometry of which instance each run of them
+   * came from. `positions` is `triangles` when there are any and `lines` otherwise; the lines beside
+   * triangles are procedural boxes and stand-ins for bottom levels whose geometry is not here.
+   */
+  triangles: Float32Array;
+  lines: Float32Array;
+  groups: SceneGroup[];
   /** What those positions are, which decides what the view may claim about them. */
   shape: StructureShape;
   /** A top level's instances, for the table beside the preview; empty for a bottom level. */
@@ -201,17 +320,25 @@ export interface StructureDrawing {
   placed: number;
   /** Why there is nothing to draw, or "" when there is. */
   note: string;
+  /**
+   * What is drawn was read back when the capture began, from a build made before it: right for
+   * geometry that does not change, and not for a buffer the application has rewritten since.
+   */
+  fromCaptureStart: boolean;
 }
 
 const NOTHING = (note: string): StructureDrawing =>
-  ({ positions: new Float32Array(0), kind: "lines", shape: "none", instances: [], placed: 0, note });
+  ({
+    positions: new Float32Array(0), kind: "lines", triangles: new Float32Array(0), lines: new Float32Array(0), groups: [],
+    shape: "none", instances: [], placed: 0, note, fromCaptureStart: false,
+  });
 
 /**
  * What a structure can be shown as. A top level is its instances placed in the world; a bottom
  * level is its own geometry, which is triangles or the boxes of a procedural one.
  */
 export function structureDrawing(data: CaptureData, db: StructureDatabase, structureId: number): StructureDrawing {
-  const builds = buildsIn(data);
+  const builds = allBuilds(data, db);
   const target = [...builds].reverse().find((b) => b.build.target === structureId);
   if (!target) {
     return NOTHING("This capture holds no build of this structure. A bottom level is usually built once, at load, "
@@ -223,40 +350,40 @@ export function structureDrawing(data: CaptureData, db: StructureDatabase, struc
     if (!scene || !scene.instances.length) {
       return NOTHING("The instances this top level was built from are not in the capture, so the scene it describes is not known.");
     }
-    const drawn = instanceScene(scene.instances, scene.meshOf, scene.boxesOf);
+    const drawn = instanceScene(scene.instances, scene.meshOf, scene.boxesOf, scene.partsOf);
     return {
-      positions: drawn.mesh, kind: drawn.kind,
+      positions: drawn.mesh, kind: drawn.kind, triangles: drawn.triangles, lines: drawn.lines, groups: drawn.groups,
       shape: drawn.drawn === "none" ? "instances" : drawn.drawn === "triangles" ? "triangles" : "aabbs",
       instances: scene.instances, placed: drawn.placed, note: "",
+      fromCaptureStart: !!target.fromCaptureStart,
     };
   }
 
   // A bottom level: its own geometry, in its own space. Every geometry of the build together, so a
   // structure of several reads as the one thing it is.
-  const triangles: Float32Array[] = [];
-  const boxes: Float32Array[] = [];
-  target.build.geometries.forEach((g, index) => {
-    const mesh = triangleMesh(
-      g,
-      bytesOf(data, captureIdOf(target.command, target.info, index, "vertexData")),
-      bytesOf(data, captureIdOf(target.command, target.info, index, "indexData")),
-    );
-    if (mesh) triangles.push(mesh);
-    const box = aabbBoxes(g, bytesOf(data, captureIdOf(target.command, target.info, index, "aabbData")));
-    if (box) boxes.push(box);
-  });
-  const join = (parts: Float32Array[]): Float32Array => {
-    const out = new Float32Array(parts.reduce((n, p) => n + p.length, 0));
+  const parts = geometryParts(data, target);
+  const groups: SceneGroup[] = [];
+  const join = (lines: boolean): Float32Array => {
+    const chosen = parts.filter((p) => p.lines === lines);
+    const out = new Float32Array(chosen.reduce((n, p) => n + p.positions.length, 0));
     let at = 0;
-    for (const p of parts) {
-      out.set(p, at);
-      at += p.length;
+    for (const p of chosen) {
+      groups.push({ instance: -1, geometry: p.geometry, lines, first: at / 3, count: p.positions.length / 3 });
+      out.set(p.positions, at);
+      at += p.positions.length;
     }
     return out;
   };
+  const triangles = join(false);
+  const lines = join(true);
+  const early = !!target.fromCaptureStart;
   // Triangles win, as they do in a scene: a box around known geometry says less than the geometry.
-  if (triangles.length) return { positions: join(triangles), kind: "triangles", shape: "triangles", instances: [], placed: 0, note: "" };
-  if (boxes.length) return { positions: join(boxes), kind: "lines", shape: "aabbs", instances: [], placed: 0, note: "" };
+  if (triangles.length || lines.length) {
+    return {
+      positions: triangles.length ? triangles : lines, kind: triangles.length ? "triangles" : "lines", triangles, lines, groups,
+      shape: triangles.length ? "triangles" : "aabbs", instances: [], placed: 0, note: "", fromCaptureStart: early,
+    };
+  }
   return NOTHING("This build's geometry was not read back, so what the structure holds is not known. "
     + "A build reads its vertices by GPU address, and an address the capture could not tie to a buffer has no contents to fetch.");
 }

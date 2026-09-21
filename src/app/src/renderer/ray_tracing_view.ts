@@ -14,7 +14,7 @@ import { Button } from "./widget/button.js";
 import { objectLink, type LinkHandler } from "./args_view.js";
 import { MeshPreview } from "./mesh_preview.js";
 import {
-  instancePosition, instanceScene, isIdentity,
+  instancePosition, instanceScene, isIdentity, type GeometryPart,
   type AccelerationInstance,
 } from "./acceleration_structure.js";
 import { bindingTableRegions, shaderGroups, stageFromFlag, stageLabel } from "./shader_cache.js";
@@ -173,6 +173,8 @@ export interface AccelerationScene {
   meshOf: (blas: number) => Float32Array | null;
   /** The boxes a procedural bottom level was built from, which has no triangles to give. */
   boxesOf?: (blas: number) => Float32Array | null;
+  /** Every geometry of a bottom level apart, triangles or boxes, or null when its build is not in the capture. */
+  partsOf?: (blas: number) => GeometryPart[] | null;
 }
 
 /** An acceleration structure as the Inspect panel draws it, whichever API it came from. */

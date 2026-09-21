@@ -1049,6 +1049,7 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
     std::printf("uploads: %zu sampled textures, %zu images as the frame found them, %zu buffer ranges\n", report.texturesUploaded,
                 report.initialImagesUploaded, report.bufferUploads);
     std::printf("commands: %zu recorded in %zu submissions\n", report.commandsRecorded, report.submissions);
+    if (report.earlierStructuresBuilt) std::printf("acceleration structures built before the capture: %zu, built again from what was read back when it began\n", report.earlierStructuresBuilt);
     size_t exact = 0, differing = 0, skipped = 0;
     std::printf("render targets: %zu\n", report.targets.size());
     for (const TargetComparison& t : report.targets) {

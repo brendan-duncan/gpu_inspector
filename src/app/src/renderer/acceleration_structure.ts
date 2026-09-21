@@ -312,54 +312,108 @@ export function aabbBoxes(g: AccelerationGeometry, bytes: Uint8Array | null): Fl
   return lines.length ? new Float32Array(lines) : null;
 }
 
+/** One geometry of a bottom level, as a list of primitives in its own space. */
+export interface GeometryPart {
+  /** The geometry's index in its build. */
+  geometry: number;
+  /** Line pairs (a procedural geometry's boxes) rather than triangles. */
+  lines: boolean;
+  positions: Float32Array;
+}
+
+/**
+ * A run of a scene's vertices that came from one geometry of one instance: what a tree row hides,
+ * what a click in the preview names, and what a statistic is summed over. `first` and `count` are
+ * in vertices of the scene's `triangles` or `lines`, as `lines` says.
+ */
+export interface SceneGroup {
+  /** The instance's position in the list given, or -1 in a bottom level's own drawing. */
+  instance: number;
+  /** The geometry's index in its bottom level's build, or -1 for a stand-in box. */
+  geometry: number;
+  lines: boolean;
+  first: number;
+  count: number;
+}
+
+export interface InstanceScene {
+  /** The triangles when there are any, the lines otherwise: what a one-kind preview draws. */
+  mesh: Float32Array;
+  kind: "triangles" | "lines";
+  placed: number;
+  drawn: SceneGeometry;
+  /** Every placed triangle, and every line: procedural boxes and stand-ins for missing geometry. */
+  triangles: Float32Array;
+  lines: Float32Array;
+  groups: SceneGroup[];
+}
+
 /**
  * The scene a top level describes: each instance's bottom level placed by its transform, and a box
  * where the geometry of one is not in the capture. A bottom level is usually built once, before any
  * capture, so the boxes are the common case rather than the fallback — and they still say how many
  * instances there are and where they sit, which is what a top level is for.
  *
- * `meshOf` gives the triangles of a bottom level by object id, or null when they were not captured.
+ * `meshOf` gives the triangles of a bottom level by object id, or null when they were not captured;
+ * `partsOf`, when given, every geometry of it apart, which is what lets the scene say which vertices
+ * came from which geometry of which instance.
  */
 export function instanceScene(instances: AccelerationInstance[],
                               meshOf: (blas: number) => Float32Array | null,
-                              boxesOf?: (blas: number) => Float32Array | null): { mesh: Float32Array; kind: "triangles" | "lines"; placed: number; drawn: SceneGeometry } {
+                              boxesOf?: (blas: number) => Float32Array | null,
+                              partsOf?: (blas: number) => GeometryPart[] | null): InstanceScene {
   const triangles: number[] = [];
   const lines: number[] = [];
+  const groups: SceneGroup[] = [];
   let placed = 0;
-  let drawn: SceneGeometry = "none";
-  for (const i of instances) {
-    const geometry = i.blas !== undefined ? meshOf(i.blas) : null;
+  let hasTriangles = false;
+  let hasBoxes = false;
+  const place = (instance: number, geometry: number, isLines: boolean, source: ArrayLike<number>, transform: number[]): void => {
+    const out = isLines ? lines : triangles;
+    const first = out.length / 3;
+    for (let v = 0; v + 2 < source.length; v += 3) {
+      const p = transformPoint(transform, source[v], source[v + 1], source[v + 2]);
+      out.push(p[0], p[1], p[2]);
+    }
+    groups.push({ instance, geometry, lines: isLines, first, count: out.length / 3 - first });
+  };
+  instances.forEach((i, at) => {
+    const parts = i.blas !== undefined && partsOf ? partsOf(i.blas) : null;
+    if (parts && parts.length) {
+      placed++;
+      for (const part of parts) {
+        place(at, part.geometry, part.lines, part.positions, i.transform);
+        if (part.lines) hasBoxes = true;
+        else hasTriangles = true;
+      }
+      return;
+    }
+    const geometry = !partsOf && i.blas !== undefined ? meshOf(i.blas) : null;
     if (geometry) {
       placed++;
-      drawn = "triangles";
-      for (let v = 0; v + 2 < geometry.length; v += 3) {
-        const p = transformPoint(i.transform, geometry[v], geometry[v + 1], geometry[v + 2]);
-        triangles.push(p[0], p[1], p[2]);
-      }
-      continue;
+      hasTriangles = true;
+      place(at, 0, false, geometry, i.transform);
+      return;
     }
     // A procedural bottom level: its own boxes, which is all its shape ever is outside its
     // intersection shader. Placed by the instance like any other geometry.
-    const boxes = i.blas !== undefined && boxesOf ? boxesOf(i.blas) : null;
+    const boxes = !partsOf && i.blas !== undefined && boxesOf ? boxesOf(i.blas) : null;
     if (boxes) {
       placed++;
-      if (drawn === "none") drawn = "aabbs";
-      for (let v = 0; v + 2 < boxes.length; v += 3) {
-        const p = transformPoint(i.transform, boxes[v], boxes[v + 1], boxes[v + 2]);
-        lines.push(p[0], p[1], p[2]);
-      }
-      continue;
+      hasBoxes = true;
+      place(at, 0, true, boxes, i.transform);
+      return;
     }
-    for (const [x, y, z] of CUBE_EDGES) {
-      const p = transformPoint(i.transform, x, y, z);
-      lines.push(p[0], p[1], p[2]);
-    }
-  }
-  // Triangles win when any geometry was captured: a box drawn around known geometry says less than
-  // the geometry does, and the preview draws one primitive kind at a time.
-  return triangles.length
-    ? { mesh: new Float32Array(triangles), kind: "triangles", placed, drawn }
-    : { mesh: new Float32Array(lines), kind: "lines", placed, drawn };
+    place(at, -1, true, CUBE_EDGES.flat(), i.transform);
+  });
+  const drawn: SceneGeometry = hasTriangles ? "triangles" : hasBoxes ? "aabbs" : "none";
+  const tri = new Float32Array(triangles);
+  const lin = new Float32Array(lines);
+  // Triangles win when any geometry was captured, for a caller that draws one kind at a time: a
+  // box drawn around known geometry says less than the geometry does.
+  return tri.length
+    ? { mesh: tri, kind: "triangles", placed, drawn, triangles: tri, lines: lin, groups }
+    : { mesh: lin, kind: "lines", placed, drawn, triangles: tri, lines: lin, groups };
 }
 
 /**

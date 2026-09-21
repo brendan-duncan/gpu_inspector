@@ -188,6 +188,10 @@ struct App {
     // pipeline (VK_KHR_ray_tracing_pipeline), so a capture has a ray tracing pipeline, its shader
     // groups, acceleration structures and a vkCmdTraceRaysKHR.
     bool rayTracing = false;
+    // --static-blas (with --ray-tracing): the bottom level is built once at start-up and never
+    // again, as most engines do, so a capture holds no build of it and the layer has to read its
+    // inputs back when the capture begins (CaptureManager::ReadBackEarlierStructures).
+    bool staticBlas = false;
     struct DeviceBuffer {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
@@ -1263,8 +1267,8 @@ struct App {
         // The bottom level is rebuilt every frame beside the top one, as an engine with deforming
         // geometry does. It also means a capture holds the build of everything it traces against:
         // a bottom level built once before the capture cannot be rebuilt by a replay, which then
-        // traces against an empty structure (docs/REPLAY.md).
-        {
+        // traces against an empty structure (docs/REPLAY.md). --static-blas leaves it as built at start-up.
+        if (!staticBlas) {
             VkAccelerationStructureGeometryKHR triangles{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
             triangles.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
             triangles.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
@@ -2622,6 +2626,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--suspend")) app.suspend = true;
         else if (!strcmp(argv[i], "--stencil")) app.stencil = true;
         else if (!strcmp(argv[i], "--ray-tracing")) app.rayTracing = true;
+        else if (!strcmp(argv[i], "--static-blas")) app.staticBlas = true;
         else if (!strcmp(argv[i], "--second-device")) app.side = App::Side::Device;
         else if (!strcmp(argv[i], "--second-queue")) app.side = App::Side::Queue;
         else if (!strcmp(argv[i], "--persistent")) app.persistent = true;

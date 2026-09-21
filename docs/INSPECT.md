@@ -84,16 +84,43 @@ transform. A *procedural* bottom level has no triangles at all — its shape is 
 intersection shader decides — so it is drawn with the bounding boxes it was built from, which is
 what the traversal tests against and the only shape there is outside the shader. An instance with
 neither is drawn as a box where it sits. A scene of boxes is the common case and
-is not a fault — it means those bottom levels were built before anything was capturing. Capturing a
-frame of an application that rebuilds its geometry each frame, or that streams it in, fills them in.
+is not a fault — it means the capture holds nothing of those bottom levels' geometry.
+
+A bottom level built before the capture began — which is how an engine builds them, once at load — is
+still drawn: the capture library remembers what each structure's last build read, and reads those
+ranges back as the capture starts. What comes back is what those buffers hold at that moment, which
+is what the build read for geometry that does not change, and not for a buffer the application has
+rewritten since; the view says so on every structure drawn that way. Both replays build these
+structures before the frame ([Capture replay](REPLAY.md)).
 
 ### In a tab of its own
 
 **View in a Tab** in the Acceleration Structure section opens it beside the capture's tab, with the
-[mesh view](REPORTS.md#mesh-view)'s camera and shading. A top level is drawn as its instances placed
-in the world, over a table of them; clicking an instance opens the bottom level it names. A bottom
-level is drawn as its own geometry, in its own space. A top level of more than a few instances opens
-with the **Fly** camera, since a scene is something to walk through rather than turn.
+[mesh view](REPORTS.md#mesh-view)'s camera, shading, picking and bookmarks. A top level is drawn as
+its instances placed in the world, a bottom level as its own geometry, in its own space. A top level
+of more than a few instances opens with the **Fly** camera, since a scene is something to walk
+through rather than turn. Clicking an instance in the view selects it whole, and resting the pointer
+on one names it, its bottom level and the geometry under the pointer.
+
+Under the view:
+
+- **Tree** — top level, instances, bottom levels and geometries, each with its primitives, surface
+  area (in world space, after the instance's transform) and memory, summed up the tree. Memory is the
+  size the driver gave the build; a bottom level placed many times counts once. Unchecking a row
+  hides its geometry; the search keeps the rows whose name matches, with what they hold; **Boxes**
+  draws every instance's world-space bounding box; **open** on a bottom level shows it on its own.
+  Double-click a row to frame it.
+- **Instances** — what each instance says: its bottom level, position, mask, custom index, hit group
+  offset and flags. Double-click one to open its bottom level.
+- **Overlaps** — the pairs of instances whose bounding boxes overlap, the most overlapped first, as a
+  share of the smaller box. A ray through a region where several boxes overlap descends into every
+  one of them, so an instance buried in another, or many stacked in one place, is where traversal
+  gets expensive. **Heatmap** colours every instance by how many others its box overlaps, from blue
+  to red, which is the **Overlap heat** colouring in **Color**.
+
+Nsight Graphics also colours a scene by the traversal steps and intersections each ray took. Those
+are counted by the GPU's ray tracing units and only NVIDIA's driver can read them; no API exposes
+them, so they are not here.
 
 Every command that names a structure offers it too, under **Acceleration Structures** in its
 details, with what the command does with it: a build **builds** it (and a top level's build lists the

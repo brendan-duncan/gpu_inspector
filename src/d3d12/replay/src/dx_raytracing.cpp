@@ -366,8 +366,11 @@ void DxReplayer::NoteStateObjectIdentifiers(uint64_t id, const JValue& object, I
  * may be the application's upload heap, rewritten every frame — so the build is pointed at a copy.
  */
 D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstances(const JValue& command, UINT count) {
+    return RemapInstancesFrom(command.Get("buildData"), count);
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstancesFrom(const JValue* list, UINT count) {
     if (!count) return 0;
-    const JValue* list = command.Get("buildData");
     uint64_t dataId = 0;
     for (uint32_t i = 0; list && list->IsArray() && i < list->count; ++i) {
         const JValue& e = list->items[i];
@@ -653,6 +656,218 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
 
     leftOut = "the replay does not issue it yet";
     return false;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Structures built before the capture began
+//
+// An engine builds its bottom levels once, at load, so the captured frame holds no build of them and
+// the replay's copy of each is a buffer nothing ever wrote: every ray through it misses. The capture
+// library records each structure's last build as it goes by and, when a capture starts, reads back
+// what that build read (src/d3d12/src/raytracing.h, ReadBackEarlierStructures). From those the
+// replay builds each such structure once, before the frame: the bottom levels, then the top levels
+// over them.
+//
+// What was read back is what those buffers held when the capture began, which is what the build
+// read for geometry that does not change. The inputs go into buffers of the replay's own rather than
+// the application's, whose contents in the replay are only what the frame's own commands read.
+
+/** Bytes of a read-back, or null when this capture has none of it (or has one of another buffer). */
+static bool ReadBack(const CaptureFile& capture, const std::unordered_map<uint64_t, const JValue*>& data, const JValue& input,
+                     const uint8_t*& bytes, size_t& size) {
+    const uint64_t id = input.Get("capture") ? input.Get("capture")->Uint() : 0;
+    auto it = data.find(id);
+    if (!id || it == data.end()) return false;
+    const JValue* info = it->second->Get("info");
+    // `captureInputs` is overwritten by every capture: an id this capture read back of another
+    // buffer is not this input.
+    if (!info || info->Get("error") || !info->Get("buffer") || !input.Get("buffer") ||
+        info->Get("buffer")->Uint() != input.Get("buffer")->Uint()) return false;
+    return capture.Payload(it->second->Get("payload"), bytes, size) && size;
+}
+
+void DxReplayer::BuildEarlierStructures() {
+    const JValue* objects = _capture->Objects();
+    if (!objects || !objects->IsArray()) return;
+
+    struct Earlier {
+        uint64_t id = 0;
+        uint64_t captured = 0;
+        bool topLevel = false;
+        const JValue* build = nullptr;
+        const JValue* inputs = nullptr;
+    };
+    std::vector<Earlier> earlier;
+    for (uint32_t i = 0; i < objects->count; ++i) {
+        const JValue& o = objects->items[i];
+        if (Str(o.Get("type")) != "ID3D12RaytracingAccelerationStructure") continue;
+        const JValue* updates = o.Get("updates");
+        const JValue* build = updates ? updates->Get("build") : nullptr;
+        const JValue* read = updates ? updates->Get("captureInputs") : nullptr;
+        const JValue* inputs = read ? read->Get("inputs") : nullptr;
+        const JValue* address = o.Get("args") ? o.Get("args")->Get("Address") : nullptr;
+        const JValue* number = address ? address->Get("address") : nullptr;
+        if (!build || !inputs || !inputs->IsArray() || !number || !number->IsString()) continue;
+        Earlier e;
+        e.id = o.Get("id")->Uint();
+        e.captured = strtoull(Str(number).c_str(), nullptr, 0);
+        // A structure the frame builds itself is left to the frame.
+        if (!e.captured || _structuresBuiltInFrame.count(e.captured)) continue;
+        e.topLevel = Str(build->Get("Type")).find("TOP_LEVEL") != std::string::npos;
+        e.build = build;
+        e.inputs = inputs;
+        earlier.push_back(e);
+    }
+    if (earlier.empty()) return;
+    if (!RaytracingDevice()) {
+        Problem("the capture has acceleration structures built before it began, and this GPU has no DXR to build them with");
+        return;
+    }
+    // Bottom levels first: a top level's instances point at them.
+    std::stable_sort(earlier.begin(), earlier.end(), [](const Earlier& a, const Earlier& b) { return !a.topLevel && b.topLevel; });
+
+    struct Planned {
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc{};
+        std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
+        bool topLevel = false;
+        uint64_t captured = 0;
+    };
+    std::vector<Planned> planned;
+    planned.reserve(earlier.size());
+    for (const Earlier& e : earlier) {
+        Planned p;
+        p.topLevel = e.topLevel;
+        p.captured = e.captured;
+        D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& in = p.desc.Inputs;
+        in.Type = e.topLevel ? D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL : D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
+        in.Flags = (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)ParseFlags(e.build->Get("Flags"),
+            dxinsp::kEnum_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS, std::size(dxinsp::kEnum_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS));
+        // A build made from scratch: an update needs a source, and there is none before the frame.
+        in.Flags &= ~D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PERFORM_UPDATE;
+        in.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
+        in.NumDescs = (UINT)(e.build->Get("NumDescs") ? e.build->Get("NumDescs")->Uint() : 0);
+        bool complete = true;
+        if (e.topLevel) {
+            in.InstanceDescs = RemapInstancesFrom(e.inputs, in.NumDescs);
+            complete = in.InstanceDescs != 0;
+        } else {
+            const JValue* list = e.build->Get("geometries");
+            for (uint32_t g = 0; list && list->IsArray() && g < list->count; ++g) {
+                D3D12_RAYTRACING_GEOMETRY_DESC geometry{};
+                // The description's own addresses name the application's buffers, whose contents
+                // the replay does not have before the frame; each is replaced below by an upload of
+                // what was read back.
+                const size_t unresolved = _env.unresolved;
+                Decoder d(&list->items[g], _env);
+                Reflect(d, geometry);
+                _env.unresolved = unresolved;
+                // Cleared, so an input that was not read back stays visibly missing rather than
+                // pointing at the application's buffer. The two arms share storage: only the one
+                // the type names is touched.
+                if (geometry.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES) {
+                    geometry.Triangles.VertexBuffer.StartAddress = 0;
+                    geometry.Triangles.IndexBuffer = 0;
+                    geometry.Triangles.Transform3x4 = 0;
+                } else {
+                    geometry.AABBs.AABBs.StartAddress = 0;
+                }
+                p.geometries.push_back(geometry);
+            }
+            for (uint32_t k = 0; k < e.inputs->count; ++k) {
+                const JValue& input = e.inputs->items[k];
+                const uint32_t g = input.Get("geometry") ? (uint32_t)input.Get("geometry")->Uint() : UINT32_MAX;
+                if (g >= p.geometries.size()) continue;
+                const uint8_t* bytes = nullptr;
+                size_t size = 0;
+                if (!ReadBack(*_capture, _bufferData, input, bytes, size)) continue;
+                const std::string field = Str(input.Get("field"));
+                const D3D12_GPU_VIRTUAL_ADDRESS here = UploadTransient(bytes, size, "earlier build input");
+                D3D12_RAYTRACING_GEOMETRY_DESC& geometry = p.geometries[g];
+                if (field == "VertexBuffer") geometry.Triangles.VertexBuffer.StartAddress = here;
+                else if (field == "IndexBuffer") geometry.Triangles.IndexBuffer = here;
+                else if (field == "Transform3x4") geometry.Triangles.Transform3x4 = here;
+                else if (field == "AABBs") geometry.AABBs.AABBs.StartAddress = here;
+            }
+            // Every geometry has to have been read back: a build over a buffer the replay never
+            // wrote would make a structure of garbage and look like one.
+            for (const auto& geometry : p.geometries) {
+                if (geometry.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES) {
+                    if (!geometry.Triangles.VertexBuffer.StartAddress) complete = false;
+                    if (geometry.Triangles.IndexCount && geometry.Triangles.IndexFormat != DXGI_FORMAT_UNKNOWN &&
+                        !geometry.Triangles.IndexBuffer) complete = false;
+                } else if (!geometry.AABBs.AABBs.StartAddress) {
+                    complete = false;
+                }
+            }
+            in.NumDescs = (UINT)p.geometries.size();
+        }
+        p.desc.DestAccelerationStructureData = RemapStructureAddress(e.captured);
+        if (!complete || !p.desc.DestAccelerationStructureData) {
+            Problem("acceleration structure " + std::to_string(e.id) + ": built before the capture began, and what it was built "
+                    "from was not all read back, so the replay cannot build it; rays through it miss");
+            continue;
+        }
+        // Counted as built from here, so the top levels planned after it know their instances land
+        // on something. A build that then fails takes it back out below.
+        _structuresBuiltInFrame.insert(e.captured);
+        planned.push_back(std::move(p));
+    }
+
+    // Scratch of the replay's own for each, sized by this driver: another GPU's sizes mean nothing here.
+    std::vector<ID3D12Resource*> scratch;
+    for (Planned& p : planned) {
+        if (!p.topLevel) p.desc.Inputs.pGeometryDescs = p.geometries.data();
+        D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
+        _device5->GetRaytracingAccelerationStructurePrebuildInfo(&p.desc.Inputs, &info);
+        D3D12_HEAP_PROPERTIES heap{};
+        heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC desc{};
+        desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+        desc.Width = std::max<UINT64>(info.ScratchDataSizeInBytes, 256);
+        desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
+        desc.SampleDesc.Count = 1;
+        desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+        desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+        ID3D12Resource* buffer = nullptr;
+        // A buffer starts in COMMON whatever it is asked for, and a build promotes it.
+        if (FAILED(_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON,
+                                                    nullptr, IID_PPV_ARGS(&buffer)))) {
+            p.desc.DestAccelerationStructureData = 0;
+            _structuresBuiltInFrame.erase(p.captured);
+            continue;
+        }
+        scratch.push_back(buffer);
+        p.desc.ScratchAccelerationStructureData = buffer->GetGPUVirtualAddress();
+    }
+
+    uint32_t built = 0;
+    const bool ok = RunOneTime([&](ID3D12GraphicsCommandList* list) {
+        ID3D12GraphicsCommandList4* rtList = RaytracingList(list);
+        if (!rtList) return;
+        bool lastTopLevel = false;
+        for (Planned& p : planned) {
+            if (!p.desc.DestAccelerationStructureData || !p.desc.ScratchAccelerationStructureData) continue;
+            // Every bottom level finished before the first top level reads one.
+            if (p.topLevel && !lastTopLevel) {
+                D3D12_RESOURCE_BARRIER barrier{};
+                barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+                list->ResourceBarrier(1, &barrier);
+            }
+            lastTopLevel = p.topLevel;
+            rtList->BuildRaytracingAccelerationStructure(&p.desc, 0, nullptr);
+            ++built;
+        }
+        D3D12_RESOURCE_BARRIER barrier{};
+        barrier.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
+        list->ResourceBarrier(1, &barrier);
+    });
+    for (ID3D12Resource* r : scratch) r->Release();
+    if (!ok) {
+        for (const Planned& p : planned) _structuresBuiltInFrame.erase(p.captured);
+        Problem("the builds of the structures made before the capture began could not be run");
+        return;
+    }
+    _report->earlierStructuresBuilt = built;
 }
 
 }  // namespace dxreplay

@@ -268,8 +268,13 @@ A draw's mesh, as RenderDoc's Mesh Viewer shows it: press **View Mesh** in a dra
 has a preview over a table of the draw's vertices:
 
 - click a row of the table to mark that vertex in the preview
+- click a primitive in the preview to select it and its first vertex's row; rest the pointer on one
+  to have it named in the corner
+- **Zoom to Selected** (or **F**) frames what is selected
 - the draw list steps through the pass's draws and keeps the view, so their meshes line up
 - double-click the preview, or **Reset View**, to frame the mesh again
+- **Ctrl+1** to **Ctrl+9** keep the camera as a bookmark, **1** to **9** go back to it (or
+  **Bookmarks**); the draws of a pass share them
 
 **Camera**, after RenderDoc's:
 
@@ -287,12 +292,24 @@ does not shrink the rest to a speck; the wheel still reaches the whole of it.
 | Mode | What it shows |
 |---|---|
 | **Wireframe** | every primitive's edges, with nothing hidden behind anything else |
-| **Solid** | the triangles filled in one colour, with their edges over them |
-| **Flat** | the triangles lit by each face's own normal and a light at the eye, without edges: a fold, a flipped face or a wrong winding shows as a face that is the wrong brightness |
+| **Solid** | the triangles filled in one colour, or the chosen attribute's |
+| **Wireframe + Solid** | the triangles filled, with their edges over them |
+| **Flat** | the triangles lit by one normal per face and a light at the eye: a fold, a flipped face or a wrong winding shows as a face that is the wrong brightness |
+| **Smooth** | the triangles lit by normals interpolated across each face, which is what the lighting will see |
+| **Points** | only the vertices |
 
-The flat normal comes from the triangle itself, not from the mesh's normals, so it is exactly the
-face the rasterizer sees. Only a triangle list can be filled: lines and points stay a wireframe, and
-the control says so.
+**Normals** says where Flat and Smooth take their normals from. **Geometry** is the triangles
+themselves: Flat uses each face's own normal, exactly the face the rasterizer sees, and Smooth
+averages the faces around each position. An attribute instead gives Flat the normal of each face's
+last vertex and Smooth the normal interpolated across it, so a normal that disagrees with its face
+stands out when switching between the two. **Show** draws the normals as short lines: each vertex's
+with an attribute chosen, each face's without.
+
+**Color** paints the vertices with any attribute: a colour as it is, anything else (a position, a
+normal, a texture coordinate) stretched over its own range. On VS In, **Position** picks the
+attribute drawn as the position when the one that looks like a position is not it.
+
+Only a triangle list can be filled: lines and points are drawn as they are, and the control says so.
 
 ![The mesh view's VS In: the vertices of a Unity menu's draw as a wireframe, over the table of the attributes its vertex shader reads](images/mesh-view.png)
 

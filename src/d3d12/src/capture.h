@@ -107,6 +107,8 @@ public:
     void RequestCapture(const CaptureOptions& options);
     /** Recording frames right now (between the arming present and the finishing one). */
     bool IsCapturing() const { return _capturing.load(std::memory_order_acquire); }
+    /** Counts the captures begun, so something done once per capture can tell a new one from the last. */
+    uint64_t CaptureSerial() const { return _captureSerial.load(std::memory_order_acquire); }
     /** DXINSP_RECORD_ALWAYS or the UI's Settings: every list gets a recorder whether or not a capture is on. */
     bool RecordAlways() const;
     void SetRecordAlways(bool on);
@@ -204,9 +206,17 @@ public:
      * mesh cut at maxBufferSize draws as part of itself in a replay; the capture's total budget still
      * bounds it.
      */
-    uint32_t QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole = false);
+    uint32_t QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole = false,
+                                bool afterSubmit = false);
     /** The same for a GPU virtual address range (resolved through the AddressMap); `size` 0 means to the buffer's end. */
     uint32_t QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size, bool whole = false);
+    /**
+     * The same, for a list that is already closed: the copy is made in the library's own list,
+     * submitted right after the submission that executes `rec`'s (the path a suspended pass's copies
+     * take). Counts as that list's for the frame it lands in. Call it before the submission is noted
+     * (OnExecuteCommandLists does), or the entry never learns its frame.
+     */
+    uint32_t QueueAddressCaptureAfterSubmit(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size);
     /**
      * Queues a texture bound through an SRV or UAV for read-back: every mip with all its slices,
      * once per resource per capture, under maxImageTotal. Returns the CaptureTextureInfo `capture`
@@ -253,6 +263,7 @@ private:
     Impl* _impl = nullptr;
     Impl& impl();
     std::atomic<bool> _capturing{false};
+    std::atomic<uint64_t> _captureSerial{0};
     /** Recorders in the table, so a lookup made while nothing is recorded costs one atomic load. */
     std::atomic<size_t> _recorderCount{0};
     std::atomic<bool> _recordActive{false};

@@ -220,6 +220,8 @@ struct DxReplayReport {
     size_t texturesUploaded = 0;
     size_t bufferUploads = 0;
     size_t descriptorsWritten = 0;
+    /** Acceleration structures built before the capture began, built again before the frame from what was read back. */
+    size_t earlierStructuresBuilt = 0;
     std::vector<std::string> problems;
     /** The debug layer's errors and warnings. */
     std::vector<std::string> messages;
@@ -289,6 +291,10 @@ private:
     void NoteStateObjectIdentifiers(uint64_t id, const vkreplay::JValue& object, ID3D12StateObject* stateObject);
     /** A top level build's instances with their bottom level addresses remapped, in a buffer of the replay's own. */
     D3D12_GPU_VIRTUAL_ADDRESS RemapInstances(const vkreplay::JValue& command, UINT count);
+    /** The same, from a list of read-backs ({field, capture}): a command's buildData or a structure's captureInputs. */
+    D3D12_GPU_VIRTUAL_ADDRESS RemapInstancesFrom(const vkreplay::JValue* list, UINT count);
+    /** Builds, before the frame, the structures built before the capture began, from what was read back of them. */
+    void BuildEarlierStructures();
     /** One binding table region rebuilt with this runtime's identifiers, in a buffer of the replay's own. */
     D3D12_GPU_VIRTUAL_ADDRESS RemapBindingTable(const vkreplay::JValue& command, const char* region, UINT64 stride,
                                                 UINT64 size, uint64_t stateObjectId);

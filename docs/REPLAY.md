@@ -870,14 +870,18 @@ Checked on an RTX 4080, under the debug layer:
 | Capture | The replay |
 |---|---|
 | `test/d3d12_triangle --rebuild-blas` (a state object with two hit groups, both levels built every frame, a 4-record binding table, a 256x256 trace whose image the cubes then sample) | identical, color and depth, no problems and no debug layer messages |
-| `--ray-tracing` (the same frame with the bottom level built once, before the capture) | the frame differs in exactly the texels that sample the traced image, and the replay says why |
+| `--ray-tracing` (the same frame with the bottom level built once, before the capture) | identical: the bottom level is built before the frame from what was read back when the capture began |
+| `test/path_tracer/d3d12` (three procedural bottom levels and a top level, all built at start-up) | all four structures built before the frame, no problems |
 
-That last row is the limit worth knowing. An engine builds its bottom levels once at load, so a
-captured frame usually holds no build of them: the replay has the buffer the structure lived in and
-nothing to fill it with, every ray through those instances misses, and the traced image comes back
-empty. Nothing about that is an error — an empty scene replays without a single validation message —
-so the replay reports it against the instance that named the structure. `--rebuild-blas` makes the
-other case, as an application with deforming geometry does.
+An engine builds its bottom levels once at load, so a captured frame usually holds no build of them.
+The capture library remembers what each structure's last build read, and when a capture starts it
+reads those ranges back, behind the first submission. The replay builds every structure the frame
+uses but does not build itself from them before replaying the frame — bottom levels first, since a
+top level's instances name them — and says how many it built. What was read back is what those
+buffers held as the capture began: right for geometry that does not change, and not for a buffer the
+application rewrote after the build. A structure whose inputs were not read back (a capture library
+older than this, or memory that is not a buffer) is still left empty, and the replay reports it
+against the instance that named it.
 
 The comparison is what found the one real defect along the way, and it was in the replay: a build's
 inputs are read back under their field names (`VertexBuffer`, `IndexBuffer`, `InstanceDescs`) rather
@@ -1075,12 +1079,14 @@ image the capture read back that a shader could have written (STORAGE usage) is 
 the end of its command buffer and compared, listed with a pass index of `-` because it belongs to
 no pass. Without that, a trace that runs and a trace that produces the wrong pixels look alike.
 
-A traced image will differ when the bottom level it traces against was built *before* the capture
-began, which is the usual thing: an engine builds its bottom levels once at load. The replay
-creates the structure but has nothing to build it from, so the rays miss. A capture that holds the
-bottom level's own build — which `test/triangle --ray-tracing` makes, rebuilding both levels every
-frame as an engine with deforming geometry does — replays it, and the traced image comes back
-identical.
+A bottom level built *before* the capture began, which is the usual thing — an engine builds its
+bottom levels once at load — is built by the replay before the frame, from what the layer read back
+of its last build's inputs when the capture started ("acceleration structures built before the
+capture" in the report). `test/triangle --ray-tracing --static-blas` makes that frame and replays
+identical, traced image included; without `--static-blas` the test rebuilds both levels every frame,
+as an engine with deforming geometry does. The same limits as on D3D12 apply: what was read back is
+what the input buffers held when the capture began, and a host build
+(`vkBuildAccelerationStructuresKHR`) has host pointers for inputs, which a later capture cannot read.
 
 That comparison earns its keep. The first thing it found was not a fault in the replay at all: the
 test application had no barrier between the top level's build and the trace that reads it, and on

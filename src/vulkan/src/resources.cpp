@@ -105,7 +105,15 @@ void ResourceRegistry::OnDestroy(HandleType type, uint64_t handle) {
         case HT_VkFramebuffer: _framebuffers.erase(handle); break;
         case HT_VkRenderPass: _renderPasses.erase(handle); break;
         case HT_VkSwapchainKHR: _swapchains.erase(handle); break;
-        case HT_VkAccelerationStructureKHR: _structureAddresses.erase(handle); break;
+        case HT_VkAccelerationStructureKHR: {
+            // Keyed by address, not by handle.
+            for (auto it = _structureAddresses.begin(); it != _structureAddresses.end();) {
+                if (VKINSP_KEY(it->second) == handle) it = _structureAddresses.erase(it);
+                else ++it;
+            }
+            _structureInputs.erase(handle);
+            break;
+        }
         case HT_VkDescriptorSet:
         case HT_VkDescriptorSetLayout:
         case HT_VkDescriptorUpdateTemplate:
@@ -167,6 +175,27 @@ VkAccelerationStructureKHR ResourceRegistry::StructureAt(VkDeviceAddress address
     std::shared_lock lock(_mutex);
     auto it = _structureAddresses.find((uint64_t)address);
     return it == _structureAddresses.end() ? VK_NULL_HANDLE : it->second;
+}
+
+void ResourceRegistry::NoteStructureInputs(VkAccelerationStructureKHR structure, VkDevice device, uint64_t id,
+                                           uint64_t capture, std::vector<StructureInput> inputs) {
+    if (!structure || !id) return;
+    std::unique_lock lock(_mutex);
+    if (inputs.empty()) {
+        _structureInputs.erase(VKINSP_KEY(structure));
+        return;
+    }
+    _structureInputs[VKINSP_KEY(structure)] = {device, id, capture, std::move(inputs)};
+}
+
+std::vector<std::pair<uint64_t, std::vector<ResourceRegistry::StructureInput>>>
+ResourceRegistry::StructureInputs(VkDevice device, uint64_t capture) const {
+    std::vector<std::pair<uint64_t, std::vector<StructureInput>>> out;
+    std::shared_lock lock(_mutex);
+    for (const auto& [handle, set] : _structureInputs) {
+        if (set.device == device && (!capture || set.capture != capture)) out.emplace_back(set.id, set.inputs);
+    }
+    return out;
 }
 
 void ResourceRegistry::NoteMemory(VkDeviceMemory memory, VkDeviceSize size, bool hostVisible) {

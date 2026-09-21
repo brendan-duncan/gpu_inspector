@@ -479,6 +479,8 @@ struct ReplayReport {
     /** Images put back as the frame first read them (the capture's "initial" contents). */
     size_t initialImagesUploaded = 0;
     size_t bufferUploads = 0;
+    /** Structures built before the capture began, built here from what was read back when it did. */
+    size_t earlierStructuresBuilt = 0;
     std::vector<std::string> problems;
     std::vector<std::string> validation;
     std::vector<TargetComparison> targets;
@@ -988,6 +990,15 @@ private:
     bool ReserveScratch(VkDeviceSize size, VkDeviceAddress& address);
     /** Replays one vkCmdBuildAccelerationStructuresKHR with its addresses remapped. */
     void BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb);
+    /**
+     * Builds, once at setup, the structures the frame traces against but never builds: an engine
+     * builds its bottom levels at load, before any capture. The layer read back what each one's last
+     * build read as the capture began (`captureInputs`, src/vulkan/src/capture.h), and the build it
+     * recorded on the structure says how. Bottom levels first, since a top level's instances name them.
+     */
+    void BuildEarlierStructures();
+    /** Uploads one of the capture's buffer read-backs to the buffer it came from; false when it holds none. */
+    bool UploadCapturedBuffer(uint64_t dataId);
     /** Replays one vkCmdTraceRaysKHR, rebuilding its binding table with this driver's handles. */
     void TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb);
     bool EnsureBindingTable(VkDeviceSize size);

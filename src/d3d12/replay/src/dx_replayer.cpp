@@ -2329,6 +2329,8 @@ bool DxReplayer::Run(const CaptureFile& capture, const DxReplayOptions& options,
     ComputeInitialStates();
     UploadTextures();
     MoveToInitialStates();
+    // Before anything traces: the structures an engine built at load (dx_raytracing.cpp).
+    BuildEarlierStructures();
     CollectMessages();
     if (options.counters.enabled) {
         // Hardware counters are their own analysis: the frame is replayed once per collection pass
