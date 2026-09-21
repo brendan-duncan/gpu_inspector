@@ -1,4 +1,4 @@
-## Unreleased
+## v0.19.0
 
 ### Added
 - How-to guides in the documentation, starting with [inspecting Minecraft Bedrock](docs/HOWTO_MINECRAFT.md), which the inspector waits for rather than launches.
