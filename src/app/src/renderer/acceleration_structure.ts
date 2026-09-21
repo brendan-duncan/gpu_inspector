@@ -360,6 +360,29 @@ export function aabbBoxes(g: AccelerationGeometry, bytes: Uint8Array | null): Fl
   return lines.length ? new Float32Array(lines) : null;
 }
 
+/**
+ * The axis-aligned boxes a procedural geometry was built from, as min/max pairs: six floats each.
+ *
+ * `aabbBoxes` above gives the same boxes as the endpoints of their edges, which is what draws them;
+ * a traversal needs the extents themselves (msl/raytracing.ts). One parse, two shapes, rather than
+ * recovering min and max back out of twenty-four corners.
+ */
+export function aabbExtents(g: AccelerationGeometry, bytes: Uint8Array | null): Float32Array | null {
+  if (g.kind !== "aabbs" || !bytes) return null;
+  const stride = g.aabbStride && g.aabbStride >= AABB_SIZE ? g.aabbStride : AABB_SIZE;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count = Math.min(g.primitiveCount || Infinity, Math.floor(bytes.byteLength / stride));
+  // Every box keeps its slot, degenerate or not: `primitive_id` is an index into the build's boxes,
+  // so dropping one would renumber every box after it. A degenerate box is left as it was read and
+  // misses every ray, which is what the hardware does with it.
+  const out = new Float32Array(count * 6);
+  for (let i = 0; i < count; i++) {
+    const at = i * stride;
+    for (let k = 0; k < 6; k++) out[i * 6 + k] = view.getFloat32(at + k * 4, true);
+  }
+  return count ? out : null;
+}
+
 /** One geometry of a bottom level, as a list of primitives in its own space. */
 export interface GeometryPart {
   /** The geometry's index in its build. */

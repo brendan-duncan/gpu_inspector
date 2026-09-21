@@ -12,7 +12,7 @@ import type {
   Declarator, Expr, FunctionDecl, GlobalDecl, ParamDecl, Span, Stmt, StructDecl, TypeRefNode, Unit,
 } from "./ast.js";
 import type { BinaryOp, FunctionIr, Instr, InstrBody, ParamBinding, Symbol, UnaryOp } from "./ir.js";
-import { isTextureName, TypeTable, type ScalarBase, type TextureAccess } from "./types.js";
+import { isTextureName, RAY_TRACING_HANDLES, TypeTable, type Attribute, type ScalarBase, type TextureAccess } from "./types.js";
 import type { Value } from "../debug/values.js";
 
 export interface LowerDiagnostic {
@@ -37,6 +37,28 @@ export interface LoweredProgram {
 }
 
 /** MSL attributes that name a built-in input or output rather than a resource. */
+/**
+ * The `<metal_raytracing>` enumerations, with the values MSL gives them.
+ *
+ * Kept qualified by the parser for the reason it explains: `intersection_type::triangle` is 1 and
+ * `geometry_type::triangle` is 0, so the qualifier is the whole of what tells them apart.
+ */
+const RAY_TRACING_ENUMS: Record<string, number> = {
+  "intersection_type::none": 0,
+  "intersection_type::triangle": 1,
+  "intersection_type::bounding_box": 2,
+  "intersection_type::curve": 3,
+  "geometry_type::triangle": 0,
+  "geometry_type::bounding_box": 1,
+  "geometry_type::curve": 2,
+  "curve_type::round": 0,
+  "curve_type::flat": 1,
+  "curve_basis::bspline": 0,
+  "curve_basis::catmull_rom": 1,
+  "curve_basis::linear": 2,
+  "curve_basis::bezier": 3,
+};
+
 const BUILTIN_ATTRIBUTES = new Set([
   "vertex_id", "instance_id", "base_vertex", "base_instance", "vertex_amplification_id", "vertex_amplification_count",
   "position", "point_size", "clip_distance", "point_coord", "front_facing", "primitive_id", "sample_id", "sample_mask",
@@ -46,6 +68,10 @@ const BUILTIN_ATTRIBUTES = new Set([
   "thread_index_in_simdgroup", "simdgroup_index_in_threadgroup", "simdgroups_per_threadgroup",
   "threads_per_simdgroup", "quad_index_in_threadgroup", "quad_index_in_simdgroup",
   "depth", "color", "raster_order_group", "amplification_count", "amplification_id",
+  // An intersection function's own: the ray it is being asked about and which primitive of which
+  // instance (interpreter.ts fills these when the traversal calls it).
+  "origin", "direction", "min_distance", "max_distance", "geometry_id", "user_instance_id",
+  "payload", "opaque", "geometry_intersection_function_table_offset",
 ]);
 
 /** How strongly a scalar type pulls a mixed expression towards it (C's usual arithmetic conversions). */
@@ -197,6 +223,11 @@ class Lowering {
     }
     const struct = this.types.structNamed(name);
     if (struct !== undefined) return struct;
+    // `<metal_raytracing>`: `ray` and `intersection_result` as structs, the handles as opaque
+    // (types.ts, rayTracing). After the shader's own structs, so a shader that declares a type of
+    // one of these names means its own.
+    const rayTracing = this.types.rayTracing(name);
+    if (rayTracing !== undefined) return rayTracing;
     const alias = this._aliases.get(name);
     if (alias && !seen.has(name)) {
       seen.add(name);
@@ -329,7 +360,11 @@ class Lowering {
         const type = this._withArrayDims(this._type(p.type), p.arrayDims);
         const symbol = this._symbol(p.name, type, "param", false, {
           attribute: p.attributes[0],
-          binding: decl.qualifier ? bindingOf(p, type, this.types) : undefined,
+          // An intersection function's parameters bind like an entry point's — `[[origin]]`,
+          // `[[primitive_id]]`, `[[buffer(0)]]` — and it has no `kernel`-style qualifier to say so:
+          // what marks it is the `[[intersection(...)]]` on its return (interpreter.ts calls it
+          // from a traversal and fills these).
+          binding: decl.qualifier || isIntersectionFunction(decl) ? bindingOf(p, type, this.types) : undefined,
         });
         return { id: symbol.id, type, name: p.name };
       });
@@ -729,6 +764,14 @@ class Lowering {
 
   private _nameValue(expr: Expr & { kind: "name" }): number {
     const id = this._lookup(expr.name);
+    // A ray tracing enumeration's member, which the parser kept qualified because the members of
+    // `intersection_type` and `geometry_type` collide at different values (parser.ts).
+    const enumerator = id === undefined ? RAY_TRACING_ENUMS[expr.name] : undefined;
+    if (enumerator !== undefined) {
+      const dst = this._temp(this.types.uint);
+      this._emit({ op: "const", dst, value: enumerator, type: this.types.uint }, expr.span);
+      return dst;
+    }
     if (id === undefined) {
       this._warn(expr.span, `${expr.name} is not declared in this shader: it reads as zero`);
       const dst = this._temp(this.types.int);
@@ -738,7 +781,10 @@ class Lowering {
     const symbol = this.symbols[id];
     const t = this.types.get(symbol.type);
     // Textures and samplers are handles, not memory: the parameter's value is the handle itself.
-    if (t?.kind === "texture" || t?.kind === "sampler") {
+    // So are the ray tracing handles — an acceleration structure, a function table, an intersector
+    // — which have no layout to read and are kept in the register rather than in a cell.
+    if (t?.kind === "texture" || t?.kind === "sampler"
+        || (t?.kind === "opaque" && RAY_TRACING_HANDLES.has(t.name))) {
       const dst = this._temp(symbol.type);
       this._emit({ op: "move", dst, src: id, type: symbol.type }, expr.span);
       return dst;
@@ -1247,6 +1293,25 @@ class Lowering {
         this._emit({ op: "builtin", dst, name: `texture.${expr.callee.name}`, args, type }, expr.span);
         return dst;
       }
+      // A method on an `intersector` or on an acceleration structure. `intersect` is its own
+      // instruction rather than a builtin, because the traversal may have to *call* the shader's
+      // own intersection function for a bounding box, and a builtin cannot: the interpreter is a
+      // stepping machine, so only an instruction it drives can push a frame and resume
+      // (interpreter.ts, "rayQuery").
+      if (t?.kind === "opaque" && RAY_TRACING_HANDLES.has(t.name)) {
+        const object = this._value(expr.callee.object);
+        const args = [object, ...expr.args.map((a) => this._value(a))];
+        if (expr.callee.name === "intersect") {
+          const type = this.types.rayTracing("intersection_result") ?? this.types.void_;
+          const dst = this._temp(type);
+          this._emit({ op: "rayQuery", dst, args, type }, expr.span);
+          return dst;
+        }
+        const type = this._rayMethodResultType(expr.callee.name);
+        const dst = this._temp(type);
+        this._emit({ op: "builtin", dst, name: `rt.${expr.callee.name}`, args, type }, expr.span);
+        return dst;
+      }
     }
     if (expr.callee.kind !== "name") {
       this._warn(expr.span, "a call through something other than a name is not supported");
@@ -1315,6 +1380,18 @@ class Lowering {
       }
     }
     return best;
+  }
+
+  /**
+   * What a method on an intersector or an acceleration structure returns.
+   *
+   * Every setter — `accept_any_intersection`, `assume_geometry_type`, `force_opacity` and the rest
+   * — returns void and changes how the *next* `intersect` behaves, which is why they are recorded
+   * on the intersector's value rather than computed here.
+   */
+  private _rayMethodResultType(method: string): number {
+    if (method === "get_max_levels" || method === "get_geometry_count") return this.types.uint;
+    return this.types.void_;
   }
 
   private _textureResultType(textureType: number, method: string): number {
@@ -1409,23 +1486,42 @@ class Lowering {
   }
 }
 
-/** A literal's value: an integer stays exact, a float is a number, a 64-bit integer a bigint. */
+/**
+ * A literal's value: an integer stays exact, a float is a number, a 64-bit integer a bigint.
+ *
+ * The suffix a hex literal can carry is `u` and `l` only, because `f` and `h` are hex *digits*:
+ * reading `0xFF` the other way leaves `0x` with an `FF` suffix, which is not a number at all, and
+ * threw — so every shader holding a hex constant, which is most of the ones with a ray mask or a
+ * bit field in them, brought the debugger down before it ran an instruction.
+ */
 function numberOf(text: string): Value {
   const clean = text.replace(/'/g, "");
-  const suffix = /[uUlLfFhH]*$/.exec(clean)?.[0] ?? "";
+  const hex = /^0[xX]/.test(clean);
+  const suffix = (hex ? /[uUlL]*$/ : /[uUlLfFhH]*$/).exec(clean)?.[0] ?? "";
   const digits = clean.slice(0, clean.length - suffix.length);
   const long = /[lL]{1,2}/.test(suffix) && !/[fFhH]/.test(suffix);
-  if (/^0[xX]/.test(digits) && !/[.pP]/.test(digits)) {
-    const big = BigInt(digits);
-    return long ? BigInt.asIntN(64, big) : Number(BigInt.asUintN(32, big)) | 0;
+  // A literal the lexer accepted but BigInt will not is worth a zero rather than an exception: the
+  // debugger has to keep running on a shader it cannot fully read.
+  try {
+    if (hex && !/[.pP]/.test(digits)) {
+      const value = BigInt(digits);
+      return long ? BigInt.asIntN(64, value) : Number(BigInt.asUintN(32, value)) | 0;
+    }
+    if (/^0[bB]/.test(digits)) return Number(BigInt(digits));
+    if (long) return BigInt(digits.split(".")[0] || "0");
+  } catch {
+    return 0;
   }
-  if (/^0[bB]/.test(digits)) return Number(BigInt(digits));
-  if (long) return BigInt(digits.split(".")[0] || "0");
   const value = Number(digits);
   return Number.isFinite(value) ? value : 0;
 }
 
 /** What binds an entry point's parameter, from its attribute. */
+/** Whether a function is an intersection function: `[[intersection(bounding_box, instancing)]]`. */
+export function isIntersectionFunction(decl: { returnAttributes: Attribute[] }): boolean {
+  return decl.returnAttributes.some((a) => a.name === "intersection");
+}
+
 function bindingOf(param: ParamDecl, type: number, types: TypeTable): ParamBinding | undefined {
   const t = types.get(type);
   for (const a of param.attributes) {

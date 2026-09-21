@@ -566,6 +566,8 @@ bool HasAccelerationStructures(void) {
     return !g_structures.empty();
 }
 
+void ReadBackTableBuffers(id encoder, uint64_t captureSerial);
+
 void ReadBackEarlierStructures(id encoder, uint64_t captureSerial) {
     std::vector<std::pair<uint64_t, StructureRecord>> pending;
     {
@@ -608,6 +610,62 @@ void ReadBackEarlierStructures(id encoder, uint64_t captureSerial) {
         w.EndObject();
         w.EndObject();
         UpdateObject(structure, "captureInputs", w.str());
+    }
+    ReadBackTableBuffers(encoder, captureSerial);
+}
+
+/**
+ * The buffers an intersection function table binds for its functions, read back as the capture
+ * starts.
+ *
+ * These are arguments to the frame in exactly the way a build's vertices are, and for the same
+ * reason nothing else captures them: a table's buffers are set once at setup, with
+ * `setBuffer:offset:atIndex:` on the *table*, so no command of any later frame binds them and no
+ * read-back is queued by one. Without them the shader debugger can step into an intersection
+ * function and find its arguments zero — which for the path tracer means every sphere at the
+ * origin with radius zero, and every ray missing.
+ *
+ * The capture ids go on the table's own update beside the entries, so one read serves whichever
+ * frame is being stepped.
+ */
+void ReadBackTableBuffers(id encoder, uint64_t captureSerial) {
+    std::vector<std::pair<uint64_t, TableRecord>> pending;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        for (const auto &entry : g_tables) {
+            if (!entry.second.buffers.empty()) pending.push_back(entry);
+        }
+    }
+    for (const auto &entry : pending) {
+        id table = LiveObject(entry.first);
+        if (table == nil) continue;
+        std::vector<std::pair<uint64_t, uint64_t>> captured;   // slot -> capture id
+        for (const auto &bound : entry.second.buffers) {
+            id buffer = LiveObject(bound.second.first);
+            // Whole: an intersection function indexes its buffer by primitive, so a range clipped
+            // to the first few kilobytes answers for the first few primitives and no others.
+            const uint64_t captureId = buffer != nil
+                ? QueueBufferCapture(encoder, buffer, bound.second.second, 0, /*whole=*/true) : 0;
+            if (captureId != 0) captured.push_back({bound.first, captureId});
+        }
+        if (captured.empty()) continue;
+        JsonWriter w;
+        w.BeginObject();
+        w.Key("tableBuffers");
+        w.BeginObject();
+        w.Key("serial"); w.Uint(captureSerial);
+        w.Key("buffers");
+        w.BeginArray();
+        for (const auto &c : captured) {
+            w.BeginObject();
+            w.Key("index"); w.Uint(c.first);
+            w.Key("capture"); w.Uint(c.second);
+            w.EndObject();
+        }
+        w.EndArray();
+        w.EndObject();
+        w.EndObject();
+        UpdateObject(table, "tableBuffers", w.str());
     }
 }
 

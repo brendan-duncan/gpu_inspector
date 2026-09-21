@@ -422,6 +422,9 @@ export class CodeEditor extends Div {
  * Lines and messages from a compiler log: glslangValidator ("ERROR: file:12: message"), dxc
  * ("file:12:34: error: message") and spirv-as ("error: 12: 34: message"). The first message of
  * a line wins; lines outside the source are ignored by the editor.
+ *
+ * Metal's compiler needs no case of its own: it is clang, and reports in clang's form
+ * ("program_source:49:27: error: ..."), which the dxc pattern below already reads.
  */
 export function parseCompileErrors(log: string): Map<number, string> {
   const errors = new Map<number, string>();
@@ -432,7 +435,7 @@ export function parseCompileErrors(log: string): Map<number, string> {
     const l = raw.trim();
     let m = /^ERROR: .*?:(\d+): (.*)$/.exec(l);          // glslang
     if (m) { add(Number(m[1]), m[2]); continue; }
-    m = /^.*?:(\d+):\d+: (?:error|warning): (.*)$/.exec(l);  // dxc / clang style
+    m = /^.*?:(\d+):\d+: (?:error|warning): (.*)$/.exec(l);  // dxc, and Metal's compiler: clang style
     if (m) { add(Number(m[1]), m[2]); continue; }
     m = /^error: (\d+): \d+: (.*)$/.exec(l);           // spirv-as
     if (m) add(Number(m[1]), m[2]);

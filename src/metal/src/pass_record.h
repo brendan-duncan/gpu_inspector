@@ -35,6 +35,8 @@ struct OverdrawPass {
     uint32_t height = 0;
     /** Whether the capture measures the pass's overdraw. */
     bool measureOverdraw = false;
+    /** Whether the capture draws one of this pass's draws as an overlay (draw_overlay.mm). */
+    bool overlay = false;
     /** Why the pass's overdraw is not measured at all. */
     std::string note;
     bool multisampled = false;
@@ -88,6 +90,24 @@ enum class PipelineVariant : int {
     HistoryCover = 1,
     /** Pixel history: the application's fragment function, no color writes. */
     HistoryNoWrite = 2,
+    /**
+     * Draw overlay: `fragment` (writes 1) into one R8Unorm target, unblended, one sample.
+     *
+     * One variant covers all five of an overlay's runs, because what the runs differ in is encoder
+     * state rather than pipeline state: Metal sets the fill mode and the cull mode on the encoder
+     * (`setTriangleFillMode:`, `setCullMode:`), where D3D12 has to bake both into a pipeline. The
+     * depth and stencil tests differ too, and those are a DepthStencilVariant.
+     */
+    OverlayMask = 3,
+    /**
+     * Draw overlay: the application's own fragment function, no color writes, into the overlay's
+     * own attachment formats.
+     *
+     * The draws *before* the one being drawn, in the runs that test: they have to move depth and
+     * stencil exactly as they did, and write no color. HistoryNoWrite does the same thing but
+     * keeps the application's color formats, which do not match an overlay's R8Unorm target.
+     */
+    OverlayQuiet = 4,
 };
 
 struct DerivedPipeline {
@@ -98,7 +118,8 @@ struct DerivedPipeline {
 
 /**
  * A copy of a recorded pipeline for a measurement, cached per pipeline, variant and (for the
- * overdraw count, which changes the attachment formats) the depth and stencil formats.
+ * overdraw count and the two overlay variants, which change the attachment formats) the depth and
+ * stencil formats.
  */
 DerivedPipeline PipelineCopy(id<MTLDevice> device, id state, PipelineVariant variant, id<MTLFunction> fragment,
                              MTLPixelFormat depthFormat = MTLPixelFormatInvalid, MTLPixelFormat stencilFormat = MTLPixelFormatInvalid);
@@ -122,6 +143,20 @@ id DepthStencilCopy(id<MTLDevice> device, id state, DepthStencilVariant variant)
 
 /** The color attachment of a pass that renders to the pixel the capture follows, or -1. */
 int MatchPixelHistoryAttachment(MTLRenderPassDescriptor *descriptor);
+
+// ---------------------------------------------------------------------------------------------
+// Draw overlays (draw_overlay.mm), the third consumer of this machinery.
+
+/** Whether the capture draws an overlay at all: checked before a pass's depth and stencil are copied. */
+bool DrawOverlayWanted();
+/** Whether this is the pass the overlay's draw is in, known once the pass has its index. */
+bool MatchDrawOverlayPass(uint32_t passIndex);
+/** After the application's endEncoding: the pass drawn again, five ways, around the requested draw. */
+void MeasureDrawOverlay(OverdrawPass &pass);
+/** A capture starts recording: which draw of which pass to draw, if any. */
+void StartDrawOverlayCapture(const DrawOverlayRequest &request);
+/** The capture's command buffers have completed: the overlay is sent as CaptureDrawOverlay. */
+void SendDrawOverlay();
 
 /** Before the pass begins: copies of its attachments at the pixel, for the history to start from. */
 void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDescriptor *descriptor, int attachment);

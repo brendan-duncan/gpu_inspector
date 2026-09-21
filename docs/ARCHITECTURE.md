@@ -102,6 +102,12 @@ gives the app DXBC/DXIL disassembly, embedded HLSL and reflection the way `spirv
   decides the port: whether one is already served is read from the OS rather than probed with a
   connect (`PortIsServed` — on Windows out of the listening table, because `SO_REUSEADDR` lets a
   second listener bind a served address and silently share it).
+
+  The Metal library answers a probe and steps its port the same way
+  (`src/metal/src/transport.mm`), with one difference: its client session runs on the accept thread
+  rather than on one of its own, so while an inspector is attached nothing is accepted and a probe
+  of that port times out — an attached Metal application is missing from the list rather than
+  listed as busy. Discovery, which is what the list is for, is unaffected.
 * `src/descriptors.*` — descriptor set contents: follows `vkCreateDescriptorSetLayout`,
   `vkAllocateDescriptorSets`, `vkUpdateDescriptorSets`, update templates and push descriptors, so
   a bind command during a capture can carry a snapshot of what each bound set contained. The
@@ -444,7 +450,7 @@ Per backend, all that is left is putting the rectangles on the screen:
 - **Vulkan** (`src/vulkan/src/hud.*`) draws from `vkQueuePresentKHR`, in a render pass that loads
   and stores the swapchain image in `PRESENT_SRC`. Submitting on the presenting queue is *not*
   enough to order the overlay before the present: the present waits on semaphores the application's
-  rendering already signalled, so the presentation engine could read the image while the overlay is
+  rendering already signaled, so the presentation engine could read the image while the overlay is
   still drawing. The overlay's submission therefore waits on the application's present semaphores
   and signals one of its own, and the present is handed a rewritten `VkPresentInfoKHR` that waits
   on that. Its command buffers need the loader's dispatch pointer copied onto them, for the same
@@ -455,7 +461,7 @@ Per backend, all that is left is putting the rectangles on the screen:
   already ordered before it.
 - **Metal** (`src/metal/src/hud.*`) appends a render pass to the command buffer the application is
   still encoding when it calls `presentDrawable:` — the present does not happen until that command
-  buffer completes, so there is no extra submission and no synchronisation of its own. It compiles
+  buffer completes, so there is no extra submission and no synchronization of its own. It compiles
   its MSL at run time, which is why it has no generated header.
 
 The Vulkan and D3D12 shaders cannot be compiled at run time, and a release build deliberately has
@@ -471,10 +477,14 @@ without needing a compiler of its own.
 the pixel history on the right. The toolbar's overlay list blends something over the image.
 **Overdraw** is the pass's heatmap (`renderer/overdraw.ts` for the ramp and the counts, transparent
 where nothing landed), with both counts in the tooltip. **Highlight Draw**, **Depth Test** and
-**Wireframe** are RenderDoc's draw overlays for one of the pass's draws, painted from the replay's
-mask (`renderer/draw_overlay.ts`); a pass of up to 48 draws has them all drawn in one replay, so
-stepping through them is immediate. A Vulkan capture is replayed for each the first time it is
-needed. Clicking a pixel follows it through the frame in the pane beside it
+**Wireframe** — with **Stencil Test** and **Backface Cull** — are RenderDoc's draw overlays for one
+of the pass's draws, painted from the one-byte-per-pixel mask all three backends write
+(`renderer/draw_overlay.ts`). A Vulkan capture is replayed for each the first time it is needed, and
+a pass of up to 48 draws has them all drawn in one replay, so stepping through them is immediate. A
+Metal or D3D12 capture has no replay to ask, so the library measures one draw while a frame is
+captured (`src/metal/src/draw_overlay.mm`, `src/d3d12/src/draw_overlay.cpp`): choosing an overlay
+there captures the application's next frame and opens that capture's own tab on the answer, which
+the capture file then keeps, since it cannot be taken again. Clicking a pixel follows it through the frame in the pane beside it
 (`renderer/pixel_history_view.ts` in its compact mode) — replayed for a Vulkan capture, and for a
 Metal capture the one the capture was taken with, with a button to capture the next frame
 following another. One such tab per capture, retargeted as other render targets are opened.
@@ -525,6 +535,16 @@ shaders arrive as the source the application compiled rather than as an IR:
   SPIR-V one; `stdlib.ts` is the `metal::` library, `program.ts` its `DebugProgram`. An invocation
   is specialized with the function constants the draw's `MTLFunction` was built with, so a library
   of `[[function_constant]]`-guarded variants steps the one that ran.
+- `raytracing.ts` is what `intersector::intersect` does, since a Metal kernel traverses the scene
+  itself: brute force over the geometry the capture read back, which for the one invocation being
+  stepped is fast enough. `intersect` is an *instruction* rather than a `stdlib` builtin, and the
+  reason is worth knowing — for a procedural geometry the traversal has to call the *shader's own*
+  intersection function, and a builtin is a function of its arguments and cannot push a frame. The
+  interpreter drives `rayQuery` instead, and does not advance the program counter while a box is
+  being asked about: the callee's `return` writes into the caller's destination register and leaves
+  it on the same instruction, so the op runs again with the answer. That is also what lets the
+  debugger step *into* the intersection function, which is the only place "why is this sphere not
+  hit" is answered.
 
 `renderer/shader_debug_setup.ts` builds a session from a capture and holds the rasterizer both APIs
 share; `renderer/metal/shader_debug.ts` holds the Metal half. A vertex's inputs are decoded by
@@ -862,6 +882,19 @@ buffers recorded before the edit keep binding the original until they are re-rec
   negative key per set of shader objects, followed through a frame by `ProgramTracker`.
   `stateStages` gives a draw's stages from either source, so the command details, the analysis,
   the flame graph and the shader debugger read one lookup.
+
+**Metal** does the same thing with the least machinery of the three, because the compiler is not
+here: a capture holds the Metal Shading Language the application compiled, so `ReplaceShader`
+carries the *source* and `src/metal/src/shader_edit.mm` hands it to the application's own device
+(`newLibraryWithSource:`). The diagnostics come back with the answer rather than before it, and the
+editor marks the lines they name — Metal's compiler is clang, whose form the log parser already
+read. A pipeline state cannot be copied, so the rebuild works from the descriptor `overdraw.mm`
+already kept for the measurements' pipeline copies; a compute pipeline built from a bare function
+has none, so the function is remembered and the rebuild makes one. The part with no counterpart in
+either other backend is function constants: `MTLFunctionConstantValues` has no getters, so the
+values object is retained at function creation, without which a variant-heavy library would
+recompile into a different variant that compiles, draws and looks like a clean edit. There is no
+**Compile & Replay** on Metal: that needs a replay that serves analyses.
 
 The editor (`renderer/code_editor.ts`) is a
 textarea over a highlighted copy of its text with a line-number gutter and a find bar; a failed

@@ -33,6 +33,19 @@ struct PixelHistoryRequest {
     uint32_t slice = 0;
 };
 
+/**
+ * One draw to draw as an overlay (draw_overlay.mm), from the `Capture` message's `drawOverlay`.
+ *
+ * A draw is named by the pass it is in and its ordinal within that pass, not by the command index
+ * the UI clicked: the measurement happens while the *next* frame records, and that frame's commands
+ * are numbered again from the start.
+ */
+struct DrawOverlayRequest {
+    bool enabled = false;
+    uint32_t passIndex = 0;
+    uint32_t drawIndex = 0;
+};
+
 /** The UI's `Capture` message, with the Vulkan layer's defaults for what it leaves out. */
 struct CaptureOptions {
     uint32_t frameCount = 1;
@@ -54,6 +67,8 @@ struct CaptureOptions {
     bool overdraw = false;
     /** Follow one pixel through the frame's passes (pixel_history.mm). */
     PixelHistoryRequest pixelHistory;
+    /** Draw one of the frame's draws as an overlay over its pass's target (draw_overlay.mm). */
+    DrawOverlayRequest drawOverlay;
 };
 
 /** Arms a capture, from the UI's `Capture` message. */

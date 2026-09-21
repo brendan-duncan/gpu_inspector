@@ -23,6 +23,7 @@ import { d3d12RasterState, interpretedD3D12MeshOutput, isD3D12Pipeline, prepareD
 import { isD3D12Type } from "./d3d12/d3d12_object.js";
 import type { MslBindings } from "./msl/interpreter.js";
 import { meshInput } from "./mesh_input.js";
+import type { StructureDatabase } from "./acceleration_scene.js";
 import { positionOutput, primitiveKind, type MeshOutput, type MeshOutputVariable } from "./mesh_output.js";
 import { stateStages, type StageSource } from "./shader_cache.js";
 import { Invocation, type InvocationInputs, type ShaderBindings } from "./spirv/interpreter.js";
@@ -71,7 +72,12 @@ export interface DebugSession {
 
 export interface DebugContext {
   data: CaptureData;
-  db: ObjectLookup & { blobData: Map<string, Uint8Array> };
+  /**
+   * `getObjectsOfType` is there for ray queries: a Metal kernel's traversal is stepped over the
+   * scene the capture read back, and finding a top level's builds means looking through every
+   * acceleration structure the capture holds (acceleration_scene.ts).
+   */
+  db: ObjectLookup & StructureDatabase & { blobData: Map<string, Uint8Array> };
   /** The replay's vertex shader outputs of a draw (a fragment needs them; a vertex compares with them). */
   meshOutput?: (command: number) => Promise<MeshOutput>;
   /** The vertex shader's input names, for attributes. */

@@ -1,6 +1,7 @@
 // Hooks on the device and the objects it creates: CAMetalLayer, drawables, MTLDevice, MTLHeap,
 // MTLLibrary, MTLTexture and MTLBuffer. See hooks_common.h for the shape every hook has.
 #include "function_constants.h"
+#include "shader_edit.h"
 #include "cpu_timeline.h"
 #include "frame_pause.h"
 #include "frame_stats.h"
@@ -736,7 +737,7 @@ id D_newRenderPipelineState(id self, SEL _cmd, MTLRenderPipelineDescriptor *desc
         descriptor.label == nil ? "" : descriptor.label.UTF8String, ClassName(state));
     Track(state, "MTLRenderPipelineState", "newRenderPipelineStateWithDescriptor:error:", self,
           RenderPipelineArgs(descriptor, reflection));
-    RememberRenderPipeline(state, descriptor);
+    RememberPipelineDescriptor(state, descriptor);
     return state;
 }
 
@@ -759,7 +760,7 @@ id D_newRenderPipelineStateReflection(id self, SEL _cmd, MTLRenderPipelineDescri
     Track(state, "MTLRenderPipelineState",
           "newRenderPipelineStateWithDescriptor:options:reflection:error:", self,
           RenderPipelineArgs(descriptor, *out));
-    RememberRenderPipeline(state, descriptor);
+    RememberPipelineDescriptor(state, descriptor);
     return state;
 }
 
@@ -782,7 +783,7 @@ void D_newRenderPipelineStateAsync(id self, SEL _cmd, MTLRenderPipelineDescripto
         Track(state, "MTLRenderPipelineState",
               "newRenderPipelineStateWithDescriptor:completionHandler:", self,
               RenderPipelineArgs(kept, reflection));
-        RememberRenderPipeline(state, kept);
+        RememberPipelineDescriptor(state, kept);
         [kept release];
         handler(state, error);
     }];
@@ -804,7 +805,7 @@ void D_newRenderPipelineStateOptionsAsync(id self, SEL _cmd, MTLRenderPipelineDe
             Track(state, "MTLRenderPipelineState",
                   "newRenderPipelineStateWithDescriptor:options:completionHandler:", self,
                   RenderPipelineArgs(kept, reflection));
-            RememberRenderPipeline(state, kept);
+            RememberPipelineDescriptor(state, kept);
             [kept release];
             handler(state, reflection, error);
         };
@@ -871,7 +872,7 @@ id D_newMeshRenderPipelineState(id self, SEL _cmd, id descriptor, MTLPipelineOpt
     Track(state, "MTLRenderPipelineState",
           "newRenderPipelineStateWithMeshDescriptor:options:reflection:error:", self,
           MeshRenderPipelineArgs(descriptor, *out));
-    RememberRenderPipeline(state, descriptor);
+    RememberPipelineDescriptor(state, descriptor);
     return state;
 }
 
@@ -889,7 +890,7 @@ void D_newMeshRenderPipelineStateAsync(id self, SEL _cmd, id descriptor, MTLPipe
             Track(state, "MTLRenderPipelineState",
                   "newRenderPipelineStateWithMeshDescriptor:options:completionHandler:", self,
                   MeshRenderPipelineArgs(kept, reflection));
-            RememberRenderPipeline(state, kept);
+            RememberPipelineDescriptor(state, kept);
             [kept release];
             handler(state, reflection, error);
         };
@@ -913,6 +914,7 @@ id D_newComputePipelineStateWithFunction(id self, SEL _cmd, id<MTLFunction> func
         function == nil ? "" : function.name.UTF8String, ClassName(state));
     Track(state, "MTLComputePipelineState", "newComputePipelineStateWithFunction:error:", self,
           ComputePipelineFunctionArgs(function, (id<MTLComputePipelineState>)state, reflection));
+    RememberComputePipeline(state, function);
     return state;
 }
 
@@ -934,6 +936,7 @@ id D_newComputePipelineStateWithFunctionReflection(id self, SEL _cmd, id<MTLFunc
     Track(state, "MTLComputePipelineState",
           "newComputePipelineStateWithFunction:options:reflection:error:", self,
           ComputePipelineFunctionArgs(function, (id<MTLComputePipelineState>)state, *out));
+    RememberComputePipeline(state, function);
     return state;
 }
 
@@ -953,6 +956,7 @@ void D_newComputePipelineStateWithFunctionAsync(id self, SEL _cmd, id<MTLFunctio
         Track(state, "MTLComputePipelineState",
               "newComputePipelineStateWithFunction:completionHandler:", self,
               ComputePipelineFunctionArgs(function, state, reflection));
+        RememberComputePipeline(state, function);
         handler(state, error);
     }];
 }
@@ -971,6 +975,7 @@ void D_newComputePipelineStateWithFunctionOptionsAsync(
             Track(state, "MTLComputePipelineState",
                   "newComputePipelineStateWithFunction:options:completionHandler:", self,
                   ComputePipelineFunctionArgs(function, state, reflection));
+            RememberComputePipeline(state, function);
             handler(state, reflection, error);
         };
     ORIG(void (*)(id, SEL, id, MTLPipelineOption, MTLNewComputePipelineStateWithReflectionCompletionHandler))(
@@ -996,6 +1001,7 @@ id D_newComputePipelineStateWithDescriptor(id self, SEL _cmd, MTLComputePipeline
     Track(state, "MTLComputePipelineState",
           "newComputePipelineStateWithDescriptor:options:reflection:error:", self,
           ComputePipelineDescriptorArgs(descriptor, (id<MTLComputePipelineState>)state, *out));
+    RememberPipelineDescriptor(state, descriptor);
     return state;
 }
 
@@ -1015,6 +1021,7 @@ void D_newComputePipelineStateWithDescriptorAsync(
             Track(state, "MTLComputePipelineState",
                   "newComputePipelineStateWithDescriptor:options:completionHandler:", self,
                   ComputePipelineDescriptorArgs(kept, state, reflection));
+            RememberPipelineDescriptor(state, kept);
             [kept release];
             handler(state, reflection, error);
         };
@@ -1124,6 +1131,8 @@ id L_newFunctionWithNameConstants(id self, SEL _cmd, NSString *name,
     if (reentry.outermost()) {
         Track(function, "MTLFunction", "newFunctionWithName:constantValues:error:", self,
               FunctionArgs((id<MTLFunction>)function, values));
+        // Kept so an edit of this function's source can be specialized the same way.
+        RememberFunctionConstants(function, values);
     }
     return function;
 }
@@ -1136,6 +1145,7 @@ void L_newFunctionWithNameConstantsAsync(id self, SEL _cmd, NSString *name,
         void (^wrapped)(id<MTLFunction>, NSError *) = ^(id<MTLFunction> function, NSError *error) {
             Track(function, "MTLFunction", "newFunctionWithName:constantValues:completionHandler:",
                   self, FunctionArgs(function, values));
+            RememberFunctionConstants(function, values);
             handler(function, error);
         };
         ORIG(void (*)(id, SEL, NSString *, MTLFunctionConstantValues *, id))(

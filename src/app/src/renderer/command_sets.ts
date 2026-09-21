@@ -58,6 +58,21 @@ export interface BoundStageBuffer {
 }
 
 /**
+ * Metal: an acceleration structure or a function table bound to a stage.
+ *
+ * These bind at a *buffer* index — `setAccelerationStructure:atBufferIndex:` — so the index shares
+ * its namespace with the buffers above, and only the shader parameter's type says which of the two
+ * a slot holds. The shader debugger's ray queries read them (msl/raytracing.ts).
+ */
+export interface BoundRayObject {
+  cmd: CaptureCommand;
+  stage: string;
+  index: number;
+  kind: "accelerationStructure" | "intersectionFunctionTable" | "visibleFunctionTable";
+  object: ArgValue | null;
+}
+
+/**
  * A texture or a sampler bound to a stage by index, the counterpart of BoundStageBuffer:
  * `setFragmentTexture:atIndex:`, `setVertexSamplerState:atIndex:`, the compute encoder's
  * `setTexture:atIndex:`, and the plural forms that bind a range at once.
@@ -156,6 +171,14 @@ export interface CommandSets {
   BIND_STAGE_BUFFER?: ReadonlySet<string>;
   /** The stage buffers `cmd` binds, empty when it binds none. */
   stageBuffersOf?(cmd: CaptureCommand): BoundStageBuffer[];
+
+  /**
+   * Commands that bind an acceleration structure or a function table to a stage (Metal). They bind
+   * at a buffer index, so the index namespace is the one above and the shader parameter's type is
+   * what tells a scene from bytes: the shader debugger's ray queries read these.
+   */
+  BIND_RAY_OBJECT?: ReadonlySet<string>;
+  rayObjectsOf?(cmd: CaptureCommand): BoundRayObject[];
 
   /**
    * Commands that bind a texture or a sampler to a stage by index (Metal). What a draw sampled is

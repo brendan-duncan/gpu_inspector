@@ -5,7 +5,7 @@
 // views, the Format editor and the Reflection section work on a Metal draw without knowing
 // which API produced the pipeline.
 import { ShaderReflection, typeName, type ReflType, type ShaderResource, type ShaderStage } from "../vulkan/spirv_reflect.js";
-import { isObject, num, str } from "../vulkan/vulkan_object.js";
+import { isObject, num, refId, str } from "../vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue } from "../../shared/protocol.js";
 import type { VulkanObject } from "../vulkan/vulkan_object.js";
 
@@ -102,4 +102,59 @@ export function metalReflection(stage: MetalStageReflection): ShaderReflection {
   const all = [...stage.buffers.values(), ...stage.textures.values(), ...stage.samplers.values()];
   r.resources = all.sort((a, b) => a.binding - b.binding);
   return r;
+}
+
+/** One stage of a Metal pipeline, with where its Metal Shading Language is to be found. */
+export interface MetalPipelineStage {
+  /** The stage name the capture library's ReplaceShader takes ("vertex", "fragment", "compute"). */
+  stage: string;
+  /** The entry point the pipeline uses, which is what an edit recompiles and looks up. */
+  functionName: string;
+  /** The library the function came from, when the capture recorded it. */
+  library: VulkanObject | null;
+  /** The library payload holding the source, or -1 for a precompiled metallib (or none). */
+  blobIndex: number;
+}
+
+/**
+ * The stages of a Metal render or compute pipeline state, with the library each one's function
+ * came from.
+ *
+ * Metal puts the source one step further away than either other API: a pipeline descriptor names
+ * `MTLFunction`s, a function belongs to an `MTLLibrary`, and the library is what holds the text
+ * (the capture attaches it as a payload — `metallib` when the application loaded it precompiled,
+ * which has no source). So a view of a pipeline's shaders has to walk pipeline -> function ->
+ * library, which is what this does.
+ *
+ * `vertexFunction` and friends are written as references to the tracked function when there is one
+ * and as a bare name when there is not (src/metal/src/hooks_descriptors.mm, WriteFunction), and
+ * `<key>Name` carries the name either way — so a stage is listed with its entry point even when
+ * the function object itself was never tracked.
+ */
+export function metalPipelineStages(pipeline: VulkanObject | null | undefined,
+                                    db: { getObject(id: number | null): VulkanObject | null }): MetalPipelineStage[] {
+  const d = pipeline?.descriptor;
+  if (!d) return [];
+  // The descriptor keys, and the stage name each one is called by. A compute pipeline's is
+  // `function`, since its descriptor has only the one.
+  const keys: [string, string][] = [
+    ["vertexFunction", "vertex"], ["fragmentFunction", "fragment"], ["function", "compute"],
+    ["objectFunction", "object"], ["meshFunction", "mesh"],
+  ];
+  const out: MetalPipelineStage[] = [];
+  for (const [key, stage] of keys) {
+    const name = str(d[`${key}Name`]);
+    const ref = refId(d[key]);
+    if (!name && ref === null) continue;
+    const fn = db.getObject(ref);
+    const library = fn ? db.getObject(fn.parentId) : null;
+    const lib = library?.type === "MTLLibrary" ? library : null;
+    out.push({
+      stage,
+      functionName: name || str(fn?.args?.name),
+      library: lib,
+      blobIndex: lib ? lib.blobs.findIndex((b) => b.name !== "metallib") : -1,
+    });
+  }
+  return out;
 }

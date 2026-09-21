@@ -4,7 +4,7 @@
 // renders it and the MCP server (src/mcp/) reports it, so both read one reconstruction.
 import { decodeBase64 } from "./utils/base64.js";
 import {
-  boundPipelineOf, type BoundIndexBuffer, type BoundStageBuffer, type BoundStageSampler, type BoundStageTexture, type BoundVertexBuffer, type CommandSets,
+  boundPipelineOf, type BoundIndexBuffer, type BoundRayObject, type BoundStageBuffer, type BoundStageSampler, type BoundStageTexture, type BoundVertexBuffer, type CommandSets,
 } from "./command_sets.js";
 import { d3d12InputElements, d3d12PipelineKind, isD3D12Type } from "./d3d12/d3d12_object.js";
 import { vkFormatOfDxgi } from "./d3d12/dxgi_format.js";
@@ -42,6 +42,12 @@ export interface DrawState {
   vertexBuffers: Map<number, BoundVertexBuffer>;
   /** Metal: buffers bound to a stage by index, keyed "stage:index". */
   stageBuffers: Map<string, BoundStageBuffer>;
+  /**
+   * Metal: acceleration structures and function tables bound to a stage, keyed "stage:index". The
+   * same index namespace as `stageBuffers`, since Metal binds them at a buffer index — the shader
+   * parameter's type is what says which of the two a slot holds.
+   */
+  rayBindings: Map<string, BoundRayObject>;
   /** Metal: textures and samplers bound to a stage by index, keyed "stage:index". */
   stageTextures: Map<string, BoundStageTexture>;
   stageSamplers: Map<string, BoundStageSampler>;
@@ -111,7 +117,7 @@ export function emptyDrawState(bindPoint: string): DrawState {
   return {
     bindPoint, pipelineCmd: null, pipeline: null, shaders: [], shadersCmd: null,
     dynamic: { cullMode: null, frontFace: null, topology: null, depthTest: null, depthCompare: null },
-    sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(),
+    sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(), rayBindings: new Map(),
     stageTextures: new Map(), stageSamplers: new Map(), indexBuffer: null,
     vertexInput: null, viewports: null, scissors: null, pushConstants: [],
     cullMode: null, frontFace: null, depthStencil: null,
@@ -189,6 +195,12 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
       for (const sb of cmdSets.stageBuffersOf(c)) {
         const key = `${sb.stage}:${sb.index}`;
         if (!state.stageBuffers.has(key)) state.stageBuffers.set(key, sb);
+      }
+    }
+    if (cmdSets.BIND_RAY_OBJECT?.has(c.method) && cmdSets.rayObjectsOf) {
+      for (const rb of cmdSets.rayObjectsOf(c)) {
+        const key = `${rb.stage}:${rb.index}`;
+        if (!state.rayBindings.has(key)) state.rayBindings.set(key, rb);
       }
     }
     if (cmdSets.BIND_STAGE_TEXTURE?.has(c.method) && cmdSets.stageTexturesOf) {

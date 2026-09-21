@@ -265,6 +265,7 @@ export class CaptureData {
     this.passTimingOrigin = c.passTimingOrigin;
     this.overdraw = c.overdraw;
     this.pixelHistory = c.pixelHistory;
+    this.drawOverlays = c.drawOverlays;
     this.drawStats = c.drawStats;
     this.hwCounters = c.hwCounters;
     this.cpuTimeline = c.cpuTimeline;

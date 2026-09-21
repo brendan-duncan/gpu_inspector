@@ -46,6 +46,26 @@ function isBuiltinTypeName(name: string): boolean {
   return /^(packed_)?(bool|char|uchar|short|ushort|int|uint|long|ulong|half|float|double)\d(x\d)?$/.test(name);
 }
 
+/**
+ * Enumerations whose members are kept qualified (see the `::` handling in `_primary`).
+ * `intersection_type::triangle` is 1 and `geometry_type::triangle` is 0, so a lowering that saw
+ * only `triangle` would compare a hit against the wrong constant and every triangle would read as
+ * a miss — or worse, as a bounding box.
+ */
+const QUALIFIED_ENUMS = new Set(["intersection_type", "geometry_type", "curve_type", "curve_basis"]);
+
+/**
+ * Member types of the ray tracing templates, as the type they stand for.
+ *
+ * `intersector<...>::result_type` is how a shader names what `intersect` returns; MSL also lets it
+ * be written out as `intersection_result<...>`, and the two are the same type.
+ */
+const NESTED_TYPES = new Map([
+  ["intersector::result_type", "intersection_result"],
+  ["intersector::result_ref_type", "intersection_result"],
+  ["intersection_query::result_type", "intersection_result"],
+]);
+
 class Parser {
   private _tokens: Token[];
   private _at = 0;
@@ -471,6 +491,16 @@ class Parser {
         if (!this._eat(",")) break;
       }
       this._expect(">", "after template arguments");
+      // `intersector<instancing>::result_type`: a member type of a template, which is how a shader
+      // names what `intersect` returns without spelling the whole `intersection_result<...>` out.
+      // The member replaces the name, which is what makes `result_type` resolve to the struct the
+      // ray tracing types declare (types.ts, rayTracing).
+      while (this._is("::")) {
+        this._take();
+        if (this._t.kind !== "identifier") break;
+        const member = this._take().text;
+        name = NESTED_TYPES.get(`${name}::${member}`) ?? member;
+      }
     }
     let pointers = 0;
     let reference = false;
@@ -668,6 +698,10 @@ class Parser {
         }
       }
     }
+    // A member type *after* the template arguments: `intersector<instancing>::result_type hit`,
+    // which is how a ray query's result is usually declared. The `::` loop above runs before the
+    // arguments and does not reach this one.
+    while (this._peek(n).text === "::") n += 2;
     while (this._peek(n).text === "*" || this._peek(n).text === "&" ||
            (this._peek(n).kind === "identifier" && (this._peek(n).text === "const" || ADDRESS_SPACES.has(this._peek(n).text)))) n++;
     return this._peek(n).kind === "identifier";
@@ -996,10 +1030,19 @@ class Parser {
         }
       }
       // `metal::min`, `access::read`: keep the last component, which names the function.
-      let name = this._take().text;
+      const first = this._take().text;
+      let name = first;
+      let qualified = false;
       while (this._eat("::")) {
-        if (this._t.kind === "identifier") name = this._take().text;
+        if (this._t.kind === "identifier") {
+          name = this._take().text;
+          qualified = true;
+        }
       }
+      // Except for the ray tracing enumerations, whose members collide (QUALIFIED_ENUMS above).
+      // Kept as "intersection_type::triangle", which is a name no shader can declare, so nothing
+      // else can be shadowed by it.
+      if (qualified && QUALIFIED_ENUMS.has(first)) return { kind: "name", span, name: `${first}::${name}` };
       return { kind: "name", span, name };
     }
     if (t.kind === "string" || t.kind === "char") {

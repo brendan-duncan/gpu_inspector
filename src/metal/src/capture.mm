@@ -6,6 +6,7 @@
 #include "frame_stats.h"
 #include "gpu_trace.h"
 #include "overdraw.h"
+#include "pass_record.h"
 #include "raytracing.h"
 #include "stacktrace.h"
 #include "validation.h"
@@ -704,6 +705,7 @@ void Finish() {
     // since the CPU events stand on their own (cpu_timeline.h).
     SendCpuTimeline();
     SendOverdraw();
+    SendDrawOverlay();
     SendPixelHistory();
     // The end of the capture's stream, whichever sections it had (the empty ones are not sent): a
     // client waiting for the capture (the MCP server) knows nothing more of it is coming.
@@ -757,7 +759,10 @@ void AdvanceFrame() {
             ReleaseTiming(g_timing);
             // Before recording starts, so the first pass of the capture is measured too.
             StartPixelHistoryCapture(g_options.pixelHistory);
-            StartOverdrawCapture(g_options.overdraw, g_options.pixelHistory.enabled, g_options.maxTextureSize);
+            StartDrawOverlayCapture(g_options.drawOverlay);
+            StartOverdrawCapture(g_options.overdraw,
+                                 g_options.pixelHistory.enabled || g_options.drawOverlay.enabled,
+                                 g_options.maxTextureSize);
             g_recording = true;
             // The host calls the frame spends its time in, from here until Finish
             // (cpu_timeline.h).

@@ -216,7 +216,7 @@ tree by it, numbers passes within it, and matches render targets and timings to 
 the command was issued on is named in `encoder` with an id from the same sequence, never
 announced.
 
-Both paths are exercised by the test application, which allocates a labelled buffer every second
+Both paths are exercised by the test application, which allocates a labeled buffer every second
 on top of what it creates at start-up: objects created before the UI connects arrive in the
 snapshot with their labels resolved, and objects created after it connects arrive as `AddObject`
 followed by `ObjectSetLabel`, because Metal applications label a resource on the line after they
@@ -262,7 +262,7 @@ only confirms a frame already counted, and a `present` marker is recorded before
 both paths read the same in the UI. The convenience method also calls the drawable's own present
 internally, later and on another thread, so the re-entry guard cannot pair them; the drawables a
 command buffer was asked to present are remembered, by pointer and by `drawableID`, so that call
-is recognised and not counted twice. An engine that draws into the drawable from two command
+is recognized and not counted twice. An engine that draws into the drawable from two command
 buffers before presenting would have the second land in the next frame; none of the targets do.
 
 **`addCompletedHandler:` is only legal before a command buffer is committed.** The read-back
@@ -357,7 +357,7 @@ does:
   either. Each of these was a Metal validation failure, which aborts the application rather than
   failing the read, so they are checked first. What cannot be read is reported with the reason,
   because an empty Render Targets section with no reason given is the hardest kind of gap to
-  notice. The attachment's `level`, `slice` and `depthPlane` are honoured rather than assumed
+  notice. The attachment's `level`, `slice` and `depthPlane` are honored rather than assumed
   zero.
 
 The capture is then sent from the command buffer's completion handler rather than at commit: the
@@ -683,7 +683,7 @@ different reasons:
 * **The protocol's name** — `VK_FORMAT_B8G8R8A8_UNORM` — travels with pixel data, because the
   UI's decoder is built around those names and an identical memory layout can reuse all of it.
   135 formats are mapped: the color and depth formats, BC1 through BC7, ETC2 and EAC, every
-  ASTC footprint in its LDR, sRGB and HDR flavour, PVRTC, and the packed 4:2:2 pair. The two
+  ASTC footprint in its LDR, sRGB and HDR flavor, PVRTC, and the packed 4:2:2 pair. The two
   extended-range families have no Vulkan spelling, so they travel under Metal's own names and
   the UI decodes them under those. Vertex formats get the same pair, for the same reason.
 
@@ -839,6 +839,105 @@ Limits:
   captured frame.
 - Writes outside render passes (blits, compute) are not events.
 
+## Shader editing
+
+The UI's `ReplaceShader {pipeline, stage, spirv}` carries Metal Shading Language *source* — the
+field keeps its Vulkan name across all three libraries and carries whatever each one compiles —
+and `shader_edit.mm` compiles it, makes the pipeline again with that stage's function swapped,
+registers the result as an object of its own (`"<label> (edited)"`) and binds it instead of the
+original from `setRenderPipelineState:` / `setComputePipelineState:` onwards. `RestoreShader`
+drops it. The counterpart of `src/vulkan/src/shader_edit.h` and `src/d3d12/src/shader_edit.h`.
+
+This is the least work of the three, and for a reason worth stating: the other two libraries are
+handed bytecode the *UI* had to produce — SPIR-V from glslang, DXIL from dxc, either of which may
+be missing from the machine the inspector runs on — while a Metal capture holds the source the
+application compiled and the device that compiled it is right there. `newLibraryWithSource:` takes
+the edited text and the compiler's own diagnostics go back to the editor, which marks the lines it
+names (Metal's compiler is clang, so `parseCompileErrors` needed no new case).
+
+What needs care is everything around the function:
+
+* **A pipeline state cannot be copied, but its descriptor can.** `RememberPipelineDescriptor`
+  (overdraw.mm) already kept every render pipeline's descriptor for the measurements' pipeline
+  copies; this reads the same table through `CopyRememberedPipelineDescriptor`, and the compute
+  descriptor forms now fill it too. A pipeline the library never saw created cannot be rebuilt, and
+  says so.
+* **A compute pipeline is usually built from a bare function.**
+  `newComputePipelineStateWithFunction:` has no descriptor at all, so the *function* is remembered
+  (`RememberComputePipeline`) and the rebuild makes a descriptor of its own. A render pipeline never
+  exercises that path, which is why `metal-shader-edit-compute` is its own case.
+* **Function constants have to be carried across.** A Unity shader is one library of
+  `[[function_constant(n)]]`-guarded variants, and recompiling without the values the application
+  specialized with would build a *different variant* — which compiles, draws, and looks like a
+  successful edit. `MTLFunctionConstantValues` has no getters and a function does not say what it
+  was built with, so the values object is retained at function creation
+  (`RememberFunctionConstants` in function_constants.mm) and used again for the rebuild. The one
+  part with no counterpart in either other backend.
+* **What the capture records is what the application asked for.** `setRenderPipelineState:` logs
+  the original and binds the replacement: a command list showing the replacement would read as the
+  application having bound it. The *measurements* use what is actually bound, so an overlay of a
+  draw whose shader is being edited shows where the edited draw lands.
+
+Limits:
+- Replacements are never freed while the library is attached. A command buffer holds a reference to
+  the state its encoder bound — unless the application asked for one with unretained references,
+  and then nothing but the editor would keep the replacement alive while the GPU still had work
+  referring to it. A handful of pipeline states is a few kilobytes.
+- Tile and mesh pipelines are not rebuilt: their descriptors are different classes this does not
+  copy.
+- The compile options are the defaults, not the application's: a descriptor does not carry what its
+  functions were compiled with, and the `MTLCompileOptions` object is long gone. Fast math and the
+  language version are the two that could differ.
+- There is no counterpart of the other two backends' **Compile & Replay**: running an edit against
+  the captured frame needs a replay that serves analyses (below).
+
+## Draw overlays
+
+Where one draw of a pass landed, and what the depth test, the stencil test and its own culling did
+with it (`draw_overlay.mm`). The third consumer of the recorded calls overdraw keeps (above), after
+overdraw itself and the pixel history, and the counterpart of `src/d3d12/src/draw_overlay.cpp`;
+Vulkan measures the same five things by replaying a capture file (`vkinsp_replay --overlay`).
+
+* **Asking.** The `Capture` message's `drawOverlay` (`{passIndex, drawIndex}`) names a draw by its
+  pass and its ordinal within it, not by a command index: the frame being captured numbers its
+  commands afresh, so an index from the earlier capture would name a different draw. In the app the
+  overlay is chosen in a render target's tab, which captures the next frame and opens that
+  capture's own tab on the result.
+* **Five runs.** The pass is drawn five times into `R8Unorm` targets of its size, one per run, each
+  holding 1 wherever a fragment landed:
+
+  | Run | What it draws | Mask bit |
+  |---|---|---|
+  | Cover | the draw with its own cull mode, no tests | `COVERED` |
+  | Passed | the same with the pass's depth and stencil state | `PASSED` |
+  | Wireframe | the same with `MTLTriangleFillModeLines` | `WIREFRAME` |
+  | Stencil | the same with the stencil test alone, depth comparison `Always` | `STENCIL_PASSED` |
+  | BackFace | the same with `MTLCullModeNone` | `BACK_FACING`, where Cover did *not* reach |
+
+  Fill mode and cull mode are encoder state in Metal rather than pipeline state, so one pipeline
+  copy serves all five: the application's, with a constant fragment function and one `R8Unorm`
+  attachment (`PipelineVariant::OverlayMask`). The two runs that test also need the draws *before*
+  the one being measured, so their depth and stencil writes are there to be tested against; those
+  are issued with the application's own fragment function and no color writes
+  (`PipelineVariant::OverlayQuiet`), since a draw before this one has to behave as it did, discards
+  included.
+* **Results.** The five targets are blitted to staging buffers and folded into one byte per pixel of
+  `OVERLAY_*` bits, which goes out as `CaptureDrawOverlay` and `CaptureDrawOverlayData` — the same
+  mask the Vulkan replay writes, so the app's render target tab and `get_draw_overlay` read all
+  three backends the same way. Capture files keep it, as they keep the pixel history: the
+  measurement was taken in the application and cannot be taken again from the file.
+
+Limits:
+- A multisampled pass is drawn at one sample per pixel, which is what a mask means. The runs that
+  test need the depth the pass began with and a multisampled depth attachment is not copied
+  (overdraw has the same limit), so Passed and Stencil are skipped with a note and the other three
+  still answer.
+- A pass with no stencil attachment has no stencil test to replay: the Stencil run is skipped rather
+  than reporting an absent test as one that rejected nothing.
+- A pass with no depth or stencil at all reports every covered pixel as having passed, which is what
+  the other two backends report for it.
+- One draw per capture.
+
 ## Replay
 
 `replay/` builds `mtlinsp_replay` alongside the capture library (`VKINSP_BUILD_REPLAY`, on by
@@ -862,12 +961,128 @@ The enum name tables both directions need are generated from the Metal SDK heade
 `tools/gen_metal_enums.py` into `gen/`, and committed: `formats.mm`'s switches only go from value
 to name, and a decoder needs the other direction.
 
+`src/mtl_raytracing.mm` is the one descriptor that does *not* go through `mtl_reflect.h`: Metal has
+four geometry kinds and a motion variant of each, and the descriptor classes share no base with the
+fields on it, so each is filled on its own. It is still much less work than the same job on either
+other API, and the reason is the API rather than the code — a Vulkan or D3D12 geometry names its
+vertices by device address, so those replays have to map an address back to the buffer it fell in,
+while a Metal geometry holds the `id<MTLBuffer>`. An intersection function table is the same story:
+DXR and Vulkan write opaque identifiers into GPU memory that the replay has to substitute its own
+into, and a Metal entry names its function, so filling the table is a lookup among the pipeline's
+linked functions.
+
+A storage texture a compute pass wrote is read back after the frame and compared as well, since it
+has no pass end to be read at — without which a frame whose work is all in compute compares nothing.
+A kernel that reads the texture it writes accumulates into it, and then nothing that kernel wrote
+can be reproduced; the pipeline's own reflection says which slots are `read_write`, and those are
+reported as not compared rather than as differing.
+
+## The attach list
+
+`transport.mm` answers the probe the inspector uses to list attachable applications
+(`src/vulkan/src/target_probe.h`, shared and API-neutral), which means two things beyond opening a
+socket. The port *steps aside* when another inspected application already has it, so two started by
+hand are both reachable without anybody choosing numbers — only the default may move, since a port
+the user named is where they are waiting. And a connection is not taken for a client until its
+first frame says it is one: these servers hold one client at a time and replace the old connection
+on accept, so a bare connect — the obvious way to ask "is anybody there?" — would throw an attached
+inspector off its own session. A `Probe` is answered with a `Target` naming the API, the executable,
+the pid and the port, and dropped.
+
+One difference from the Vulkan library is deliberate and documented where it lives: a client's
+session runs on the accept thread here rather than on one of its own, so while somebody is attached
+nothing is accepted and a probe of that port times out. An attached Metal application is therefore
+missing from the list rather than listed as busy. Fixing it means moving the session to its own
+thread, which needs the `client` handle made safe first — the present shape serializes it by
+construction.
+
+## Where the CPU went, and sampled stacks
+
+`cpu_timeline.mm` times the calls a Metal frame's CPU actually sits in — `commit`,
+`waitUntilCompleted`, `nextDrawable`, the synchronous pipeline builds — and a timing capture keeps
+each frame's totals over minutes. With `sampleHz` it also starts `src/vulkan/src/cpu_sampler.h`,
+which is shared with the other two libraries and has no graphics API in it: a few hundred times a
+second every thread of the process is stopped for the microseconds it takes to copy its registers
+and the top of its stack, and the copy is walked afterwards.
+
+The macOS half of that sampler goes through Mach — `task_threads` for the thread list,
+`thread_suspend`, `thread_get_state` with `ARM_THREAD_STATE64`, `thread_info` with
+`THREAD_BASIC_INFO` for the thread's own CPU time and its run state, and pthread for its name and
+its stack bounds. It unwinds by walking frame pointers, which is the right choice here in a way it
+is not on Windows: the arm64 ABI requires a frame pointer and Apple's system libraries keep one, so
+the chain reaches every frame.
+
+**The one rule** carries over from the Windows half unchanged, and it is the whole risk: between
+`thread_suspend` and `thread_resume` the code touches nothing that could want a lock — no
+allocation, no logging, no unwinding. It copies memory into a buffer it already has and walks the
+copy after the thread is running again. Breaking that does not crash; it deadlocks the application
+intermittently, which is worse. The stack copy is clamped to the bounds pthread reports, which is
+the whole of what keeps the `memcpy` from faulting: macOS has no structured exception handling to
+catch one.
+
+A thread found waiting, that has used no CPU time since the sample before, is in the wait it was
+already found in and is not stopped again — the same rule Windows follows with cycles, and what
+keeps a profiler from causing the hitches it is there to find. It holds: of the six threads
+`mtlinsp_triangle` has, about *one* is suspended per tick at 250 Hz and the other five are counted
+under the wait they were already in.
+
+Measured back to back on an idle M1 Max, two minutes each: 7,201 frames with sampling on and 7,033
+with it off — 60.0 against 58.6 frames a second, which is noise. A five-minute run gave 181,438
+sample records over 8,739 distinct stacks, every one but the last batch's symbolized, and the
+sampler held its 250 ticks a second from the first second to the last. (An earlier five-minute run
+did show the frame rate halved, and it was this machine being busy building the thing rather than
+the sampler: measure a profiler's cost on an idle machine or measure nothing.)
+
+Then left running for several minutes at a time watching for a hang, because an intermittent
+deadlock is what breaking the suspend rule looks like and one short run does not prove its absence.
+
+## Ray queries in the shader debugger
+
+A Metal kernel traverses the scene itself — no hit shaders, no binding table, an `intersector` and
+a call to `intersect` — so the app's MSL interpreter has to follow that call or stop at the one
+line the kernel is about. `src/app/src/renderer/msl/raytracing.ts` is the traversal, and the
+capture already holds its input: the ray tracing work reads a build's vertices, indices and boxes
+back and resolves a top level's instances to their bottom levels.
+
+Three things in the language side were needed, and none of them was the arithmetic:
+
+* **The types.** `ray` and `intersection_result` are declared as real structs, so member access,
+  assignment and construction come from the code every other struct uses; the handles
+  (`intersector`, the acceleration structures, the function tables) are opaque types whose methods
+  dispatch by name. `intersector<instancing>::result_type` needed the type parser to accept a
+  member type after template arguments, and the *declaration* detector to skip past it.
+* **The enumerations.** `intersection_type` and `geometry_type` both have `triangle` and
+  `bounding_box`, at different values, and the parser used to keep only the last component of a
+  qualified name — so both read as `triangle` and one of them was wrong. Those two enums (and the
+  curve ones) now keep their qualifier.
+* **`intersect` is an instruction, not a builtin.** For a procedural geometry the traversal has to
+  call the *shader's own* intersection function, and the interpreter is a stepping machine: a
+  builtin is a function of its arguments and cannot push a frame. So `rayQuery` is its own IR op
+  that the interpreter drives, and the trick is that it does not advance the program counter — the
+  callee's `return` writes into the caller's destination register and leaves it on the same
+  instruction, so `rayQuery` runs again, reads what the function said, and asks about the next box.
+  The debugger steps *into* the intersection function while that happens, which is the whole point:
+  a bounding box says nothing about what is in it.
+
+One thing the capture had to learn: `ReadBackTableBuffers` reads back the buffers an intersection
+function table binds for its functions, as the capture starts. Those are set once at setup with
+`setBuffer:offset:atIndex:` on the *table*, so no command of any captured frame binds them and
+nothing else would have read them — and without them an intersection function steps with its
+arguments all zero, which for the path tracer is every sphere at the origin with radius zero.
+
+Checked against the hardware: `test/metal_triangle --ray-tracing` writes
+`float4(instance_id + 1, bary.x, bary.y, distance)` per traced pixel, and for thread (19, 32) the
+interpreter computes `(1, 0.2999999, 0.3312500, 2)` where the GPU wrote
+`(1.0, 0.30000001, 0.33125004, 2.0)` — the same to float32. `metal-debug-ray-triangle` holds that,
+and `metal-debug-ray-boxes` holds that the path tracer's query comes back as a bounding box hit at
+a real distance, which it can only do by calling `sphereIntersection`.
+
 ## Not done
 
 Only the pixel formats in `PixelFormatDetails` are supported, which is now all of Metal's except
 the placeholder `Unspecialized`; PVRTC is mapped but the UI has no decoder for it. Tessellation, object, mesh and tile stages are not
 debugged, and a function constant that selects whether an entry point's *argument* exists
-(`[[function_constant(isEnabled)]]` on a parameter) is not honoured — the argument is bound
+(`[[function_constant(isEnabled)]]` on a parameter) is not honored — the argument is bound
 regardless, which reads a resource the specialized function does not have. What an argument buffer points at is resolved one level
 deep: the buffers it names are not themselves read back. A resource state encoder is
 recorded as a pass without its commands. `MTLIndirectCommandBuffer` contents are not read.

@@ -13,6 +13,7 @@
 #include "formats.h"
 
 #include "mtl_exporter.h"
+#include "mtl_raytracing.h"
 #include "mtl_reflect.h"
 
 namespace mtlreplay {
@@ -207,9 +208,28 @@ bool MtlReplayer::OpenEncoder(const std::string& m, const Decoder& d, uint32_t i
                 w.Line(pass.variable + " = [" + _commandBufferVar + " blitCommandEncoder];");
             });
         }
+    } else if (m.compare(0, 35, "accelerationStructureCommandEncoder") == 0) {
+        // The builds, refits and copies the capture records (src/metal/src/raytracing.mm). Opened
+        // without the descriptor form's pass descriptor: that exists to give the pass a timing
+        // slot, which the replay has no use for.
+        pass.passIndex = _passCounter++;
+        if (@available(macOS 11.0, *)) {
+            encoder = [_commandBuffer accelerationStructureCommandEncoder];
+            kind = "id<MTLAccelerationStructureCommandEncoder>";
+            if (_x && encoder) {
+                pass.variable = "encoder" + std::to_string(index);
+                DeclareEncoder(kind, pass.variable);
+                _x->Block(MtlExporter::Frame, "[" + std::to_string(index) + "]", [&](Source& w) {
+                    w.Line(pass.variable + " = [" + _commandBufferVar + " accelerationStructureCommandEncoder];");
+                });
+            }
+        } else {
+            LeftOut(index, m, "acceleration structures need macOS 11");
+            return true;
+        }
     } else {
-        // A resource state or acceleration structure encoder: a pass the capture records no
-        // commands in yet, so opening one would add an empty encoder and nothing else.
+        // A resource state encoder: a pass the capture records no commands in yet, so opening one
+        // would add an empty encoder and nothing else.
         LeftOut(index, m, "the replay does not open this kind of encoder");
         _passCounter++;
         return true;
@@ -771,6 +791,9 @@ bool MtlReplayer::ComputeCommand(const std::string& m, const Decoder& d, uint32_
     if (m == "setComputePipelineState:") {
         id<MTLComputePipelineState> p = (id<MTLComputePipelineState>)d.Object("pipeline");
         if (!p) { LeftOut(index, m, "the pipeline is not in the replay"); return true; }
+        // Kept so a texture bind can ask the reflection how the slot is accessed
+        // (CompareWrittenTextures).
+        _boundComputePipeline = d.ObjectId("pipeline");
         [e setComputePipelineState:p];
         emit("[" + var + " setComputePipelineState:" + ExportName(p) + "];");
         return true;
@@ -806,6 +829,14 @@ bool MtlReplayer::ComputeCommand(const std::string& m, const Decoder& d, uint32_
         id<MTLTexture> t = (id<MTLTexture>)d.Object("texture");
         const uint64_t slot = d.Uint("index");
         [e setTexture:t atIndex:slot];
+        // A writable texture bound to a compute encoder is something the frame *produces*, so what
+        // it holds afterwards is worth comparing: the path tracer's traced image is one, and
+        // without this a frame with no render pass compares nothing at all (CompareWrittenTextures).
+        if (t != nil && (t.usage & MTLTextureUsageShaderWrite) != 0) {
+            const std::string access = ComputeTextureAccess(_boundComputePipeline, slot);
+            if (access == "readWrite") _encoderAccumulates = true;
+            if (access != "readOnly") _encoderWrites.push_back(d.ObjectId("texture"));
+        }
         emit("[" + var + " setTexture:" + ExportName(t) + " atIndex:" + Source::Uint(slot) + "];");
         return true;
     }
@@ -882,8 +913,67 @@ bool MtlReplayer::ComputeCommand(const std::string& m, const Decoder& d, uint32_
              Source::Uint(offset) + "];");
         return true;
     }
+    // The ray tracing bindings a compute encoder has. An acceleration structure and a function
+    // table are ordinary objects to bind — unlike DXR's and Vulkan's, where the binding is a
+    // buffer of identifiers the replay has to rewrite (mtl_raytracing.h).
     if (m == "setAccelerationStructure:atBufferIndex:") {
-        LeftOut(index, m, "acceleration structures are not replayed yet");
+        id structure = d.Object("accelerationStructure");
+        const uint64_t slot = d.Uint("index");
+        if (structure == nil) { LeftOut(index, m, "the acceleration structure is not in the replay"); return true; }
+        if (@available(macOS 11.0, *)) {
+            [e setAccelerationStructure:(id<MTLAccelerationStructure>)structure atBufferIndex:(NSUInteger)slot];
+        } else {
+            LeftOut(index, m, "acceleration structures need macOS 11");
+            return true;
+        }
+        emit("[" + var + " setAccelerationStructure:" + ExportName(structure) + " atBufferIndex:" +
+             Source::Uint(slot) + "];");
+        return true;
+    }
+    if (m == "setIntersectionFunctionTable:atBufferIndex:" || m == "setVisibleFunctionTable:atBufferIndex:") {
+        const bool intersection = m.compare(0, 28, "setIntersectionFunctionTable") == 0;
+        id table = d.Object(intersection ? "intersectionFunctionTable" : "visibleFunctionTable");
+        const uint64_t slot = d.Uint("index");
+        if (table == nil) { LeftOut(index, m, "the function table is not in the replay"); return true; }
+        if (@available(macOS 11.0, *)) {
+            if (intersection) {
+                [e setIntersectionFunctionTable:(id<MTLIntersectionFunctionTable>)table atBufferIndex:(NSUInteger)slot];
+            } else {
+                [e setVisibleFunctionTable:(id<MTLVisibleFunctionTable>)table atBufferIndex:(NSUInteger)slot];
+            }
+        } else {
+            LeftOut(index, m, "function tables need macOS 11");
+            return true;
+        }
+        emit("[" + var + (intersection ? " setIntersectionFunctionTable:" : " setVisibleFunctionTable:") +
+             ExportName(table) + " atBufferIndex:" + Source::Uint(slot) + "];");
+        return true;
+    }
+    if (m == "setIntersectionFunctionTables:withBufferRange:" || m == "setVisibleFunctionTables:withBufferRange:") {
+        const bool intersection = m.compare(0, 29, "setIntersectionFunctionTables") == 0;
+        std::vector<id> tables = ObjectArray(d, intersection ? "intersectionFunctionTables" : "visibleFunctionTables");
+        const NSRange range = d.Range("range");
+        if (tables.empty()) { LeftOut(index, m, "none of the function tables are in the replay"); return true; }
+        if (@available(macOS 11.0, *)) {
+            if (intersection) {
+                [e setIntersectionFunctionTables:(const id<MTLIntersectionFunctionTable>*)tables.data() withBufferRange:range];
+            } else {
+                [e setVisibleFunctionTables:(const id<MTLVisibleFunctionTable>*)tables.data() withBufferRange:range];
+            }
+        } else {
+            LeftOut(index, m, "function tables need macOS 11");
+            return true;
+        }
+        emitWith([&](Source& w) {
+            const std::string name = w.Local("tables");
+            std::string items;
+            for (size_t i = 0; i < tables.size(); ++i) items += (i ? ", " : "") + w.Object(tables[i]);
+            w.Line(std::string(intersection ? "id<MTLIntersectionFunctionTable> " : "id<MTLVisibleFunctionTable> ") +
+                   name + "[] = {" + items + "};");
+            w.Line("[" + var + (intersection ? " setIntersectionFunctionTables:" : " setVisibleFunctionTables:") +
+                   name + " withBufferRange:NSMakeRange(" + Source::Uint(range.location) + ", " +
+                   Source::Uint(range.length) + ")];");
+        });
         return true;
     }
     if (m == "dispatchThreadgroups:threadsPerThreadgroup:") {
@@ -933,6 +1023,173 @@ bool MtlReplayer::ComputeCommand(const std::string& m, const Decoder& d, uint32_
             w.Line("id<MTLResource> " + name + "[] = {" + items + "};");
             w.Line("[" + var + " memoryBarrierWithResources:" + name + " count:" + Source::Uint(resources.size()) + "];");
         });
+        return true;
+    }
+    return ResidencyCommand(m, d, index, var);
+}
+
+// ------------------------------------------------------------------------------------------
+// Acceleration structures
+//
+// The builds, refits and copies an acceleration structure encoder recorded. The descriptor comes
+// back from the capture's JSON (mtl_raytracing.h) — a Metal geometry names its buffers outright, so
+// there is no address to remap and nothing to guess, which is the whole of why this is short.
+//
+// The scratch buffer is the replay's own, not the application's. A build's scratch requirement is
+// the *driver's* answer to a descriptor, and this may be a different driver or a different GPU from
+// the one captured: the application's buffer could be too small, and a build given too little
+// scratch is undefined rather than an error. So the size is asked for here and a buffer of it made,
+// which also means a capture whose scratch buffer was not read back still builds.
+
+bool MtlReplayer::AccelerationCommand(const std::string& m, const Decoder& d, uint32_t index) {
+    if (@available(macOS 11.0, *)) {
+    } else {
+        LeftOut(index, m, "acceleration structures need macOS 11");
+        return true;
+    }
+    id<MTLAccelerationStructureCommandEncoder> e = (id<MTLAccelerationStructureCommandEncoder>)_encoder;
+    const std::string var = _pass.variable;
+    auto emit = [&](const std::string& statement) {
+        if (!_x) return;
+        _x->Block(MtlExporter::Frame, "[" + std::to_string(index) + "]", [&](Source& w) { w.Line(statement); });
+        _x->CountCommand();
+    };
+    auto emitWith = [&](void (^body)(Source&)) {
+        if (!_x) return;
+        _x->Block(MtlExporter::Frame, "[" + std::to_string(index) + "]", body);
+        _x->CountCommand();
+    };
+
+    const bool build = m.compare(0, 26, "buildAccelerationStructure") == 0;
+    const bool refit = m.compare(0, 26, "refitAccelerationStructure") == 0;
+    if (build || refit) {
+        id destination = d.Object("accelerationStructure");
+        if (destination == nil) { LeftOut(index, m, "the structure being built is not in the replay"); return true; }
+        std::string error;
+        MTLAccelerationStructureDescriptor* descriptor = BuildDescriptor(d.Nested("descriptor"), error);
+        if (descriptor == nil) { LeftOut(index, m, error); return true; }
+
+        // Scratch of this driver's size, not the application's (see above).
+        const MTLAccelerationStructureSizes sizes = [_device accelerationStructureSizesWithDescriptor:descriptor];
+        const NSUInteger scratchSize = refit ? std::max<NSUInteger>(sizes.refitScratchBufferSize, 1)
+                                             : std::max<NSUInteger>(sizes.buildScratchBufferSize, 1);
+        id<MTLBuffer> scratch = [_device newBufferWithLength:scratchSize options:MTLResourceStorageModePrivate];
+        if (scratch == nil) { LeftOut(index, m, "no memory for the build's scratch buffer"); return true; }
+        _scratch.push_back(scratch);
+
+        if (build) {
+            [e buildAccelerationStructure:(id<MTLAccelerationStructure>)destination
+                               descriptor:descriptor
+                            scratchBuffer:scratch
+                      scratchBufferOffset:0];
+        } else {
+            // A refit with no destination rewrites the source in place, which is what the capture
+            // recorded as the structure built; the source it refits from is named separately.
+            id source = d.Has("sourceAccelerationStructure") ? d.Object("sourceAccelerationStructure") : destination;
+            if (source == nil) { LeftOut(index, m, "the structure being refit is not in the replay"); return true; }
+            id explicitDestination = source == destination ? nil : destination;
+            if (m.find("options:") != std::string::npos) {
+                if (@available(macOS 14.0, *)) {
+                    [e refitAccelerationStructure:(id<MTLAccelerationStructure>)source
+                                       descriptor:descriptor
+                                      destination:(id<MTLAccelerationStructure>)explicitDestination
+                                    scratchBuffer:scratch
+                              scratchBufferOffset:0
+                                          options:(MTLAccelerationStructureRefitOptions)d.Uint("options")];
+                } else {
+                    LeftOut(index, m, "a refit with options needs macOS 14");
+                    return true;
+                }
+            } else {
+                [e refitAccelerationStructure:(id<MTLAccelerationStructure>)source
+                                   descriptor:descriptor
+                                  destination:(id<MTLAccelerationStructure>)explicitDestination
+                                scratchBuffer:scratch
+                          scratchBufferOffset:0];
+            }
+        }
+
+        emitWith(^(Source& w) {
+            const std::string descriptorVar = w.Local("descriptor");
+            w.Line("MTLAccelerationStructureDescriptor *" + descriptorVar + " = nil;");
+            std::string why;
+            Decoder nested = d.Nested("descriptor");
+            if (!WriteDescriptorSource(w, descriptorVar, nested, why)) {
+                w.Comment("left out: " + why);
+                w.Note("command " + std::to_string(index) + " (" + m + "): " + why);
+                return;
+            }
+            const std::string sizesVar = w.Local("sizes");
+            const std::string scratchVar = w.Local("scratch");
+            w.Line("MTLAccelerationStructureSizes " + sizesVar +
+                   " = [device accelerationStructureSizesWithDescriptor:" + descriptorVar + "];");
+            w.Line("id<MTLBuffer> " + scratchVar + " = [device newBufferWithLength:" + sizesVar +
+                   (refit ? ".refitScratchBufferSize" : ".buildScratchBufferSize") +
+                   " options:MTLResourceStorageModePrivate];");
+            if (build) {
+                w.Line("[" + var + " buildAccelerationStructure:" + w.Object(destination) +
+                       " descriptor:" + descriptorVar + " scratchBuffer:" + scratchVar +
+                       " scratchBufferOffset:0];");
+            } else {
+                id source = d.Has("sourceAccelerationStructure") ? d.Object("sourceAccelerationStructure") : destination;
+                const std::string dest = source == destination ? std::string("nil") : w.Object(destination);
+                w.Line("[" + var + " refitAccelerationStructure:" + w.Object(source) +
+                       " descriptor:" + descriptorVar + " destination:" + dest +
+                       " scratchBuffer:" + scratchVar + " scratchBufferOffset:0];");
+            }
+        });
+        return true;
+    }
+
+    if (m == "copyAccelerationStructure:toAccelerationStructure:" ||
+        m == "copyAndCompactAccelerationStructure:toAccelerationStructure:") {
+        id source = d.Object("sourceAccelerationStructure");
+        id destination = d.Object("destinationAccelerationStructure");
+        if (source == nil || destination == nil) {
+            LeftOut(index, m, "an acceleration structure is not in the replay");
+            return true;
+        }
+        const bool compact = m.compare(0, 5, "copyA") == 0 && m.find("Compact") != std::string::npos;
+        if (compact) {
+            [e copyAndCompactAccelerationStructure:(id<MTLAccelerationStructure>)source
+                           toAccelerationStructure:(id<MTLAccelerationStructure>)destination];
+        } else {
+            [e copyAccelerationStructure:(id<MTLAccelerationStructure>)source
+                 toAccelerationStructure:(id<MTLAccelerationStructure>)destination];
+        }
+        emit("[" + var + (compact ? " copyAndCompactAccelerationStructure:" : " copyAccelerationStructure:") +
+             ExportName(source) + " toAccelerationStructure:" + ExportName(destination) + "];");
+        return true;
+    }
+
+    if (m.compare(0, 40, "writeCompactedAccelerationStructureSize:") == 0) {
+        id structure = d.Object("accelerationStructure");
+        id<MTLBuffer> buffer = (id<MTLBuffer>)d.Object("buffer");
+        const uint64_t offset = d.Uint("offset");
+        if (structure == nil || buffer == nil) {
+            LeftOut(index, m, "the structure or the buffer is not in the replay");
+            return true;
+        }
+        if (m.find("sizeDataType:") != std::string::npos) {
+            if (@available(macOS 13.0, *)) {
+                const MTLDataType type = (MTLDataType)d.Uint("sizeDataType", MTLDataTypeUInt);
+                [e writeCompactedAccelerationStructureSize:(id<MTLAccelerationStructure>)structure
+                                                 toBuffer:buffer
+                                                   offset:(NSUInteger)offset
+                                             sizeDataType:type];
+                emit("[" + var + " writeCompactedAccelerationStructureSize:" + ExportName(structure) +
+                     " toBuffer:" + ExportName(buffer) + " offset:" + Source::Uint(offset) +
+                     " sizeDataType:(MTLDataType)" + Source::Uint((uint64_t)type) + "];");
+                return true;
+            }
+            LeftOut(index, m, "writing a compacted size with a data type needs macOS 13");
+            return true;
+        }
+        [e writeCompactedAccelerationStructureSize:(id<MTLAccelerationStructure>)structure
+                                         toBuffer:buffer
+                                           offset:(NSUInteger)offset];
+        emit("[" + var + " writeCompactedAccelerationStructureSize:" + ExportName(structure) +
+             " toBuffer:" + ExportName(buffer) + " offset:" + Source::Uint(offset) + "];");
         return true;
     }
     return ResidencyCommand(m, d, index, var);
@@ -1289,6 +1546,135 @@ void MtlReplayer::QueuePassReadbacks() {
             _x->CountTarget();
         }
     }
+}
+
+std::string MtlReplayer::ComputeTextureAccess(uint64_t pipelineId, uint64_t slot) const {
+    const JValue* record = Record(pipelineId);
+    const JValue* args = record ? record->Get("args") : nullptr;
+    const JValue* reflection = args ? args->Get("reflection") : nullptr;
+    const JValue* compute = reflection ? reflection->Get("compute") : nullptr;
+    const JValue* textures = compute ? compute->Get("textures") : nullptr;
+    if (!textures || !textures->IsArray()) return "";
+    for (uint32_t i = 0; i < textures->count; ++i) {
+        const JValue* entry = &textures->items[i];
+        const JValue* index = entry->Get("index");
+        if (!index || index->Uint() != slot) continue;
+        const JValue* access = entry->Get("access");
+        return access && access->IsString() ? std::string(access->Str()) : std::string();
+    }
+    return "";
+}
+
+void MtlReplayer::CompareWrittenTextures(MtlReplayReport& report) {
+    (void)report;
+    if (!_options.compareTargets || _writtenTextures.empty()) return;
+    // A command buffer of the replay's own: every one of the frame's has been committed by now, and
+    // the textures are compared as they stood when the frame finished.
+    id<MTLCommandBuffer> cb = [_queue commandBuffer];
+    cb.label = @"mtlinsp_replay written textures";
+    bool any = false;
+    bool exportedAny = false;
+
+
+    for (uint32_t i = 0; i < (_capture.Textures() ? _capture.Textures()->count : 0); ++i) {
+        const JValue* entry = &_capture.Textures()->items[i];
+        const JValue* info = entry->Get("info");
+        if (!info) continue;
+        const uint64_t textureId = info->Get("id") ? info->Get("id")->Uint() : 0;
+        const auto written = _writtenTextures.find(textureId);
+        if (written == _writtenTextures.end()) continue;
+        if (info->Get("error") || !entry->Get("payload")) continue;
+        // Only the top level: a kernel writes the level it was bound, and the capture reads that.
+        if (info->Get("mip") && info->Get("mip")->Uint() != 0) continue;
+
+        id<MTLTexture> texture = (id<MTLTexture>)Object(textureId);
+        if (!texture) continue;
+        const mtlinsp::PixelFormatInfo format = mtlinsp::PixelFormatDetails(texture.pixelFormat);
+        if (!format.blockBytes) continue;
+        const uint32_t width = (uint32_t)texture.width, height = (uint32_t)texture.height;
+        uint64_t rowBytes = 0;
+        const uint64_t imageBytes = mtlinsp::PixelFormatImageSize(format, width, height, &rowBytes);
+        if (!imageBytes) continue;
+
+        Readback readback;
+        MtlTargetComparison& c = readback.comparison;
+        c.texture = textureId;
+        c.frame = info->Get("frame") ? (uint32_t)info->Get("frame")->Uint() : 0;
+        c.commandBuffer = info->Get("commandBuffer") ? info->Get("commandBuffer")->Uint() : 0;
+        c.passIndex = info->Get("passIndex") ? (uint32_t)info->Get("passIndex")->Uint() : 0;
+        c.format = info->Get("format") ? std::string(info->Get("format")->Str()) : std::string();
+        c.aspect = "color";
+        c.width = width;
+        c.height = height;
+        if (!written->second) {
+            // The kernel that wrote it also read a texture it writes, so the frame continues from
+            // contents the capture does not hold. test/path_tracer/metal is exactly this: one more
+            // sample into a running mean whose earlier samples no capture recorded, and its
+            // tonemapped output is that mean tonemapped.
+            c.undefined = true;
+            c.note = "a compute pass of this frame accumulates into a texture it also reads, so what "
+                     "it wrote continues from contents the capture does not hold: it cannot be reproduced";
+            _readbacks.push_back({c, nil, 0, nullptr, 0});
+            continue;
+        }
+        c.note = "written by a compute pass, compared after the frame";
+        readback.rowBytes = rowBytes;
+        readback.staging = [_device newBufferWithLength:(NSUInteger)imageBytes
+                                                options:MTLResourceStorageModeShared];
+        _capture.Payload(entry->Get("payload"), readback.captured, readback.capturedSize);
+        if (!readback.staging || !readback.captured) continue;
+
+        id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+        blit.label = @"mtlinsp_replay read-back";
+        [blit copyFromTexture:texture
+                  sourceSlice:0
+                  sourceLevel:0
+                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake(width, height, 1)
+                     toBuffer:readback.staging
+            destinationOffset:0
+       destinationBytesPerRow:(NSUInteger)rowBytes
+     destinationBytesPerImage:(NSUInteger)imageBytes
+                      options:MTLBlitOptionNone];
+        [blit endEncoding];
+        _readbacks.push_back(readback);
+        any = true;
+
+        if (_x) {
+            const std::string name = _x->NameOf(texture);
+            const std::string where = _x->Data(readback.captured, readback.capturedSize);
+            const std::string label = "storage texture " + std::to_string(textureId);
+            // A command buffer of its own, as here: the frame's have all been committed by this
+            // point, and asking a committed one for an encoder is a Metal assertion rather than an
+            // error. Opened before the first of these and committed after the last.
+            if (!exportedAny) {
+                _x->Blank(MtlExporter::Frame);
+                _x->Comment(MtlExporter::Frame, "The frame's storage textures, read back after it ran.");
+                _x->Block(MtlExporter::Frame, "", [&](Source& w) {
+                    w.Line(_commandBufferVar + " = [queue commandBuffer];");
+                });
+                exportedAny = true;
+            }
+            _x->Block(MtlExporter::Frame, label, [&](Source& w) {
+                w.Line("ReadbackTexture(" + _commandBufferVar + ", " + name + ", \"" + label + "\", 0, 0, " +
+                       Source::Uint(width) + ", " + Source::Uint(height) + ", " + Source::Uint(rowBytes) +
+                       ", " + Source::Uint(imageBytes) + ", MTLBlitOptionNone, " + where + ", " +
+                       Source::Uint(readback.capturedSize) + ");");
+            });
+            _x->CountTarget();
+        }
+    }
+    if (exportedAny && _x) {
+        _x->Block(MtlExporter::Frame, "", [&](Source& w) {
+            w.Line("[" + _commandBufferVar + " commit];");
+        });
+        _x->Block(MtlExporter::Frame, "", [&](Source& w) {
+            w.Line("[" + _commandBufferVar + " waitUntilCompleted];");
+        });
+    }
+    if (!any) return;
+    [cb commit];
+    _committed.push_back(cb);
 }
 
 void MtlReplayer::CompleteReadbacks(MtlReplayReport& report) {

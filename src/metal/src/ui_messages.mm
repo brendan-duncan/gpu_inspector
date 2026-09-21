@@ -1,7 +1,7 @@
 // Incoming messages from the inspector UI.
 //
 // The counterpart of HandleUiMessage in src/vulkan/src/layer.cpp, answering the same actions with the
-// same shapes. Only what the Metal side can honour is handled; anything else is logged and
+// same shapes. Only what the Metal side can honor is handled; anything else is logged and
 // ignored, so a UI that asks for something Vulkan-only does not wedge the session.
 #include "ui_messages.h"
 
@@ -13,6 +13,7 @@
 #include "image.h"
 #include "json_parse.h"
 #include "json_writer.h"
+#include "shader_edit.h"
 #include "stacktrace.h"
 #include "swizzle.h"
 #include "tracker.h"
@@ -31,6 +32,50 @@ void SendPauseState() {
     w.BeginObject();
     w.Key("action"); w.String("PauseState");
     w.Key("paused"); w.Boolean(gpuinsp::FramePause::Get().Paused());
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
+/**
+ * Base64, for the ReplaceShader payload. A copy of the decoder in src/d3d12/src/ui_messages.cpp
+ * rather than a shared one: the two libraries share no source, by design (src/metal/README.md).
+ */
+bool DecodeBase64(const std::string &text, std::string &out) {
+    auto value = [](char c) -> int {
+        if (c >= 'A' && c <= 'Z') return c - 'A';
+        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+        if (c >= '0' && c <= '9') return c - '0' + 52;
+        if (c == '+') return 62;
+        if (c == '/') return 63;
+        return -1;
+    };
+    uint32_t bits = 0;
+    int have = 0;
+    for (char c : text) {
+        if (c == '=' || c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+        const int v = value(c);
+        if (v < 0) return false;
+        bits = (bits << 6) | (uint32_t)v;
+        have += 6;
+        if (have >= 8) {
+            have -= 8;
+            out.push_back((char)((bits >> have) & 0xFF));
+        }
+    }
+    return true;
+}
+
+void SendShaderReplaced(uint64_t pipeline, const std::string &stage, bool ok,
+                        const std::string &error, const std::string &note, uint64_t replacement) {
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("ShaderReplaced");
+    w.Key("pipeline"); w.Uint(pipeline);
+    w.Key("stage"); w.String(stage);
+    w.Key("ok"); w.Boolean(ok);
+    if (!error.empty()) { w.Key("error"); w.String(error); }
+    if (!note.empty()) { w.Key("note"); w.String(note); }
+    if (replacement != 0) { w.Key("replacement"); w.Uint(replacement); }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 }
@@ -75,7 +120,7 @@ void HandleMessage(const std::string &text) {
                 SendPauseState();
             }
             // The same fields the Vulkan layer reads (layer.cpp); what the Metal side cannot
-            // honour (sampled images, stack traces) is left at its default.
+            // honor (sampled images, stack traces) is left at its default.
             CaptureOptions options;
             options.frameCount = (uint32_t)message.GetNumber("frameCount", 1);
             if (const vkinsp::JsonValue *v = message.Get("atFrame")) {
@@ -100,6 +145,13 @@ void HandleMessage(const std::string &text) {
                 options.pixelHistory.y = (uint32_t)h->GetNumber("y");
                 options.pixelHistory.level = (uint32_t)h->GetNumber("mip");
                 options.pixelHistory.slice = (uint32_t)h->GetNumber("layer");
+            }
+            if (const vkinsp::JsonValue *d = message.Get("drawOverlay")) {
+                // One draw of one pass, by ordinal: the measurement happens while the next frame
+                // records, and that frame's command indices are its own (draw_overlay.mm).
+                options.drawOverlay.enabled = true;
+                options.drawOverlay.passIndex = (uint32_t)d->GetNumber("passIndex");
+                options.drawOverlay.drawIndex = (uint32_t)d->GetNumber("drawIndex");
             }
             if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
@@ -139,6 +191,26 @@ void HandleMessage(const std::string &text) {
         } else if (action == "RequestImage") {
             SendImageData((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("mip"),
                           (uint32_t)message.GetNumber("layer"));
+        } else if (action == "ReplaceShader") {
+            // {pipeline, stage, spirv: base64 Metal Shading Language} -- the field keeps its
+            // Vulkan name across all three libraries, and carries whatever each one compiles.
+            const uint64_t pipeline = (uint64_t)message.GetNumber("pipeline");
+            const std::string stage = message.GetString("stage");
+            std::string source;
+            if (!DecodeBase64(message.GetString("spirv"), source) || source.empty()) {
+                SendShaderReplaced(pipeline, stage, false, "malformed source payload (expected base64 Metal Shading Language)", "", 0);
+            } else {
+                std::string error, note;
+                uint64_t replacement = 0;
+                const bool ok = ReplaceShader(pipeline, stage, source, error, replacement, note);
+                SendShaderReplaced(pipeline, stage, ok, ok ? "" : error, note, ok ? replacement : 0);
+            }
+        } else if (action == "RestoreShader") {
+            const uint64_t pipeline = (uint64_t)message.GetNumber("pipeline");
+            const std::string stage = message.GetString("stage");
+            std::string error;
+            const bool ok = RestoreShader(pipeline, stage, error);
+            SendShaderReplaced(pipeline, stage, ok, ok ? "" : error, "", 0);
         } else if (action == "Settings") {
             // "Record all command buffers" has no Metal counterpart: a command buffer is encoded
             // and submitted once, so there is no earlier recording for a capture to have missed.

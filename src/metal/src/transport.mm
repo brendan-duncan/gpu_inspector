@@ -1,5 +1,8 @@
 #include "transport.h"
 
+#include "cpu_sampler.h"
+#include "target_probe.h"
+
 #include "swizzle.h"
 
 #include <arpa/inet.h>
@@ -22,7 +25,15 @@ namespace mtlinsp {
 namespace {
 
 constexpr uint16_t kDefaultPort = 47531;
+/** How long a fresh connection has to say what it is before it is dropped (target_probe.h). */
+constexpr int kHandshakeTimeoutMs = 2000;
 constexpr int kInvalidSocket = -1;
+
+/** Whether MTLINSP_PORT named the port: one the user chose is used as given, never stepped off. */
+bool PortWasChosen() {
+    const char *value = getenv("MTLINSP_PORT");
+    return value != nullptr && value[0] != '\0' && atoi(value) > 0 && atoi(value) < 65536;
+}
 
 uint16_t PortFromEnvironment() {
     const char *value = getenv("MTLINSP_PORT");
@@ -87,6 +98,9 @@ struct Transport::Impl {
 
     /** Drains the queue onto the socket until the connection drops. */
     void SendLoop() {
+        // The inspector's own thread, not the application's: its stack is never the answer
+        // a timing capture is looking for (src/vulkan/src/cpu_sampler.h).
+        gpuinsp::CpuSampler::Get().ExcludeCurrentThread();
         while (connected) {
             Outgoing frame;
             {
@@ -113,8 +127,60 @@ struct Transport::Impl {
         queueDrained.notify_all();
     }
 
+    /**
+     * Reads one frame from a fresh connection, within `timeoutMs`.
+     *
+     * A connection is not a client until its first frame says it is: a probe is answered and
+     * dropped, leaving whoever is attached where they are (target_probe.h). Without this a bare
+     * connect — the obvious way to ask "is anybody there?" — would throw the attached inspector off
+     * its own session, because accept replaces the old connection.
+     */
+    static bool RecvFirstFrame(int socketFd, std::string &out, uint8_t &kind, int timeoutMs) {
+        timeval timeout{};
+        timeout.tv_sec = timeoutMs / 1000;
+        timeout.tv_usec = (timeoutMs % 1000) * 1000;
+        setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
+        std::string pending;
+        char buffer[4096];
+        for (;;) {
+            if (pending.size() >= 5) {
+                uint32_t length = 0;
+                memcpy(&length, pending.data(), 4);
+                if (length > 64u * 1024u * 1024u) return false;   // not a frame of ours
+                if (pending.size() >= 5 + length) {
+                    kind = (uint8_t)pending[4];
+                    out = pending.substr(5, length);
+                    break;
+                }
+            }
+            const ssize_t n = recv(socketFd, buffer, sizeof(buffer), 0);
+            if (n <= 0) return false;
+            pending.append(buffer, (size_t)n);
+        }
+        // Back to blocking for the session that follows.
+        timeval none{};
+        setsockopt(socketFd, SOL_SOCKET, SO_RCVTIMEO, &none, sizeof(none));
+        return true;
+    }
+
+    /** Writes one JSON frame straight to a socket, outside the send queue: the probe's answer. */
+    static void SendJsonTo(int socketFd, const std::string &json) {
+        std::string frame;
+        AppendHeader(frame, (uint32_t)json.size(), 0);
+        frame += json;
+        size_t sent = 0;
+        while (sent < frame.size()) {
+            const ssize_t n = send(socketFd, frame.data() + sent, frame.size() - sent, 0);
+            if (n <= 0) return;
+            sent += (size_t)n;
+        }
+    }
+
     /** Reads length-prefixed frames from the client until it goes away. */
     void ReceiveLoop() {
+        // The inspector's own thread, not the application's: its stack is never the answer
+        // a timing capture is looking for (src/vulkan/src/cpu_sampler.h).
+        gpuinsp::CpuSampler::Get().ExcludeCurrentThread();
         std::string pending;
         size_t consumed = 0;
         char buffer[4096];
@@ -142,24 +208,52 @@ struct Transport::Impl {
         queueReady.notify_all();
     }
 
-    // TODO (on a Mac, where this builds): the attach list, as the Vulkan and Direct3D 12
-    // libraries now do it -- see src/vulkan/src/target_probe.h for the handshake and
-    // src/vulkan/src/transport.cpp for the shape of both changes. Two pieces are missing here:
-    //
-    //  * Stepping to the next free port when METALINSP_PORT was not set, so two applications
-    //    started by hand are both reachable: gpuinsp::PortIsServed(port), then the first free
-    //    port up to gpuinsp::kLastPort. The POSIX branch of PortIsServed bind-tests the port, so
-    //    nothing macOS-specific is needed.
-    //  * Answering a probe before taking a connection for a client: read the first frame with a
-    //    timeout, and if gpuinsp::IsProbeRequest says it is a probe, write
-    //    gpuinsp::ProbeReply("Metal", name, port, connected) to the socket and close it without
-    //    disturbing whoever is attached. `name` can be the label of the MTLDevice's application
-    //    if one is to hand, else "" -- the reply carries the executable name regardless.
-    //
-    // Until then a Metal application is reachable only by typing its port, as all three were
-    // before, and a probe of its port would take the connection from an attached inspector.
+    /**
+     * The listening socket, and the handshake that makes a Metal application turn up in the
+     * inspector's attach list (target_probe.h), as the Vulkan and Direct3D 12 libraries do it.
+     *
+     * Two things beyond opening a socket. The port *steps aside* when another inspected
+     * application already has it, so two started by hand are both reachable without anybody
+     * choosing numbers — but only the default may move, since a port the user named is where they
+     * are waiting. And a connection is not taken for a client until its first frame says it is
+     * one: these servers hold one client at a time, so a bare connect would throw an attached
+     * inspector off its own session, and a probe has to be answered and dropped instead.
+     *
+     * One difference from the Vulkan library remains, and it is deliberate. There, a client's
+     * session runs on a thread of its own and this loop goes straight back to accept, so a probe
+     * is answered *while* somebody is attached and the attach list shows the application as busy.
+     * Here the session runs on this thread, so while a client is attached nothing is accepted and
+     * a probe of this port times out: an attached Metal application is missing from the list rather
+     * than listed as busy. Moving the session to its own thread is the fix, and it is not a small
+     * one — `client` is read by the sender and the receiver and written here, which the present
+     * shape serializes by construction, so the change needs that handle made safe rather than just
+     * moved. Discovery, which is what the list is for, works either way.
+     */
     void Listen() {
-        const uint16_t port = PortFromEnvironment();
+        // The inspector's own thread, not the application's: its stack is never the answer
+        // a timing capture is looking for (src/vulkan/src/cpu_sampler.h).
+        gpuinsp::CpuSampler::Get().ExcludeCurrentThread();
+        const bool chosen = PortWasChosen();
+        uint16_t port = PortFromEnvironment();
+        if (gpuinsp::PortIsServed(port)) {
+            if (chosen) {
+                Log("127.0.0.1:%u is already served by another inspected application; "
+                    "set MTLINSP_PORT to a free port for this one", port);
+                return;
+            }
+            uint16_t free = 0;
+            for (uint16_t candidate = (uint16_t)(port + 1); candidate <= gpuinsp::kLastPort; ++candidate) {
+                if (!gpuinsp::PortIsServed(candidate)) { free = candidate; break; }
+            }
+            if (free == 0) {
+                Log("127.0.0.1:%u and the ports above it are all served by other inspected "
+                    "applications; set MTLINSP_PORT to a free port", port);
+                return;
+            }
+            Log("127.0.0.1:%u is already served by another inspected application; listening on %u instead",
+                port, free);
+            port = free;
+        }
         const int listener = socket(AF_INET, SOCK_STREAM, 0);
         if (listener == kInvalidSocket) {
             Log("socket() failed (%d)", errno);
@@ -193,6 +287,23 @@ struct Transport::Impl {
             // application down with it.
             const int noSigPipe = 1;
             setsockopt(accepted, SOL_SOCKET, SO_NOSIGPIPE, &noSigPipe, sizeof(noSigPipe));
+
+            // Not a client until its first frame says so. Both clients send Ping the moment they
+            // connect, so the wait is not felt; a connection that says nothing at all is dropped
+            // rather than taking the session from whoever is attached.
+            std::string first;
+            uint8_t kind = 0;
+            if (!RecvFirstFrame(accepted, first, kind, kHandshakeTimeoutMs)) {
+                Log("a connection said nothing within %d ms; dropped", kHandshakeTimeoutMs);
+                close(accepted);
+                continue;
+            }
+            if (kind == 0 && gpuinsp::IsProbeRequest(first)) {
+                SendJsonTo(accepted, gpuinsp::ProbeReply("Metal", std::string(), port, connected));
+                close(accepted);
+                continue;
+            }
+
             client = accepted;
             connected = true;
             Log("client connected");
@@ -201,6 +312,9 @@ struct Transport::Impl {
             // The snapshot goes out before anything the hooks produce from here on, so the UI
             // sees every object exactly once whenever it happens to connect.
             if (onConnect) onConnect();
+            // The frame that identified it as a client still has to be acted on; it goes after the
+            // snapshot, exactly where the receiver would have put it.
+            if (kind == 0 && onMessage) onMessage(first);
             ReceiveLoop();
             queueReady.notify_all();
             sender.join();

@@ -11,10 +11,10 @@
 // translation at all, because a D3D12_RAYTRACING_INSTANCE_DESC is byte for byte a
 // VkAccelerationStructureInstanceKHR (d3d12/raytracing.ts).
 import {
-  aabbBoxes, instanceScene, parseBuild, parseInstances, triangleMesh,
+  aabbBoxes, aabbExtents, instanceScene, parseBuild, parseInstances, triangleMesh,
   type AccelerationBuild, type AccelerationInstance, type GeometryPart, type SceneGroup,
 } from "./acceleration_structure.js";
-import type { AccelerationScene } from "./ray_tracing_view.js";
+import type { AccelerationScene, TraversalGeometry } from "./ray_tracing_view.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ArgObject, ArgValue, CaptureCommand } from "../shared/protocol.js";
 import { buildCapture, d3d12StructureAddresses, parseD3D12Build } from "./d3d12/raytracing.js";
@@ -315,7 +315,48 @@ export function accelerationScene(data: CaptureData, db: StructureDatabase, stru
     return result;
   };
 
-  return { instances, meshOf, boxesOf, partsOf };
+  const traversal = new Map<number, TraversalGeometry[] | null>();
+  const traversalOf = (blas: number): TraversalGeometry[] | null => {
+    const hit = traversal.get(blas);
+    if (hit !== undefined) return hit;
+    const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
+    const found = source ? traversalGeometries(data, source) : [];
+    const result = found.length ? found : null;
+    traversal.set(blas, result);
+    return result;
+  };
+
+  return { instances, meshOf, boxesOf, partsOf, traversalOf };
+}
+
+/**
+ * Every geometry of a bottom-level build in the shape a ray traversal walks.
+ *
+ * Deliberately not `geometryParts` above with a flag: that one gives a *drawing*, so a procedural
+ * geometry arrives as the endpoints of its boxes' edges and the geometry's own index is all it
+ * carries. A traversal needs the box extents, the geometry's intersection function table offset,
+ * and whether the build marked it opaque — and it needs one entry per geometry whether or not that
+ * geometry had anything read back, so `geometry_id` numbers them the way the build did.
+ */
+function traversalGeometries(data: CaptureData, source: CapturedBuild): TraversalGeometry[] {
+  const out: TraversalGeometry[] = [];
+  source.build.geometries.forEach((g, index) => {
+    if (g.kind === "instances") return;
+    const triangles = triangleMesh(
+      g,
+      bytesOf(data, captureIdOf(source.command, source.info, index, "vertexData")),
+      bytesOf(data, captureIdOf(source.command, source.info, index, "indexData")),
+    );
+    const extents = aabbExtents(g, bytesOf(data, captureIdOf(source.command, source.info, index, "aabbData")));
+    out.push({
+      index,
+      triangles,
+      extents,
+      functionTableOffset: num((g as unknown as { intersectionFunctionTableOffset?: ArgValue }).intersectionFunctionTableOffset),
+      opaque: (g as unknown as { opaque?: boolean }).opaque === true,
+    });
+  });
+  return out;
 }
 
 /** Every geometry of a bottom-level build that was read back, apart, in its own space. */

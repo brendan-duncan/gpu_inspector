@@ -13,6 +13,7 @@
 // the files the UI writes. Saving a live capture, which fetches what the session does not hold
 // yet from the layer, is capture_file.ts.
 import { passKey, type CapturedBuffer, type CapturedOverdraw, type CapturedTexture } from "./capture_data.js";
+import type { DrawOverlay } from "./draw_overlay.js";
 import type { DrawStat } from "./draw_stats.js";
 import type { HwCounters } from "./hw_counters.js";
 import type { CpuTimelineMessage } from "../shared/protocol.js";
@@ -80,6 +81,12 @@ export interface CaptureFileManifest {
   overdraw?: { info: OverdrawMeasurement; payload?: Payload }[];
   /** The pixel a Metal capture followed (CapturePixelHistory's `history`), when it followed one. */
   pixelHistory?: Record<string, unknown>;
+  /**
+   * The draw a Metal or D3D12 capture measured an overlay for while it was taken
+   * (CaptureDrawOverlay), with its mask as a payload. A Vulkan capture never carries one: its
+   * overlays come from replaying the file, so there is nothing to keep.
+   */
+  drawOverlays?: { info: Omit<DrawOverlay, "mask">; payload?: Payload }[];
   /** Per-draw timings and counters, when the capture has been replayed for them. */
   drawStats?: DrawStat[];
   /** The GPU's own hardware counters, when a replay has read them (renderer/hw_counters.ts). */
@@ -110,6 +117,8 @@ export interface LoadedCapture {
   passTimingOrigin: number | null;
   overdraw: CapturedOverdraw[];
   pixelHistory: Record<string, unknown> | null;
+  /** Keyed by the command each overlay answers for, as CaptureData holds them. */
+  drawOverlays: Map<number, DrawOverlay>;
   drawStats: DrawStat[] | null;
   hwCounters: HwCounters | null;
   cpuTimeline: CpuTimelineMessage | null;
@@ -196,11 +205,13 @@ export function parseCaptureFile(bytes: Uint8Array, options: ParseOptions = {}):
   const passTimings = new Map<string, PassTiming>();
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
   const overdraw: CapturedOverdraw[] = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
+  const drawOverlays = new Map<number, DrawOverlay>();
+  for (const o of manifest.drawOverlays ?? []) drawOverlays.set(o.info.command, { ...o.info, mask: payload(o.payload) });
   // Numbered in place: the manifest was just parsed here and belongs to this function, so a
   // capture's whole command list does not need copying to renumber it.
   const commands = manifest.commands ?? [];
   for (let i = 0; i < commands.length; i++) commands[i].index = i;
   return { manifest, validation: manifest.validation ?? [], objects: manifest.objects ?? [], blobs, commands, textures, buffers, passTimings, passTimingOrigin: manifest.passTimingOrigin ?? null,
-         overdraw, pixelHistory: manifest.pixelHistory ?? null, drawStats: manifest.drawStats ?? null, hwCounters: manifest.hwCounters ?? null, cpuTimeline: manifest.cpuTimeline ?? null, ablations: manifest.ablations ?? [],
+         overdraw, pixelHistory: manifest.pixelHistory ?? null, drawOverlays, drawStats: manifest.drawStats ?? null, hwCounters: manifest.hwCounters ?? null, cpuTimeline: manifest.cpuTimeline ?? null, ablations: manifest.ablations ?? [],
          api: manifest.api ?? "vulkan" };
 }

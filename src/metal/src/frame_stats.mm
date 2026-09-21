@@ -215,6 +215,7 @@ uint64_t OnFrameEnded() {
         // frames a timing capture has recorded since the last report.
         SendMemorySample(device);
         SendTimingFrames();
+        SendTimingSamples();
     }
     return frame;
 }

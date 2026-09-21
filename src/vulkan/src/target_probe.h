@@ -12,7 +12,8 @@
 // until its first frame says it is one: Probe is answered and dropped, anything else attaches.
 //
 // Header-only and API-neutral, shared by all three backends the way json_writer.h is (see
-// src/d3d12/CMakeLists.txt, which puts this directory on the include path for that reason).
+// src/d3d12/CMakeLists.txt and src/metal/CMakeLists.txt, which put this directory on the include
+// path for that reason).
 #pragma once
 
 #include "json_parse.h"
@@ -33,7 +34,12 @@
 #include <windows.h>
 #include <vector>
 #elif defined(__APPLE__)
+// The sockets as well as the executable path: PortIsServed's POSIX branch bind-tests a port, and
+// macOS takes that branch (the Metal library calls it, src/metal/src/transport.mm).
+#include <arpa/inet.h>
 #include <mach-o/dyld.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
 #include <unistd.h>
 #else
 #include <arpa/inet.h>
@@ -57,7 +63,7 @@ inline std::string ExecutablePath() {
     return n > 0 && n < sizeof(buf) ? std::string(buf, n) : std::string();
 #elif defined(__ANDROID__)
     // No /proc/self/exe worth showing (it is the zygote-forked app_process); the package name
-    // from the command line is what the user recognises.
+    // from the command line is what the user recognizes.
     if (FILE* f = fopen("/proc/self/cmdline", "rb")) {
         char cmd[256] = {};
         size_t got = fread(cmd, 1, sizeof(cmd) - 1, f);

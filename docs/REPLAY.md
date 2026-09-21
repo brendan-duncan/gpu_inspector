@@ -974,6 +974,38 @@ How the frame is rebuilt:
 - **Read-back.** Every target the capture read at the end of a pass is read here at the same point,
   through a blit into a staging buffer, and compared byte for byte. A multisampled attachment is
   read through its resolve, which is what the capture read.
+- **Storage textures.** A texture a compute pass of the frame wrote is read back after the frame and
+  compared too, in a command buffer of the replay's own. A render pass's attachments have a pass end
+  to be read at; a storage texture does not — the capture read it because a later pass *sampled* it
+  — so without this a frame whose work is all in compute (a path tracer, whose traced image is the
+  whole output) would compare nothing at all. Only textures bound writable to a compute encoder: one
+  the frame merely reads was uploaded from the capture, so comparing it would compare the upload
+  with itself.
+
+  A kernel that *reads* the texture it writes accumulates into it, and then neither that texture nor
+  anything else the same kernel wrote can be reproduced: the frame continues from contents nothing
+  captured, since the capture holds them only as they were *after* the frame. Those are reported as
+  not compared, with that reason. The verdict comes from the pipeline's own reflection, which says
+  whether a texture slot is `read_write`.
+- **Acceleration structures** are re-created at the size the capture recorded — a build writes into
+  a structure the application had already sized, so the size is what has to match — and the builds,
+  refits and copies are replayed with the descriptor rebuilt from the capture's JSON
+  (`mtl_raytracing.h`). This is far less work than the same job on either other API, and the reason
+  is in the API rather than in the code: a `VkAccelerationStructureGeometryKHR` names its vertices
+  by *device address*, so the Vulkan replay has to have recorded every buffer's address range and
+  map an address back to the buffer it fell in, with all the ways that can go wrong. A Metal
+  geometry descriptor holds the `id<MTLBuffer>` and an offset, which the replay resolves the way it
+  resolves every other reference. The scratch buffer is the replay's own, sized by asking *this*
+  driver what the descriptor needs, rather than the application's — a build given too little scratch
+  is undefined rather than an error.
+- **Intersection function tables** are made from the pipeline they belong to and filled by function
+  name. This is where DXR's and Vulkan's replays do their hardest work: both write a table into GPU
+  memory as opaque identifiers — 32-byte export identifiers, or group handles — so the replay has to
+  have recorded every identifier the capture's pipeline produced and substitute its own into the
+  buffer's bytes. A Metal table is set through the API one entry at a time and an entry names its
+  function, so the whole of that rewrite collapses into looking the name up among the pipeline's
+  linked functions and asking for a handle. The linked functions themselves have to be carried onto
+  the pipeline descriptor, or the table exists and cannot be filled — and then every ray misses.
 
 Checked on an Apple M1 Max, replayed and then exported, built and run:
 
@@ -982,11 +1014,16 @@ Checked on an Apple M1 Max, replayed and then exported, built and run:
 | test/metal_triangle (compute pass, multisampled pass through a parallel encoder resolving into a texture the next pass samples, function constants, a sampler, inline bytes) | both targets identical |
 | `--occluded` (a depth attachment the pass discards, two draws) | all three targets identical, depth included |
 | `--present-direct` (the drawable presented by the application rather than the command buffer) | both targets identical |
+| `--ray-tracing` (a triangle bottom level, an instance top level over two copies of it, and a compute trace into a storage texture) | all three targets identical, the traced image included |
+| test/path_tracer/metal `--rebuild` (bounding box geometry, an intersection function table, linked functions) | every command replayed; the traced image is reported as unreproducible rather than compared, because the frame accumulates into it |
 
 Limits:
-- Acceleration structures and ray tracing, indirect command buffers, argument encoders and mesh
-  shader draws are not replayed: each such object or command is reported, and in the export is a
-  comment where it would be.
+- Indirect command buffers, argument encoders and mesh shader draws are not replayed: each such
+  object or command is reported, and in the export is a comment where it would be.
+- Curve and motion geometry is replayed but not exported: the exported project would need a newer
+  SDK and a keyframe array per buffer, which is more transcription than a repro case has needed.
+  An opaque triangle intersection function is Metal's own rather than the application's, set by
+  signature rather than by a function, and the replay has no way to name it.
 - Tile shading (`setImageblockWidth:height:`, `dispatchThreadsPerTile:`) is recorded by the capture
   but is not on `MTLRenderCommandEncoder` in the macOS SDK, so it is left out.
 - Events and fences within the frame are replayed; the replay commits each command buffer and waits
@@ -994,7 +1031,22 @@ Limits:
 - What the frame reads with no command naming it is not in the capture — a buffer reached through a
   `gpuAddress` held in another buffer, or through an argument buffer.
 
-Worth keeping: the first frame with a depth attachment differed in every texel of its **color**
+Worth keeping, twice over.
+
+The first ray tracing frame replayed with **every ray missing**, and nothing said so: every object
+was created, every build issued, the trace dispatched, and the report read like a clean run with a
+black image. The fault was two lines away from the ray tracing work. `ParseEnum` resolves an enum
+written by name, falls back to reading it as a number, and `strtoll` on a name that is not a number
+returns *zero* — which for most Metal enums is a meaningful value, usually "invalid". The capture
+writes a geometry's vertex format under its `MTLVertexFormat` name (the two enums are the same 42
+values under two names), the replay looked it up in `MTLAttributeFormat`, the name did not resolve,
+and the build got `MTLAttributeFormatInvalid` vertices. A structure built from those holds nothing.
+`ParseEnum` now returns the caller's fallback for a string that is neither a known name nor a
+number, which is the honest answer for an enumerator from a newer SDK too; and the geometry formats
+are read under either name. The general lesson is the one the comment there now carries: a decoder
+whose failure mode is a valid-looking zero hides itself.
+
+The first frame with a depth attachment differed in every texel of its **color**
 target, and the fault was the capture's. A depth attachment is announced under attachment index 0,
 the same as color attachment 0, and `CaptureTextureData` did not carry the aspect — so the depth
 read-back matched the color entry and landed on top of it. The Vulkan layer had always sent the
@@ -1090,7 +1142,7 @@ what the input buffers held when the capture began, and a host build
 
 That comparison earns its keep. The first thing it found was not a fault in the replay at all: the
 test application had no barrier between the top level's build and the trace that reads it, and on
-this driver the race resolved in its favour often enough that the frame looked right every time it
+this driver the race resolved in its favor often enough that the frame looked right every time it
 was run. Synchronization validation does not report that hazard. Two runs of identical commands
 disagreeing does, which is what a replay is for.
 

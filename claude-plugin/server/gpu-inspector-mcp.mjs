@@ -1227,6 +1227,23 @@ var STAGE_BUFFER_METHODS = {
   "setTileBytes:length:atIndex:": { stage: "tile", kind: "bytes" }
 };
 var BIND_STAGE_BUFFER = new Set(Object.keys(STAGE_BUFFER_METHODS));
+var RAY_BINDING_METHODS = {
+  "setAccelerationStructure:atBufferIndex:": { stage: "compute", kind: "accelerationStructure" },
+  "setVertexAccelerationStructure:atBufferIndex:": { stage: "vertex", kind: "accelerationStructure" },
+  "setFragmentAccelerationStructure:atBufferIndex:": { stage: "fragment", kind: "accelerationStructure" },
+  "setTileAccelerationStructure:atBufferIndex:": { stage: "tile", kind: "accelerationStructure" },
+  "setIntersectionFunctionTable:atBufferIndex:": { stage: "compute", kind: "intersectionFunctionTable" },
+  "setVertexIntersectionFunctionTable:atBufferIndex:": { stage: "vertex", kind: "intersectionFunctionTable" },
+  "setFragmentIntersectionFunctionTable:atBufferIndex:": { stage: "fragment", kind: "intersectionFunctionTable" },
+  "setTileIntersectionFunctionTable:atBufferIndex:": { stage: "tile", kind: "intersectionFunctionTable" },
+  "setIntersectionFunctionTables:withBufferRange:": { stage: "compute", kind: "intersectionFunctionTable", many: true },
+  "setVisibleFunctionTable:atBufferIndex:": { stage: "compute", kind: "visibleFunctionTable" },
+  "setVertexVisibleFunctionTable:atBufferIndex:": { stage: "vertex", kind: "visibleFunctionTable" },
+  "setFragmentVisibleFunctionTable:atBufferIndex:": { stage: "fragment", kind: "visibleFunctionTable" },
+  "setTileVisibleFunctionTable:atBufferIndex:": { stage: "tile", kind: "visibleFunctionTable" },
+  "setVisibleFunctionTables:withBufferRange:": { stage: "compute", kind: "visibleFunctionTable", many: true }
+};
+var BIND_RAY_OBJECT = new Set(Object.keys(RAY_BINDING_METHODS));
 var STAGE_TEXTURE_METHODS = {
   "setVertexTexture:atIndex:": { stage: "vertex", kind: "one" },
   "setVertexTextures:withRange:": { stage: "vertex", kind: "many" },
@@ -1477,6 +1494,20 @@ var METAL_SETS = {
       dataId: cmd.bufferData?.[i] ?? 0,
       inline: false
     }));
+  },
+  BIND_RAY_OBJECT,
+  rayObjectsOf(cmd) {
+    const entry2 = RAY_BINDING_METHODS[cmd.method];
+    const a = cmd.args;
+    if (!entry2 || !a) return [];
+    if (!entry2.many) {
+      const object = a.accelerationStructure ?? a.intersectionFunctionTable ?? a.visibleFunctionTable ?? null;
+      return [{ cmd, stage: entry2.stage, index: num(a.index), kind: entry2.kind, object }];
+    }
+    const list = a.intersectionFunctionTables ?? a.visibleFunctionTables;
+    if (!Array.isArray(list)) return [];
+    const first = isObject(a.range) ? num(a.range.location) : 0;
+    return list.map((object, i) => ({ cmd, stage: entry2.stage, index: first + i, kind: entry2.kind, object }));
   },
   BIND_STAGE_TEXTURE,
   stageTexturesOf(cmd) {
@@ -2251,6 +2282,7 @@ var CaptureData = class {
     this.passTimingOrigin = c2.passTimingOrigin;
     this.overdraw = c2.overdraw;
     this.pixelHistory = c2.pixelHistory;
+    this.drawOverlays = c2.drawOverlays;
     this.drawStats = c2.drawStats;
     this.hwCounters = c2.hwCounters;
     this.cpuTimeline = c2.cpuTimeline;
@@ -2715,6 +2747,8 @@ function parseCaptureFile(bytes, options = {}) {
   const passTimings = /* @__PURE__ */ new Map();
   for (const p of manifest.passTimings ?? []) passTimings.set(passKey(p.frame, p.commandBuffer, p.passIndex, p.kind === "compute"), p);
   const overdraw = (manifest.overdraw ?? []).map((o) => ({ info: o.info, data: payload(o.payload) }));
+  const drawOverlays = /* @__PURE__ */ new Map();
+  for (const o of manifest.drawOverlays ?? []) drawOverlays.set(o.info.command, { ...o.info, mask: payload(o.payload) });
   const commands = manifest.commands ?? [];
   for (let i = 0; i < commands.length; i++) commands[i].index = i;
   return {
@@ -2729,6 +2763,7 @@ function parseCaptureFile(bytes, options = {}) {
     passTimingOrigin: manifest.passTimingOrigin ?? null,
     overdraw,
     pixelHistory: manifest.pixelHistory ?? null,
+    drawOverlays,
     drawStats: manifest.drawStats ?? null,
     hwCounters: manifest.hwCounters ?? null,
     cpuTimeline: manifest.cpuTimeline ?? null,
@@ -4768,7 +4803,7 @@ var LIMITER_ADVICE = {
   cache: "The pass is limited by cache traffic rather than by arithmetic. Sampling that stays local (mips, smaller textures, better texture layout) and fewer scattered reads help more than cheaper shader maths.",
   occupancy: "No unit is near its limit and few warps are in flight, so the pass is waiting rather than working: long dependency chains, register pressure limiting occupancy, or too little work to fill the GPU.",
   // Filled in per pass by limiterAdvice when the compiler statistics name the stage responsible.
-  unsaturated: "No unit measured is close to its limit, so the pass is probably too small to fill the GPU, or is waiting on something outside it. Merging it with a neighbour usually beats optimising it."
+  unsaturated: "No unit measured is close to its limit, so the pass is probably too small to fill the GPU, or is waiting on something outside it. Merging it with a neighbor usually beats optimizing it."
 };
 function limiterAdvice(limiter) {
   const base = LIMITER_ADVICE[limiter.kind];
@@ -5097,7 +5132,7 @@ var BOUND_ADVICE = {
   vertex: "Cut vertices or vertex-stage work: mesh level of detail at distance, fewer or cheaper vertex attributes, and per-fragment rather than per-vertex evaluation of anything the fragment stage could do itself.",
   fragment: "Cut fragments or fragment-stage work: fewer overlapping surfaces, a smaller render target, cheaper texture sampling, and simpler shader maths.",
   target: "The pass spends its time writing the attachment rather than shading it. A smaller target, fewer targets, or a store action of DontCare on anything nothing reads afterwards.",
-  balanced: "Neither stage dominates. The cheapest win is usually to remove work from the pass entirely: merge it with a neighbour, or skip it when nothing reads its output."
+  balanced: "Neither stage dominates. The cheapest win is usually to remove work from the pass entirely: merge it with a neighbor, or skip it when nothing reads its output."
 };
 function passAdvice(p) {
   const out = [];
@@ -5942,7 +5977,7 @@ function analyzeSpirv(data) {
           } else if (isDerivative(op)) {
             charge(DERIVATIVE_COST, scale);
             totals.derivatives++;
-            if (selectionStack.length) finding("derivative-in-branch", "medium", "medium", "A derivative (dFdx / dFdy / fwidth, or an implicit-LOD sample) inside a branch: undefined where neighbouring invocations take a different path, and it forces quad-wide execution.", ordinal);
+            if (selectionStack.length) finding("derivative-in-branch", "medium", "medium", "A derivative (dFdx / dFdy / fwidth, or an implicit-LOD sample) inside a branch: undefined where neighboring invocations take a different path, and it forces quad-wide execution.", ordinal);
           } else if (isSample(op) && selectionStack.length) {
           } else if (isDiscard(op)) {
             totals.discards++;
@@ -6241,7 +6276,7 @@ var GraphAnalysis = class {
    * results as input attachments, so they never leave tile memory. Returns the images it named, so
    * the transient rule does not say the same about them. Not reported where the two passes render
    * to the same targets (mergeable-passes), and only a hint: a shader that filters its input (a blur
-   * reading neighbouring texels) needs it as a texture.
+   * reading neighboring texels) needs it as a texture.
    */
   _subpassCandidates(merged) {
     const folded = new Folded();
@@ -6387,6 +6422,109 @@ function analyzeRenderGraph(graph, options = {}) {
 }
 
 // src/renderer/acceleration_structure.ts
+var INSTANCE_STRIDE = 64;
+var INSTANCE_FLAGS = [
+  [1, "TRIANGLE_FACING_CULL_DISABLE"],
+  [2, "TRIANGLE_FLIP_FACING"],
+  [4, "FORCE_OPAQUE"],
+  [8, "FORCE_NO_OPAQUE"]
+];
+var METAL_INSTANCE_FLAGS = [
+  [1, "DisableTriangleCulling"],
+  [2, "TriangleFrontFacingWindingCounterClockwise"],
+  [4, "Opaque"],
+  [8, "NonOpaque"]
+];
+function flagNamesOf(flags, table = INSTANCE_FLAGS) {
+  return table.filter(([bit]) => (flags & bit) !== 0).map(([, name]) => name);
+}
+function parseInstances(bytes, references) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const out = [];
+  for (let i = 0; i + INSTANCE_STRIDE <= bytes.byteLength; i += INSTANCE_STRIDE) {
+    const transform = [];
+    for (let k = 0; k < 12; k++) transform.push(view.getFloat32(i + k * 4, true));
+    const indexAndMask = view.getUint32(i + 48, true);
+    const offsetAndFlags = view.getUint32(i + 52, true);
+    const flags = offsetAndFlags >>> 24;
+    const reference = view.getBigUint64(i + 56, true).toString();
+    out.push({
+      index: out.length,
+      transform,
+      customIndex: indexAndMask & 16777215,
+      mask: indexAndMask >>> 24,
+      bindingTableOffset: offsetAndFlags & 16777215,
+      flags,
+      flagNames: flagNamesOf(flags),
+      reference,
+      ...references?.has(reference) ? { blas: references.get(reference) } : {}
+    });
+  }
+  return out;
+}
+var SHORT = (s, prefix) => str(s).replace(prefix, "").replace(/_KHR$/, "");
+function parseBuild(info, range) {
+  if (!isObject(info)) return null;
+  const dst = isObject(info.dstAccelerationStructure) ? info.dstAccelerationStructure : null;
+  const target = dst ? num(dst.__id) : 0;
+  if (!target) return null;
+  const type = str(info.type);
+  const ranges = Array.isArray(range) ? range : range === void 0 ? [] : [range];
+  const raw = Array.isArray(info.pGeometries) ? info.pGeometries : [];
+  const geometries = [];
+  let primitives = 0;
+  raw.forEach((g, index) => {
+    if (!isObject(g)) return;
+    const r = ranges[index];
+    const count2 = isObject(r) ? num(r.primitiveCount) : 0;
+    primitives += count2;
+    const kind = SHORT(str(g.geometryType), /^VK_GEOMETRY_TYPE_/).toLowerCase();
+    const geometry = isObject(g.geometry) ? g.geometry : {};
+    const triangles = isObject(geometry.triangles) ? geometry.triangles : null;
+    geometries.push({
+      index,
+      kind,
+      flags: str(g.flags),
+      primitiveCount: count2,
+      ...triangles ? {
+        vertexFormat: SHORT(str(triangles.vertexFormat), /^VK_FORMAT_/),
+        vertexStride: num(triangles.vertexStride),
+        maxVertex: num(triangles.maxVertex),
+        indexType: SHORT(str(triangles.indexType), /^VK_INDEX_TYPE_/)
+      } : {},
+      ...kind === "aabbs" ? { aabbStride: num(g.stride) } : {},
+      ...capturedData(g)
+    });
+  });
+  return {
+    target,
+    topLevel: type.includes("TOP_LEVEL"),
+    mode: SHORT(str(info.mode), /^VK_BUILD_ACCELERATION_STRUCTURE_MODE_/),
+    flags: str(info.flags),
+    geometries,
+    primitives
+  };
+}
+function capturedData(g) {
+  const geometry = isObject(g.geometry) ? g.geometry : {};
+  const pick2 = (holder, field2) => {
+    if (!isObject(holder)) return void 0;
+    const d = holder[field2];
+    if (!isObject(d)) return void 0;
+    const id = num(d.capture);
+    return id > 0 ? id : void 0;
+  };
+  const triangles = geometry.triangles;
+  const instances = geometry.instances;
+  const aabbs = geometry.aabbs;
+  return {
+    vertexData: pick2(triangles, "vertexData"),
+    indexData: pick2(triangles, "indexData"),
+    transformData: pick2(triangles, "transformData"),
+    instanceData: pick2(instances, "data"),
+    aabbData: pick2(aabbs, "data")
+  };
+}
 var CUBE_EDGES = (() => {
   const corner = (i) => [i & 1 ? 0.5 : -0.5, i & 2 ? 0.5 : -0.5, i & 4 ? 0.5 : -0.5];
   const pairs = [];
@@ -6398,6 +6536,78 @@ var CUBE_EDGES = (() => {
   }
   return pairs;
 })();
+function transformPoint(m, x, y, z) {
+  return [
+    m[0] * x + m[1] * y + m[2] * z + m[3],
+    m[4] * x + m[5] * y + m[6] * z + m[7],
+    m[8] * x + m[9] * y + m[10] * z + m[11]
+  ];
+}
+function triangleMesh(g, vertices, indices) {
+  if (g.kind !== "triangles" || !vertices || !g.vertexStride) return null;
+  const format = vertexFormat(`VK_FORMAT_${g.vertexFormat ?? ""}`);
+  if (!format) return null;
+  const view = new DataView(vertices.buffer, vertices.byteOffset, vertices.byteLength);
+  const held = Math.floor(vertices.byteLength / g.vertexStride);
+  const count2 = g.maxVertex === void 0 ? held : Math.min(g.maxVertex + 1, held);
+  const positions = [];
+  const at = (vertex) => {
+    const offset = vertex * g.vertexStride;
+    if (vertex >= count2 || offset + format.size > vertices.byteLength) {
+      positions.push(0, 0, 0);
+      return;
+    }
+    const v = format.read(view, offset);
+    positions.push(v[0] ?? 0, v[1] ?? 0, v[2] ?? 0);
+  };
+  const wanted = g.primitiveCount * 3;
+  if (g.indexType && g.indexType !== "NONE" && indices) {
+    const size2 = g.indexType === "UINT16" ? 2 : 4;
+    const iv = new DataView(indices.buffer, indices.byteOffset, indices.byteLength);
+    const available = Math.floor(indices.byteLength / size2);
+    for (let i = 0; i < wanted && i < available; i++) {
+      at(size2 === 2 ? iv.getUint16(i * size2, true) : iv.getUint32(i * size2, true));
+    }
+  } else {
+    for (let i = 0; i < wanted; i++) at(i);
+  }
+  return positions.length ? new Float32Array(positions) : null;
+}
+var AABB_SIZE = 24;
+function aabbBoxes(g, bytes) {
+  if (g.kind !== "aabbs" || !bytes) return null;
+  const stride = g.aabbStride && g.aabbStride >= AABB_SIZE ? g.aabbStride : AABB_SIZE;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count2 = Math.min(g.primitiveCount || Infinity, Math.floor(bytes.byteLength / stride));
+  const lines = [];
+  for (let i = 0; i < count2; i++) {
+    const at = i * stride;
+    const min = [view.getFloat32(at, true), view.getFloat32(at + 4, true), view.getFloat32(at + 8, true)];
+    const max = [view.getFloat32(at + 12, true), view.getFloat32(at + 16, true), view.getFloat32(at + 20, true)];
+    if (![0, 1, 2].every((k) => Number.isFinite(min[k]) && Number.isFinite(max[k]) && max[k] >= min[k])) continue;
+    const corner = (c2) => [c2 & 1 ? max[0] : min[0], c2 & 2 ? max[1] : min[1], c2 & 4 ? max[2] : min[2]];
+    for (let a = 0; a < 8; a++) {
+      for (const bit of [1, 2, 4]) {
+        const b = a ^ bit;
+        if (b <= a) continue;
+        lines.push(...corner(a), ...corner(b));
+      }
+    }
+  }
+  return lines.length ? new Float32Array(lines) : null;
+}
+function aabbExtents(g, bytes) {
+  if (g.kind !== "aabbs" || !bytes) return null;
+  const stride = g.aabbStride && g.aabbStride >= AABB_SIZE ? g.aabbStride : AABB_SIZE;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const count2 = Math.min(g.primitiveCount || Infinity, Math.floor(bytes.byteLength / stride));
+  const out = new Float32Array(count2 * 6);
+  for (let i = 0; i < count2; i++) {
+    const at = i * stride;
+    for (let k = 0; k < 6; k++) out[i * 6 + k] = view.getFloat32(at + k * 4, true);
+  }
+  return count2 ? out : null;
+}
 
 // src/renderer/metal/raytracing.ts
 var METAL_BUILD_METHODS = /* @__PURE__ */ new Set([
@@ -6405,6 +6615,172 @@ var METAL_BUILD_METHODS = /* @__PURE__ */ new Set([
   "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:",
   "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:options:"
 ]);
+var INSTANCE_LAYOUTS = {
+  // MTLAccelerationStructureInstanceDescriptor
+  0: { stride: 64, transform: 0, options: 48, mask: 52, tableOffset: 56, structureIndex: 60, resourceId: -1, userId: -1 },
+  // MTLAccelerationStructureUserIDInstanceDescriptor
+  1: { stride: 68, transform: 0, options: 48, mask: 52, tableOffset: 56, structureIndex: 60, resourceId: -1, userId: 64 },
+  // MTLAccelerationStructureMotionInstanceDescriptor
+  2: { stride: 60, transform: -1, options: 0, mask: 4, tableOffset: 8, structureIndex: 12, resourceId: -1, userId: 16 },
+  // MTLIndirectAccelerationStructureInstanceDescriptor
+  3: { stride: 80, transform: 0, options: 48, mask: 52, tableOffset: 56, structureIndex: -1, resourceId: 64, userId: 60 },
+  // MTLIndirectAccelerationStructureMotionInstanceDescriptor
+  4: { stride: 76, transform: -1, options: 0, mask: 4, tableOffset: 8, structureIndex: -1, resourceId: 16, userId: 12 }
+};
+var IDENTITY = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+function layoutOf(type, stride) {
+  const byName = {
+    MTLAccelerationStructureInstanceDescriptorTypeDefault: 0,
+    MTLAccelerationStructureInstanceDescriptorTypeUserID: 1,
+    MTLAccelerationStructureInstanceDescriptorTypeMotion: 2,
+    MTLAccelerationStructureInstanceDescriptorTypeIndirect: 3,
+    MTLAccelerationStructureInstanceDescriptorTypeIndirectMotion: 4
+  };
+  const kind = typeof type === "string" ? byName[type] ?? 0 : typeof type === "number" ? type : 0;
+  const layout = INSTANCE_LAYOUTS[kind] ?? INSTANCE_LAYOUTS[0];
+  return stride > layout.stride ? { ...layout, stride } : layout;
+}
+function parseMetalInstances(bytes, descriptor, structures) {
+  const layout = layoutOf(
+    typeof descriptor.instanceDescriptorType === "string" ? descriptor.instanceDescriptorType : void 0,
+    num(descriptor.instanceDescriptorStride)
+  );
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const declared = num(descriptor.instanceCount);
+  const out = [];
+  for (let at = 0; at + layout.stride <= bytes.byteLength; at += layout.stride) {
+    if (declared > 0 && out.length >= declared) break;
+    const transform = [];
+    if (layout.transform >= 0) {
+      for (let row = 0; row < 3; row++) {
+        for (let column = 0; column < 4; column++) {
+          transform.push(view.getFloat32(at + layout.transform + column * 12 + row * 4, true));
+        }
+      }
+    } else {
+      transform.push(...IDENTITY);
+    }
+    const flags = view.getUint32(at + layout.options, true);
+    let reference = "";
+    let referenceKind;
+    let blas;
+    if (layout.structureIndex >= 0) {
+      const index = view.getUint32(at + layout.structureIndex, true);
+      reference = String(index);
+      referenceKind = "index";
+      if (index < structures.length && structures[index]) blas = structures[index];
+    } else if (layout.resourceId >= 0) {
+      reference = `0x${view.getBigUint64(at + layout.resourceId, true).toString(16)}`;
+      referenceKind = "resourceId";
+    }
+    out.push({
+      index: out.length,
+      transform,
+      customIndex: layout.userId >= 0 ? view.getUint32(at + layout.userId, true) : 0,
+      mask: view.getUint32(at + layout.mask, true),
+      bindingTableOffset: view.getUint32(at + layout.tableOffset, true),
+      flags,
+      flagNames: flagNamesOf(flags, METAL_INSTANCE_FLAGS),
+      reference,
+      ...referenceKind ? { referenceKind } : {},
+      ...blas !== void 0 ? { blas } : {}
+    });
+  }
+  return out;
+}
+var GEOMETRY_KINDS = {
+  triangles: "triangles",
+  motionTriangles: "triangles",
+  boundingBoxes: "aabbs",
+  motionBoundingBoxes: "aabbs",
+  curves: "curves",
+  motionCurves: "curves"
+};
+function metalBuildCapture(source, geometry, field2) {
+  const list = isObject(source) && Array.isArray(source.buildData) ? source.buildData : Array.isArray(source) ? source : [];
+  for (const e of list) {
+    if (!isObject(e)) continue;
+    if (num(e.geometry) === geometry && e.field === field2) return num(e.capture);
+  }
+  return 0;
+}
+var METAL_FIELDS = {
+  vertexData: ["vertexBuffer"],
+  indexData: ["indexBuffer"],
+  transformData: ["transformationMatrixBuffer"],
+  aabbData: ["boundingBoxBuffer"],
+  data: ["instanceDescriptorBuffer"]
+};
+function instancedStructures(descriptor) {
+  const list = Array.isArray(descriptor.instancedAccelerationStructures) ? descriptor.instancedAccelerationStructures : [];
+  return list.map((s) => refId(s) ?? 0);
+}
+function metalDescriptorOf(value) {
+  if (!isObject(value)) return null;
+  const d = value.descriptor;
+  return isObject(d) ? d : null;
+}
+function parseMetalBuild(command) {
+  const args = isObject(command.args) ? command.args : null;
+  if (!args) return null;
+  const target = refId(args.accelerationStructure ?? args.destinationAccelerationStructure);
+  if (!target) return null;
+  const descriptor = metalDescriptorOf(args);
+  if (!descriptor) return null;
+  return metalBuild(target, descriptor, str(args.mode) || (command.method.startsWith("refit") ? "REFIT" : "BUILD"));
+}
+function metalBuild(target, descriptor, mode) {
+  const topLevel = str(descriptor.kind) === "instance";
+  const geometries = [];
+  let primitives = 0;
+  if (topLevel) {
+    const count2 = num(descriptor.instanceCount);
+    primitives = count2;
+    geometries.push({ index: 0, kind: "instances", flags: "", primitiveCount: count2 });
+  } else {
+    const raw = Array.isArray(descriptor.geometries) ? descriptor.geometries : [];
+    raw.forEach((g, index) => {
+      if (!isObject(g)) return;
+      const count2 = num(g.primitiveCount);
+      primitives += count2;
+      const kind = GEOMETRY_KINDS[str(g.kind)] ?? str(g.kind);
+      geometries.push({
+        index,
+        kind,
+        // Metal has no per-geometry flag set; `opaque` and the duplicate-invocation switch are the
+        // two booleans that stand in for one, and they read better named than as a bit string.
+        flags: [
+          g.opaque === true ? "Opaque" : "",
+          g.allowDuplicateIntersectionFunctionInvocation === true ? "AllowDuplicateIntersectionFunctionInvocation" : ""
+        ].filter(Boolean).join(" | "),
+        primitiveCount: count2,
+        ...kind === "triangles" ? {
+          // The library writes the same layout twice: Metal's own name for display, and the
+          // canonical VK_FORMAT_* the vertex decoder knows (MTLAttributeFormat and MTLVertexFormat
+          // are the same values, so this is the same mapping a draw's attributes get).
+          vertexFormat: str(g.vkFormat).replace(/^VK_FORMAT_/, ""),
+          vertexStride: num(g.vertexStride),
+          indexType: metalIndexType(str(g.indexType))
+          // No maxVertex on purpose: a Metal triangle geometry carries a triangle count and no
+          // vertex count, so what was read back is the only bound there is (triangleMesh).
+        } : {},
+        ...kind === "aabbs" ? { aabbStride: num(g.boundingBoxStride) } : {}
+      });
+    });
+  }
+  return { target, topLevel, mode, flags: str(descriptor.usage), geometries, primitives };
+}
+function metalIndexType(name) {
+  if (name.endsWith("UInt16")) return "UINT16";
+  if (name.endsWith("UInt32")) return "UINT32";
+  return "NONE";
+}
+function metalStructureBuild(object) {
+  return isObject(object.updates.build) ? object.updates.build : null;
+}
+function metalCaptureInputs(object) {
+  return isObject(object.updates.captureInputs) ? object.updates.captureInputs : null;
+}
 
 // src/renderer/metal/frame_analysis.ts
 var TINY_DRAW_VERTICES = 12;
@@ -10474,6 +10850,7 @@ function emptyDrawState(bindPoint) {
     sets: /* @__PURE__ */ new Map(),
     vertexBuffers: /* @__PURE__ */ new Map(),
     stageBuffers: /* @__PURE__ */ new Map(),
+    rayBindings: /* @__PURE__ */ new Map(),
     stageTextures: /* @__PURE__ */ new Map(),
     stageSamplers: /* @__PURE__ */ new Map(),
     indexBuffer: null,
@@ -10545,6 +10922,12 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
       for (const sb of cmdSets.stageBuffersOf(c2)) {
         const key = `${sb.stage}:${sb.index}`;
         if (!state.stageBuffers.has(key)) state.stageBuffers.set(key, sb);
+      }
+    }
+    if (cmdSets.BIND_RAY_OBJECT?.has(c2.method) && cmdSets.rayObjectsOf) {
+      for (const rb of cmdSets.rayObjectsOf(c2)) {
+        const key = `${rb.stage}:${rb.index}`;
+        if (!state.rayBindings.has(key)) state.rayBindings.set(key, rb);
       }
     }
     if (cmdSets.BIND_STAGE_TEXTURE?.has(c2.method) && cmdSets.stageTexturesOf) {
@@ -13486,7 +13869,112 @@ function gather(texture, sampler, coord, component, dref) {
   return [pick2(x0, y0 + 1), pick2(x0 + 1, y0 + 1), pick2(x0 + 1, y0), pick2(x0, y0)];
 }
 
+// src/renderer/debug/values.ts
+var OpaqueValue = class {
+  constructor(kind, values, handle) {
+    this.kind = kind;
+    this.values = values;
+    this.handle = handle;
+  }
+};
+var Pointer = class {
+  constructor(cell, path12, type, storage, variable) {
+    this.cell = cell;
+    this.path = path12;
+    this.type = type;
+    this.storage = storage;
+    this.variable = variable;
+  }
+};
+var ImageValue = class {
+  constructor(texture, binding) {
+    this.texture = texture;
+    this.binding = binding;
+  }
+};
+var SamplerValue = class {
+  constructor(sampler, binding) {
+    this.sampler = sampler;
+    this.binding = binding;
+  }
+};
+var SampledImageValue = class {
+  constructor(image, sampler) {
+    this.image = image;
+    this.sampler = sampler;
+  }
+};
+function cloneValue(v) {
+  return Array.isArray(v) ? v.map(cloneValue) : v;
+}
+function normalize(v, s) {
+  if (s.base === "bool") return Boolean(v);
+  if (s.base === "float") {
+    const n2 = typeof v === "bigint" ? Number(v) : typeof v === "boolean" ? v ? 1 : 0 : v;
+    return s.width === 32 ? Math.fround(n2) : s.width === 16 ? Math.fround(n2) : n2;
+  }
+  if (s.width === 64) {
+    const b = typeof v === "bigint" ? v : BigInt(Math.trunc(typeof v === "boolean" ? v ? 1 : 0 : v));
+    return s.base === "int" ? BigInt.asIntN(64, b) : BigInt.asUintN(64, b);
+  }
+  let n = typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : typeof v === "boolean" ? v ? 1 : 0 : Math.trunc(v);
+  if (s.width < 32) {
+    const mod = 2 ** s.width;
+    n = (n % mod + mod) % mod;
+    return s.base === "int" && n >= mod / 2 ? n - mod : n;
+  }
+  return s.base === "int" ? n | 0 : n >>> 0;
+}
+function mapScalars(v, f) {
+  return Array.isArray(v) ? v.map((e) => mapScalars(e, f)) : f(v);
+}
+function zipScalars(a, b, f) {
+  if (Array.isArray(a)) return a.map((e, i) => zipScalars(e, Array.isArray(b) ? b[i] : b, f));
+  return f(a, b);
+}
+function nonFinite(value) {
+  if (typeof value === "number") return !Number.isFinite(value);
+  return Array.isArray(value) && value.some(nonFinite);
+}
+function scalars(value) {
+  if (Array.isArray(value)) return value.flatMap(scalars);
+  if (typeof value === "number") return [value];
+  if (typeof value === "bigint") return [Number(value)];
+  if (typeof value === "boolean") return [value ? 1 : 0];
+  return [];
+}
+function scalarText(v) {
+  if (typeof v === "number") {
+    if (Number.isInteger(v)) return String(v);
+    if (Number.isNaN(v)) return "NaN";
+    if (!Number.isFinite(v)) return v > 0 ? "inf" : "-inf";
+    const a = Math.abs(v);
+    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(+v.toPrecision(7));
+  }
+  if (typeof v === "bigint") return String(v);
+  if (typeof v === "boolean") return v ? "true" : "false";
+  return "?";
+}
+function imageText(image) {
+  const t = image.texture;
+  return t ? `${image.binding}: ${t.format.replace(/^VK_FORMAT_/, "")} ${t.width}x${t.height}${t.layers > 1 ? `x${t.layers}` : ""}` : `${image.binding}: not captured`;
+}
+function samplerText(sampler) {
+  const s = sampler.sampler;
+  return s ? `${sampler.binding}: ${s.minFilter}/${s.magFilter} ${s.address[0]}${s.compareOp ? ` compare ${s.compareOp}` : ""}` : `${sampler.binding}: default sampler`;
+}
+
 // src/renderer/msl/types.ts
+var RAY_TRACING_HANDLES = /* @__PURE__ */ new Set([
+  "intersector",
+  "instance_acceleration_structure",
+  "primitive_acceleration_structure",
+  "acceleration_structure",
+  "intersection_function_table",
+  "visible_function_table",
+  "intersection_query",
+  "intersection_params"
+]);
 var SCALAR_BYTES = {
   bool: 1,
   char: 1,
@@ -13620,6 +14108,68 @@ var TypeTable = class {
   }
   structNamed(name) {
     return this._structsByName.get(name);
+  }
+  /** Fills a declared struct's members. No size cache to invalidate: every size is computed on use. */
+  fillStruct(ref, members2) {
+    const type = this.types[ref];
+    if (type?.kind !== "struct" || type.members.length) return;
+    type.members.push(...members2);
+  }
+  /**
+   * The ray tracing types of `<metal_raytracing>`, interned on first use.
+   *
+   * `ray` and `intersection_result` are real structs with public members, so they are declared as
+   * structs and get member access, assignment and construction from the same code every other
+   * struct uses. The rest — `intersector`, the acceleration structures, the function tables — are
+   * handles with methods and no readable layout, so they are opaque and their methods are
+   * dispatched by name (msl/raytracing.ts, and the `rt.` builtins).
+   *
+   * `intersection_result`'s members are declared whether or not the intersector's tags would give
+   * them: a shader that reads `triangle_barycentric_coord` without `triangle_data` does not
+   * compile in Metal, so a debugger that offered the member anyway can only be read by a shader
+   * that was already valid. The alternative — a different struct per tag combination — would be a
+   * lot of machinery to reject code the compiler has already rejected.
+   */
+  rayTracing(name) {
+    const bare = name.replace(/_ref$/, "");
+    if (bare === "ray") {
+      const existing = this.structNamed("ray");
+      if (existing !== void 0) return existing;
+      const float3 = this.vector(this.float, 3, false);
+      const type = this.declareStruct("ray");
+      this.fillStruct(type, [
+        { name: "origin", type: float3, attributes: [] },
+        { name: "direction", type: float3, attributes: [] },
+        { name: "min_distance", type: this.float, attributes: [] },
+        { name: "max_distance", type: this.float, attributes: [] }
+      ]);
+      return type;
+    }
+    if (bare === "intersection_result" || bare === "intersection_result_instance") {
+      const existing = this.structNamed("intersection_result");
+      if (existing !== void 0) return existing;
+      const float2 = this.vector(this.float, 2, false);
+      const float3 = this.vector(this.float, 3, false);
+      const float4x3 = this.matrix(float3, 4);
+      const type = this.declareStruct("intersection_result");
+      this.fillStruct(type, [
+        { name: "type", type: this.uint, attributes: [] },
+        { name: "distance", type: this.float, attributes: [] },
+        { name: "primitive_id", type: this.uint, attributes: [] },
+        { name: "geometry_id", type: this.uint, attributes: [] },
+        { name: "instance_id", type: this.uint, attributes: [] },
+        { name: "user_instance_id", type: this.uint, attributes: [] },
+        { name: "triangle_barycentric_coord", type: float2, attributes: [] },
+        { name: "triangle_front_facing", type: this.bool, attributes: [] },
+        { name: "world_space_origin", type: float3, attributes: [] },
+        { name: "world_space_direction", type: float3, attributes: [] },
+        { name: "object_to_world_transform", type: float4x3, attributes: [] },
+        { name: "world_to_object_transform", type: float4x3, attributes: [] }
+      ]);
+      return type;
+    }
+    if (RAY_TRACING_HANDLES.has(bare)) return this.intern({ kind: "opaque", name: bare });
+    return void 0;
   }
   /**
    * A built-in type spelled by name: a scalar, `float4`, `half2x3`, `packed_float3`. Returns
@@ -13948,6 +14498,11 @@ var TypeTable = class {
         return Array.from({ length: Math.max(0, t.length) }, () => this.zero(t.element));
       case "struct":
         return t.members.map((m) => this.zero(m.type));
+      // An `intersector<...>` the shader declared: the handle its setters change and the next
+      // `intersect` reads (msl/raytracing.ts). Every other opaque type is a binding, which the
+      // invocation fills in, so null is the right answer for those.
+      case "opaque":
+        return t.name === "intersector" ? new OpaqueValue("intersector", [], { options: {}, tags: [] }) : null;
       default:
         return null;
     }
@@ -14081,6 +14636,21 @@ function toFloat16(value) {
 }
 
 // src/renderer/msl/lower.ts
+var RAY_TRACING_ENUMS = {
+  "intersection_type::none": 0,
+  "intersection_type::triangle": 1,
+  "intersection_type::bounding_box": 2,
+  "intersection_type::curve": 3,
+  "geometry_type::triangle": 0,
+  "geometry_type::bounding_box": 1,
+  "geometry_type::curve": 2,
+  "curve_type::round": 0,
+  "curve_type::flat": 1,
+  "curve_basis::bspline": 0,
+  "curve_basis::catmull_rom": 1,
+  "curve_basis::linear": 2,
+  "curve_basis::bezier": 3
+};
 var BUILTIN_ATTRIBUTES = /* @__PURE__ */ new Set([
   "vertex_id",
   "instance_id",
@@ -14117,7 +14687,18 @@ var BUILTIN_ATTRIBUTES = /* @__PURE__ */ new Set([
   "color",
   "raster_order_group",
   "amplification_count",
-  "amplification_id"
+  "amplification_id",
+  // An intersection function's own: the ray it is being asked about and which primitive of which
+  // instance (interpreter.ts fills these when the traversal calls it).
+  "origin",
+  "direction",
+  "min_distance",
+  "max_distance",
+  "geometry_id",
+  "user_instance_id",
+  "payload",
+  "opaque",
+  "geometry_intersection_function_table_offset"
 ]);
 var RANK = {
   bool: 0,
@@ -14269,6 +14850,8 @@ var Lowering = class {
     }
     const struct = this.types.structNamed(name);
     if (struct !== void 0) return struct;
+    const rayTracing = this.types.rayTracing(name);
+    if (rayTracing !== void 0) return rayTracing;
     const alias = this._aliases.get(name);
     if (alias && !seen.has(name)) {
       seen.add(name);
@@ -14400,7 +14983,11 @@ var Lowering = class {
       const type = this._withArrayDims(this._type(p.type), p.arrayDims);
       const symbol = this._symbol(p.name, type, "param", false, {
         attribute: p.attributes[0],
-        binding: decl.qualifier ? bindingOf(p, type, this.types) : void 0
+        // An intersection function's parameters bind like an entry point's — `[[origin]]`,
+        // `[[primitive_id]]`, `[[buffer(0)]]` — and it has no `kernel`-style qualifier to say so:
+        // what marks it is the `[[intersection(...)]]` on its return (interpreter.ts calls it
+        // from a traversal and fills these).
+        binding: decl.qualifier || isIntersectionFunction(decl) ? bindingOf(p, type, this.types) : void 0
       });
       return { id: symbol.id, type, name: p.name };
     });
@@ -14775,6 +15362,12 @@ var Lowering = class {
   }
   _nameValue(expr) {
     const id = this._lookup(expr.name);
+    const enumerator = id === void 0 ? RAY_TRACING_ENUMS[expr.name] : void 0;
+    if (enumerator !== void 0) {
+      const dst2 = this._temp(this.types.uint);
+      this._emit({ op: "const", dst: dst2, value: enumerator, type: this.types.uint }, expr.span);
+      return dst2;
+    }
     if (id === void 0) {
       this._warn(expr.span, `${expr.name} is not declared in this shader: it reads as zero`);
       const dst2 = this._temp(this.types.int);
@@ -14783,7 +15376,7 @@ var Lowering = class {
     }
     const symbol = this.symbols[id];
     const t = this.types.get(symbol.type);
-    if (t?.kind === "texture" || t?.kind === "sampler") {
+    if (t?.kind === "texture" || t?.kind === "sampler" || t?.kind === "opaque" && RAY_TRACING_HANDLES.has(t.name)) {
       const dst2 = this._temp(symbol.type);
       this._emit({ op: "move", dst: dst2, src: id, type: symbol.type }, expr.span);
       return dst2;
@@ -15248,6 +15841,20 @@ var Lowering = class {
         this._emit({ op: "builtin", dst: dst2, name: `texture.${expr.callee.name}`, args: args2, type: type2 }, expr.span);
         return dst2;
       }
+      if (t?.kind === "opaque" && RAY_TRACING_HANDLES.has(t.name)) {
+        const object = this._value(expr.callee.object);
+        const args2 = [object, ...expr.args.map((a) => this._value(a))];
+        if (expr.callee.name === "intersect") {
+          const type3 = this.types.rayTracing("intersection_result") ?? this.types.void_;
+          const dst3 = this._temp(type3);
+          this._emit({ op: "rayQuery", dst: dst3, args: args2, type: type3 }, expr.span);
+          return dst3;
+        }
+        const type2 = this._rayMethodResultType(expr.callee.name);
+        const dst2 = this._temp(type2);
+        this._emit({ op: "builtin", dst: dst2, name: `rt.${expr.callee.name}`, args: args2, type: type2 }, expr.span);
+        return dst2;
+      }
     }
     if (expr.callee.kind !== "name") {
       this._warn(expr.span, "a call through something other than a name is not supported");
@@ -15310,6 +15917,17 @@ var Lowering = class {
       }
     }
     return best;
+  }
+  /**
+   * What a method on an intersector or an acceleration structure returns.
+   *
+   * Every setter — `accept_any_intersection`, `assume_geometry_type`, `force_opacity` and the rest
+   * — returns void and changes how the *next* `intersect` behaves, which is why they are recorded
+   * on the intersector's value rather than computed here.
+   */
+  _rayMethodResultType(method) {
+    if (method === "get_max_levels" || method === "get_geometry_count") return this.types.uint;
+    return this.types.void_;
   }
   _textureResultType(textureType, method) {
     const t = this.types.get(textureType);
@@ -15435,17 +16053,25 @@ var Lowering = class {
 };
 function numberOf(text) {
   const clean = text.replace(/'/g, "");
-  const suffix = /[uUlLfFhH]*$/.exec(clean)?.[0] ?? "";
+  const hex = /^0[xX]/.test(clean);
+  const suffix = (hex ? /[uUlL]*$/ : /[uUlLfFhH]*$/).exec(clean)?.[0] ?? "";
   const digits = clean.slice(0, clean.length - suffix.length);
   const long = /[lL]{1,2}/.test(suffix) && !/[fFhH]/.test(suffix);
-  if (/^0[xX]/.test(digits) && !/[.pP]/.test(digits)) {
-    const big3 = BigInt(digits);
-    return long ? BigInt.asIntN(64, big3) : Number(BigInt.asUintN(32, big3)) | 0;
+  try {
+    if (hex && !/[.pP]/.test(digits)) {
+      const value2 = BigInt(digits);
+      return long ? BigInt.asIntN(64, value2) : Number(BigInt.asUintN(32, value2)) | 0;
+    }
+    if (/^0[bB]/.test(digits)) return Number(BigInt(digits));
+    if (long) return BigInt(digits.split(".")[0] || "0");
+  } catch {
+    return 0;
   }
-  if (/^0[bB]/.test(digits)) return Number(BigInt(digits));
-  if (long) return BigInt(digits.split(".")[0] || "0");
   const value = Number(digits);
   return Number.isFinite(value) ? value : 0;
+}
+function isIntersectionFunction(decl) {
+  return decl.returnAttributes.some((a) => a.name === "intersection");
 }
 function bindingOf(param, type, types) {
   const t = types.get(type);
@@ -16088,6 +16714,12 @@ function isBuiltinTypeName(name) {
   if (BUILTIN_TYPE_NAMES.has(name) || isTextureName(name)) return true;
   return /^(packed_)?(bool|char|uchar|short|ushort|int|uint|long|ulong|half|float|double)\d(x\d)?$/.test(name);
 }
+var QUALIFIED_ENUMS = /* @__PURE__ */ new Set(["intersection_type", "geometry_type", "curve_type", "curve_basis"]);
+var NESTED_TYPES = /* @__PURE__ */ new Map([
+  ["intersector::result_type", "intersection_result"],
+  ["intersector::result_ref_type", "intersection_result"],
+  ["intersection_query::result_type", "intersection_result"]
+]);
 var Parser2 = class _Parser {
   _tokens;
   _at = 0;
@@ -16467,6 +17099,12 @@ var Parser2 = class _Parser {
         if (!this._eat(",")) break;
       }
       this._expect(">", "after template arguments");
+      while (this._is("::")) {
+        this._take();
+        if (this._t.kind !== "identifier") break;
+        const member = this._take().text;
+        name = NESTED_TYPES.get(`${name}::${member}`) ?? member;
+      }
     }
     let pointers = 0;
     let reference = false;
@@ -16657,6 +17295,7 @@ var Parser2 = class _Parser {
         }
       }
     }
+    while (this._peek(n).text === "::") n += 2;
     while (this._peek(n).text === "*" || this._peek(n).text === "&" || this._peek(n).kind === "identifier" && (this._peek(n).text === "const" || ADDRESS_SPACES.has(this._peek(n).text))) n++;
     return this._peek(n).kind === "identifier";
   }
@@ -16969,10 +17608,16 @@ var Parser2 = class _Parser {
           return { kind: "construct", span, type, args };
         }
       }
-      let name = this._take().text;
+      const first = this._take().text;
+      let name = first;
+      let qualified = false;
       while (this._eat("::")) {
-        if (this._t.kind === "identifier") name = this._take().text;
+        if (this._t.kind === "identifier") {
+          name = this._take().text;
+          qualified = true;
+        }
       }
+      if (qualified && QUALIFIED_ENUMS.has(first)) return { kind: "name", span, name: `${first}::${name}` };
       return { kind: "name", span, name };
     }
     if (t.kind === "string" || t.kind === "char") {
@@ -17008,100 +17653,6 @@ function parseMsl(source, defines) {
   const parser = new Parser2(tokens);
   parser.parseUnit();
   return { unit: parser.unit, diagnostics: parser.diagnostics, lexDiagnostics };
-}
-
-// src/renderer/debug/values.ts
-var OpaqueValue = class {
-  constructor(kind, values) {
-    this.kind = kind;
-    this.values = values;
-  }
-};
-var Pointer = class {
-  constructor(cell, path12, type, storage, variable) {
-    this.cell = cell;
-    this.path = path12;
-    this.type = type;
-    this.storage = storage;
-    this.variable = variable;
-  }
-};
-var ImageValue = class {
-  constructor(texture, binding) {
-    this.texture = texture;
-    this.binding = binding;
-  }
-};
-var SamplerValue = class {
-  constructor(sampler, binding) {
-    this.sampler = sampler;
-    this.binding = binding;
-  }
-};
-var SampledImageValue = class {
-  constructor(image, sampler) {
-    this.image = image;
-    this.sampler = sampler;
-  }
-};
-function cloneValue(v) {
-  return Array.isArray(v) ? v.map(cloneValue) : v;
-}
-function normalize(v, s) {
-  if (s.base === "bool") return Boolean(v);
-  if (s.base === "float") {
-    const n2 = typeof v === "bigint" ? Number(v) : typeof v === "boolean" ? v ? 1 : 0 : v;
-    return s.width === 32 ? Math.fround(n2) : s.width === 16 ? Math.fround(n2) : n2;
-  }
-  if (s.width === 64) {
-    const b = typeof v === "bigint" ? v : BigInt(Math.trunc(typeof v === "boolean" ? v ? 1 : 0 : v));
-    return s.base === "int" ? BigInt.asIntN(64, b) : BigInt.asUintN(64, b);
-  }
-  let n = typeof v === "bigint" ? Number(BigInt.asIntN(32, v)) : typeof v === "boolean" ? v ? 1 : 0 : Math.trunc(v);
-  if (s.width < 32) {
-    const mod = 2 ** s.width;
-    n = (n % mod + mod) % mod;
-    return s.base === "int" && n >= mod / 2 ? n - mod : n;
-  }
-  return s.base === "int" ? n | 0 : n >>> 0;
-}
-function mapScalars(v, f) {
-  return Array.isArray(v) ? v.map((e) => mapScalars(e, f)) : f(v);
-}
-function zipScalars(a, b, f) {
-  if (Array.isArray(a)) return a.map((e, i) => zipScalars(e, Array.isArray(b) ? b[i] : b, f));
-  return f(a, b);
-}
-function nonFinite(value) {
-  if (typeof value === "number") return !Number.isFinite(value);
-  return Array.isArray(value) && value.some(nonFinite);
-}
-function scalars(value) {
-  if (Array.isArray(value)) return value.flatMap(scalars);
-  if (typeof value === "number") return [value];
-  if (typeof value === "bigint") return [Number(value)];
-  if (typeof value === "boolean") return [value ? 1 : 0];
-  return [];
-}
-function scalarText(v) {
-  if (typeof v === "number") {
-    if (Number.isInteger(v)) return String(v);
-    if (Number.isNaN(v)) return "NaN";
-    if (!Number.isFinite(v)) return v > 0 ? "inf" : "-inf";
-    const a = Math.abs(v);
-    return a !== 0 && (a >= 1e7 || a < 1e-4) ? v.toExponential(4) : String(+v.toPrecision(7));
-  }
-  if (typeof v === "bigint") return String(v);
-  if (typeof v === "boolean") return v ? "true" : "false";
-  return "?";
-}
-function imageText(image) {
-  const t = image.texture;
-  return t ? `${image.binding}: ${t.format.replace(/^VK_FORMAT_/, "")} ${t.width}x${t.height}${t.layers > 1 ? `x${t.layers}` : ""}` : `${image.binding}: not captured`;
-}
-function samplerText(sampler) {
-  const s = sampler.sampler;
-  return s ? `${sampler.binding}: ${s.minFilter}/${s.magFilter} ${s.address[0]}${s.compareOp ? ` compare ${s.compareOp}` : ""}` : `${sampler.binding}: default sampler`;
 }
 
 // src/renderer/msl/program.ts
@@ -17425,6 +17976,7 @@ function callBuiltin(name, args, ctx) {
   const a = args[0], b = args[1], c2 = args[2];
   const types = ctx.types;
   if (name.startsWith("texture.")) return textureCall(name.slice(8), args, ctx);
+  if (name.startsWith("rt.")) return rayCall(name.slice(3), args, ctx);
   const math1 = MATH1[name];
   if (math1 && args.length >= 1) {
     if (name === "abs" && !types.isFloat(ctx.argTypes[0] ?? 0)) return mapScalars(a, (x) => typeof x === "bigint" ? x < 0n ? -x : x : Math.abs(num2(x)));
@@ -17732,6 +18284,39 @@ function determinant(m) {
   }
   return n === 1 ? columns[0][0] : 0;
 }
+function rayCall(method, args, ctx) {
+  const handle = args[0] instanceof OpaqueValue ? args[0].handle : void 0;
+  const on = (v) => v === void 0 ? true : num2(v) !== 0 || v === true;
+  switch (method) {
+    case "accept_any_intersection":
+      if (handle) handle.options.acceptAny = on(args[1]);
+      return null;
+    case "assume_geometry_type": {
+      const kind = Math.trunc(num2(args[1]));
+      if (handle) {
+        handle.options.triangles = kind === 0;
+        handle.options.boundingBoxes = kind === 1;
+      }
+      return null;
+    }
+    case "force_opacity":
+      if (handle) handle.options.forceOpaque = Math.trunc(num2(args[1])) === 1;
+      return null;
+    case "set_geometry_cull_mode":
+    case "set_opacity_cull_mode":
+    case "set_triangle_cull_mode":
+    case "assume_identity_transforms":
+    case "accept_first_intersection":
+      if (method === "accept_first_intersection" && handle) handle.options.acceptAny = on(args[1]);
+      else ctx.warn(`intersector::${method} is recorded but does not change what the traversal finds`);
+      return null;
+    case "get_max_levels":
+      return 1;
+    default:
+      ctx.warn(`intersector::${method} is not something the interpreter knows: it does nothing`);
+      return null;
+  }
+}
 function textureOf(v) {
   if (v instanceof ImageValue) return { texture: v.texture, binding: v.binding };
   if (v instanceof SampledImageValue) return { texture: v.image.texture, binding: v.image.binding };
@@ -17870,6 +18455,228 @@ function sampleOption(name, args) {
     default:
       return void 0;
   }
+}
+
+// src/renderer/msl/raytracing.ts
+var INTERSECTION_NONE = 0;
+var INTERSECTION_TRIANGLE = 1;
+var INTERSECTION_BOUNDING_BOX = 2;
+function noHit() {
+  return {
+    type: INTERSECTION_NONE,
+    distance: 0,
+    primitiveId: 0,
+    geometryId: 0,
+    instanceId: 0,
+    userInstanceId: 0,
+    barycentric: [0, 0],
+    frontFacing: false,
+    objectToWorld: IDENTITY_3X4.slice(),
+    worldToObject: IDENTITY_3X4.slice()
+  };
+}
+var IDENTITY_3X4 = [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0];
+function invert3x4(m) {
+  const [a, b, c2, tx, d, e, f, ty, g, h, i, tz] = m;
+  const A = e * i - f * h, B = f * g - d * i, C = d * h - e * g;
+  const det = a * A + b * B + c2 * C;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-20) return null;
+  const s = 1 / det;
+  const r = [
+    A * s,
+    (c2 * h - b * i) * s,
+    (b * f - c2 * e) * s,
+    0,
+    B * s,
+    (a * i - c2 * g) * s,
+    (c2 * d - a * f) * s,
+    0,
+    C * s,
+    (b * g - a * h) * s,
+    (a * e - b * d) * s,
+    0
+  ];
+  r[3] = -(r[0] * tx + r[1] * ty + r[2] * tz);
+  r[7] = -(r[4] * tx + r[5] * ty + r[6] * tz);
+  r[11] = -(r[8] * tx + r[9] * ty + r[10] * tz);
+  return r;
+}
+function transformDirection(m, x, y, z) {
+  return [
+    m[0] * x + m[1] * y + m[2] * z,
+    m[4] * x + m[5] * y + m[6] * z,
+    m[8] * x + m[9] * y + m[10] * z
+  ];
+}
+function geometriesOf(scene, blas) {
+  const parts2 = scene.traversalOf?.(blas) ?? null;
+  if (parts2 && parts2.length) {
+    return parts2.map((part) => ({
+      index: part.index,
+      triangles: part.triangles,
+      boxes: part.extents,
+      functionTableOffset: part.functionTableOffset,
+      opaque: part.opaque
+    }));
+  }
+  const triangles = scene.meshOf(blas);
+  if (!triangles) return [];
+  return [{ index: 0, triangles, boxes: null, functionTableOffset: 0, opaque: false }];
+}
+function buildRayScene(scene) {
+  const instances = [];
+  let missing = 0;
+  let triangles = 0;
+  let boxes = 0;
+  const byBlas = /* @__PURE__ */ new Map();
+  for (const i of scene.instances) {
+    const blas = i.blas ?? 0;
+    let geometries = blas ? byBlas.get(blas) : void 0;
+    if (geometries === void 0) {
+      geometries = blas ? geometriesOf(scene, blas) : [];
+      if (blas) byBlas.set(blas, geometries);
+    }
+    const absent = geometries.length === 0;
+    if (absent) missing++;
+    for (const g of geometries) {
+      triangles += g.triangles ? Math.floor(g.triangles.length / 9) : 0;
+      boxes += g.boxes ? Math.floor(g.boxes.length / 6) : 0;
+    }
+    instances.push({
+      index: i.index,
+      transform: i.transform,
+      inverse: invert3x4(i.transform),
+      mask: i.mask,
+      userId: i.customIndex,
+      functionTableOffset: i.bindingTableOffset,
+      geometries,
+      missing: absent
+    });
+  }
+  return { instances, missing, triangles, boxes };
+}
+function traceRay(scene, ray, mask, options = {}) {
+  const wantTriangles = options.triangles !== false;
+  const wantBoxes = options.boundingBoxes !== false;
+  const hit = noHit();
+  let best = ray.maxDistance;
+  const candidates = [];
+  for (const instance of scene.instances) {
+    if ((mask & instance.mask) === 0) continue;
+    const inverse2 = instance.inverse;
+    if (!inverse2) continue;
+    const origin = transformPoint(inverse2, ray.origin[0], ray.origin[1], ray.origin[2]);
+    const direction = transformDirection(inverse2, ray.direction[0], ray.direction[1], ray.direction[2]);
+    for (const geometry of instance.geometries) {
+      if (wantTriangles && geometry.triangles) {
+        const count2 = Math.floor(geometry.triangles.length / 9);
+        for (let p = 0; p < count2; p++) {
+          const t = intersectTriangle(geometry.triangles, p * 9, origin, direction, ray.minDistance, best);
+          if (!t) continue;
+          best = t.distance;
+          hit.type = INTERSECTION_TRIANGLE;
+          hit.distance = t.distance;
+          hit.primitiveId = p;
+          hit.geometryId = geometry.index;
+          hit.instanceId = instance.index;
+          hit.userInstanceId = instance.userId;
+          hit.barycentric = [t.u, t.v];
+          hit.frontFacing = t.frontFacing;
+          hit.objectToWorld = instance.transform;
+          hit.worldToObject = inverse2;
+          if (options.acceptAny) return { hit, candidates };
+        }
+      }
+      if (wantBoxes && geometry.boxes) {
+        const count2 = Math.floor(geometry.boxes.length / 6);
+        for (let p = 0; p < count2; p++) {
+          const range = intersectBox(geometry.boxes, p * 6, origin, direction, ray.minDistance, ray.maxDistance);
+          if (!range) continue;
+          candidates.push({
+            instance: instance.index,
+            geometry: geometry.index,
+            primitive: p,
+            tMin: range.tMin,
+            tMax: range.tMax,
+            functionTableOffset: instance.functionTableOffset + geometry.functionTableOffset,
+            opaque: geometry.opaque
+          });
+        }
+      }
+    }
+  }
+  candidates.sort((a, b) => a.tMin - b.tMin);
+  return { hit, candidates };
+}
+function intersectTriangle(triangles, at, origin, direction, tMin, tMax) {
+  const ax = triangles[at], ay = triangles[at + 1], az = triangles[at + 2];
+  const bx = triangles[at + 3], by = triangles[at + 4], bz = triangles[at + 5];
+  const cx = triangles[at + 6], cy = triangles[at + 7], cz = triangles[at + 8];
+  const e1x = bx - ax, e1y = by - ay, e1z = bz - az;
+  const e2x = cx - ax, e2y = cy - ay, e2z = cz - az;
+  const px = direction[1] * e2z - direction[2] * e2y;
+  const py = direction[2] * e2x - direction[0] * e2z;
+  const pz = direction[0] * e2y - direction[1] * e2x;
+  const det = e1x * px + e1y * py + e1z * pz;
+  if (!Number.isFinite(det) || Math.abs(det) < 1e-20) return null;
+  const inv = 1 / det;
+  const sx = origin[0] - ax, sy = origin[1] - ay, sz = origin[2] - az;
+  const u = (sx * px + sy * py + sz * pz) * inv;
+  if (u < 0 || u > 1) return null;
+  const qx = sy * e1z - sz * e1y;
+  const qy = sz * e1x - sx * e1z;
+  const qz = sx * e1y - sy * e1x;
+  const v = (direction[0] * qx + direction[1] * qy + direction[2] * qz) * inv;
+  if (v < 0 || u + v > 1) return null;
+  const distance = (e2x * qx + e2y * qy + e2z * qz) * inv;
+  if (!(distance >= tMin) || !(distance <= tMax)) return null;
+  return { distance, u, v, frontFacing: det > 0 };
+}
+function intersectBox(boxes, at, origin, direction, tMin, tMax) {
+  let near = tMin;
+  let far = tMax;
+  for (let axis = 0; axis < 3; axis++) {
+    const lo = boxes[at + axis], hi = boxes[at + 3 + axis];
+    const d = direction[axis];
+    if (Math.abs(d) < 1e-20) {
+      if (origin[axis] < lo || origin[axis] > hi) return null;
+      continue;
+    }
+    const inv = 1 / d;
+    let t0 = (lo - origin[axis]) * inv;
+    let t1 = (hi - origin[axis]) * inv;
+    if (t0 > t1) {
+      const swap = t0;
+      t0 = t1;
+      t1 = swap;
+    }
+    near = Math.max(near, t0);
+    far = Math.min(far, t1);
+    if (near > far) return null;
+  }
+  return { tMin: near, tMax: far };
+}
+var SCENE_KIND = "acceleration_structure";
+var TABLE_KIND = "intersection_function_table";
+var INTERSECTOR_KIND = "intersector";
+function isAccelerationStructure(name) {
+  return name === "instance_acceleration_structure" || name === "primitive_acceleration_structure" || name === "acceleration_structure";
+}
+function isFunctionTable(name) {
+  return name === "intersection_function_table" || name === "visible_function_table";
+}
+function boxHit(scene, candidate, distance) {
+  const instance = scene.instances.find((i) => i.index === candidate.instance);
+  const hit = noHit();
+  hit.type = INTERSECTION_BOUNDING_BOX;
+  hit.distance = distance;
+  hit.primitiveId = candidate.primitive;
+  hit.geometryId = candidate.geometry;
+  hit.instanceId = candidate.instance;
+  hit.userInstanceId = instance?.userId ?? 0;
+  hit.objectToWorld = instance?.transform ?? IDENTITY_3X4.slice();
+  hit.worldToObject = instance?.inverse ?? IDENTITY_3X4.slice();
+  return hit;
 }
 
 // src/renderer/msl/interpreter.ts
@@ -18074,7 +18881,33 @@ var MslInvocation = class {
       const t = this._types.get(p.type);
       let value = this._types.zero(p.type);
       let where = {};
-      if (binding?.kind === "buffer") {
+      if (binding?.kind === "buffer" && t?.kind === "opaque" && isAccelerationStructure(t.name)) {
+        const scene = binding.index >= 0 ? this.bindings.accelerationStructure?.(binding.index) ?? null : null;
+        if (!scene) {
+          this.warn(`${this.label("buffer", binding.index)} (${p.name}) is an acceleration structure the capture does not hold the builds of, so every ray misses`);
+        } else if (scene.missing) {
+          this.warn(`${scene.missing} of the scene's instances name a bottom level whose build is not in the capture, so a ray cannot be told what is in them`);
+        }
+        value = new OpaqueValue(
+          SCENE_KIND,
+          [],
+          { scene, binding: this.label("buffer", binding.index) }
+        );
+        frame.values.set(p.id, value);
+        where = { binding: binding.index, set: 0 };
+      } else if (binding?.kind === "buffer" && t?.kind === "opaque" && isFunctionTable(t.name)) {
+        const table = binding.index >= 0 ? this.bindings.functionTable?.(binding.index) ?? null : null;
+        if (!table) {
+          this.warn(`${this.label("buffer", binding.index)} (${p.name}) is an intersection function table the capture did not record, so a bounding box cannot be asked about`);
+        }
+        value = new OpaqueValue(
+          TABLE_KIND,
+          [],
+          { table, binding: this.label("buffer", binding.index) }
+        );
+        frame.values.set(p.id, value);
+        where = { binding: binding.index, set: 0 };
+      } else if (binding?.kind === "buffer") {
         const index = binding.index;
         const bytes = index >= 0 ? this.bindings.buffer(index) : null;
         const pointee = t?.kind === "pointer" ? t.pointee : p.type;
@@ -18399,6 +19232,9 @@ var MslInvocation = class {
         this._set(frame, instr, instr.dst, scalar ? mapScalars(result, (x) => normalize(x, scalar)) : result);
         return;
       }
+      case "rayQuery":
+        this._rayQuery(frame, instr);
+        return;
       case "call": {
         const fn = this.program.ir.functions[instr.target];
         if (!fn) {
@@ -18447,6 +19283,244 @@ var MslInvocation = class {
         this.status = "discarded";
         return;
     }
+  }
+  // ---------------------------------------------------------------------------------------
+  // Ray queries
+  /**
+   * `intersector::intersect(ray, structure, mask, table)`.
+   *
+   * Runs in as many visits as there are bounding boxes to ask the shader about, plus one. The first
+   * visit traverses the scene: triangles are settled there and then, and the boxes the ray entered
+   * come back as candidates. Each later visit reads what the shader's intersection function said
+   * about the previous candidate and pushes a frame for the next, leaving the program counter where
+   * it is so that the function's `return` brings it back here.
+   *
+   * The debugger steps *through* the intersection function while this is happening, which is the
+   * whole point: on Metal the traversal is in the shader, so the intersection function is the one
+   * place a "why is nothing hit" question is answered.
+   */
+  _rayQuery(frame, instr) {
+    const state = frame.query?.at === instr.index ? frame.query : this._beginRayQuery(frame, instr);
+    if (!state) {
+      frame.pc++;
+      this._set(frame, instr, instr.dst, this._resultValue(noHit(), null));
+      return;
+    }
+    if (state.pending) {
+      const answer = this._get(frame, instr.dst);
+      const accepted = this._acceptedIntersection(answer, state.pending);
+      if (accepted !== null && accepted.distance >= state.ray.minDistance && accepted.distance <= state.limit) {
+        state.hit = boxHit(state.scene, state.pending, accepted.distance);
+        state.limit = accepted.distance;
+        if (state.acceptAny) {
+          this._finishRayQuery(frame, instr, state);
+          return;
+        }
+      }
+      state.pending = null;
+    }
+    while (state.next < state.candidates.length) {
+      const candidate = state.candidates[state.next++];
+      if (candidate.tMin > state.limit) break;
+      if (candidate.opaque) {
+        state.hit = boxHit(state.scene, candidate, candidate.tMin);
+        state.limit = candidate.tMin;
+        if (state.acceptAny) {
+          this._finishRayQuery(frame, instr, state);
+          return;
+        }
+        continue;
+      }
+      const fn = this._intersectionFunction(state.table, candidate);
+      if (!fn) continue;
+      state.pending = candidate;
+      this._callIntersectionFunction(frame, instr, state, fn, candidate);
+      return;
+    }
+    this._finishRayQuery(frame, instr, state);
+  }
+  /** Reads the arguments, traverses the scene, and starts a query; null when there is nothing to trace. */
+  _beginRayQuery(frame, instr) {
+    const args = instr.args.map((r) => this._get(frame, r));
+    const intersector = args[0] instanceof OpaqueValue && args[0].kind === INTERSECTOR_KIND ? args[0].handle : null;
+    const ray = this._rayOf(args[1]);
+    const sceneHandle = args[2] instanceof OpaqueValue && args[2].kind === SCENE_KIND ? args[2].handle : null;
+    if (!sceneHandle?.scene) {
+      this.warn("intersect was given something that is not an acceleration structure the capture holds, so the ray misses");
+      return null;
+    }
+    let mask = 255;
+    let table = null;
+    for (const arg of args.slice(3)) {
+      if (arg instanceof OpaqueValue && arg.kind === TABLE_KIND) table = arg.handle.table;
+      else if (typeof arg === "number" || typeof arg === "bigint") mask = Math.trunc(numberOf2(arg)) & 255;
+    }
+    const options = intersector?.options ?? {};
+    const { hit, candidates } = traceRay(sceneHandle.scene, ray, mask, options);
+    const state = {
+      at: instr.index,
+      ray,
+      scene: sceneHandle.scene,
+      table,
+      candidates,
+      next: 0,
+      hit,
+      limit: hit.type === INTERSECTION_NONE ? ray.maxDistance : hit.distance,
+      acceptAny: options.acceptAny === true,
+      pending: null
+    };
+    if (options.forceOpaque) for (const c2 of state.candidates) c2.opaque = true;
+    frame.query = state;
+    return state;
+  }
+  _finishRayQuery(frame, instr, state) {
+    frame.query = void 0;
+    frame.pc++;
+    this._set(frame, instr, instr.dst, this._resultValue(state.hit, state.ray));
+  }
+  /** MSL's `ray` struct, as the traversal reads one. */
+  _rayOf(value) {
+    const members2 = Array.isArray(value) ? value : [];
+    const vec3 = (v) => {
+      const a = Array.isArray(v) ? v : [];
+      return [numberOf2(a[0] ?? 0), numberOf2(a[1] ?? 0), numberOf2(a[2] ?? 0)];
+    };
+    return {
+      origin: vec3(members2[0]),
+      direction: vec3(members2[1]),
+      minDistance: numberOf2(members2[2] ?? 0),
+      // A `ray` built with no max distance has INFINITY in it, which the traversal is happy with.
+      maxDistance: numberOf2(members2[3] ?? Infinity)
+    };
+  }
+  /** The `intersection_result` struct, in the member order types.ts declares. */
+  _resultValue(hit, ray) {
+    const matrix = (m) => (
+      // 3x4 row-major as the instance holds it, into MSL's `float4x3`: four columns of three.
+      [0, 1, 2, 3].map((c2) => [m[c2], m[4 + c2], m[8 + c2]])
+    );
+    return [
+      hit.type,
+      hit.distance,
+      hit.primitiveId,
+      hit.geometryId,
+      hit.instanceId,
+      hit.userInstanceId,
+      [hit.barycentric[0], hit.barycentric[1]],
+      hit.frontFacing,
+      ray ? [...ray.origin] : [0, 0, 0],
+      ray ? [...ray.direction] : [0, 0, 0],
+      matrix(hit.objectToWorld),
+      matrix(hit.worldToObject)
+    ];
+  }
+  /** The shader's function for a candidate's table entry, or null with a warning. */
+  _intersectionFunction(table, candidate) {
+    const name = table?.entries[candidate.functionTableOffset] ?? null;
+    if (!name) {
+      this.warn(`no intersection function is bound at entry ${candidate.functionTableOffset} of the table, so box ${candidate.primitive} of instance ${candidate.instance} cannot be asked about`);
+      return null;
+    }
+    const fn = this.program.ir.functions.find((f) => f.name === name);
+    if (!fn) {
+      this.warn(`the table's entry ${candidate.functionTableOffset} runs '${name}', which is not a function of this shader: it was linked in from another library, so the box cannot be asked about`);
+      return null;
+    }
+    return fn;
+  }
+  /**
+   * Pushes a frame for the intersection function, with its parameters filled from the candidate.
+   *
+   * Its parameters bind the way an entry point's do — `[[origin]]`, `[[primitive_id]]`,
+   * `[[buffer(0)]]` — except that the buffers come from the *table* rather than from the encoder:
+   * a table binds its own for its functions (`setBuffer:offset:atIndex:` on the table), which the
+   * capture records with the table's entries.
+   */
+  _callIntersectionFunction(frame, instr, state, fn, candidate) {
+    const next = this._frame(fn, instr.dst);
+    for (const p of fn.params) {
+      const symbol = this._symbol(p.id);
+      const binding = symbol?.binding;
+      const t = this._types.get(p.type);
+      let value = this._types.zero(p.type);
+      if (binding?.kind === "builtin") {
+        switch (binding.name) {
+          case "origin":
+            value = [...state.ray.origin];
+            break;
+          case "direction":
+            value = [...state.ray.direction];
+            break;
+          case "min_distance":
+            value = state.ray.minDistance;
+            break;
+          // The interval the function is asked about: from the ray's own start to the nearest hit
+          // so far, which is what makes a function that reports a farther hit be ignored.
+          case "max_distance":
+            value = state.limit;
+            break;
+          case "primitive_id":
+            value = candidate.primitive;
+            break;
+          case "geometry_id":
+            value = candidate.geometry;
+            break;
+          case "instance_id":
+            value = candidate.instance;
+            break;
+          case "user_instance_id":
+            value = state.scene.instances.find((i) => i.index === candidate.instance)?.userId ?? 0;
+            break;
+          case "geometry_intersection_function_table_offset":
+            value = candidate.functionTableOffset;
+            break;
+          default:
+            this.warn(`the intersection function's ${p.name} is [[${binding.name}]], which the traversal does not fill: it reads as zero`);
+            break;
+        }
+        this._cell(next, p.id, p.type, value);
+        continue;
+      }
+      if (binding?.kind === "buffer") {
+        const bytes = binding.index >= 0 ? state.table?.buffer(binding.index) ?? null : null;
+        if (!bytes) {
+          this.warn(`the intersection function's ${p.name} is buffer(${binding.index}) of the table, which the capture does not hold: it reads as zero`);
+        }
+        const pointee = t?.kind === "pointer" ? t.pointee : p.type;
+        const storage = {
+          bytes: bytes ? new Uint8Array(bytes) : new Uint8Array(Math.max(4, this._types.sizeOf(pointee))),
+          type: t?.kind === "pointer" && !t.reference ? this._types.array(pointee, -1) : pointee,
+          overrides: /* @__PURE__ */ new Map()
+        };
+        const cell = { value: null, buffer: storage };
+        next.values.set(p.id, new Pointer(cell, [], storage.type, 0, p.id));
+        continue;
+      }
+      this._cell(next, p.id, p.type, value);
+    }
+    this.frames.push(next);
+  }
+  /**
+   * What an intersection function returned: whether it accepted, and at what distance.
+   *
+   * MSL lets it be a bare `bool` — accepted at the point the ray enters the box — or a struct whose
+   * members carry `[[accept_intersection]]` and `[[distance]]`. The struct's members are read by
+   * *position* here, since the returned value is a plain composite by the time it arrives: the
+   * accept flag is the boolean member and the distance the float one, which is unambiguous for the
+   * two-member struct the form requires.
+   */
+  _acceptedIntersection(answer, candidate) {
+    if (typeof answer === "boolean") return answer ? { distance: candidate.tMin } : null;
+    if (typeof answer === "number" || typeof answer === "bigint") {
+      return numberOf2(answer) !== 0 ? { distance: candidate.tMin } : null;
+    }
+    if (Array.isArray(answer)) {
+      const accepted = answer.find((m) => typeof m === "boolean");
+      if (accepted === false) return null;
+      const distance = answer.find((m) => typeof m === "number");
+      return { distance: typeof distance === "number" ? distance : candidate.tMin };
+    }
+    return null;
   }
   // ---------------------------------------------------------------------------------------
   // Memory
@@ -18904,6 +19978,391 @@ function meshInput(data, db, cmd, names = /* @__PURE__ */ new Map()) {
   };
 }
 
+// src/renderer/d3d12/raytracing.ts
+function buildTarget(command) {
+  return num(command.destStructure);
+}
+function buildCapture(command, geometry, field2) {
+  const list = Array.isArray(command.buildData) ? command.buildData : [];
+  for (const e of list) {
+    if (!isObject(e)) continue;
+    const at = e.geometry === void 0 ? -1 : num(e.geometry);
+    if (at === geometry && str(e.field) === field2) return num(e.capture);
+  }
+  return 0;
+}
+var SHORT2 = (s, prefix) => str(s).replace(prefix, "");
+function parseD3D12Build(command) {
+  const args = command.args;
+  if (!isObject(args)) return null;
+  const desc = isObject(args.pDesc) ? args.pDesc : null;
+  const inputs = desc && isObject(desc.Inputs) ? desc.Inputs : null;
+  if (!inputs) return null;
+  const target = buildTarget(command);
+  if (!target) return null;
+  const topLevel = str(inputs.Type).includes("TOP_LEVEL");
+  const flags = str(inputs.Flags);
+  const geometries = [];
+  let primitives = 0;
+  if (topLevel) {
+    primitives = num(inputs.NumDescs);
+    geometries.push({
+      index: 0,
+      kind: "instances",
+      flags: "",
+      primitiveCount: primitives,
+      instanceData: buildCapture(command, -1, "InstanceDescs") || void 0
+    });
+  } else {
+    const raw = Array.isArray(inputs.pGeometryDescs) ? inputs.pGeometryDescs : Array.isArray(inputs.ppGeometryDescs) ? inputs.ppGeometryDescs : [];
+    raw.forEach((g, index) => {
+      if (!isObject(g)) return;
+      const geometry = parseGeometry(command, g, index);
+      primitives += geometry.primitiveCount;
+      geometries.push(geometry);
+    });
+  }
+  return {
+    target,
+    topLevel,
+    geometries,
+    primitives,
+    flags,
+    // Vulkan's mode is a separate enum; D3D12 folds it into the build flags.
+    mode: flags.includes("PERFORM_UPDATE") ? "UPDATE" : "BUILD"
+  };
+}
+function parseGeometry(command, g, index) {
+  const type = str(g.Type);
+  const flags = str(g.Flags);
+  if (type.includes("PROCEDURAL_PRIMITIVE_AABBS")) {
+    const aabbs = isObject(g.AABBs) ? g.AABBs : {};
+    const buffer2 = isObject(aabbs.AABBs) ? aabbs.AABBs : {};
+    return {
+      index,
+      kind: "aabbs",
+      flags,
+      primitiveCount: num(aabbs.AABBCount),
+      aabbStride: num(buffer2.StrideInBytes),
+      aabbData: buildCapture(command, index, "AABBs") || void 0
+    };
+  }
+  const tri = isObject(g.Triangles) ? g.Triangles : {};
+  const buffer = isObject(tri.VertexBuffer) ? tri.VertexBuffer : {};
+  const indexCount = num(tri.IndexCount);
+  const vertexCount = num(tri.VertexCount);
+  const indexFormat = str(tri.IndexFormat);
+  const primitiveCount = Math.floor((indexCount || vertexCount) / 3);
+  const vk = vkFormatOfDxgi(str(tri.VertexFormat));
+  return {
+    index,
+    kind: "triangles",
+    flags,
+    primitiveCount,
+    vertexFormat: vk ? SHORT2(vk, /^VK_FORMAT_/) : void 0,
+    vertexStride: num(buffer.StrideInBytes),
+    // triangleMesh reads maxVertex as the highest index the build may touch.
+    maxVertex: vertexCount > 0 ? vertexCount - 1 : 0,
+    indexType: indexFormat.includes("R16") ? "UINT16" : indexFormat.includes("R32") ? "UINT32" : "NONE",
+    vertexData: buildCapture(command, index, "VertexBuffer") || void 0,
+    indexData: buildCapture(command, index, "IndexBuffer") || void 0,
+    transformData: buildCapture(command, index, "Transform3x4") || void 0
+  };
+}
+function d3d12StructureAddresses(structures) {
+  const out = /* @__PURE__ */ new Map();
+  for (const o of structures) {
+    const address = isObject(o.descriptor?.Address) ? str(o.descriptor.Address.address) : "";
+    if (!address) continue;
+    try {
+      out.set(BigInt(address).toString(), o.id);
+    } catch {
+    }
+  }
+  return out;
+}
+
+// src/renderer/acceleration_scene.ts
+function earlierBuilds(data, db, built) {
+  const out = [];
+  for (const o of db.getObjectsOfType("ID3D12RaytracingAccelerationStructure")?.values() ?? []) {
+    if (built.has(o.id)) continue;
+    const build = isObject(o.updates.build) ? o.updates.build : null;
+    const ours = ourInputs(data, o.updates.captureInputs);
+    if (!build || !ours.length) continue;
+    const command = {
+      index: -1,
+      frame: 0,
+      slot: 0,
+      method: "BuildRaytracingAccelerationStructure",
+      args: { pDesc: { Inputs: {
+        Type: build.Type,
+        Flags: build.Flags,
+        NumDescs: build.NumDescs,
+        DescsLayout: "D3D12_ELEMENTS_LAYOUT_ARRAY",
+        pGeometryDescs: Array.isArray(build.geometries) ? build.geometries : []
+      } } },
+      destStructure: o.id,
+      buildData: ours
+    };
+    const parsed = parseD3D12Build(command);
+    if (parsed) out.push({ command, info: 0, build: parsed, fromCaptureStart: true });
+  }
+  for (const o of db.getObjectsOfType("VkAccelerationStructureKHR")?.values() ?? []) {
+    if (built.has(o.id)) continue;
+    const build = isObject(o.updates.build) ? o.updates.build : null;
+    const ours = ourInputs(data, o.updates.captureInputs);
+    if (!build || !ours.length) continue;
+    const geometries = (Array.isArray(build.geometries) ? build.geometries : []).filter(isObject);
+    const info = {
+      dstAccelerationStructure: { __id: o.id },
+      type: build.type,
+      mode: build.mode,
+      flags: build.flags,
+      pGeometries: geometries.map((g) => ({
+        geometryType: g.geometryType,
+        flags: g.flags,
+        stride: g.stride,
+        geometry: {
+          triangles: {
+            vertexFormat: g.vertexFormat,
+            vertexStride: g.vertexStride,
+            maxVertex: g.maxVertex,
+            indexType: g.indexType
+          }
+        }
+      }))
+    };
+    const ranges = geometries.map((g) => ({ primitiveCount: num(g.primitiveCount) }));
+    const command = {
+      index: -1,
+      frame: 0,
+      slot: 0,
+      method: "vkCmdBuildAccelerationStructuresKHR",
+      args: { pInfos: [info], ppBuildRangeInfos: [ranges] },
+      buildData: ours
+    };
+    const parsed = parseBuild(info, ranges);
+    if (parsed) out.push({ command, info: 0, build: parsed, fromCaptureStart: true });
+  }
+  for (const o of db.getObjectsOfType("MTLAccelerationStructure")?.values() ?? []) {
+    if (built.has(o.id)) continue;
+    const read = metalCaptureInputs(o);
+    const descriptor = metalDescriptorOf(read) ?? metalDescriptorOf(metalStructureBuild(o));
+    if (!descriptor) continue;
+    const ours = ourInputs(data, read ?? void 0);
+    if (!ours.length) continue;
+    const command = {
+      index: -1,
+      frame: 0,
+      slot: 0,
+      method: "buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:",
+      args: { accelerationStructure: { __id: o.id }, descriptor, buildData: ours }
+    };
+    out.push({
+      command,
+      info: 0,
+      fromCaptureStart: true,
+      build: metalBuild(o.id, descriptor, str(read?.mode) || "BUILD")
+    });
+  }
+  return out;
+}
+function ourInputs(data, captureInputs) {
+  const read = isObject(captureInputs) ? captureInputs : null;
+  const inputs = read && Array.isArray(read.inputs) ? read.inputs.filter(isObject) : [];
+  return inputs.filter((i) => {
+    const b = data.buffer(num(i.capture));
+    return !!b && !b.info.error && num(b.info.buffer) === num(i.buffer);
+  });
+}
+function allBuilds(data, db) {
+  const own = buildsIn(data);
+  const built = new Set(own.map((b) => b.build.target));
+  return [...earlierBuilds(data, db, built), ...own];
+}
+function buildsIn(data) {
+  const out = [];
+  for (const c2 of data.commands) {
+    if (c2.method === "BuildRaytracingAccelerationStructure") {
+      const build = parseD3D12Build(c2);
+      if (build) out.push({ command: c2, info: 0, build });
+      continue;
+    }
+    if (METAL_BUILD_METHODS.has(c2.method)) {
+      const build = parseMetalBuild(c2);
+      if (build) out.push({ command: c2, info: 0, build });
+      continue;
+    }
+    if (!c2.method.includes("BuildAccelerationStructures")) continue;
+    const args = c2.args;
+    if (!isObject(args)) continue;
+    const infos = Array.isArray(args.pInfos) ? args.pInfos : [];
+    const listed = c2.buildRanges;
+    const ranges = Array.isArray(listed) ? listed : Array.isArray(args.ppBuildRangeInfos) ? args.ppBuildRangeInfos : [];
+    infos.forEach((info, i) => {
+      const build = parseBuild(info, ranges[i]);
+      if (build) out.push({ command: c2, info: i, build });
+    });
+  }
+  return out;
+}
+function captureIdOf(command, info, geometry, field2) {
+  if (command.method === "BuildRaytracingAccelerationStructure") {
+    return buildCapture(command, D3D12_FIELDS[field2] === "InstanceDescs" ? -1 : geometry, D3D12_FIELDS[field2] ?? field2);
+  }
+  if (METAL_BUILD_METHODS.has(command.method)) {
+    for (const name of METAL_FIELDS[field2] ?? [field2]) {
+      const id = metalBuildCapture(command.args, geometry, name);
+      if (id) return id;
+    }
+    return 0;
+  }
+  const list = Array.isArray(command.buildData) ? command.buildData : [];
+  for (const e of list) {
+    if (!isObject(e)) continue;
+    if (num(e.info) === info && num(e.geometry) === geometry && e.field === field2) return num(e.capture);
+  }
+  return 0;
+}
+var D3D12_FIELDS = {
+  data: "InstanceDescs",
+  vertexData: "VertexBuffer",
+  indexData: "IndexBuffer",
+  transformData: "Transform3x4",
+  aabbData: "AABBs"
+};
+function bytesOf(data, captureId) {
+  return data.buffer(captureId)?.data ?? null;
+}
+function addressesOf(db) {
+  const out = /* @__PURE__ */ new Map();
+  for (const o of db.getObjectsOfType("VkAccelerationStructureKHR")?.values() ?? []) {
+    const a = o.updates.deviceAddress;
+    if (a !== void 0 && a !== null) out.set(String(a), o.id);
+  }
+  for (const [address, id] of d3d12StructureAddresses(db.getObjectsOfType("ID3D12RaytracingAccelerationStructure")?.values() ?? [])) {
+    out.set(address, id);
+  }
+  return out;
+}
+function accelerationScene(data, db, structureId) {
+  const builds = allBuilds(data, db);
+  const target = [...builds].reverse().find((b) => b.build.target === structureId && b.build.topLevel);
+  if (!target) return null;
+  const instances = [];
+  const addresses = addressesOf(db);
+  const metalDescriptor = METAL_BUILD_METHODS.has(target.command.method) ? metalDescriptorOf(target.command.args) : null;
+  target.build.geometries.forEach((g, index) => {
+    if (g.kind !== "instances") return;
+    const bytes = bytesOf(data, captureIdOf(target.command, target.info, index, "data"));
+    if (!bytes) return;
+    if (metalDescriptor) instances.push(...parseMetalInstances(bytes, metalDescriptor, instancedStructures(metalDescriptor)));
+    else instances.push(...parseInstances(bytes, addresses));
+  });
+  if (!instances.length) return null;
+  const meshes = /* @__PURE__ */ new Map();
+  const meshOf = (blas) => {
+    const hit = meshes.get(blas);
+    if (hit !== void 0) return hit;
+    let mesh = null;
+    const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
+    if (source) {
+      for (let g = 0; g < source.build.geometries.length && !mesh; g++) {
+        const geometry = source.build.geometries[g];
+        mesh = triangleMesh(
+          geometry,
+          bytesOf(data, captureIdOf(source.command, source.info, g, "vertexData")),
+          bytesOf(data, captureIdOf(source.command, source.info, g, "indexData"))
+        );
+      }
+    }
+    meshes.set(blas, mesh);
+    return mesh;
+  };
+  const boxes = /* @__PURE__ */ new Map();
+  const boxesOf = (blas) => {
+    const hit = boxes.get(blas);
+    if (hit !== void 0) return hit;
+    let mesh = null;
+    const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
+    if (source) {
+      const parts3 = [];
+      for (let g = 0; g < source.build.geometries.length; g++) {
+        const geometry = source.build.geometries[g];
+        const part = aabbBoxes(geometry, bytesOf(data, captureIdOf(source.command, source.info, g, "aabbData")));
+        if (part) parts3.push(part);
+      }
+      if (parts3.length) {
+        const total = parts3.reduce((n, p) => n + p.length, 0);
+        mesh = new Float32Array(total);
+        let at = 0;
+        for (const p of parts3) {
+          mesh.set(p, at);
+          at += p.length;
+        }
+      }
+    }
+    boxes.set(blas, mesh);
+    return mesh;
+  };
+  const parts2 = /* @__PURE__ */ new Map();
+  const partsOf = (blas) => {
+    const hit = parts2.get(blas);
+    if (hit !== void 0) return hit;
+    const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
+    const found = source ? geometryParts(data, source) : [];
+    const result = found.length ? found : null;
+    parts2.set(blas, result);
+    return result;
+  };
+  const traversal = /* @__PURE__ */ new Map();
+  const traversalOf = (blas) => {
+    const hit = traversal.get(blas);
+    if (hit !== void 0) return hit;
+    const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
+    const found = source ? traversalGeometries(data, source) : [];
+    const result = found.length ? found : null;
+    traversal.set(blas, result);
+    return result;
+  };
+  return { instances, meshOf, boxesOf, partsOf, traversalOf };
+}
+function traversalGeometries(data, source) {
+  const out = [];
+  source.build.geometries.forEach((g, index) => {
+    if (g.kind === "instances") return;
+    const triangles = triangleMesh(
+      g,
+      bytesOf(data, captureIdOf(source.command, source.info, index, "vertexData")),
+      bytesOf(data, captureIdOf(source.command, source.info, index, "indexData"))
+    );
+    const extents = aabbExtents(g, bytesOf(data, captureIdOf(source.command, source.info, index, "aabbData")));
+    out.push({
+      index,
+      triangles,
+      extents,
+      functionTableOffset: num(g.intersectionFunctionTableOffset),
+      opaque: g.opaque === true
+    });
+  });
+  return out;
+}
+function geometryParts(data, source) {
+  const out = [];
+  source.build.geometries.forEach((g, index) => {
+    const mesh = triangleMesh(
+      g,
+      bytesOf(data, captureIdOf(source.command, source.info, index, "vertexData")),
+      bytesOf(data, captureIdOf(source.command, source.info, index, "indexData"))
+    );
+    if (mesh) out.push({ geometry: index, lines: false, positions: mesh });
+    const boxes = aabbBoxes(g, bytesOf(data, captureIdOf(source.command, source.info, index, "aabbData")));
+    if (boxes) out.push({ geometry: index, lines: true, positions: boxes });
+  });
+  return out;
+}
+
 // src/renderer/metal/shader_debug.ts
 var MAX_INTERPRETED_VERTICES = 2e4;
 var FUNCTION_KEY = { vertex: "vertexFunction", fragment: "fragmentFunction", compute: "function" };
@@ -18987,6 +20446,8 @@ function metalSampler(object, clamps) {
 }
 function metalBindings(ctx, state, stage) {
   const textures = /* @__PURE__ */ new Map();
+  const scenes = /* @__PURE__ */ new Map();
+  const tables = /* @__PURE__ */ new Map();
   return {
     buffer: (index) => {
       const bound = state.stageBuffers.get(`${stage}:${index}`);
@@ -19010,8 +20471,55 @@ function metalBindings(ctx, state, stage) {
       if (!bound) return null;
       return metalSampler(ctx.db.getObject(refId(bound.sampler)), bound);
     },
+    // Ray queries: the scene and the function table the dispatch bound, for a kernel that
+    // traverses (msl/raytracing.ts). Built once each, since a traversal asks for them per ray.
+    accelerationStructure: (index) => {
+      if (scenes.has(index)) return scenes.get(index) ?? null;
+      const bound = state.rayBindings.get(`${stage}:${index}`);
+      let built = null;
+      if (bound?.kind === "accelerationStructure") {
+        const structureId = refId(bound.object) ?? 0;
+        const scene = structureId ? accelerationScene(ctx.data, ctx.db, structureId) : null;
+        built = scene ? buildRayScene(scene) : null;
+      }
+      scenes.set(index, built);
+      return built;
+    },
+    functionTable: (index) => {
+      if (tables.has(index)) return tables.get(index) ?? null;
+      const bound = state.rayBindings.get(`${stage}:${index}`);
+      const table = bound && bound.kind !== "accelerationStructure" ? metalFunctionTable(ctx, refId(bound.object) ?? 0) : null;
+      tables.set(index, table);
+      return table;
+    },
     label: (kind, index) => `${kind}(${index})`
   };
+}
+function metalFunctionTable(ctx, tableId) {
+  const object = tableId ? ctx.db.getObject(tableId) : null;
+  const table = isObject(object?.updates?.table) ? object.updates.table : null;
+  if (!table) return null;
+  const entries = [];
+  for (const entry2 of Array.isArray(table.entries) ? table.entries : []) {
+    if (!isObject(entry2)) continue;
+    const at = num(entry2.index);
+    entries[at] = entry2.empty === true || entry2.opaque !== void 0 ? null : str(entry2.function) || null;
+  }
+  const buffers = /* @__PURE__ */ new Map();
+  const read = isObject(object?.updates?.tableBuffers) ? object.updates.tableBuffers : null;
+  for (const bound of Array.isArray(read?.buffers) ? read.buffers : []) {
+    if (!isObject(bound)) continue;
+    buffers.set(num(bound.index), ctx.data.buffer(num(bound.capture))?.data ?? null);
+  }
+  for (const bound of Array.isArray(table.buffers) ? table.buffers : []) {
+    if (!isObject(bound)) continue;
+    const at = num(bound.index);
+    if (buffers.get(at)) continue;
+    const objectId = num(bound.buffer);
+    const range = [...ctx.data.buffers.values()].find((b) => b.info.buffer === objectId && b.data);
+    buffers.set(at, range?.data ?? null);
+  }
+  return { entries, buffer: (index) => buffers.get(index) ?? null };
 }
 function stageInType(program, entry2) {
   for (const p of entry2.params) {
@@ -19941,7 +21449,7 @@ var SpirvProgram = class _SpirvProgram {
   resultType(r) {
     return resultType(this.module, r);
   }
-  /** A result the shader named nothing: an SSA temporary, which the values table greys out. */
+  /** A result the shader named nothing: an SSA temporary, which the values table grays out. */
   resultTemporary(r) {
     return !this.module.names.has(r.id) && !this.module.debugVariableNames.has(r.id);
   }
@@ -26239,7 +27747,7 @@ function displayTexels(tex, display = DEFAULT_DISPLAY) {
 // src/renderer/shader_debug_setup.ts
 var TRANSLATION_NOTE = "This steps GLSL that spirv-cross decompiled from the SPIR-V and glslang compiled back: it should compute the same values, but it is not the module the GPU ran, so the result is checked against the original.";
 var STAGE_MODEL2 = { vertex: 0 /* Vertex */, fragment: 4 /* Fragment */, compute: 5 /* GLCompute */ };
-function bytesOf(v) {
+function bytesOf2(v) {
   if (!isObject(v) || typeof v.base64 !== "string") return null;
   try {
     return decodeBase64(v.base64);
@@ -26296,7 +27804,7 @@ function specialization(state, source) {
   const stageInfo = source.object.type === "VkShaderEXT" ? source.object.descriptor : Array.isArray(stages) ? stages.find((s) => isObject(s) && str(s.stage) === source.stageFlag) : isObject(stages) ? stages : null;
   const spec = isObject(stageInfo) ? stageInfo.pSpecializationInfo : null;
   if (!isObject(spec)) return out;
-  const data = bytesOf(spec.pData);
+  const data = bytesOf2(spec.pData);
   if (!data || !Array.isArray(spec.pMapEntries)) return out;
   for (const e of spec.pMapEntries) {
     if (!isObject(e)) continue;
@@ -27691,6 +29199,8 @@ async function serializeCapture(session, data, options = {}) {
     ...data.passTimingOrigin !== null ? { passTimingOrigin: data.passTimingOrigin } : {},
     ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
     ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
+    // The mask goes out as a payload, like a texture's pixels: one byte per pixel of the pass.
+    ...data.drawOverlays.size ? { drawOverlays: [...data.drawOverlays.values()].map(({ mask, ...info }) => ({ info, ...mask ? { payload: addPayload(mask) } : {} })) } : {},
     ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
     ...data.hwCounters ? { hwCounters: data.hwCounters } : {},
     ...data.cpuTimeline ? { cpuTimeline: data.cpuTimeline } : {},
@@ -29870,7 +31380,7 @@ function buildFrameCostTree(o) {
   if (units === "ms") root.name = `Frame: ${root.totalCost.toFixed(2)} ms GPU`;
   if (stats.unknownStages > 0) notes.push(`${stats.unknownStages} shader stage(s) have no invocation count or no analysis and are shown unweighted (zero width).`);
   if (stats.measuredDrawPasses > 0) {
-    notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbours' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
+    notes.push(`The draws of ${stats.measuredDrawPasses} pass(es) were timed one at a time by replaying the frame, and those times set how each pass's measured duration is split between them. A draw's time overlaps its neighbors' on the GPU, so it is a share of the pass rather than what the draw costs alone.`);
   }
   if (stats.measuredStages > 0) {
     notes.push(`The functions and lines of ${stats.measuredStages} shader stage frame(s) are sized by ablation: the replay timed a draw with each function or line made constant, and each takes the share of the stage's time that saved. Parts overlap (taking one out takes what only feeds it too), so where they add up to more than their parent they are squeezed to fit.`);
@@ -30630,18 +32140,18 @@ function resourceTools(store) {
           depth: Math.max(1, (info.depth || 1) >> m - info.mip)
         });
         const layers = Math.max(1, info.layers || 1);
-        const bytesOf2 = (m) => {
+        const bytesOf3 = (m) => {
           const dd = dims(m);
           return sliceBytes({ format: info.format, aspect: info.aspect, width: dd.width, height: dd.height }) * Math.max(dd.depth, layers);
         };
         let offset = 0;
-        for (let m = info.mip; m < mip; m++) offset += bytesOf2(m);
+        for (let m = info.mip; m < mip; m++) offset += bytesOf3(m);
         const size2 = dims(mip);
         const imageInfo = { format: info.format, aspect: info.aspect, width: size2.width, height: size2.height };
         if (!isFormatSupported(imageInfo)) return jsonResult({ ...brief, note: `Decoding ${info.format} is not supported.` });
         const slices = Math.max(size2.depth, layers);
         const layer = intArg(args, "layer", 0, 0, slices - 1);
-        const tex = decodeTexels(imageInfo, t.data.subarray(offset, offset + bytesOf2(mip)), layer);
+        const tex = decodeTexels(imageInfo, t.data.subarray(offset, offset + bytesOf3(mip)), layer);
         if (!tex) return jsonResult({ ...brief, note: "The pixel data is shorter than the image's size says." });
         return texelAnswer(tex, args, { ...brief, mip, layer, slices: slices > 1 ? slices : void 0 }, info.aspect);
       }
@@ -31514,7 +33024,7 @@ function tracksVerdict(t) {
     return head + "Its passes ran back to back, so that time is the work itself rather than gaps in it." + latency;
   }
   const a = attributeGaps(t, gaps);
-  const why = a.displayWaitMs >= idle * 0.4 ? "The CPU was in present or acquire for most of that, so the frame is paced by the display and the idle GPU is headroom rather than a stall." : a.workMs >= idle * 0.4 ? "The CPU was inside submission for much of that, so the GPU is waiting on work the CPU had not finished handing it: fewer, larger submissions would close the gap." : a.gpuWaitMs >= idle * 0.4 ? "The CPU was waiting on a fence for most of that, which with an idle GPU means it is waiting on work already finished: the fence is being waited on later than it is signalled." : "The CPU was outside the calls the layer times for most of that \u2014 its own work between them: building command buffers, culling, simulation \u2014 so that is where the GPU's idle time is going.";
+  const why = a.displayWaitMs >= idle * 0.4 ? "The CPU was in present or acquire for most of that, so the frame is paced by the display and the idle GPU is headroom rather than a stall." : a.workMs >= idle * 0.4 ? "The CPU was inside submission for much of that, so the GPU is waiting on work the CPU had not finished handing it: fewer, larger submissions would close the gap." : a.gpuWaitMs >= idle * 0.4 ? "The CPU was waiting on a fence for most of that, which with an idle GPU means it is waiting on work already finished: the fence is being waited on later than it is signaled." : "The CPU was outside the calls the layer times for most of that \u2014 its own work between them: building command buffers, culling, simulation \u2014 so that is where the GPU's idle time is going.";
   return head + `It went idle between passes for ${idle.toFixed(2)} ms across ${gaps.length} gap${gaps.length === 1 ? "" : "s"}, the longest ${gaps[0].durationMs.toFixed(2)} ms. ` + why + latency;
 }
 
@@ -32257,7 +33767,7 @@ function captureTools(store) {
     },
     {
       name: "get_draw_overlay",
-      description: `Where one draw of a Vulkan capture landed, as RenderDoc's texture viewer overlays show it, for "the draw ran and I cannot see it": the capture is replayed with the draw issued on its own (under a second, quicker for later draws of the same capture). Gives the pixels it covered, how many passed its depth and stencil tests and how many were rejected, how many the stencil test alone rejected, and how many its own back-face culling emptied \u2014 a pixel where only back faces of it land, which is what a mesh wound the wrong way looks like. A closed mesh reports none of those, since some face always points at the camera. get_pixel_history follows one pixel through the whole frame instead.`,
+      description: `Where one draw landed, as RenderDoc's texture viewer overlays show it, for "the draw ran and I cannot see it": a Vulkan capture is replayed with the draw issued on its own (under a second, quicker for later draws of the same capture), while a Metal or D3D12 capture carries the one draw it was asked to measure while it was taken. Gives the pixels it covered, how many passed its depth and stencil tests and how many were rejected, how many the stencil test alone rejected, and how many its own back-face culling emptied \u2014 a pixel where only back faces of it land, which is what a mesh wound the wrong way looks like. A closed mesh reports none of those, since some face always points at the camera. get_pixel_history follows one pixel through the whole frame instead.`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw command's index." }
@@ -32268,14 +33778,21 @@ function captureTools(store) {
         const index = requireInt(args, "command");
         const cmd = c2.data.commands[index];
         if (!cmd || !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_draw_overlay takes a draw command (list_commands with kind draw).`);
-        if (c2.data.api !== "vulkan") {
-          return jsonResult({ capture: c2.id, command: index, note: c2.data.api === "d3d12" ? "A D3D12 capture's draw overlays are measured in the application as the frame is captured, so a saved capture has none: ask for one in the app's render target tab, which captures again." : "A Metal capture has no draw overlays: they need a replay, which Metal captures do not have yet." });
+        let o;
+        if (c2.data.api === "vulkan") {
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) return jsonResult({ capture: c2.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+          const run2 = await replayServers.run(tool, c2.path, { kind: "overlay", commands: [index] });
+          if (!run2.data) return jsonResult({ capture: c2.id, command: index, note: `The replay could not draw it: ${run2.error ?? "no data"}` });
+          o = parseDrawOverlayFile(run2.data).draws.find((d) => d.command === index);
+        } else {
+          o = c2.data.drawOverlays.get(index);
+          if (!o) {
+            const measured = [...c2.data.drawOverlays.values()][0];
+            const api = c2.data.api === "metal" ? "Metal" : "D3D12";
+            return jsonResult({ capture: c2.id, command: index, note: measured ? `This capture measured draw ${measured.command}, not ${index}: a ${api} draw overlay is measured in the application as the frame is captured, one draw per capture.` : `A ${api} capture's draw overlays are measured in the application as the frame is captured, so this one has none: ask for one in the app's render target tab, which captures again.` });
+          }
         }
-        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
-        if (!tool) return jsonResult({ capture: c2.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-        const run2 = await replayServers.run(tool, c2.path, { kind: "overlay", commands: [index] });
-        if (!run2.data) return jsonResult({ capture: c2.id, command: index, note: `The replay could not draw it: ${run2.error ?? "no data"}` });
-        const o = parseDrawOverlayFile(run2.data).draws.find((d) => d.command === index);
         if (!o || !o.measured) return jsonResult({ capture: c2.id, command: index, method: cmd.method, note: `Not drawn: ${o?.note ?? "the replay did not reach the draw"}` });
         const pixels = o.width * o.height;
         const share = (n) => `${(n / Math.max(1, pixels) * 100).toFixed(2)}%`;

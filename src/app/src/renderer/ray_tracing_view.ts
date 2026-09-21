@@ -178,6 +178,27 @@ export interface AccelerationScene {
   boxesOf?: (blas: number) => Float32Array | null;
   /** Every geometry of a bottom level apart, triangles or boxes, or null when its build is not in the capture. */
   partsOf?: (blas: number) => GeometryPart[] | null;
+  /**
+   * Every geometry of a bottom level in the shape a ray traversal walks, which is not the shape that
+   * draws one: a procedural geometry's boxes as their extents rather than as the endpoints of their
+   * edges, and each geometry's own intersection function table offset and opaque flag, which a
+   * traversal needs and a drawing does not (msl/raytracing.ts).
+   */
+  traversalOf?: (blas: number) => TraversalGeometry[] | null;
+}
+
+/** One geometry of a bottom level, for a ray traversal. */
+export interface TraversalGeometry {
+  /** Its index in the build, which is what `geometry_id` reports. */
+  index: number;
+  /** Triangles as nine floats each, in the bottom level's own space. */
+  triangles: Float32Array | null;
+  /** Boxes as six floats each, min then max. A procedural geometry has these instead. */
+  extents: Float32Array | null;
+  /** The entry of a bound intersection function table this geometry's boxes call. */
+  functionTableOffset: number;
+  /** The build marked it opaque, so no intersection function is called for it. */
+  opaque: boolean;
 }
 
 /** An acceleration structure as the Inspect panel draws it, whichever API it came from. */

@@ -76,9 +76,13 @@ void SendCpuTimeline();
 // report's interval, with the oldest dropped once it is full — a timing capture left running should
 // not grow without bound, and what matters is the recent minutes.
 //
-// `sampleHz` is accepted and ignored: sampling every thread's call stack is Windows-only
-// (src/vulkan/src/cpu_sampler.h), so on Metal a timing capture records where the frame's *calls*
-// went and not what the threads were doing between them.
+// `sampleHz` also starts the call-stack sampler (src/vulkan/src/cpu_sampler.h, which has no
+// graphics API in it and is shared with the other two libraries): a few hundred times a second
+// every thread of the process is stopped for the microseconds it takes to copy its registers and
+// the top of its stack, and the copy is walked afterwards. That is what answers the hitch none of
+// the timed calls accounts for — the application's own work between them. On macOS it goes through
+// Mach (`task_threads`, `thread_suspend`, `thread_get_state`) and unwinds by walking frame
+// pointers, which the arm64 ABI guarantees are there.
 
 /** Starts recording per-frame timings, discarding anything a previous run held. */
 void BeginTimingCapture(uint32_t sampleHz = 0);
@@ -95,6 +99,9 @@ void NoteFrameTiming(uint32_t frame, double frameMs);
 
 /** Sends the frames recorded since the last call, if any. Called with the frame report. */
 void SendTimingFrames();
+
+/** Sends the call stacks sampled since the last call, if any. Called with the frame report. */
+void SendTimingSamples();
 
 // ---------------------------------------------------------------------------------------------
 // Memory over time.

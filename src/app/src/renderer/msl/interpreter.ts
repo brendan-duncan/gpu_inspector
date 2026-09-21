@@ -9,7 +9,7 @@
 //
 // Inputs come from the capture: the vertex's attributes or the fragment's interpolated varyings
 // (MslInputs), and the buffers, textures and samplers the draw had bound (MslBindings).
-// Derivatives (dfdx, implicit-LOD sampling) need the neighbouring invocations of the pixel quad;
+// Derivatives (dfdx, implicit-LOD sampling) need the neighboring invocations of the pixel quad;
 // a DerivativeSource (../debug/quad.ts) runs them in lockstep, and without one they are zero.
 import type { DerivativeSource } from "../debug/quad.js";
 import type {
@@ -20,6 +20,12 @@ import {
   type BufferStorage, type Cell, type DebugSampler, type DebugTexture, type Value,
 } from "../debug/values.js";
 import { BLOCKED, callBuiltin, type BuiltinContext } from "./stdlib.js";
+import {
+  boxHit, isAccelerationStructure, isFunctionTable, noHit, traceRay,
+  INTERSECTION_BOUNDING_BOX, INTERSECTION_NONE, INTERSECTOR_KIND, SCENE_KIND, TABLE_KIND,
+  type BoxCandidate, type DebugRay, type IntersectorHandle, type RayFunctionTable, type RayHit,
+  type RayScene, type SceneHandle, type TableHandle,
+} from "./raytracing.js";
 import type { FunctionIr, Instr, Symbol } from "./ir.js";
 import type { MslProgram } from "./program.js";
 import type { TypeTable } from "./types.js";
@@ -29,6 +35,14 @@ export interface MslBindings {
   buffer(index: number): Uint8Array | null;
   texture(index: number): DebugTexture | null;
   sampler(index: number): DebugSampler | null;
+  /**
+   * The scene bound at `[[buffer(index)]]`, for a parameter whose type is an acceleration
+   * structure. Metal binds one at a buffer index like anything else, so the index is the same
+   * namespace as `buffer` above and only the parameter's *type* says which of the two it is.
+   */
+  accelerationStructure?(index: number): RayScene | null;
+  /** The intersection function table bound at `[[buffer(index)]]`. */
+  functionTable?(index: number): RayFunctionTable | null;
   /** What to call a binding in the values table: "buffer(1)", "texture(0)". */
   label?(kind: "buffer" | "texture" | "sampler", index: number): string;
 }
@@ -63,6 +77,39 @@ interface Frame {
   locals: { id: number; cell: Cell; type: number }[];
   /** The caller's destination register, -1 for the entry point. */
   resultId: number;
+  /**
+   * A ray query part way through (the `rayQuery` instruction). One per frame is enough: a traversal
+   * runs to completion before the instruction that started it finishes, so a second cannot begin
+   * in the same frame — and a nested one, inside the intersection function, is a frame of its own.
+   */
+  query?: RayQueryState;
+}
+
+/**
+ * A ray query in progress: the traversal is done, and what is left is asking the shader's own
+ * intersection function about each bounding box the ray entered.
+ *
+ * The interpreter is a stepping machine — `call` pushes a frame and returns — so a builtin cannot
+ * call a shader function and wait for it. What it can do is *not advance the program counter*: the
+ * callee's `return` writes into the caller's destination register and leaves the caller on the same
+ * instruction, so `rayQuery` runs again, reads what the function said out of that register, and
+ * asks about the next box. When the candidates run out it writes the result and moves on.
+ */
+interface RayQueryState {
+  /** The instruction that started it, so a different query in the same frame starts fresh. */
+  at: number;
+  ray: DebugRay;
+  scene: RayScene;
+  table: RayFunctionTable | null;
+  candidates: BoxCandidate[];
+  /** The next candidate to ask about. */
+  next: number;
+  /** The nearest hit so far: a triangle from the traversal, or a box a function accepted. */
+  hit: RayHit;
+  limit: number;
+  acceptAny: boolean;
+  /** The candidate the shader's function is answering about right now. */
+  pending: BoxCandidate | null;
 }
 
 const MAX_STEPS = 20_000_000;
@@ -282,7 +329,32 @@ export class MslInvocation implements DebugInvocation {
       const t = this._types.get(p.type);
       let value: Value = this._types.zero(p.type);
       let where: Partial<VariableView> = {};
-      if (binding?.kind === "buffer") {
+      // An acceleration structure or a function table binds at a buffer index, so the type is what
+      // tells it from a pointer to bytes (msl/raytracing.ts).
+      if (binding?.kind === "buffer" && t?.kind === "opaque" && isAccelerationStructure(t.name)) {
+        const scene = binding.index >= 0 ? this.bindings.accelerationStructure?.(binding.index) ?? null : null;
+        if (!scene) {
+          this.warn(`${this.label("buffer", binding.index)} (${p.name}) is an acceleration structure the capture `
+                    + "does not hold the builds of, so every ray misses");
+        } else if (scene.missing) {
+          this.warn(`${scene.missing} of the scene's instances name a bottom level whose build is not in the `
+                    + "capture, so a ray cannot be told what is in them");
+        }
+        value = new OpaqueValue(SCENE_KIND, [],
+          { scene, binding: this.label("buffer", binding.index) } satisfies SceneHandle);
+        frame.values.set(p.id, value);
+        where = { binding: binding.index, set: 0 };
+      } else if (binding?.kind === "buffer" && t?.kind === "opaque" && isFunctionTable(t.name)) {
+        const table = binding.index >= 0 ? this.bindings.functionTable?.(binding.index) ?? null : null;
+        if (!table) {
+          this.warn(`${this.label("buffer", binding.index)} (${p.name}) is an intersection function table the `
+                    + "capture did not record, so a bounding box cannot be asked about");
+        }
+        value = new OpaqueValue(TABLE_KIND, [],
+          { table, binding: this.label("buffer", binding.index) } satisfies TableHandle);
+        frame.values.set(p.id, value);
+        where = { binding: binding.index, set: 0 };
+      } else if (binding?.kind === "buffer") {
         const index = binding.index;
         const bytes = index >= 0 ? this.bindings.buffer(index) : null;
         const pointee = t?.kind === "pointer" ? t.pointee : p.type;
@@ -627,6 +699,9 @@ export class MslInvocation implements DebugInvocation {
         this._set(frame, instr, instr.dst, scalar ? mapScalars(result, (x) => normalize(x, scalar)) : result);
         return;
       }
+      case "rayQuery":
+        this._rayQuery(frame, instr);
+        return;
       case "call": {
         const fn = this.program.ir.functions[instr.target];
         if (!fn) {
@@ -677,6 +752,247 @@ export class MslInvocation implements DebugInvocation {
         this.status = "discarded";
         return;
     }
+  }
+
+  // ---------------------------------------------------------------------------------------
+  // Ray queries
+
+  /**
+   * `intersector::intersect(ray, structure, mask, table)`.
+   *
+   * Runs in as many visits as there are bounding boxes to ask the shader about, plus one. The first
+   * visit traverses the scene: triangles are settled there and then, and the boxes the ray entered
+   * come back as candidates. Each later visit reads what the shader's intersection function said
+   * about the previous candidate and pushes a frame for the next, leaving the program counter where
+   * it is so that the function's `return` brings it back here.
+   *
+   * The debugger steps *through* the intersection function while this is happening, which is the
+   * whole point: on Metal the traversal is in the shader, so the intersection function is the one
+   * place a "why is nothing hit" question is answered.
+   */
+  private _rayQuery(frame: Frame, instr: Instr & { op: "rayQuery" }): void {
+    const state = frame.query?.at === instr.index ? frame.query : this._beginRayQuery(frame, instr);
+    if (!state) {
+      frame.pc++;
+      this._set(frame, instr, instr.dst, this._resultValue(noHit(), null));
+      return;
+    }
+    // A candidate the shader was answering about: its result is in this instruction's own register,
+    // which the callee's `return` wrote.
+    if (state.pending) {
+      const answer = this._get(frame, instr.dst);
+      const accepted = this._acceptedIntersection(answer, state.pending);
+      if (accepted !== null && accepted.distance >= state.ray.minDistance && accepted.distance <= state.limit) {
+        state.hit = boxHit(state.scene, state.pending, accepted.distance);
+        state.limit = accepted.distance;
+        if (state.acceptAny) {
+          this._finishRayQuery(frame, instr, state);
+          return;
+        }
+      }
+      state.pending = null;
+    }
+
+    // The next candidate the traversal found. One past the nearest hit so far cannot beat it, and
+    // the candidates are in entry order, so the rest cannot either.
+    while (state.next < state.candidates.length) {
+      const candidate = state.candidates[state.next++];
+      if (candidate.tMin > state.limit) break;
+      // An opaque geometry, or a query forced opaque: Metal takes the box itself, at the point the
+      // ray enters it, and calls nothing.
+      if (candidate.opaque) {
+        state.hit = boxHit(state.scene, candidate, candidate.tMin);
+        state.limit = candidate.tMin;
+        if (state.acceptAny) {
+          this._finishRayQuery(frame, instr, state);
+          return;
+        }
+        continue;
+      }
+      const fn = this._intersectionFunction(state.table, candidate);
+      if (!fn) continue;
+      state.pending = candidate;
+      this._callIntersectionFunction(frame, instr, state, fn, candidate);
+      return;    // the program counter stays here; the function's return brings us back
+    }
+    this._finishRayQuery(frame, instr, state);
+  }
+
+  /** Reads the arguments, traverses the scene, and starts a query; null when there is nothing to trace. */
+  private _beginRayQuery(frame: Frame, instr: Instr & { op: "rayQuery" }): RayQueryState | null {
+    const args = instr.args.map((r) => this._get(frame, r));
+    const intersector = args[0] instanceof OpaqueValue && args[0].kind === INTERSECTOR_KIND
+      ? args[0].handle as IntersectorHandle : null;
+    const ray = this._rayOf(args[1]);
+    const sceneHandle = args[2] instanceof OpaqueValue && args[2].kind === SCENE_KIND
+      ? args[2].handle as SceneHandle : null;
+    if (!sceneHandle?.scene) {
+      this.warn("intersect was given something that is not an acceleration structure the capture holds, "
+                + "so the ray misses");
+      return null;
+    }
+    // `intersect(ray, structure)`, `intersect(ray, structure, mask)`,
+    // `intersect(ray, structure, table)` and `intersect(ray, structure, mask, table)` are all
+    // written, so the trailing arguments are read by what they are rather than by position.
+    let mask = 0xFF;
+    let table: RayFunctionTable | null = null;
+    for (const arg of args.slice(3)) {
+      if (arg instanceof OpaqueValue && arg.kind === TABLE_KIND) table = (arg.handle as TableHandle).table;
+      else if (typeof arg === "number" || typeof arg === "bigint") mask = Math.trunc(numberOf(arg)) & 0xFF;
+    }
+    const options = intersector?.options ?? {};
+    const { hit, candidates } = traceRay(sceneHandle.scene, ray, mask, options);
+    const state: RayQueryState = {
+      at: instr.index, ray, scene: sceneHandle.scene, table, candidates, next: 0,
+      hit, limit: hit.type === INTERSECTION_NONE ? ray.maxDistance : hit.distance,
+      acceptAny: options.acceptAny === true, pending: null,
+    };
+    if (options.forceOpaque) for (const c of state.candidates) c.opaque = true;
+    frame.query = state;
+    return state;
+  }
+
+  private _finishRayQuery(frame: Frame, instr: Instr & { op: "rayQuery" }, state: RayQueryState): void {
+    frame.query = undefined;
+    frame.pc++;
+    this._set(frame, instr, instr.dst, this._resultValue(state.hit, state.ray));
+  }
+
+  /** MSL's `ray` struct, as the traversal reads one. */
+  private _rayOf(value: Value): DebugRay {
+    const members = Array.isArray(value) ? value : [];
+    const vec3 = (v: Value): [number, number, number] => {
+      const a = Array.isArray(v) ? v : [];
+      return [numberOf(a[0] ?? 0), numberOf(a[1] ?? 0), numberOf(a[2] ?? 0)];
+    };
+    return {
+      origin: vec3(members[0]),
+      direction: vec3(members[1]),
+      minDistance: numberOf(members[2] ?? 0),
+      // A `ray` built with no max distance has INFINITY in it, which the traversal is happy with.
+      maxDistance: numberOf(members[3] ?? Infinity),
+    };
+  }
+
+  /** The `intersection_result` struct, in the member order types.ts declares. */
+  private _resultValue(hit: RayHit, ray: DebugRay | null): Value {
+    const matrix = (m: number[]): Value =>
+      // 3x4 row-major as the instance holds it, into MSL's `float4x3`: four columns of three.
+      [0, 1, 2, 3].map((c) => [m[c], m[4 + c], m[8 + c]]);
+    return [
+      hit.type,
+      hit.distance,
+      hit.primitiveId,
+      hit.geometryId,
+      hit.instanceId,
+      hit.userInstanceId,
+      [hit.barycentric[0], hit.barycentric[1]],
+      hit.frontFacing,
+      ray ? [...ray.origin] : [0, 0, 0],
+      ray ? [...ray.direction] : [0, 0, 0],
+      matrix(hit.objectToWorld),
+      matrix(hit.worldToObject),
+    ];
+  }
+
+  /** The shader's function for a candidate's table entry, or null with a warning. */
+  private _intersectionFunction(table: RayFunctionTable | null, candidate: BoxCandidate): FunctionIr | null {
+    const name = table?.entries[candidate.functionTableOffset] ?? null;
+    if (!name) {
+      this.warn(`no intersection function is bound at entry ${candidate.functionTableOffset} of the table, so `
+                + `box ${candidate.primitive} of instance ${candidate.instance} cannot be asked about`);
+      return null;
+    }
+    const fn = this.program.ir.functions.find((f) => f.name === name);
+    if (!fn) {
+      this.warn(`the table's entry ${candidate.functionTableOffset} runs '${name}', which is not a function of `
+                + "this shader: it was linked in from another library, so the box cannot be asked about");
+      return null;
+    }
+    return fn;
+  }
+
+  /**
+   * Pushes a frame for the intersection function, with its parameters filled from the candidate.
+   *
+   * Its parameters bind the way an entry point's do — `[[origin]]`, `[[primitive_id]]`,
+   * `[[buffer(0)]]` — except that the buffers come from the *table* rather than from the encoder:
+   * a table binds its own for its functions (`setBuffer:offset:atIndex:` on the table), which the
+   * capture records with the table's entries.
+   */
+  private _callIntersectionFunction(frame: Frame, instr: Instr & { op: "rayQuery" }, state: RayQueryState,
+                                    fn: FunctionIr, candidate: BoxCandidate): void {
+    const next = this._frame(fn, instr.dst);
+    for (const p of fn.params) {
+      const symbol = this._symbol(p.id);
+      const binding = symbol?.binding;
+      const t = this._types.get(p.type);
+      let value: Value = this._types.zero(p.type);
+      if (binding?.kind === "builtin") {
+        switch (binding.name) {
+          case "origin": value = [...state.ray.origin]; break;
+          case "direction": value = [...state.ray.direction]; break;
+          case "min_distance": value = state.ray.minDistance; break;
+          // The interval the function is asked about: from the ray's own start to the nearest hit
+          // so far, which is what makes a function that reports a farther hit be ignored.
+          case "max_distance": value = state.limit; break;
+          case "primitive_id": value = candidate.primitive; break;
+          case "geometry_id": value = candidate.geometry; break;
+          case "instance_id": value = candidate.instance; break;
+          case "user_instance_id":
+            value = state.scene.instances.find((i) => i.index === candidate.instance)?.userId ?? 0;
+            break;
+          case "geometry_intersection_function_table_offset": value = candidate.functionTableOffset; break;
+          default:
+            this.warn(`the intersection function's ${p.name} is [[${binding.name}]], which the traversal does `
+                      + "not fill: it reads as zero");
+            break;
+        }
+        this._cell(next, p.id, p.type, value);
+        continue;
+      }
+      if (binding?.kind === "buffer") {
+        const bytes = binding.index >= 0 ? state.table?.buffer(binding.index) ?? null : null;
+        if (!bytes) {
+          this.warn(`the intersection function's ${p.name} is buffer(${binding.index}) of the table, which the `
+                    + "capture does not hold: it reads as zero");
+        }
+        const pointee = t?.kind === "pointer" ? t.pointee : p.type;
+        const storage: BufferStorage = {
+          bytes: bytes ? new Uint8Array(bytes) : new Uint8Array(Math.max(4, this._types.sizeOf(pointee))),
+          type: t?.kind === "pointer" && !t.reference ? this._types.array(pointee, -1) : pointee,
+          overrides: new Map(),
+        };
+        const cell: Cell = { value: null, buffer: storage };
+        next.values.set(p.id, new Pointer(cell, [], storage.type, 0, p.id));
+        continue;
+      }
+      this._cell(next, p.id, p.type, value);
+    }
+    this.frames.push(next);
+  }
+
+  /**
+   * What an intersection function returned: whether it accepted, and at what distance.
+   *
+   * MSL lets it be a bare `bool` — accepted at the point the ray enters the box — or a struct whose
+   * members carry `[[accept_intersection]]` and `[[distance]]`. The struct's members are read by
+   * *position* here, since the returned value is a plain composite by the time it arrives: the
+   * accept flag is the boolean member and the distance the float one, which is unambiguous for the
+   * two-member struct the form requires.
+   */
+  private _acceptedIntersection(answer: Value, candidate: BoxCandidate): { distance: number } | null {
+    if (typeof answer === "boolean") return answer ? { distance: candidate.tMin } : null;
+    if (typeof answer === "number" || typeof answer === "bigint") {
+      return numberOf(answer) !== 0 ? { distance: candidate.tMin } : null;
+    }
+    if (Array.isArray(answer)) {
+      const accepted = answer.find((m) => typeof m === "boolean");
+      if (accepted === false) return null;
+      const distance = answer.find((m) => typeof m === "number");
+      return { distance: typeof distance === "number" ? distance : candidate.tMin };
+    }
+    return null;
   }
 
   // ---------------------------------------------------------------------------------------

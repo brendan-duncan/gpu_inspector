@@ -40,4 +40,19 @@ void HookFunctionConstantValues();
  */
 std::string FunctionConstantsJson(id values);
 
+/**
+ * Remembers the values object a function was specialized with, retained, so the function can be
+ * built again from *different* source with the same specialization — which is what shader editing
+ * needs (shader_edit.h). Nothing else could supply it: `MTLFunctionConstantValues` has no getters,
+ * and a function does not carry what it was built with, so an edit that forgot this would compile
+ * the shader with every `[[function_constant]]` at its default and quietly draw another variant.
+ *
+ * Keyed by the function, and retained rather than weak: a values object is a bag of scalars, worth
+ * a few dozen bytes, and the application usually drops it the moment the function is made.
+ */
+void RememberFunctionConstants(id function, id values);
+
+/** The values `function` was specialized with, or nil. Not retained for the caller. */
+id FunctionConstantsOf(id function);
+
 }  // namespace mtlinsp

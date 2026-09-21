@@ -19,6 +19,8 @@ import { PixelQuad, type DerivativeSource } from "../debug/quad.js";
 import type { Value } from "../debug/values.js";
 import type { DebugSampler, DebugTexture } from "../debug/values.js";
 import { meshInput } from "../mesh_input.js";
+import { accelerationScene } from "../acceleration_scene.js";
+import { buildRayScene, type RayFunctionTable, type RayScene } from "../msl/raytracing.js";
 import type { MeshOutput, MeshOutputVariable } from "../mesh_output.js";
 import {
   coveringTriangle, debugTexture, interpolate, packInterpretedMesh, passOfCommand, passPixel, rasterStateOf, scalarsOf,
@@ -148,6 +150,8 @@ export function metalSampler(object: VulkanObject | null, clamps?: { lodMinClamp
 /** What a Metal draw or dispatch had bound at a stage, as the MSL interpreter reads it. */
 export function metalBindings(ctx: DebugContext, state: DrawState, stage: Stage): MslBindings {
   const textures = new Map<number, DebugTexture | null>();
+  const scenes = new Map<number, RayScene | null>();
+  const tables = new Map<number, RayFunctionTable | null>();
   return {
     buffer: (index) => {
       const bound = state.stageBuffers.get(`${stage}:${index}`);
@@ -172,8 +176,74 @@ export function metalBindings(ctx: DebugContext, state: DrawState, stage: Stage)
       if (!bound) return null;
       return metalSampler(ctx.db.getObject(refId(bound.sampler)), bound);
     },
+    // Ray queries: the scene and the function table the dispatch bound, for a kernel that
+    // traverses (msl/raytracing.ts). Built once each, since a traversal asks for them per ray.
+    accelerationStructure: (index) => {
+      if (scenes.has(index)) return scenes.get(index) ?? null;
+      const bound = state.rayBindings.get(`${stage}:${index}`);
+      let built: RayScene | null = null;
+      if (bound?.kind === "accelerationStructure") {
+        const structureId = refId(bound.object) ?? 0;
+        const scene = structureId ? accelerationScene(ctx.data, ctx.db, structureId) : null;
+        built = scene ? buildRayScene(scene) : null;
+      }
+      scenes.set(index, built);
+      return built;
+    },
+    functionTable: (index) => {
+      if (tables.has(index)) return tables.get(index) ?? null;
+      const bound = state.rayBindings.get(`${stage}:${index}`);
+      const table = bound && bound.kind !== "accelerationStructure"
+        ? metalFunctionTable(ctx, refId(bound.object) ?? 0) : null;
+      tables.set(index, table);
+      return table;
+    },
     label: (kind, index) => `${kind}(${index})`,
   };
+}
+
+/**
+ * An intersection function table as the capture recorded it: which function each entry runs, and
+ * the buffers the table bound for them.
+ *
+ * Both are on the table object, and neither needs resolving against anything: an
+ * `MTLFunctionHandle` carries its function's *name*, so the capture writes the name
+ * (src/metal/src/raytracing.mm, SendTable) and the debugger looks that name up among the shader's
+ * own functions. Where DXR would have a 32-byte export identifier to match against the state
+ * object's exports, and Vulkan a group handle against the pipeline's, Metal has the name.
+ */
+function metalFunctionTable(ctx: DebugContext, tableId: number): RayFunctionTable | null {
+  const object = tableId ? ctx.db.getObject(tableId) : null;
+  const table = isObject(object?.updates?.table) ? object.updates.table : null;
+  if (!table) return null;
+  const entries: (string | null)[] = [];
+  for (const entry of Array.isArray(table.entries) ? table.entries : []) {
+    if (!isObject(entry)) continue;
+    const at = num(entry.index);
+    // An entry the application never set, or one holding Metal's own opaque triangle function,
+    // runs nothing the shader declares.
+    entries[at] = entry.empty === true || entry.opaque !== undefined ? null : str(entry.function) || null;
+  }
+  // The contents, from the read-back the capture library made as the capture started
+  // (ReadBackTableBuffers in src/metal/src/raytracing.mm). A table's buffers are set once at setup,
+  // so no command of the captured frame binds them and nothing else would have read them.
+  const buffers = new Map<number, Uint8Array | null>();
+  const read = isObject(object?.updates?.tableBuffers) ? object.updates.tableBuffers : null;
+  for (const bound of Array.isArray(read?.buffers) ? read.buffers : []) {
+    if (!isObject(bound)) continue;
+    buffers.set(num(bound.index), ctx.data.buffer(num(bound.capture))?.data ?? null);
+  }
+  // A capture taken before that read-back existed still names the buffer objects, so any range of
+  // one the frame happened to bind elsewhere is better than nothing.
+  for (const bound of Array.isArray(table.buffers) ? table.buffers : []) {
+    if (!isObject(bound)) continue;
+    const at = num(bound.index);
+    if (buffers.get(at)) continue;
+    const objectId = num(bound.buffer);
+    const range = [...ctx.data.buffers.values()].find((b) => b.info.buffer === objectId && b.data);
+    buffers.set(at, range?.data ?? null);
+  }
+  return { entries, buffer: (index) => buffers.get(index) ?? null };
 }
 
 // ---------------------------------------------------------------------------------------------

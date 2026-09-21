@@ -10,6 +10,7 @@
 #include "formats.h"  // mtlinsp::PixelFormatDetails, DepthReadbackDetails
 
 #include "mtl_exporter.h"
+#include "mtl_raytracing.h"
 #include "mtl_reflect.h"
 
 namespace mtlreplay {
@@ -173,8 +174,12 @@ bool MtlReplayer::Run(MtlReplayReport& report) {
         }
 
         CreateObjects();
+        // A function table's entries and buffers, now that everything it names exists.
+        FillFunctionTables();
         UploadContents();
         ReplayCommands();
+        // The frame's storage textures, which have no pass end to be read back at.
+        CompareWrittenTextures(report);
         CompleteReadbacks(report);
 
         report.objects = _objectCount;
@@ -234,6 +239,9 @@ void MtlReplayer::CreateObject(const JValue& object) {
     else if (type == "MTLDepthStencilState") made = CreateDepthStencil(object, d, captureId);
     else if (type == "MTLSamplerState") made = CreateSampler(object, d, captureId);
     else if (type == "MTLHeap") made = CreateHeap(object, d, captureId);
+    else if (type == "MTLAccelerationStructure") made = CreateAccelerationStructure(object, d, captureId);
+    else if (type == "MTLIntersectionFunctionTable") made = CreateFunctionTable(object, d, captureId, true);
+    else if (type == "MTLVisibleFunctionTable") made = CreateFunctionTable(object, d, captureId, false);
     else if (type == "MTLFence") {
         made = [_device newFence];
         if (_x && made) {
@@ -248,8 +256,8 @@ void MtlReplayer::CreateObject(const JValue& object) {
             _x->Block(MtlExporter::Create, "", [&](Source& w) { w.Line(name + " = [device " + call + "];"); });
         }
     } else {
-        // Everything the replay has no maker for yet: argument encoders, indirect command buffers,
-        // acceleration structures. Named as a problem so the report says what the frame will miss,
+        // Everything the replay has no maker for yet: argument encoders and indirect command
+        // buffers. Named as a problem so the report says what the frame will miss,
         // and `reported` so the catch-all below does not say the same thing a second way.
         Problem("no maker for " + type + " " + std::to_string(captureId) +
                 " (" + Text(object.Get("cmd")) + ")");
@@ -667,6 +675,13 @@ id MtlReplayer::CreateComputePipeline(const JValue& object, const Decoder& d, ui
     FillVisitor fill(d);
     Reflect(fill, descriptor, defaults);
     descriptor.computeFunction = function;
+    // The intersection functions the kernel's traversal can call. Not part of the reflection macros
+    // because MTLLinkedFunctions is an object rather than a property value, and the one thing that
+    // makes a traced frame come out right rather than all-miss (mtl_raytracing.h).
+    std::vector<std::pair<std::string, id>> linkedByName;
+    if (id linked = LinkedFunctions(d, linkedByName)) {
+        if (@available(macOS 11.0, *)) descriptor.linkedFunctions = (MTLLinkedFunctions*)linked;
+    }
 
     NSError* error = nil;
     id<MTLComputePipelineState> pipeline =
@@ -687,6 +702,8 @@ id MtlReplayer::CreateComputePipeline(const JValue& object, const Decoder& d, ui
             EmitVisitor emit(w, var + ".");
             Reflect(emit, descriptor, defaults);
             w.Line(var + ".computeFunction = " + w.Object(function) + ";");
+            const std::string linked = WriteLinkedFunctionsSource(w, d);
+            if (!linked.empty()) w.Line(var + ".linkedFunctions = " + linked + ";");
             const std::string err = w.Local("error");
             w.Line("NSError* " + err + " = nil;");
             w.Line(name + " = [device newComputePipelineStateWithDescriptor:" + var +
@@ -694,6 +711,10 @@ id MtlReplayer::CreateComputePipeline(const JValue& object, const Decoder& d, ui
             w.Line("if (!" + name + ") Fail(\"compute pipeline " + std::to_string(captureId) + "\", " + err + ");");
         });
     }
+    // Kept by name so an intersection function table made from this pipeline can be filled: an
+    // entry names the function it runs, and a handle only exists for one the pipeline was linked
+    // against.
+    _linkedFunctions[captureId] = std::move(linkedByName);
     return pipeline;
 }
 
@@ -768,6 +789,241 @@ id MtlReplayer::CreateHeap(const JValue& object, const Decoder& d, uint64_t capt
         });
     }
     return heap;
+}
+
+/**
+ * An acceleration structure. Made at the size the capture recorded, which is the size the
+ * application's own structure came out at — a build writes into a structure the application had
+ * already sized, so the size is what has to match, not the descriptor.
+ *
+ * Most applications use `newAccelerationStructureWithSize:` (test/path_tracer/metal does), in which
+ * case the size is all there is; one created from a descriptor is made from the descriptor instead,
+ * so the driver sizes it the way it sized the application's. A structure placed in a heap is made
+ * from the device rather than from that heap: the replay is not reproducing the application's
+ * memory layout, and a heap whose other placements differ would refuse the offset anyway.
+ */
+id MtlReplayer::CreateAccelerationStructure(const JValue& object, const Decoder& d, uint64_t captureId) {
+    if (@available(macOS 11.0, *)) {
+        const Decoder descriptor = d.Nested("descriptor");
+        if (descriptor.Json()) {
+            std::string error;
+            MTLAccelerationStructureDescriptor* rebuilt = BuildDescriptor(descriptor, error);
+            if (rebuilt == nil) {
+                Problem("acceleration structure " + std::to_string(captureId) + ": " + error);
+                return nil;
+            }
+            id structure = [_device newAccelerationStructureWithDescriptor:rebuilt];
+            if (structure == nil) return nil;
+            if (_x) {
+                const std::string name = _x->Declare("id<MTLAccelerationStructure>", "accel", captureId, structure);
+                _x->Block(MtlExporter::Create, LabelOf(captureId), [&](Source& w) {
+                    const std::string var = w.Local("descriptor");
+                    w.Line("MTLAccelerationStructureDescriptor *" + var + " = nil;");
+                    std::string why;
+                    if (WriteDescriptorSource(w, var, descriptor, why)) {
+                        w.Line(name + " = [device newAccelerationStructureWithDescriptor:" + var + "];");
+                    } else {
+                        w.Comment("left out: " + why);
+                        w.Note("acceleration structure " + std::to_string(captureId) + ": " + why);
+                    }
+                });
+            }
+            return structure;
+        }
+        const uint64_t size = d.Uint("size");
+        if (size == 0) {
+            Problem("acceleration structure " + std::to_string(captureId) +
+                    " has neither a size nor a descriptor recorded");
+            return nil;
+        }
+        id structure = [_device newAccelerationStructureWithSize:(NSUInteger)size];
+        if (structure == nil) return nil;
+        if (_x) {
+            const std::string name = _x->Declare("id<MTLAccelerationStructure>", "accel", captureId, structure);
+            _x->Block(MtlExporter::Create, LabelOf(captureId), [&](Source& w) {
+                w.Line(name + " = [device newAccelerationStructureWithSize:" + std::to_string(size) + "];");
+            });
+        }
+        return structure;
+    }
+    Problem("acceleration structures need macOS 11");
+    return nil;
+}
+
+/**
+ * An intersection or visible function table, made from the pipeline it belongs to and filled.
+ *
+ * This is where Metal's answer to a shader binding table lives, and it is the reason the Metal
+ * replay needs none of the machinery the other two do. DXR writes a table into GPU memory as
+ * 32-byte export identifiers, and Vulkan as opaque group handles, so both replays have to record
+ * every identifier the capture's pipeline produced and substitute the replay's own into the
+ * buffer's bytes (`Replayer::TraceRays`). A Metal table is set through the API, one entry at a
+ * time, and an entry names its function — so the whole of that rewrite collapses into looking the
+ * name up among the pipeline's linked functions and asking for a handle.
+ *
+ * The entries come from the object's `table` update rather than from commands: the capture sends
+ * the whole table on every change, since an update is keyed and last-write-wins, so the update is
+ * the table as it stood when the frame was captured (src/metal/src/raytracing.mm, SendTable).
+ */
+id MtlReplayer::CreateFunctionTable(const JValue& object, const Decoder& d, uint64_t captureId,
+                                    bool intersection) {
+    if (@available(macOS 11.0, *)) {
+    } else {
+        Problem("function tables need macOS 11");
+        return nil;
+    }
+    const uint64_t pipelineId = d.ObjectId("pipeline");
+    id pipeline = d.Object("pipeline");
+    if (pipeline == nil) {
+        Problem((intersection ? "intersection" : "visible") + std::string(" function table ") +
+                std::to_string(captureId) + ": its pipeline is not in the replay");
+        return nil;
+    }
+    if (![pipeline conformsToProtocol:@protocol(MTLComputePipelineState)]) {
+        Problem("function table " + std::to_string(captureId) +
+                " belongs to a render pipeline, which the replay does not make tables from yet");
+        return nil;
+    }
+    id<MTLComputePipelineState> compute = (id<MTLComputePipelineState>)pipeline;
+    const Decoder table = Decoder(object.Get("updates"), _env).Nested("table");
+    const uint64_t count = std::max<uint64_t>(d.Uint("functionCount"), table.Uint("functionCount"));
+
+    id made = nil;
+    std::string createdWith;
+    if (intersection) {
+        MTLIntersectionFunctionTableDescriptor* descriptor =
+            [[MTLIntersectionFunctionTableDescriptor alloc] init];
+        descriptor.functionCount = (NSUInteger)count;
+        made = [compute newIntersectionFunctionTableWithDescriptor:descriptor];
+        createdWith = "MTLIntersectionFunctionTableDescriptor";
+    } else {
+        MTLVisibleFunctionTableDescriptor* descriptor = [[MTLVisibleFunctionTableDescriptor alloc] init];
+        descriptor.functionCount = (NSUInteger)count;
+        made = [compute newVisibleFunctionTableWithDescriptor:descriptor];
+        createdWith = "MTLVisibleFunctionTableDescriptor";
+    }
+    if (made == nil) {
+        Problem("function table " + std::to_string(captureId) + " was not made by its pipeline");
+        return nil;
+    }
+
+    std::string exportName;
+    if (_x) {
+        exportName = _x->Declare(intersection ? "id<MTLIntersectionFunctionTable>" : "id<MTLVisibleFunctionTable>",
+                                 intersection ? "isect_table" : "visible_table", captureId, made);
+    }
+    _pendingTables.push_back({made, captureId, pipeline, pipelineId, intersection, count, createdWith, exportName});
+    return made;
+}
+
+/**
+ * Fills the tables made above, once every object exists.
+ *
+ * Deliberately a second pass rather than part of creation: objects are created in capture id order,
+ * and a table is made from its pipeline before the buffers it binds for its functions are made —
+ * the path tracer's table is object 7 and its buffers are 8 and 9. Filling at creation would report
+ * both as missing and leave the intersection function with no arguments to read.
+ */
+void MtlReplayer::FillFunctionTables() {
+    for (const PendingTable& p : _pendingTables) {
+        @autoreleasepool { FillFunctionTable(p); }
+    }
+    _pendingTables.clear();
+}
+
+void MtlReplayer::FillFunctionTable(const PendingTable& p) {
+    if (@available(macOS 11.0, *)) {
+    } else {
+        return;
+    }
+    const uint64_t captureId = p.captureId;
+    const bool intersection = p.intersection;
+    id made = p.table;
+    id pipeline = p.pipeline;
+    id<MTLComputePipelineState> compute = (id<MTLComputePipelineState>)pipeline;
+    const JValue* record = Record(captureId);
+    const Decoder table = Decoder(record ? record->Get("updates") : nullptr, _env).Nested("table");
+
+    const auto linked = _linkedFunctions.find(p.pipelineId);
+    auto functionNamed = [&](const std::string& name) -> id {
+        if (linked == _linkedFunctions.end()) return nil;
+        for (const auto& [n, f] : linked->second) if (n == name) return f;
+        return nil;
+    };
+    std::vector<std::string> statements;
+
+    const JValue* entries = table.Get("entries");
+    for (uint32_t i = 0; entries && i < entries->count; ++i) {
+        const Decoder entry = table.At(&entries->items[i]);
+        const uint64_t slot = entry.Uint("index", i);
+        // An entry the application never set: a ray reaching it calls nothing, which is what an
+        // unset entry does here too, so it is left alone rather than reported.
+        if (entry.Bool("empty")) continue;
+        // An opaque triangle intersection function is Metal's own, not the application's: it is set
+        // by signature rather than by a function, and the replay has no way to name it.
+        if (entry.Has("opaque")) {
+            Problem("function table " + std::to_string(captureId) + " entry " + std::to_string(slot) +
+                    " is an opaque triangle function, which the replay does not set");
+            continue;
+        }
+        const std::string name = entry.Str("function");
+        if (name.empty()) continue;
+        id function = functionNamed(name);
+        if (function == nil) {
+            Problem("function table " + std::to_string(captureId) + " entry " + std::to_string(slot) +
+                    " runs '" + name + "', which is not among the pipeline's linked functions in the replay");
+            continue;
+        }
+        id<MTLFunctionHandle> handle = [compute functionHandleWithFunction:(id<MTLFunction>)function];
+        if (handle == nil) {
+            Problem("function table " + std::to_string(captureId) + " entry " + std::to_string(slot) +
+                    ": the pipeline gives no handle for '" + name + "'");
+            continue;
+        }
+        if (intersection) {
+            [(id<MTLIntersectionFunctionTable>)made setFunction:handle atIndex:(NSUInteger)slot];
+        } else {
+            [(id<MTLVisibleFunctionTable>)made setFunction:handle atIndex:(NSUInteger)slot];
+        }
+        if (_x) {
+            statements.push_back("[" + p.exportName + " setFunction:[" + ExportName(pipeline) +
+                                 " functionHandleWithFunction:" + ExportName(function) + "] atIndex:" +
+                                 std::to_string(slot) + "];");
+        }
+    }
+
+    // The buffers the table binds for its functions, which an intersection function reads as its
+    // own arguments. Intersection tables only: a visible function table has no buffers.
+    const JValue* buffers = intersection ? table.Get("buffers") : nullptr;
+    for (uint32_t i = 0; buffers && i < buffers->count; ++i) {
+        const Decoder entry = table.At(&buffers->items[i]);
+        const uint64_t slot = entry.Uint("index");
+        const uint64_t offset = entry.Uint("offset");
+        id<MTLBuffer> buffer = (id<MTLBuffer>)Object(entry.Uint("buffer"));
+        if (buffer == nil) {
+            Problem("function table " + std::to_string(captureId) + " binds buffer " +
+                    std::to_string(entry.Uint("buffer")) + " at " + std::to_string(slot) +
+                    ", which is not in the replay");
+            continue;
+        }
+        [(id<MTLIntersectionFunctionTable>)made setBuffer:buffer offset:(NSUInteger)offset atIndex:(NSUInteger)slot];
+        if (_x) {
+            statements.push_back("[" + p.exportName + " setBuffer:" + ExportName(buffer) + " offset:" +
+                                 std::to_string(offset) + " atIndex:" + std::to_string(slot) + "];");
+        }
+    }
+
+    if (_x) {
+        _x->Block(MtlExporter::Create, LabelOf(captureId), [&](Source& w) {
+            const std::string var = w.Local("descriptor");
+            w.Line(p.createdWith + " *" + var + " = [[" + p.createdWith + " alloc] init];");
+            w.Line(var + ".functionCount = " + std::to_string(p.functionCount) + ";");
+            w.Line(p.exportName + " = [" + w.Object(pipeline) +
+                   (intersection ? " newIntersectionFunctionTableWithDescriptor:" : " newVisibleFunctionTableWithDescriptor:") +
+                   var + "];");
+            for (const std::string& statement : statements) w.Line(statement);
+        });
+    }
 }
 
 // ------------------------------------------------------------------------------------------
@@ -934,6 +1190,15 @@ void MtlReplayer::EndEncoder() {
     if (!_encoder) return;
     // A parallel encoder's sub-encoder shares the pass, so the read-backs wait for the parent.
     const bool sub = _pass.parentId != 0;
+    // Every binding of this encoder is now known, so the verdict on what it wrote can be taken: a
+    // kernel that also read a texture it writes makes everything it wrote unreproducible
+    // (CompareWrittenTextures). A texture written by two encoders keeps the worse verdict.
+    for (uint64_t textureId : _encoderWrites) {
+        auto [it, inserted] = _writtenTextures.insert({textureId, !_encoderAccumulates});
+        if (!inserted && _encoderAccumulates) it->second = false;
+    }
+    _encoderWrites.clear();
+    _encoderAccumulates = false;
     [(id<MTLCommandEncoder>)_encoder endEncoding];
     if (_x) {
         _x->Block(MtlExporter::Frame, "", [&](Source& w) { w.Line("[" + _pass.variable + " endEncoding];"); });
@@ -1008,38 +1273,61 @@ void MtlReplayer::IssueCommand(uint32_t index, const std::string& method, const 
     if ([_encoder conformsToProtocol:@protocol(MTLRenderCommandEncoder)]) handled = RenderCommand(method, d, index);
     else if ([_encoder conformsToProtocol:@protocol(MTLComputeCommandEncoder)]) handled = ComputeCommand(method, d, index);
     else if ([_encoder conformsToProtocol:@protocol(MTLBlitCommandEncoder)]) handled = BlitCommand(method, d, index);
+    else if ([_encoder conformsToProtocol:@protocol(MTLAccelerationStructureCommandEncoder)]) handled = AccelerationCommand(method, d, index);
     if (handled) ++_commandCount;
     else LeftOut(index, method, "the replay has no handler for it");
 }
 
 /** The contents of every buffer range a command binds, written before the command buffer runs. */
 void MtlReplayer::BindBufferContents(const Decoder& d, const JValue& command) {
+    // An acceleration structure build names its geometry's contents in `buildData` rather than in
+    // `bufferData`, and as objects rather than as bare ids: an input is keyed by geometry and field
+    // so the UI can say *which* buffer of the build a range belongs to (src/metal/src/raytracing.mm,
+    // InputsJson). Uploading them matters more here than for any ordinary bind — a build whose
+    // vertices were never written reads zeros, builds a structure with nothing in it, and every ray
+    // of the frame misses. Which is a failure that looks exactly like a working replay.
+    // In the command's *arguments*, unlike `bufferData` below, which the capture writes beside them:
+    // a build's inputs are part of what the command says (src/metal/src/raytracing.mm).
+    if (const JValue* inputs = d.Get("buildData")) {
+        if (inputs->IsArray()) {
+            for (uint32_t i = 0; i < inputs->count; ++i) {
+                const JValue* capture = inputs->items[i].Get("capture");
+                if (!capture) continue;
+                UploadBufferRange(capture->Uint());
+            }
+        }
+    }
     const JValue* ids = command.Get("bufferData");
     if (!ids || !ids->IsArray()) return;
-    for (uint32_t i = 0; i < ids->count; ++i) {
-        const uint64_t dataId = ids->items[i].Uint();
-        if (!dataId || !_uploadedBuffers.insert(dataId).second) continue;
-        const auto it = _bufferData.find(dataId);
-        if (it == _bufferData.end()) continue;
-        const JValue* info = it->second->Get("info");
-        if (!info) continue;
-        const uint64_t bufferId = info->Get("buffer") ? info->Get("buffer")->Uint() : 0;
-        if (!bufferId) continue;   // inline bytes, which the command carries itself
-        id<MTLBuffer> buffer = (id<MTLBuffer>)Object(bufferId);
-        if (!buffer) continue;
-        const uint8_t* data = nullptr;
-        size_t size = 0;
-        if (!_capture.Payload(it->second->Get("payload"), data, size) || !size) continue;
-        const uint64_t offset = info->Get("offset") ? info->Get("offset")->Uint() : 0;
-        WriteBuffer(buffer, offset, data, size, "buffer " + std::to_string(bufferId));
-        if (_x) {
-            const std::string name = _x->NameOf(buffer);
-            const std::string where = _x->Data(data, size);
-            _x->Block(MtlExporter::Contents, "buffer " + std::to_string(bufferId), [&](Source& w) {
-                w.Line("UploadBuffer(" + name + ", " + Source::Uint(offset) + ", " + where + ", " +
-                       Source::Uint(size) + ");");
-            });
-        }
+    for (uint32_t i = 0; i < ids->count; ++i) UploadBufferRange(ids->items[i].Uint());
+}
+
+/** One CaptureBuffers range, written into the buffer it belongs to; each is written once. */
+void MtlReplayer::UploadBufferRange(uint64_t dataId) {
+    if (!dataId || !_uploadedBuffers.insert(dataId).second) return;
+    const auto it = _bufferData.find(dataId);
+    if (it == _bufferData.end()) return;
+    const JValue* info = it->second->Get("info");
+    if (!info) return;
+    const uint64_t bufferId = info->Get("buffer") ? info->Get("buffer")->Uint() : 0;
+    if (!bufferId) return;   // inline bytes, which the command carries itself
+    id<MTLBuffer> buffer = (id<MTLBuffer>)Object(bufferId);
+    if (!buffer) return;
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    if (!_capture.Payload(it->second->Get("payload"), data, size) || !size) return;
+    const uint64_t offset = info->Get("offset") ? info->Get("offset")->Uint() : 0;
+    if (_options.trace) std::fprintf(stderr, "upload buffer %llu +%llu %zu bytes (data %llu)\n",
+                                     (unsigned long long)bufferId, (unsigned long long)offset, size,
+                                     (unsigned long long)dataId);
+    WriteBuffer(buffer, offset, data, size, "buffer " + std::to_string(bufferId));
+    if (_x) {
+        const std::string name = _x->NameOf(buffer);
+        const std::string where = _x->Data(data, size);
+        _x->Block(MtlExporter::Contents, "buffer " + std::to_string(bufferId), [&](Source& w) {
+            w.Line("UploadBuffer(" + name + ", " + Source::Uint(offset) + ", " + where + ", " +
+                   Source::Uint(size) + ");");
+        });
     }
 }
 

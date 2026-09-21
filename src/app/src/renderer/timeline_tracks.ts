@@ -59,7 +59,7 @@ export interface TimelineTracks {
 }
 
 /** A pass with the label the UI shows for it, since PassTiming itself carries only ids. */
-export interface LabelledPass {
+export interface LabeledPass {
   timing: PassTiming;
   label: string;
   /** Selects the pass where the UI shows it, for a view that lets its span be clicked. */
@@ -79,7 +79,7 @@ export function defaultPassLabel(t: PassTiming): string {
 
 export interface TimelineInput {
   timeline: CpuTimelineMessage | null;
-  passes: LabelledPass[];
+  passes: LabeledPass[];
   /** CaptureData.passTimingOrigin: the device tick the pass starts are measured from. */
   originTicks: number | null;
 }
@@ -286,7 +286,7 @@ export function visibleBoxes(track: Track, view: TimelineView, minMs: number): S
   return boxes;
 }
 
-/** A labelled mark on the time axis. */
+/** A labeled mark on the time axis. */
 export interface AxisTick {
   ms: number;
   label: string;
@@ -461,7 +461,7 @@ export function tracksVerdict(t: TimelineTracks): string {
         + "handing it: fewer, larger submissions would close the gap."
       : a.gpuWaitMs >= idle * 0.4
         ? "The CPU was waiting on a fence for most of that, which with an idle GPU means it is waiting on work "
-          + "already finished: the fence is being waited on later than it is signalled."
+          + "already finished: the fence is being waited on later than it is signaled."
         : "The CPU was outside the calls the layer times for most of that — its own work between them: building "
           + "command buffers, culling, simulation — so that is where the GPU's idle time is going.";
   return head + `It went idle between passes for ${idle.toFixed(2)} ms across ${gaps.length} gap`

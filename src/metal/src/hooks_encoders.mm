@@ -11,6 +11,7 @@
 #include "hooks_common.h"
 #include "overdraw.h"
 #include "raytracing.h"
+#include "shader_edit.h"
 
 #import <objc/message.h>
 
@@ -150,16 +151,21 @@ void E_insertDebugSignpost(id self, SEL _cmd, NSString *name) {
 
 void R_setRenderPipelineState(id self, SEL _cmd, id state) {
     Reentry reentry(self, _cmd);
+    // What the application asked for is what the capture records: an edit is the inspector's doing,
+    // and a command list showing the replacement would read as the application having bound it.
     if (Rec(reentry)) {
         RecordCommand("setRenderPipelineState:", self,
                       Args().ref("pipeline", state, "MTLRenderPipelineState").str());
     }
+    // The measurements draw with whatever is actually bound, edit included: an overlay of a draw
+    // whose shader is being edited should show where the *edited* draw lands.
+    id bound = reentry.outermost() ? SubstitutePipelineState(state) : state;
     if (Measuring(reentry)) {
-        LogOverdrawOp(self, OpKey::Replace("pipeline"), [s = Strong(state)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
+        LogOverdrawOp(self, OpKey::Replace("pipeline"), [s = Strong(bound)](id<MTLRenderCommandEncoder> e, OverdrawReplay &r) {
             r.BindPipeline(e, s.get());
         });
     }
-    ORIG(void (*)(id, SEL, id))(self, _cmd, state);
+    ORIG(void (*)(id, SEL, id))(self, _cmd, bound);
 }
 
 // The binding forms every stage shares, issued again by selector: the vertex, fragment, object
@@ -1391,7 +1397,8 @@ void C_setComputePipelineState(id self, SEL _cmd, id state) {
         RecordCommand("setComputePipelineState:", self,
                       Args().ref("pipeline", state, "MTLComputePipelineState").str());
     }
-    ORIG(void (*)(id, SEL, id))(self, _cmd, state);
+    ORIG(void (*)(id, SEL, id))(self, _cmd,
+                                reentry.outermost() ? SubstitutePipelineState(state) : state);
 }
 
 void C_setBytes(id self, SEL _cmd, const void *bytes, NSUInteger length, NSUInteger index) {

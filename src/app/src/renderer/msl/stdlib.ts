@@ -13,6 +13,7 @@ import {
   type DebugSampler, type DebugTexture, type Value,
 } from "../debug/values.js";
 import type { TypeTable } from "./types.js";
+import type { IntersectorHandle } from "./raytracing.js";
 
 /** A builtin that cannot finish yet: its invocation waits for the rest of the pixel quad. */
 export const BLOCKED = Symbol("blocked");
@@ -138,6 +139,7 @@ export function callBuiltin(name: string, args: Value[], ctx: BuiltinContext): V
   const types = ctx.types;
 
   if (name.startsWith("texture.")) return textureCall(name.slice(8), args, ctx);
+  if (name.startsWith("rt.")) return rayCall(name.slice(3), args, ctx);
 
   const math1 = MATH1[name];
   if (math1 && args.length >= 1) {
@@ -400,6 +402,57 @@ function determinant(m: Value): number {
     return sum;
   }
   return n === 1 ? columns[0][0] : 0;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ray tracing
+//
+// Every method on an `intersector` other than `intersect` is a *setter*: it says how the traversal
+// that follows is to behave and returns nothing. So each one changes the intersector's handle in
+// place, which the next `rayQuery` instruction reads (interpreter.ts). `intersect` itself is not
+// here — it may have to call the shader's own intersection function, which a builtin cannot do.
+
+/** A method on an intersector or an acceleration structure. */
+function rayCall(method: string, args: Value[], ctx: BuiltinContext): Value | undefined {
+  const handle = args[0] instanceof OpaqueValue ? args[0].handle as IntersectorHandle | undefined : undefined;
+  // A setter called with no argument means "on": `accept_any_intersection()` is the same as
+  // `accept_any_intersection(true)`.
+  const on = (v: Value): boolean => v === undefined ? true : num(v) !== 0 || v === true;
+  switch (method) {
+    case "accept_any_intersection":
+      if (handle) handle.options.acceptAny = on(args[1]);
+      return null;
+    case "assume_geometry_type": {
+      // `geometry_type::triangle` is 0, `bounding_box` 1, `curve` 2 (lower.ts, RAY_TRACING_ENUMS).
+      // `assume_geometry_type` is a promise about the scene, so the traversal takes it as one and
+      // stops testing the kind the shader says is not there.
+      const kind = Math.trunc(num(args[1]));
+      if (handle) {
+        handle.options.triangles = kind === 0;
+        handle.options.boundingBoxes = kind === 1;
+      }
+      return null;
+    }
+    case "force_opacity":
+      // `forced_opacity::opaque` (1) means no intersection function is called even for a box; the
+      // traversal already refuses one for a geometry the build marked opaque, and this says the
+      // same thing for the whole query.
+      if (handle) handle.options.forceOpaque = Math.trunc(num(args[1])) === 1;
+      return null;
+    case "set_geometry_cull_mode":
+    case "set_opacity_cull_mode":
+    case "set_triangle_cull_mode":
+    case "assume_identity_transforms":
+    case "accept_first_intersection":
+      if (method === "accept_first_intersection" && handle) handle.options.acceptAny = on(args[1]);
+      else ctx.warn(`intersector::${method} is recorded but does not change what the traversal finds`);
+      return null;
+    case "get_max_levels":
+      return 1;
+    default:
+      ctx.warn(`intersector::${method} is not something the interpreter knows: it does nothing`);
+      return null;
+  }
 }
 
 // ---------------------------------------------------------------------------------------------

@@ -20,10 +20,30 @@
 - The ray tracing bindings Metal has on every stage: `setVertex`/`setFragment`/`setTile` acceleration structures and function tables, and the plural forms. Only compute's `setAccelerationStructure:` was recorded before, so a draw that traced rays showed nothing.
 - `linkedFunctions` on a Metal render or compute pipeline: the intersection functions its traversal can call.
 - `test/metal_triangle --ray-tracing` and `--static-blas`, the counterpart of `test/triangle`'s: triangle geometry in an acceleration structure, which `test/path_tracer/metal` has none of, and a bottom level built once at start-up.
+- A Metal application turns up in the inspector's attach list, and steps to a free port when another inspected application has the default one — so two started by hand are both reachable without anybody choosing port numbers. An application with an inspector already attached is still missing from the list rather than shown as busy, which the Vulkan and Direct3D 12 libraries manage.
+- **Sampled call stacks in a macOS timing capture**, which was Windows-only: every thread's stack 250 times a second, with whether it was running or blocked, so the hitch none of the timed calls accounts for can still be explained. Through Mach rather than a kernel trace, so it needs no privilege and no second process — and a thread already found waiting is not stopped again, which is what keeps it from causing the hitches it is there to find.
+- **Ray queries in the Metal shader debugger**: `intersector::intersect` is followed rather than stepped over, with the traversal worked out over the geometry the capture read back — and for a procedural geometry the debugger steps *into* the shader's own intersection function, which is the only place "why is this sphere not hit" is answered. Metal has no hit shaders, so the one line a traced frame is about is inside the kernel.
+- The buffers an intersection function table binds for its functions are read back as a capture starts. They are set once at setup, so no command of a captured frame binds them and nothing else would have read them — without them an intersection function steps with its arguments all zero.
+- **Metal ray tracing replays and exports**: `mtlinsp_replay` re-creates the acceleration structures, re-runs the builds, refits and copies, fills the intersection function tables by function name, and **Export to C++** writes all of it — so a ray tracing frame can be handed to a driver team as a standalone project. Less work on Metal than on either other API: a geometry descriptor holds its buffers and a table entry names its function, where Vulkan and Direct3D 12 have device addresses and opaque identifiers to map back.
+- A storage texture a compute pass wrote is read back after the frame and compared, on top of the render targets a pass ends with. Without it a frame whose work is all in compute — a path tracer, whose traced image is the whole output — compared nothing at all.
+- A Metal replay says when a frame *cannot* be reproduced instead of reporting a difference: a kernel that reads the texture it writes accumulates into it, so the frame continues from contents the capture holds only as they were after it.
+- **Shader editing on Metal**: a pipeline's stage recompiled from edited Metal Shading Language and bound in the running application from its next frame, with **Restore Original** to put the application's own back. Nothing has to be installed here — a Vulkan or Direct3D 12 edit is compiled by glslang or dxc on this machine, while a Metal capture holds the source the application compiled and the application's own device is the compiler, so its diagnostics come back and mark the lines of the text on screen.
+- Function constants a Metal stage was specialized with are carried into an edit's recompile. Without them a library of `[[function_constant]]`-guarded variants would rebuild into a *different variant*, which compiles, draws, and looks like a clean edit.
+- `--debug-view=shader-edit` works on a Metal capture, applying the edit to the running application rather than replaying: `:bad` for the compiler's diagnostics and `:compute` for a kernel, which reaches the rebuild by a different road since `newComputePipelineStateWithFunction:` has no descriptor to keep.
+- **Draw overlays on Metal**, all five kinds: Highlight Draw, Depth Test, Stencil Test, Backface Cull and Wireframe, measured by drawing the pass again inside the application the way Direct3D 12's are. One draw per capture, and it lands in the same mask the Vulkan replay writes, so the render target tab and `get_draw_overlay` read all three backends the same way.
+- A multisampled pass can be overlaid: the overlay draws at one sample per pixel, which is what a mask means. Only Depth Test and Stencil Test are left out there, since the runs that test start from a copy of the pass's depth and a multisampled depth attachment is not copied.
+- `test/metal_triangle --inside-out` reverses the triangle's winding with back faces culled, so the draw leaves no pixel at all — the bug Backface Cull exists for, and a draw only the cull-off run can find.
+
+- `get_draw_overlay` answers for a Metal or Direct3D 12 capture that measured one, instead of refusing every capture that is not Vulkan, and says which draw the capture measured when asked about another.
+- `--debug-save-delay=<ms>` saves a debug capture later than the default four seconds, for a flow whose answer is in a second capture.
 
 ### Fixed
+- A hex literal crashed the shader debugger: the numeric suffix was read greedily, so `0xFF` came apart as `0x` with an `FF` suffix and threw. Every shader with a ray mask or a bit field in it brought the debugger down before it ran an instruction.
+- A Metal replay decoded an enum written under a name its own table does not have as *zero*, which for most Metal enums means "invalid": an acceleration structure built from a geometry whose vertex format decoded that way holds nothing, so every ray of the replayed frame missed and the report read like a clean run. Unknown names now fall back to what the caller asked for, which is also right for an enumerator from a newer SDK than the replay was built against.
+- A measured draw overlay was dropped when the capture was saved, on Metal and Direct3D 12 both: the measurement is taken in the application and cannot be taken again from the file, so the capture was the only copy of it.
+- A draw overlay of a pass with no depth or stencil attachment counted every covered pixel as *rejected* on Metal, rather than as passed: nothing to test against rejects nothing, which is what the other two backends already reported for the same pass.
 - "Waiting for a swapchain image" is now "Waiting for the display": the three APIs do not agree on the noun (a swapchain image, a drawable, a waitable object), and the Vulkan one was being shown for all of them.
-- A Metal pass's stencil was read back as whatever the tile memory held (0xFF, in testing): the capture library forced the store on colour and depth attachments but not stencil, and an application that only tests stencil sets `DontCare`.
+- A Metal pass's stencil was read back as whatever the tile memory held (0xFF, in testing): the capture library forced the store on color and depth attachments but not stencil, and an application that only tests stencil sets `DontCare`.
 - Acceleration structure input buffers are read back whole on all three backends rather than truncated at `maxBufferSize` (64 KB by default), which clipped a real bottom level's geometry to its first few hundred triangles.
 - `setAccelerationStructure:atBufferIndex:` in a Metal capture recorded `null` for the structure it bound: nothing tracked `MTLAccelerationStructure`, so there was no object for the reference to name.
 - A stray connection reset from the target probe's own peer could fail whichever UI test happened to be running (`test/target_probe.test.js`).
@@ -41,10 +61,10 @@
 - An acceleration structure built before the capture is read back as the capture starts, drawn, and built again by both replays.
 - The acceleration structure tab has a tree of instances, bottom levels and geometries with their primitives, surface area and memory.
 - The tree hides any row, searches by name, and draws every instance's bounding box.
-- **Overlaps** lists the instances whose bounding boxes overlap and colours the scene by it.
+- **Overlaps** lists the instances whose bounding boxes overlap and colors the scene by it.
 - Both capture libraries record the size the driver gives each acceleration structure build.
 - The mesh view has Points, Wireframe + Solid and Smooth shading, and flat or smooth shading from a normal attribute.
-- The mesh view colours the vertices by any attribute, draws the normals, and takes its positions from any VS In attribute.
+- The mesh view colors the vertices by any attribute, draws the normals, and takes its positions from any VS In attribute.
 - Clicking a primitive in the mesh preview selects it, and hovering names it.
 - **Zoom to Selected** and camera bookmarks (Ctrl+1-9 to keep, 1-9 to return) in the mesh and structure views.
 - `test/triangle --static-blas` builds the bottom level once, at start-up.
@@ -349,7 +369,7 @@
 - Metal capture library (`metal/`, macOS, [metal/README.md](metal/README.md)): injected with `DYLD_INSERT_LIBRARIES` and speaking the Vulkan layer's protocol, so Inspect and Capture work unchanged.
 - The launch dialog on macOS launches a `.app` with the Metal library, and says how to re-sign a hardened-runtime target.
 - Metal pipeline reflection: stage buffers and inline constants as named, typed fields, and a Reflection section per stage.
-- Metal frame stats (frame time, submit time, refresh rate), and the capture bar's options honoured by the library.
+- Metal frame stats (frame time, submit time, refresh rate), and the capture bar's options honored by the library.
 - Metal validation: command buffer errors, Metal's validation layer, shader logs, and a leak report at exit.
 - Metal in Inspect: functions, libraries with their source, Metal Shading Language highlighting, and each command's key arguments.
 - Metal stack traces of object creations and captured commands.

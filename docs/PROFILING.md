@@ -176,7 +176,7 @@ every hitch with what caused it.
   that always takes 8 ms is not blamed for the frame that took 120. When nothing accounts for it,
   the report says so: the time went to the application's own work between the calls the layer times,
   and that is itself the finding.
-- **Threads**, with **Sample stacks** on (Windows): where that finding used to stop, the report
+- **Threads**, with **Sample stacks** on (Windows and macOS): where that finding used to stop, the report
   goes on. Every thread's call stack is sampled 250 times a second, with whether it was running or
   blocked there, and filed under the frame it fell in. Under the figures is what each thread did in
   the worst hitch — or in the stretch you dragged out — busiest first: how long it ran and in what,
@@ -190,7 +190,12 @@ every hitch with what caused it.
   there to explain. It sees inside the process only — which other process took the core, or what
   the GPU's hardware queue was doing, takes a kernel trace (PIX's timing captures, Nsight Systems).
 
-Vulkan and Direct3D 12.
+  Windows samples through the thread contexts and the unwind tables; macOS through Mach
+  (`task_threads`, `thread_suspend`, `thread_get_state`), walking frame pointers, which the arm64
+  ABI guarantees are there. Linux has neither: sampling there would mean a signal per thread or a
+  privilege a library loaded into somebody else's process should not be asking for.
+
+All three APIs. Frame times and their categories anywhere; sampled stacks on Windows and macOS.
 
 ### What is allocating
 
@@ -399,7 +404,7 @@ Once they are read, each pass's **Verdict** in GPU Bottlenecks becomes one of th
 
 A frame rendering at a modest resolution on a fast GPU comes out mostly latency bound, which is the
 honest answer: the passes are not big enough to saturate anything, and merging or removing them
-beats optimising their shaders.
+beats optimizing their shaders.
 
 A latency-bound pass says why where the capture also carries [compiler
 statistics](INSPECT.md#compiler-statistics). Registers are the usual reason occupancy is low: the

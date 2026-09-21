@@ -98,6 +98,34 @@ test("a capture file reads back what was written, on both paths", () => {
   }
 });
 
+test("a measured draw overlay survives the file, mask and all", () => {
+  // Metal and D3D12 measure a draw overlay while the frame is captured, so the capture *is* the
+  // only copy: a file that dropped it would lose the answer the second capture was taken for.
+  // Vulkan's come from replaying the file, so its captures carry none and the field is absent.
+  const mask = new Uint8Array([0, 1, 3, 11, 15, 4, 0, 0]);
+  const m = manifest();
+  m.drawOverlays = [{
+    info: {
+      command: 17, method: "drawIndexedPrimitives:", frame: 0, commandBuffer: 752, passIndex: 1,
+      measured: true, width: 4, height: 2, fragments: 5, pixelsCovered: 5, pixelsPassed: 0,
+      pixelsRejected: 5, pixelsStencilRejected: 0, pixelsBackFacing: 0,
+      depthTested: true, wireframe: true, stencilTested: false, backFaceTested: true,
+    },
+    // After pixels (0, 8), spirv (8, 8) and vertices (16, 64).
+    payload: [80, 8],
+  }];
+  for (const [label, write, read] of [["direct", {}, {}], ["batched", BATCHED_WRITE, BATCHED_READ]]) {
+    const loaded = parseCaptureFile(encodeCaptureFile(m, [...PAYLOADS, mask], write), read);
+    assert.equal(loaded.drawOverlays.size, 1, label);
+    const o = loaded.drawOverlays.get(17);
+    assert.equal(o.pixelsRejected, 5, label);
+    assert.equal(o.depthTested, true, label);
+    assert.deepEqual(o.mask, mask, label);
+  }
+  // A capture with none has no field to read, and the map is empty rather than absent.
+  assert.equal(parseCaptureFile(encodeCaptureFile(manifest(), PAYLOADS)).drawOverlays.size, 0);
+});
+
 test("commands are renumbered in place, without copying the list", () => {
   const m = manifest(5);
   m.commands.forEach((c) => { c.index = 999; });

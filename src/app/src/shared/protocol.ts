@@ -1220,10 +1220,14 @@ export interface AppConfig {
     timingMs?: number | null;
     /** --debug-memory=<ms>: run a memory capture for this long once connected, then stop. */
     memoryMs?: number | null;
+    /** --debug-timing-no-stacks: a timing capture with the stack sampler off, for comparing the two. */
+    timingStacks?: boolean | null;
     /** --debug-expand=<text>: open the selected command's section whose title contains that text. */
     expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */
     openCapture: string | null; saveCapture: string | null;
+    /** --debug-save-delay=<ms>: wait longer before saving, for a flow whose answer is in a second capture. */
+    saveCaptureDelayMs?: number | null;
     /** --debug-export=<file>: write the report --debug-view opened to that standalone HTML file. */
     exportReport: string | null;
     /** --debug-export-cpp=<directory>: export the opened capture to C++ into a folder of its own there. */

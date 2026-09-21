@@ -10,7 +10,7 @@ import { REFRESH_SOURCE_NOTE, frameBound, type CaptureStatistics } from "./captu
 import { cpuVerdict, summarizeCpuTimeline } from "./cpu_timeline.js";
 import {
   MIN_VIEW_MS, axisTicks, buildTimelineTracks, clampView, fullView, gpuGaps, panView, tracksVerdict, visibleBoxes,
-  zoomView, type LabelledPass, type SpanBox, type TimelineInput, type TimelineView, type Track,
+  zoomView, type LabeledPass, type SpanBox, type TimelineInput, type TimelineView, type Track,
 } from "./timeline_tracks.js";
 import type { CpuTimelineMessage } from "../shared/protocol.js";
 import type { FrameFinding } from "./vulkan/frame_analysis.js";
@@ -110,7 +110,7 @@ function renderCpuTimeline(root: Widget, timeline: CpuTimelineMessage | null): v
 
 /** The GPU half of the Timeline card: the capture's timed passes and the tick they are measured from. */
 export interface GpuTrackInput {
-  passes: LabelledPass[];
+  passes: LabeledPass[];
   originTicks: number | null;
 }
 

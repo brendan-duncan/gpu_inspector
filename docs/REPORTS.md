@@ -85,7 +85,7 @@ and clicking that shows the whole of the frame in focus again.
 
 ![The Shader Flame Graph of a Unity frame: passes, pipelines and the fragment stages inside them, sized by GPU time](images/flame-graph.png)
 
-Inside a pass, the split between draws is modelled until something measures it:
+Inside a pass, the split between draws is modeled until something measures it:
 
 - **Profile passes** counters, where the capture has them, give each pass's fragment shader
   invocations, and the fragment stages are weighted by those instead of by scissor area.
@@ -257,10 +257,16 @@ discards still shows as covered:
 
 - **Vulkan** — the capture is replayed on this machine's GPU with the draw drawn on its own (see
   [Capture replay](REPLAY.md#draw-call-overlays)).
-- **Direct3D 12** — the draw is issued again inside the application, so asking for an overlay
-  captures the application's next frame and shows it there
-  ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)). One draw
-  is measured per capture.
+- **Direct3D 12** and **Metal** — the draw is issued again inside the application, so asking for an
+  overlay captures the application's next frame and shows it there
+  ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes),
+  [Measuring a draw inside the application](METAL.md#measuring-a-draw-inside-the-application)). One
+  draw is measured per capture.
+
+On a multisampled pass, Metal draws the overlay at one sample per pixel, which is what a mask means:
+a pixel is covered or it is not. Depth Test and Stencil Test need the depth the pass began with, and
+a multisampled depth attachment is not copied, so those two report nothing there while Highlight
+Draw, Wireframe and Backface Cull still answer.
 
 ## Mesh view
 
@@ -292,7 +298,7 @@ does not shrink the rest to a speck; the wheel still reaches the whole of it.
 | Mode | What it shows |
 |---|---|
 | **Wireframe** | every primitive's edges, with nothing hidden behind anything else |
-| **Solid** | the triangles filled in one colour, or the chosen attribute's |
+| **Solid** | the triangles filled in one color, or the chosen attribute's |
 | **Wireframe + Solid** | the triangles filled, with their edges over them |
 | **Flat** | the triangles lit by one normal per face and a light at the eye: a fold, a flipped face or a wrong winding shows as a face that is the wrong brightness |
 | **Smooth** | the triangles lit by normals interpolated across each face, which is what the lighting will see |
@@ -305,7 +311,7 @@ last vertex and Smooth the normal interpolated across it, so a normal that disag
 stands out when switching between the two. **Show** draws the normals as short lines: each vertex's
 with an attribute chosen, each face's without.
 
-**Color** paints the vertices with any attribute: a colour as it is, anything else (a position, a
+**Color** paints the vertices with any attribute: a color as it is, anything else (a position, a
 normal, a texture coordinate) stretched over its own range. On VS In, **Position** picks the
 attribute drawn as the position when the one that looks like a position is not it.
 
@@ -441,6 +447,34 @@ What it runs on:
   specialization constants, a Metal draw's buffers, textures and samplers by index — with textures
   sampled from their read-backs.
 
+### Ray queries (Metal)
+
+A Metal kernel traverses a scene itself: there are no hit shaders and no binding table, it holds an
+`intersector` and calls `intersect`. So the one line a traced frame is about is inside the shader,
+and stepping over it would stop at exactly the wrong place. The debugger follows it instead.
+
+`intersect` is worked out on the CPU over the geometry the capture read back — every instance, every
+primitive, nearest hit wins — and `intersection_result` comes back with the type, the distance, the
+instance, the geometry, the primitive, the barycentrics and the instance's transforms, the same
+values the GPU would have given. The intersector's own settings are honored: `accept_any_intersection`
+stops at the first hit, `assume_geometry_type` skips the kind the shader says the scene does not
+hold, and the ray's mask skips the instances it ANDs to zero with.
+
+For a **procedural geometry** it goes one step further and calls the shader's own intersection
+function, stepping into it like any other call. That matters because a bounding box says nothing
+about what is in it: whether a sphere is hit is a decision the application's own code makes, and
+"why is this sphere not hit" can only be answered by watching it make that decision. Each box the
+ray entered is asked about in the order the ray entered it, with `max_distance` set to the nearest
+hit so far, so a function that reports a farther hit is ignored exactly as the hardware would ignore
+it. An opaque geometry is taken at the point the ray enters its box, with no function called, which
+is again what the hardware does.
+
+What it needs is the scene, which means the capture has to hold the builds: a bottom level built
+once at load is read back as the capture starts, so most frames do
+([Ray tracing](METAL.md)). An instance naming a bottom level the capture has no build of is
+reported as a warning rather than silently missing, since a ray that cannot be told what is in an
+instance is a miss for the wrong reason.
+
 Enable **Buffers** and **Images** before capturing. A buffer or image that was not captured reads as
 zeros, and the Warnings section lists it.
 
@@ -451,7 +485,7 @@ Current limits:
   compiled from source does.
 - A Metal shader specialized with function constants is stepped with the values the draw used, and
   the Warnings section names any the capture did not record. A function constant that decides
-  whether an *argument* exists is not honoured.
+  whether an *argument* exists is not honored.
 - A Metal fragment runs the draw's vertex shader once per vertex to find its triangle, so a draw
   with very many vertices is capped, and the notes say so.
 - Tessellation and geometry stages (Metal: object, mesh and tile stages) are not supported.

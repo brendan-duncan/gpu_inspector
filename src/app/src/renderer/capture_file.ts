@@ -178,6 +178,9 @@ export async function serializeCapture(session: LayerSession & { readonly name: 
     ...(data.passTimingOrigin !== null ? { passTimingOrigin: data.passTimingOrigin } : {}),
     ...(data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...(o.data ? { payload: addPayload(o.data) } : {}) })) } : {}),
     ...(data.pixelHistory ? { pixelHistory: data.pixelHistory } : {}),
+    // The mask goes out as a payload, like a texture's pixels: one byte per pixel of the pass.
+    ...(data.drawOverlays.size ? { drawOverlays: [...data.drawOverlays.values()].map(({ mask, ...info }) =>
+      ({ info, ...(mask ? { payload: addPayload(mask) } : {}) })) } : {}),
     ...(data.drawStats?.length ? { drawStats: data.drawStats } : {}),
     ...(data.hwCounters ? { hwCounters: data.hwCounters } : {}),
     ...(data.cpuTimeline ? { cpuTimeline: data.cpuTimeline } : {}),

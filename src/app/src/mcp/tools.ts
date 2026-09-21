@@ -13,11 +13,11 @@ import { drawOutcome, eventSummary, parsePixelHistory, texelValues, touchesPixel
 import {
   OVERDRAW_BUCKETS, measuresWhileCapturing, overdrawAverages, overdrawCount, overdrawRgba, parseOverdrawFile,
 } from "../renderer/overdraw.js";
-import { drawOverlaySummary, parseDrawOverlayFile } from "../renderer/draw_overlay.js";
+import { drawOverlaySummary, parseDrawOverlayFile, type DrawOverlay } from "../renderer/draw_overlay.js";
 import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer/mesh_output.js";
 import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
 import { exportFolderName, exportsToCpp, parseExportSummary } from "../renderer/export_cpp.js";
-import { buildTimelineTracks, defaultPassLabel, gpuGaps, submitToFirstPassMs, tracksVerdict, type LabelledPass } from "../renderer/timeline_tracks.js";
+import { buildTimelineTracks, defaultPassLabel, gpuGaps, submitToFirstPassMs, tracksVerdict, type LabeledPass } from "../renderer/timeline_tracks.js";
 import { cpuVerdict, summarizeCpuTimeline } from "../renderer/cpu_timeline.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
@@ -85,7 +85,7 @@ function timelineTiming(c: Capture): Record<string, unknown> {
     const timing = c.data.passTiming(p.frame, p.commandBuffer, p.passIndex, p.compute);
     if (timing) names.set(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`, c.passName(i));
   });
-  const passes: LabelledPass[] = [...c.data.passTimings.values()].map((timing) => ({
+  const passes: LabeledPass[] = [...c.data.passTimings.values()].map((timing) => ({
     timing,
     label: names.get(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`)
       ?? defaultPassLabel(timing),
@@ -575,7 +575,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         }
         const byPass = hwCountersByPass(file);
         const metrics = c.metrics.passes;
-        // Render passes only: a compute pass shares its neighbour's key, and no counter range wraps one.
+        // Render passes only: a compute pass shares its neighbor's key, and no counter range wraps one.
         const rows = metrics.map((p, i) => ({ p, i, r: p.compute ? undefined : byPass.get(`${p.frame}:${p.commandBuffer}:${p.passIndex}`) }))
           .filter((x) => x.r);
         // Slowest first where the pass was timed, else in frame order.
@@ -772,9 +772,10 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
     },
     {
       name: "get_draw_overlay",
-      description: "Where one draw of a Vulkan capture landed, as RenderDoc's texture viewer overlays show it, for \"the draw ran " +
-        "and I cannot see it\": the capture is replayed with the draw issued on its own (under a second, quicker for later draws " +
-        "of the same capture). Gives the pixels it covered, how many passed its depth and stencil tests and how many were " +
+      description: "Where one draw landed, as RenderDoc's texture viewer overlays show it, for \"the draw ran " +
+        "and I cannot see it\": a Vulkan capture is replayed with the draw issued on its own (under a second, quicker for later " +
+        "draws of the same capture), while a Metal or D3D12 capture carries the one draw it was asked to measure while it was " +
+        "taken. Gives the pixels it covered, how many passed its depth and stencil tests and how many were " +
         "rejected, how many the stencil test alone rejected, and how many its own back-face culling emptied — a pixel where only " +
         "back faces of it land, which is what a mesh wound the wrong way looks like. A closed mesh reports none of those, since " +
         "some face always points at the camera. get_pixel_history follows one pixel through the whole frame instead.",
@@ -788,18 +789,26 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         const index = requireInt(args, "command");
         const cmd = c.data.commands[index];
         if (!cmd || !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_draw_overlay takes a draw command (list_commands with kind draw).`);
-        if (c.data.api !== "vulkan") {
-          // D3D12 measures overlays inside the application while it captures, which needs the app
-          // running and a capture asked for with the draw named; Metal has neither.
-          return jsonResult({ capture: c.id, command: index, note: c.data.api === "d3d12"
-            ? "A D3D12 capture's draw overlays are measured in the application as the frame is captured, so a saved capture has none: ask for one in the app's render target tab, which captures again."
-            : "A Metal capture has no draw overlays: they need a replay, which Metal captures do not have yet." });
+        let o: DrawOverlay | undefined;
+        if (c.data.api === "vulkan") {
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) return jsonResult({ capture: c.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
+          const run = await replayServers.run(tool, c.path, { kind: "overlay", commands: [index] });
+          if (!run.data) return jsonResult({ capture: c.id, command: index, note: `The replay could not draw it: ${run.error ?? "no data"}` });
+          o = parseDrawOverlayFile(run.data).draws.find((d) => d.command === index);
+        } else {
+          // Metal and D3D12 measure overlays inside the application while it captures, so a capture
+          // carries the one draw it was asked to measure and cannot be made to answer for another:
+          // that needs the application running and another capture, which is the app's business.
+          o = c.data.drawOverlays.get(index);
+          if (!o) {
+            const measured = [...c.data.drawOverlays.values()][0];
+            const api = c.data.api === "metal" ? "Metal" : "D3D12";
+            return jsonResult({ capture: c.id, command: index, note: measured
+              ? `This capture measured draw ${measured.command}, not ${index}: a ${api} draw overlay is measured in the application as the frame is captured, one draw per capture.`
+              : `A ${api} capture's draw overlays are measured in the application as the frame is captured, so this one has none: ask for one in the app's render target tab, which captures again.` });
+          }
         }
-        const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
-        if (!tool) return jsonResult({ capture: c.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
-        const run = await replayServers.run(tool, c.path, { kind: "overlay", commands: [index] });
-        if (!run.data) return jsonResult({ capture: c.id, command: index, note: `The replay could not draw it: ${run.error ?? "no data"}` });
-        const o = parseDrawOverlayFile(run.data).draws.find((d) => d.command === index);
         if (!o || !o.measured) return jsonResult({ capture: c.id, command: index, method: cmd.method, note: `Not drawn: ${o?.note ?? "the replay did not reach the draw"}` });
         const pixels = o.width * o.height;
         const share = (n: number): string => `${((n / Math.max(1, pixels)) * 100).toFixed(2)}%`;

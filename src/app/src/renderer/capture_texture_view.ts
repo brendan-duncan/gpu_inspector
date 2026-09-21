@@ -216,7 +216,10 @@ export class CaptureTextureView {
       drawOverlay: d ? {
         measured: d.measured, pixelsCovered: d.pixelsCovered, pixelsPassed: d.pixelsPassed, pixelsRejected: d.pixelsRejected,
         pixelsStencilRejected: d.pixelsStencilRejected, pixelsBackFacing: d.pixelsBackFacing,
-        stencilTested: d.stencilTested, backFaceTested: d.backFaceTested,
+        // The overlay's own depth test, not the outer `depthTested` above, which is the overdraw
+        // measurement's toggle: a draw whose pass has nothing to test against reports false here
+        // while the overdraw switch beside it is on.
+        depthTested: d.depthTested, stencilTested: d.stencilTested, backFaceTested: d.backFaceTested,
         wireframe: d.wireframe, mask: !!d.mask, note: d.note ?? null,
       } : null,
       picked: this._picked ? { x: this._picked.x, y: this._picked.y } : null,
@@ -589,7 +592,8 @@ export class CaptureTextureView {
         const measured = [...this.host.data.drawOverlays.values()][0];
         this._drawError = `This capture measured draw #${measured.command}; a draw overlay is measured while the frame is captured, one draw per capture.`;
       } else if (kind && this.host.captureDrawOverlay) {
-        this._drawError = "Measuring in a new capture: D3D12 draws the overlay inside the application, on its next frame.";
+        const api = this.host.data.api === "metal" ? "Metal" : "D3D12";
+        this._drawError = `Measuring in a new capture: ${api} draws the overlay inside the application, on its next frame.`;
         this.host.captureDrawOverlay(draw, kind);
       }
       this._renderOverlayRow();

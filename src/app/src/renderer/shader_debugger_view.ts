@@ -29,6 +29,7 @@ import { nonFinite, scalars, type Value } from "./debug/values.js";
 import { SpirvProgram } from "./spirv/program.js";
 import { sourceLineMap } from "./vulkan/spirv_debug.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
+import type { StructureDatabase } from "./acceleration_scene.js";
 import type { CaptureCommand, DebugTranslationResult, ShaderTextResult } from "../shared/protocol.js";
 
 /** What to debug; the parts left out are chosen (a pixel the draw covers, the first vertex or invocation). */
@@ -40,6 +41,11 @@ export type DebugRequest =
 export interface ShaderDebuggerOptions {
   /** Testing aid: steps over this many lines once open (-1 runs to the end). */
   steps?: number;
+  /**
+   * Testing aid: runs to this source line and stops there, so a test can read what the line before
+   * it computed. Step counts cannot reach a line inside a loop, which is where a ray query is.
+   */
+  stopAtLine?: number;
   /** Debug GLSL decompiled from the SPIR-V instead of the SPIR-V (the tab's choice when left out). */
   decompiled?: boolean;
 }
@@ -47,7 +53,7 @@ export interface ShaderDebuggerOptions {
 /** What the view needs of the capture tab it belongs to. */
 export interface ShaderDebuggerHost {
   readonly data: CaptureData;
-  readonly db: ObjectLookup & { blobData: Map<string, Uint8Array> };
+  readonly db: ObjectLookup & StructureDatabase & { blobData: Map<string, Uint8Array> };
   readonly session?: SessionContext;
   passLabelOf(key: OverdrawPassKey): string;
   passOfDraw(cmd: CaptureCommand): OverdrawPassKey | null;
@@ -180,6 +186,12 @@ export class ShaderDebuggerView {
       targetPixel: this._session?.targetPixel ?? null,
       replayedOutputs: this._session?.replayedOutputs ?? null,
       lineValues: ctl?.lastLine.results.length ?? 0,
+      // The values the last line computed, named, so a test can assert what a shader worked out
+      // rather than only that it ran. A ray query needs this: "the kernel returned" says nothing
+      // about whether the traversal found the triangle.
+      lastValues: ctl ? ctl.lastLine.results.slice(-32).map((r) => ({
+        name: this._session?.program.nameOf(r.id) ?? "", value: scalars(r.value),
+      })) : [],
       codeLines: this._code?.element.querySelectorAll(".code-line").length ?? 0,
       warnings: inv ? [...inv.warnings] : [],
     };
@@ -244,6 +256,15 @@ export class ShaderDebuggerView {
     await this._renderCode(token);
     if (token !== this._token) return;
     this._refresh();
+    const stopAt = this._options.stopAtLine;
+    if (stopAt !== undefined && stopAt > 0) {
+      // File 0: an MSL program is one file, and a Vulkan one stepped as source is too.
+      this._ctl.breakpoints.add(sourceKey(0, stopAt));
+      this._breakpoints.add(sourceKey(0, stopAt));
+      this._ctl.advance("continue");
+      this._refresh();
+      return;
+    }
     const steps = this._options.steps;
     if (steps !== undefined) {
       if (steps < 0) this._ctl.advance("continue");

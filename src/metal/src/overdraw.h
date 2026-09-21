@@ -18,7 +18,7 @@
 // The Vulkan counterparts are vkinsp_replay --overdraw and --pixel (docs/REPLAY.md), which have to
 // rebuild the frame from a capture file first. A pipeline state or depth-stencil state cannot be
 // copied, only its descriptor, so every render pipeline's and depth-stencil state's descriptor is
-// kept from its creation until the object is released (RememberRenderPipeline).
+// kept from its creation until the object is released (RememberPipelineDescriptor).
 #pragma once
 
 #include "capture.h"
@@ -163,8 +163,21 @@ void NoteOverdrawSubEncoder(id parent, id encoder);
 /** After the application's endEncoding has been forwarded: draws the measurements into the command buffer. */
 void EndOverdrawPass(id encoder);
 
-/** A render pipeline was created: its descriptor is kept, since the measurements' copies are made from it. */
-void RememberRenderPipeline(id state, id descriptor);
+/**
+ * A pipeline state was created: its descriptor is kept, since a pipeline state cannot be copied
+ * but its descriptor can. The measurements' pipeline copies are made from it (PipelineCopy) and so
+ * are shader edits' rebuilds (shader_edit.h). Render, tile, mesh and compute descriptors all live
+ * in the one table: only the caller knows which kind a state is, and both readers already do.
+ */
+void RememberPipelineDescriptor(id state, id descriptor);
+
+/**
+ * The descriptor a render pipeline state was created from, as a copy the caller owns, or nil when
+ * the library never saw it created (built before it was loaded, or through a form it does not
+ * hook). The same table the measurements' pipeline copies come from, read by shader editing for
+ * the same reason: a pipeline state cannot be copied, but its descriptor can (shader_edit.h).
+ */
+id CopyRememberedPipelineDescriptor(id state);
 
 /** A depth-stencil state was created: its descriptor is kept, for the pixel history's test copies. */
 void RememberDepthStencilState(id state, MTLDepthStencilDescriptor *descriptor);

@@ -6,7 +6,7 @@
 // versions, Metal needs one per overload — `drawPrimitives:` has four, differing only in whether
 // instancing and base-instance arguments are present.
 import type {
-  BoundIndexBuffer, BoundStageBuffer, BoundStageSampler, BoundStageTexture, BoundVertexBuffer, CommandSets,
+  BoundIndexBuffer, BoundRayObject, BoundStageBuffer, BoundStageSampler, BoundStageTexture, BoundVertexBuffer, CommandSets,
 } from "../command_sets.js";
 import type { ArgValue, CaptureCommand } from "../../shared/protocol.js";
 // Generic argument coercers that happen to live beside the Vulkan object model.
@@ -90,6 +90,31 @@ const STAGE_BUFFER_METHODS: Record<string, { stage: string; kind: "one" | "many"
   "setTileBytes:length:atIndex:": { stage: "tile", kind: "bytes" },
 };
 const BIND_STAGE_BUFFER = new Set(Object.keys(STAGE_BUFFER_METHODS));
+
+/**
+ * Acceleration structures and function tables bound to a stage, which bind at a *buffer* index:
+ * `setAccelerationStructure:atBufferIndex:` puts one where `setBuffer:offset:atIndex:` would put
+ * bytes, and only the shader parameter's type says which of the two a slot holds. Kept apart from
+ * the buffer table because what they bind is an object with no bytes to read, and the shader
+ * debugger's ray queries read them through their own accessor (msl/raytracing.ts).
+ */
+const RAY_BINDING_METHODS: Record<string, { stage: string; kind: BoundRayObject["kind"]; many?: boolean }> = {
+  "setAccelerationStructure:atBufferIndex:": { stage: "compute", kind: "accelerationStructure" },
+  "setVertexAccelerationStructure:atBufferIndex:": { stage: "vertex", kind: "accelerationStructure" },
+  "setFragmentAccelerationStructure:atBufferIndex:": { stage: "fragment", kind: "accelerationStructure" },
+  "setTileAccelerationStructure:atBufferIndex:": { stage: "tile", kind: "accelerationStructure" },
+  "setIntersectionFunctionTable:atBufferIndex:": { stage: "compute", kind: "intersectionFunctionTable" },
+  "setVertexIntersectionFunctionTable:atBufferIndex:": { stage: "vertex", kind: "intersectionFunctionTable" },
+  "setFragmentIntersectionFunctionTable:atBufferIndex:": { stage: "fragment", kind: "intersectionFunctionTable" },
+  "setTileIntersectionFunctionTable:atBufferIndex:": { stage: "tile", kind: "intersectionFunctionTable" },
+  "setIntersectionFunctionTables:withBufferRange:": { stage: "compute", kind: "intersectionFunctionTable", many: true },
+  "setVisibleFunctionTable:atBufferIndex:": { stage: "compute", kind: "visibleFunctionTable" },
+  "setVertexVisibleFunctionTable:atBufferIndex:": { stage: "vertex", kind: "visibleFunctionTable" },
+  "setFragmentVisibleFunctionTable:atBufferIndex:": { stage: "fragment", kind: "visibleFunctionTable" },
+  "setTileVisibleFunctionTable:atBufferIndex:": { stage: "tile", kind: "visibleFunctionTable" },
+  "setVisibleFunctionTables:withBufferRange:": { stage: "compute", kind: "visibleFunctionTable", many: true },
+};
+const BIND_RAY_OBJECT = new Set(Object.keys(RAY_BINDING_METHODS));
 
 // Textures and samplers bound to a stage by index, the same shape as the buffer table: "one"
 // binds a single index, "many" a range given by `withRange:`. A draw samples whatever these left
@@ -353,6 +378,24 @@ export const METAL_SETS: CommandSets = {
     return a.buffers.map((buffer, i) => ({
       cmd, stage: entry.stage, index: first + i, buffer, offset: num(offsets[i]), dataId: cmd.bufferData?.[i] ?? 0, inline: false,
     }));
+  },
+
+  BIND_RAY_OBJECT,
+
+  rayObjectsOf(cmd: CaptureCommand): BoundRayObject[] {
+    const entry = RAY_BINDING_METHODS[cmd.method];
+    const a = cmd.args;
+    if (!entry || !a) return [];
+    if (!entry.many) {
+      // The singular forms name the object by what it is: `accelerationStructure`,
+      // `intersectionFunctionTable`, `visibleFunctionTable` (src/metal/src/hooks_encoders.mm).
+      const object = a.accelerationStructure ?? a.intersectionFunctionTable ?? a.visibleFunctionTable ?? null;
+      return [{ cmd, stage: entry.stage, index: num(a.index), kind: entry.kind, object }];
+    }
+    const list = a.intersectionFunctionTables ?? a.visibleFunctionTables;
+    if (!Array.isArray(list)) return [];
+    const first = isObject(a.range) ? num(a.range.location) : 0;
+    return list.map((object, i) => ({ cmd, stage: entry.stage, index: first + i, kind: entry.kind, object }));
   },
 
   BIND_STAGE_TEXTURE,

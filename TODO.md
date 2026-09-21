@@ -61,7 +61,7 @@ interpreter and re-created pipelines.
   by both APIs; they replace the per-command rules that answered the same questions by proxy.
 - Render Graph: the capture's passes and the resources connecting them, from attachments,
   descriptor sets and transfers, versioned per write and keyed per subresource; a resource
-  lifetime chart with a node-link view of the selected pass' neighbourhood, GPU times, the
+  lifetime chart with a node-link view of the selected pass' neighborhood, GPU times, the
   critical path, external inputs and passes whose output nothing reads.
 - Claude Code plugin (`claude-plugin/`): an MCP server (`src/app/src/mcp/`) over saved `.gpucap` files,
   built on the renderer's own analysis modules (split out of the UI for it).
@@ -230,7 +230,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       pixel's value and depth after each event.
 - [x] Pixel history, the rest (`src/replay/src/history.cpp`):
       **writes outside render passes** — a clear, a copy from an image or a buffer, a blit and a
-      resolve are recognised from their own arguments (which image, which region, which layout, and
+      resolve are recognized from their own arguments (which image, which region, which layout, and
       whether it covers the pixel at that mip and layer) and the pixel is read straight out of the
       image after the command; a dispatch or a trace writes through a descriptor, so it is reported
       by what was bound (a descriptor set of that bind point holding the image as a storage image),
@@ -321,6 +321,150 @@ application with injected state. Route (a) is the general one and is the prerequ
       nothing; the `overlay-backface` and `overlay-stencil` UI cases cover them. The stencil case
       holds that the run is made and reports against the stencil: the sample's own stencil test
       compares ALWAYS, so nothing there is rejected by it.
+- [x] The attach list on Metal (`src/metal/src/transport.mm`), which the library's own TODO had
+      spelled out and my gap analysis missed: `gpuinsp::PortIsServed` to step off a port another
+      inspected application already has (only when `MTLINSP_PORT` did not name it), and the
+      handshake that answers a `Probe` with a `Target` and drops it rather than taking the
+      connection for a client. `target_probe.h` needed the socket headers added to its `__APPLE__`
+      branch — its POSIX `PortIsServed` had never been compiled on a Mac.
+      Verified by hand: two `mtlinsp_triangle` started at once land on 47532 and 47533 and each
+      answers with its own pid and port.
+      **Not done, and said where it lives:** answering a probe *while* a client is attached. The
+      Vulkan library runs a client's session on a thread of its own and returns straight to accept;
+      the Metal one runs it on the accept thread, so while somebody is attached nothing is accepted
+      and a probe of that port times out — an attached Metal application is missing from the list
+      rather than listed as busy. Moving the session to its own thread needs the `client` handle
+      made safe first, since the present shape serializes it by construction, and that is a change
+      to the one path every session depends on for a refinement discovery does not need.
+- [x] The macOS half of the CPU sampler (`src/vulkan/src/cpu_sampler.h`, the `#elif` branch): the
+      same public surface, the same behaviour, through Mach — `task_threads` for the list,
+      `thread_suspend` / `thread_resume`, `thread_get_state` with `ARM_THREAD_STATE64`,
+      `thread_info` with `THREAD_BASIC_INFO` for the thread's own CPU time *and* its run state,
+      pthread for the name and the stack bounds — unwinding by walking frame pointers, which the
+      arm64 ABI guarantees are there. Wired into the Metal timing capture and the **Sample stacks**
+      checkbox, which was Windows-only in the capture bar.
+      The rule that matters was kept: between suspend and resume nothing is touched that could want
+      a lock. The stack copy is clamped to the bounds pthread reports, which is the whole of what
+      keeps the `memcpy` from faulting — macOS has no structured exception handling to catch one,
+      where the Windows branch wraps its walk in a `__try`.
+      Verified: a standalone probe with a deliberately 24-deep recursion walks 29 frames and
+      symbolizes to a real chain (`std::__thread_proxy` -> `_pthread_start` -> `thread_start`), and
+      tells the busy thread from the idle one. A five-minute run gave 181,438 samples over 8,739
+      stacks with the sampler holding its 250 ticks a second start to finish, and about *one* of
+      the six threads suspended per tick — the rest counted under the wait they were already in,
+      which is the rule that keeps this from causing hitches. Cost, measured back to back on an
+      idle machine for two minutes each: 60.0 frames a second with sampling on against 58.6 with
+      it off, which is noise. Then left running for several minutes at a time watching for the
+      intermittent deadlock that is this code's failure mode.
+      Worth remembering about the measurement rather than the code: an earlier five-minute run
+      showed the frame rate halved, and the cause was this machine building and testing at the same
+      time. A profiler's cost has to be measured on an idle machine or it is not measured at all.
+      Linux stays at the stub, and `docs/METAL.md`'s old bullet claiming no CPU sampling on macOS
+      is gone — it was a platform gap rather than a Metal one, and now it is neither.
+- [x] Ray queries in the MSL shader debugger (`src/app/src/renderer/msl/raytracing.ts`): the
+      traversal on the CPU over the geometry the capture read back, and *into* the shader's own
+      intersection function for a procedural geometry. Much less than the ~1200 lines this was
+      sized at, because the capture already holds the scene — `accelerationScene` resolves a top
+      level's instances to their bottom levels and reads the builds' vertices and boxes back, which
+      is exactly a traversal's input. What it needed beside the arithmetic:
+      the types (`ray` and `intersection_result` as real structs, the handles as opaque with
+      methods dispatched by name, and `intersector<T>::result_type` teaching the parser to accept a
+      member type after template arguments and the declaration detector to skip past it);
+      the enumerations (`intersection_type::triangle` is 1 and `geometry_type::triangle` is 0, and
+      the parser kept only the last component of a qualified name, so both read as `triangle` and
+      one was wrong — those enums now keep their qualifier);
+      and `intersect` as its own IR op rather than a builtin, because it has to *call* the shader's
+      intersection function and the interpreter is a stepping machine. The trick is that `rayQuery`
+      does not advance the program counter: the callee's `return` writes into the caller's
+      destination register and leaves it on the same instruction, so the op runs again, reads the
+      answer, and asks about the next box. The debugger steps into the function while that happens.
+      The capture learned one thing: `ReadBackTableBuffers` reads back the buffers an intersection
+      function table binds for its functions, since those are set once at setup and no command of
+      any captured frame binds them — without them the function steps with zero arguments, which
+      for the path tracer is every sphere at the origin with radius zero.
+      Verified against the hardware: for thread (19, 32) of `--ray-tracing` the interpreter computes
+      `(1, 0.2999999, 0.3312500, 2)` where the GPU wrote `(1.0, 0.30000001, 0.33125004, 2.0)`.
+      `metal-debug-ray-triangle` and `metal-debug-ray-boxes` cover both kinds, and
+      `msl_raytracing.test.js` pins the transforms, the barycentric convention and the candidate
+      ordering.
+      **Two crashes found on the way, neither in ray tracing.** A hex literal brought the whole
+      debugger down: the suffix regex `[uUlLfFhH]*$` matched the `FF` of `0xFF`, leaving
+      `BigInt("0x")`, so every shader with a ray mask or a bit field in it threw before running an
+      instruction. And an enum name a replay's table does not have decoded as *zero*, which for
+      most Metal enums means "invalid" (see the replay entry above).
+- [x] Metal ray tracing replay and **Export to C++** (`src/metal/replay/src/mtl_raytracing.mm`):
+      the structures re-created at the size the capture recorded, the builds, refits and copies
+      replayed with the descriptor rebuilt from the capture's JSON, the intersection function tables
+      made from their pipeline and filled by function name, and the bindings. Cheaper than either
+      other backend for the reason the plan predicted: no `RemapAddress` analogue, because a Metal
+      geometry descriptor holds the `id<MTLBuffer>`, and `Replayer::TraceRays`'s whole binding-table
+      rewrite collapses into a name lookup among the pipeline's linked functions. Those linked
+      functions had to be carried onto the pipeline descriptor — without them the table exists and
+      cannot be filled, and every ray misses.
+      Also: a storage texture a compute pass wrote is read back after the frame and compared, which
+      a frame whose work is all in compute needs to compare anything at all; and a kernel that reads
+      the texture it writes is reported as unreproducible rather than differing, from the pipeline's
+      own reflection saying the slot is `read_write`.
+      Verified: `test/metal_triangle --ray-tracing` replays with all three targets identical, the
+      traced 64x64 storage texture included, and its exported project builds and reports the same;
+      `test/path_tracer/metal` replays every command with bounding box geometry and an intersection
+      function table. `metal-accel-replay`, `metal-accel-scene-replay` and `metal-export-cpp-accel`
+      cover them, through a new `Case.then` hook that runs `mtlinsp_replay` on a capture the case
+      saved — the replay's own report is where a replay is verified.
+      **The bug worth remembering** was not in the ray tracing code. The first frame replayed with
+      every ray missing and nothing said so: `ParseEnum` resolves an enum by name, falls back to
+      reading it as a number, and `strtoll` on a name that is not a number returns *zero*, which for
+      most Metal enums is "invalid". The capture writes a geometry's vertex format under its
+      `MTLVertexFormat` name and the replay looked it up in `MTLAttributeFormat`, so the build got
+      invalid vertices and produced a structure holding nothing. It now returns the caller's
+      fallback, which is also right for an enumerator from a newer SDK than the replay was built
+      against.
+      Not done: curve and motion geometry in the *export* (the replay builds them), and an opaque
+      triangle intersection function, which is Metal's own and named by signature.
+- [x] Shader editing on Metal (`src/metal/src/shader_edit.mm`): a pipeline's stage recompiled from
+      edited Metal Shading Language and bound in the running application, which needed no protocol
+      change — `ReplaceShader {pipeline, stage, spirv}` already carries whatever bytecode a backend
+      wants, and Metal puts source there. The cheapest of the three: the other two compile in the
+      UI and need the Vulkan SDK on this machine, while Metal sends the text and the application's
+      own device compiles it, so the compiler's diagnostics come back and mark the editor's lines
+      (its compiler is clang, so `parseCompileErrors` needed no new case).
+      Three things needed care, and none of them was the compiler. A pipeline state cannot be
+      copied, so `RememberPipelineDescriptor` — already kept for the measurements' pipeline copies
+      — is what a rebuild works from, and the compute descriptor forms now fill it too. A compute
+      pipeline built from a bare function has no descriptor at all, so the function is remembered
+      instead and the rebuild makes one; `metal-shader-edit-compute` exists because a render
+      pipeline never touches that path. And function constants have to be carried across, which has
+      no counterpart in either other backend: `MTLFunctionConstantValues` has no getters, so the
+      values object is retained at function creation, and without it a variant-heavy library would
+      recompile into a *different variant* that compiles, draws and looks like a clean edit.
+      Verified by pixels rather than by the reply, since a replacement that builds and is never
+      bound reads exactly like a successful apply: `--debug-view=shader-edit` edits the first
+      draw's fragment function to return magenta and checks the next capture's target went from 0%
+      to the draw's own coverage, then restores and checks it went back; `:bad` checks the
+      compiler's diagnostics come back with line and column; `:compute` edits the kernel to write a
+      constant and finds it in the captured buffers.
+      Not done: the other two backends' **Compile & Replay**, which needs a replay that serves
+      analyses (below); tile and mesh pipelines, whose descriptors are classes this does not copy.
+- [x] Draw overlays on Metal (`src/metal/src/draw_overlay.mm`), all five kinds: the third consumer
+      of the recorded-calls engine `overdraw.h` already exposed, after overdraw and the pixel
+      history, and measured inside the application the way D3D12's are — one draw per capture, named
+      by its pass and its ordinal within it. Five runs into `R8Unorm` targets folded into the same
+      one-byte-per-pixel mask the Vulkan replay writes, so the app and `get_draw_overlay` read all
+      three backends identically. Fill mode and cull mode being encoder state in Metal is what makes
+      it cheap: one pipeline copy serves all five runs.
+      A multisampled pass is drawn at one sample per pixel — which is what a mask means — so
+      Highlight Draw, Wireframe and Backface Cull work on the passes most real frames are made of;
+      only Depth Test and Stencil Test are skipped there, since the runs that test start from a copy
+      of the pass's depth and a multisampled depth attachment is not copied.
+      `test/metal_triangle --inside-out` reverses the index buffer's winding and culls back faces,
+      so the draw leaves no pixel at all: the one case where covered 0 is the right answer, and only
+      the cull-off run can say where the draw went. `metal-overlay-{highlight,depth,stencil,backface,
+      wireframe}` cover the five; the depth case holds that every fragment of `--occluded`'s second
+      draw was rejected, not merely that something was.
+      Fixed while doing it: a pass with nothing to test against reported every covered pixel as
+      *rejected* rather than as passed, which is the opposite of what Vulkan and D3D12 say about the
+      same pass, and the overlay's own `depthTested` was missing from the render target tab's debug
+      state, so no test could see it.
 - [ ] Draw overlays, the rest of the rest: triangle size and quad overdraw (RenderDoc's other two
       that need real work: a geometry shader passing the primitive's screen area, and quad-granular
       atomics), the fragments a shader discards (the same SPIR-V edit "overdraw of fragments a
@@ -451,7 +595,7 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [ ] Ray tracing, the rest:
   - [x] **A replayed trace found no geometry** — solved, and the fault was not in the replay.
     `test/triangle --ray-tracing` never put a barrier between the top level's build and the
-    trace that reads it. On this driver the race resolved in the application's favour often
+    trace that reads it. On this driver the race resolved in the application's favor often
     enough that the frame looked right, so nothing showed it until the replay ran the same
     commands with different timing and every ray missed. With the barrier the traced image is
     identical to the capture's. Synchronization validation does not report this hazard: with it
@@ -600,7 +744,7 @@ vendor's driver is listed at the end so nobody spends time on it.
       (`VK_PIPELINE_CREATE_CAPTURE_INTERNAL_REPRESENTATIONS_BIT_KHR`, the driver's own disassembly)
       beside the SPIR-V in the shader viewer; statistics for shader objects
       (`VK_EXT_shader_object`), which have no pipeline to query; and the register count in the flame
-      graph's modelled cost.
+      graph's modeled cost.
 
 - [x] Acceleration structure viewer (`renderer/acceleration_structure.ts`,
       `renderer/acceleration_scene.ts`, **Instances** on a top level): the instances with their
@@ -619,14 +763,14 @@ vendor's driver is listed at the end so nobody spends time on it.
         `vkinsp_triangle --ray-tracing --static-blas`: every target identical, 0 problems.
   - [x] **Instance overlap** (`renderer/acceleration_tree.ts`, **Overlaps** in the structure tab):
         the instances' world boxes swept for overlaps, the pairs most overlapped first, and an
-        **Overlap heat** colouring of the scene and of the instance boxes.
+        **Overlap heat** coloring of the scene and of the instance boxes.
   - [x] **The structure tree** (**Tree** in the structure tab): top level, instances, bottom levels
         and geometries with primitives, world-space surface area and memory rolled up (the driver's
         size for the build, recorded by both capture libraries as `resultSize`), a checkbox per
         row, search by name, **Boxes** for the instance bounding boxes.
   - [x] **Mesh view parity** (`renderer/mesh_preview.ts`, `renderer/mesh_controls.ts`): Points,
         Wireframe + Solid and Smooth shading, flat and smooth shading from a normal attribute or the
-        geometry's own, any attribute as the colour, a Position picker on VS In, normals drawn as
+        geometry's own, any attribute as the color, a Position picker on VS In, normals drawn as
         lines, hover and click picking that selects the vertex's row, Zoom to Selected (F), and
         camera bookmarks (Ctrl+1-9, 1-9).
   - Not planned: Nsight's traversal-cycles-per-ray and intersections-per-pixel heatmaps. They read
@@ -696,15 +840,17 @@ vendor's driver is listed at the end so nobody spends time on it.
       pass both render as an image.
 - [ ] Metal replay, the rest: acceleration structures and ray tracing (the capture side is done —
       `src/metal/src/raytracing.h` — so the replay has descriptors that name their buffers
-      outright, with no `RemapAddress` analogue to write and no binding-table handle substitution:
+      outright, with no `RemapAddress` analog to write and no binding-table handle substitution:
       `Replayer::TraceRays`'s whole rewrite collapses into re-filling an
       `MTLIntersectionFunctionTable` by function name. `CreateObject` in `mtl_replayer.mm` names
       acceleration structures as an explicit gap, and `OpenEncoder` in `mtl_commands.mm` bails out
       of the encoder with `LeftOut`), indirect command buffers,
-      argument encoders, mesh shader draws, and the analyses `vkinsp_replay` serves (overdraw is
-      measured while capturing on Metal already, but overlays, mesh output, per-draw timing and
-      ablation are not). Tile shading is recorded but is not on `MTLRenderCommandEncoder` in the
-      macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
+      argument encoders, mesh shader draws, and the analyses `vkinsp_replay` serves (overdraw, pixel
+      history and draw overlays are measured while capturing on Metal already, the mesh view's VS
+      Out is interpreted, and a shader edit goes to the running application; per-draw timing,
+      ablation and **Compile & Replay** are not). Ray tracing *is* replayed now
+      (`mtl_raytracing.mm`), so what is left of that entry is the rest. Tile shading is recorded but is
+      not on `MTLRenderCommandEncoder` in the macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
 - [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, the analyses
       `vkinsp_replay` serves (overlays, mesh output, per-draw timing), descriptors indexed out of
       the heap (shader model 6.6), which no table snapshot covers, and a slot rewritten within one
@@ -1016,11 +1162,11 @@ backend does. Ordered by value per effort.
       an `MTLResourceID` instead of an address, and five layouts instead of one. So
       `parseMetalInstances` is a parser of its own; only the four option bits line up, under
       Metal's names. Every layout is pinned in `test/metal_raytracing.test.js`, because a wrong
-      stride reads an instance out of the middle of its neighbour and still produces plausible
+      stride reads an instance out of the middle of its neighbor and still produces plausible
       numbers.
 
       Verified on an M1 Max: `mtlinsp_triangle --ray-tracing` (two instances of one triangle
-      bottom level, at non-identity transforms — the scene's centre is only right if the transform
+      bottom level, at non-identity transforms — the scene's center is only right if the transform
       was transposed), `--static-blas` (the bottom level built once at start-up, so its geometry
       can only come from the capture-start read-back of a *private* buffer), and
       `mtlinsp_path_tracer --rebuild` (three bounding-box bottom levels, three instances, the
@@ -1063,7 +1209,7 @@ backend does. Ordered by value per effort.
 - [x] Stencil read-back (`StencilReadbackDetails`, `PassAspect` in `src/metal/src/capture.h`). Two
       read-backs of the one texture, because `MTLBlitOptionDepthFromDepthStencil` and
       `MTLBlitOptionStencilFromDepthStencil` may not both be set on one copy. Two defects found by
-      testing rather than reading: `ForceStore` covered colour and depth but not stencil, so the
+      testing rather than reading: `ForceStore` covered color and depth but not stencil, so the
       read-back returned whatever the tile memory held — uniformly 0xFF, which looks like data — and
       the render target tab picked a target by image id alone, so the two aspects of one image were
       indistinguishable (which affects Vulkan's `--stencil` equally, and is now fixed for all
@@ -1358,7 +1504,7 @@ library does not read back yet.
 
 Inspecting a Unity iOS player on a device with the full inspector UI, without changing the Unity
 project or the Xcode project it generates. The macOS design carries over unchanged in principle:
-dyld honours `DYLD_INSERT_LIBRARIES` on iOS for a process signed with `get-task-allow` (every
+dyld honors `DYLD_INSERT_LIBRARIES` on iOS for a process signed with `get-task-allow` (every
 development-profile build), which is how Xcode itself inserts `libMTLCapture.dylib` for GPU Frame
 Capture; `__DATA,__interpose` and the class hooks work the same; and the transport already binds
 `127.0.0.1` and listens (`src/metal/src/transport.mm`), which is exactly what a USB port forward
@@ -1441,7 +1587,7 @@ experiment `src/metal/README.md` records for macOS signing; put the resulting ta
       xcrun devicectl device process launch --device <identifier> --terminate-existing --console \
         --environment-variables '{"DYLD_INSERT_LIBRARIES":"<path>"}' <bundle-id>
       ```
-      Add `"DYLD_PRINT_LIBRARIES":"1"` to see on the console whether dyld honours `DYLD_*`
+      Add `"DYLD_PRINT_LIBRARIES":"1"` to see on the console whether dyld honors `DYLD_*`
       variables for the process at all.
 - [ ] Case A, in the bundle (re-signs a copy of the app; the Unity and Xcode projects stay as they
       are):

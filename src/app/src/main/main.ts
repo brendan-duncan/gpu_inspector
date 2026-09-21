@@ -69,6 +69,7 @@ let mainWin: BrowserWindow | null = null;
 //               [--debug-capture-with=overdraw,draws,stacks] [--debug-capture-delay=<ms>]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
 //               [--debug-drag=x,y;x,y[;x,y...]] [--debug-settle=<ms>]
+//               [--debug-save=<file> [--debug-save-delay=<ms>]] [--debug-open=<file>]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(prefix));
@@ -1192,6 +1193,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,
       showView: cliOption("debug-view"),
       timingMs: cliOption("debug-timing") ? Number(cliOption("debug-timing")) : null,
+      timingStacks: cliFlag("debug-timing-no-stacks") ? false : null,
       memoryMs: cliOption("debug-memory") ? Number(cliOption("debug-memory")) : null,
       expandSection: cliOption("debug-expand"),
       waitForApp: cliFlag("wait-for-app"),
@@ -1199,6 +1201,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       attachDialog: cliFlag("debug-attach-dialog"),
       openCapture: cliOption("debug-open"),
       saveCapture: cliOption("debug-save"),
+      saveCaptureDelayMs: cliOption("debug-save-delay") ? Number(cliOption("debug-save-delay")) : null,
       exportReport: cliOption("debug-export"),
       exportCpp: cliOption("debug-export-cpp"),
     },

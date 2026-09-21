@@ -35,6 +35,20 @@
 // takes the loader's function table lock). It copies memory, and everything else happens after the
 // thread is running again. Breaking that rule does not crash: it deadlocks the application, some
 // of the time, which is worse.
+//
+// Two implementations, one behaviour. Windows gets the thread list from a Toolhelp snapshot,
+// suspends with SuspendThread, reads registers with GetThreadContext and unwinds with the
+// function tables. macOS does the same three things through Mach — `task_threads`,
+// `thread_suspend`, `thread_get_state` — and unwinds by walking frame pointers, which is reliable
+// there in a way it is not on Windows: the arm64 ABI requires a frame pointer and Apple's system
+// libraries keep one, so a walk up the chain reaches every frame. The "did it run" question is
+// answered differently too: Windows asks the scheduler for cycles, and Mach reports a thread's own
+// CPU time in microseconds and, better, its `run_state` — a thread found waiting, that has used no
+// time since the sample before, is in the wait it was already found in and is not stopped again.
+//
+// Linux has neither and is left at the stub: sampling there means `tgkill` with a signal handler
+// per thread, or perf events with a privilege that a library loaded into somebody else's process
+// has no business asking for.
 #pragma once
 
 #include <atomic>
@@ -51,10 +65,24 @@
 
 #if defined(_WIN32) && defined(_M_X64) && defined(_MSC_VER)
 #define GPUINSP_CPU_SAMPLER 1
+#define GPUINSP_SAMPLER_WINDOWS 1
 #include <windows.h>
 #include <tlhelp32.h>
+#elif defined(__APPLE__) && (defined(__aarch64__) || defined(__x86_64__))
+#define GPUINSP_CPU_SAMPLER 1
+#define GPUINSP_SAMPLER_MACH 1
+#include <chrono>
+#include <mach/mach.h>
+#include <pthread.h>
 #else
 #define GPUINSP_CPU_SAMPLER 0
+#endif
+
+#ifndef GPUINSP_SAMPLER_WINDOWS
+#define GPUINSP_SAMPLER_WINDOWS 0
+#endif
+#ifndef GPUINSP_SAMPLER_MACH
+#define GPUINSP_SAMPLER_MACH 0
 #endif
 
 namespace gpuinsp {
@@ -82,14 +110,18 @@ public:
         return instance;
     }
 
-    /** Whether this build can sample at all (Windows x64). */
+    /** Whether this build can sample at all (Windows x64, or macOS on arm64 or x86-64). */
     static bool Available() { return GPUINSP_CPU_SAMPLER != 0; }
 
     /** The calling thread is the library's own and is left out: its stack is never the application's answer. */
     void ExcludeCurrentThread() {
-#if GPUINSP_CPU_SAMPLER
+#if GPUINSP_SAMPLER_WINDOWS
         std::lock_guard<std::mutex> lock(_mutex);
         _excluded.insert(GetCurrentThreadId());
+#elif GPUINSP_SAMPLER_MACH
+        const uint32_t id = SelfId();
+        std::lock_guard<std::mutex> lock(_mutex);
+        _excluded.insert(id);
 #endif
     }
 
@@ -159,12 +191,22 @@ private:
     struct ThreadInfo {
         uint32_t id = 0;
         std::string name;
-#if GPUINSP_CPU_SAMPLER
+#if GPUINSP_SAMPLER_WINDOWS
         HANDLE handle = nullptr;
         /** The thread's TEB, whose stack bounds are read while it is suspended (a fiber switch moves them). */
         const NT_TIB* tib = nullptr;
         uint64_t cycles = 0;
-        /** The stack it was last found under, which still holds while it uses no cycles. */
+#elif GPUINSP_SAMPLER_MACH
+        /** The Mach port the thread is suspended and read through; deallocated when it is gone. */
+        thread_act_t port = MACH_PORT_NULL;
+        /** Its stack, from pthread: the high address and the low one. A copy never leaves this range. */
+        uint64_t stackBase = 0;
+        uint64_t stackLimit = 0;
+        /** Its own CPU time in microseconds at the last sample, for whether it has run since. */
+        uint64_t micros = 0;
+#endif
+#if GPUINSP_CPU_SAMPLER
+        /** The stack it was last found under, which still holds while it uses no CPU time. */
         uint32_t lastStack = 0;
 #endif
         bool gone = false;
@@ -190,10 +232,16 @@ private:
     static constexpr size_t kMaxFrames = 48;
     /** Cycles between two samples that mean the thread ran: well above what being sampled costs it, well below a period's worth. */
     static constexpr uint64_t kRunningCycles = 150000;
+    /**
+     * The same threshold in the units Mach reports, microseconds of the thread's own CPU time. A
+     * thread that really ran through a 4 ms period spent thousands; being suspended and read costs
+     * it a fraction of one.
+     */
+    static constexpr uint64_t kRunningMicros = 20;
     /** How much of a stack is copied, from its top: deeper frames than this holds are left out. */
     static constexpr size_t kMaxCopy = 48 * 1024;
 
-#if GPUINSP_CPU_SAMPLER
+#if GPUINSP_SAMPLER_WINDOWS
     using NtQueryInformationThreadFn = LONG(NTAPI*)(HANDLE, int, PVOID, ULONG, PULONG);
     using GetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
 
@@ -398,6 +446,225 @@ private:
         }
     }
 
+#elif GPUINSP_SAMPLER_MACH
+
+    /** This thread's Mach port as an id. The port is released; the name is what identifies it. */
+    static uint32_t SelfId() {
+        const mach_port_t port = mach_thread_self();
+        mach_port_deallocate(mach_task_self(), port);
+        return (uint32_t)port;
+    }
+
+    /**
+     * The process's threads, with the ports they are suspended and read through.
+     *
+     * `task_threads` gives a port per thread, which has to be deallocated or the process leaks port
+     * rights until it cannot make another thread. A thread that has gone since the last refresh is
+     * marked and its port released; a new one is looked up through pthread for the two things Mach
+     * does not give — its name, and where its stack is.
+     *
+     * Without the lock, as the Windows one is and for the same reason: the application's own thread
+     * takes that lock to collect a batch from inside its frame, and a frame that waits on a
+     * profiler is a hitch the profiler made.
+     */
+    void RefreshThreads(uint32_t self) {
+        thread_act_array_t list = nullptr;
+        mach_msg_type_number_t count = 0;
+        if (task_threads(mach_task_self(), &list, &count) != KERN_SUCCESS) return;
+
+        std::unordered_set<uint32_t> alive;
+        for (mach_msg_type_number_t i = 0; i < count; ++i) alive.insert((uint32_t)list[i]);
+
+        std::vector<ThreadInfo> found;
+        for (mach_msg_type_number_t i = 0; i < count; ++i) {
+            const thread_act_t port = list[i];
+            const uint32_t id = (uint32_t)port;
+            bool skip = id == self || _threadIndex.count(id) != 0 || _threads.size() + found.size() >= kMaxThreads;
+            if (!skip) {
+                std::lock_guard<std::mutex> lock(_mutex);
+                skip = _excluded.count(id) != 0;
+            }
+            // A port this run is not going to keep is released here; the ones kept are released
+            // when the thread is found gone, or when sampling stops.
+            if (skip) {
+                mach_port_deallocate(mach_task_self(), port);
+                continue;
+            }
+            // Mach knows nothing about a thread's stack or its name; pthread does. A thread that
+            // pthread does not know — a Mach-only one, which a driver occasionally makes — has no
+            // stack bounds to copy within, and a copy without bounds is a crash rather than a
+            // sample, so it is left alone.
+            const pthread_t thread = pthread_from_mach_thread_np(port);
+            if (!thread) {
+                mach_port_deallocate(mach_task_self(), port);
+                continue;
+            }
+            ThreadInfo t;
+            t.id = id;
+            t.port = port;
+            t.stackBase = (uint64_t)pthread_get_stackaddr_np(thread);
+            t.stackLimit = t.stackBase - (uint64_t)pthread_get_stacksize_np(thread);
+            char name[64] = {0};
+            if (pthread_getname_np(thread, name, sizeof(name)) == 0 && name[0]) t.name = name;
+            t.micros = CpuMicros(port);
+            found.push_back(std::move(t));
+        }
+        vm_deallocate(mach_task_self(), (vm_address_t)list, count * sizeof(thread_act_t));
+
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (ThreadInfo& t : found) {
+            _threadIndex[t.id] = (uint32_t)_threads.size();
+            _threads.push_back(std::move(t));
+        }
+        for (ThreadInfo& t : _threads) {
+            if (t.gone || alive.count(t.id)) continue;
+            t.gone = true;
+            if (t.port != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), t.port);
+            t.port = MACH_PORT_NULL;
+        }
+    }
+
+    /** A thread's own CPU time, user and system together, in microseconds; 0 when it cannot be asked. */
+    static uint64_t CpuMicros(thread_act_t port) {
+        thread_basic_info_data_t info;
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        if (thread_info(port, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS) return 0;
+        return (uint64_t)info.user_time.seconds * 1000000 + (uint64_t)info.user_time.microseconds
+             + (uint64_t)info.system_time.seconds * 1000000 + (uint64_t)info.system_time.microseconds;
+    }
+
+    /** Whether a thread is on a core right now, which is the other half of "has it run". */
+    static bool OnCore(thread_act_t port) {
+        thread_basic_info_data_t info;
+        mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
+        if (thread_info(port, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS) return true;
+        return info.run_state == TH_STATE_RUNNING;
+    }
+
+    /**
+     * Walks a copy of a stack up its frame pointers. `copy` holds the `copied` bytes that were at
+     * `original`, and every address read is checked against that range first — the walk is over a
+     * buffer, so a frame pointer that has been clobbered reads as the end of the stack rather than
+     * as a fault.
+     *
+     * A frame-pointer walk is the right choice here in a way it is not on Windows: the arm64 ABI
+     * requires a frame pointer, Apple's toolchain keeps one on x86-64 as well, and the system
+     * libraries a waiting thread is inside are built that way. Both architectures lay a frame out
+     * the same: the saved frame pointer at [fp] and the return address at [fp + 8].
+     */
+    static size_t Unwind(uint64_t pc, uint64_t fp, const uint8_t* copy, size_t copied, uint64_t original,
+                         uint64_t* out, size_t capacity) {
+        size_t count = 0;
+        if (capacity) out[count++] = pc;
+        const uint64_t low = original, high = original + copied;
+        auto read = [&](uint64_t at, uint64_t& value) -> bool {
+            if (at < low || at + sizeof(uint64_t) > high) return false;
+            std::memcpy(&value, copy + (at - low), sizeof(uint64_t));
+            return true;
+        };
+        while (count < capacity) {
+            uint64_t caller = 0, ret = 0;
+            if (!read(fp, caller) || !read(fp + 8, ret)) break;
+            if (!ret) break;
+            out[count++] = ret;
+            // A frame pointer that does not move up the stack is not one: the chain has ended, or
+            // what was read is not a frame at all.
+            if (caller <= fp) break;
+            fp = caller;
+        }
+        return count;
+    }
+
+    void Run() {
+        const uint32_t self = SelfId();
+        std::vector<uint8_t> copy(kMaxCopy + 4096, 0);
+        uint64_t frames[kMaxFrames];
+        uint32_t tick = 0;
+        std::vector<ThreadInfo*> targets;
+        targets.reserve(kMaxThreads);
+        auto next = std::chrono::steady_clock::now();
+
+        while (_running.load(std::memory_order_relaxed)) {
+            const double periodMs = _periodMs;   // set before this thread started
+            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0) RefreshThreads(self);
+            // Only this thread adds to the list or marks a thread gone, so it reads it as it is.
+            targets.clear();
+            for (ThreadInfo& t : _threads) if (!t.gone) targets.push_back(&t);
+            const uint32_t frame = _frame.load(std::memory_order_relaxed);
+            for (ThreadInfo* t : targets) {
+                // Whether it has run since the sample before. The CPU time catches a thread that
+                // woke, worked and went back to waiting between two samples; `run_state` catches
+                // the one that is on a core right now, whose time may not have ticked over a
+                // microsecond yet.
+                const uint64_t micros = CpuMicros(t->port);
+                const bool ran = micros - t->micros > kRunningMicros || OnCore(t->port);
+                t->micros = micros;
+                // Still where it was: the wait it was last found in, which needs no stopping to know.
+                if (!ran && t->lastStack) {
+                    Count(frame, *t, t->lastStack, false);
+                    continue;
+                }
+
+#if defined(__aarch64__)
+                arm_thread_state64_t state;
+                mach_msg_type_number_t stateCount = ARM_THREAD_STATE64_COUNT;
+                const thread_state_flavor_t flavor = ARM_THREAD_STATE64;
+#else
+                x86_thread_state64_t state;
+                mach_msg_type_number_t stateCount = x86_THREAD_STATE64_COUNT;
+                const thread_state_flavor_t flavor = x86_THREAD_STATE64;
+#endif
+                size_t copied = 0;
+                uint64_t original = 0, pc = 0, fp = 0;
+                bool ok = false;
+                if (thread_suspend(t->port) == KERN_SUCCESS) {
+                    // ---- Stopped, and it may hold any lock: memory is copied, and nothing else.
+                    //      No allocation, no logging, no unwinding until it is running again.
+                    if (thread_get_state(t->port, flavor, (thread_state_t)&state, &stateCount) == KERN_SUCCESS) {
+#if defined(__aarch64__)
+                        pc = arm_thread_state64_get_pc(state);
+                        fp = arm_thread_state64_get_fp(state);
+                        original = arm_thread_state64_get_sp(state);
+#else
+                        pc = state.__rip;
+                        fp = state.__rbp;
+                        original = state.__rsp;
+#endif
+                        // Within the stack pthread says it has, or nothing is copied: the bounds
+                        // are the whole of what keeps the memcpy below from faulting.
+                        if (original >= t->stackLimit && original < t->stackBase) {
+                            const uint64_t room = t->stackBase - original;
+                            copied = (size_t)(room < kMaxCopy ? room : kMaxCopy);
+                            std::memcpy(copy.data(), (const void*)original, copied);
+                            ok = true;
+                        }
+                    }
+                    thread_resume(t->port);
+                    // ---- Running again.
+                }
+                if (!ok) continue;
+                const size_t depth = Unwind(pc, fp, copy.data(), copied, original, frames, kMaxFrames);
+                if (!depth) continue;
+                t->lastStack = Record(frame, *t, frames, depth, ran);
+                // Being stopped cost it time of its own, which is not work it did.
+                t->micros = CpuMicros(t->port);
+            }
+            next += std::chrono::microseconds((long long)(periodMs * 1000.0));
+            const auto now = std::chrono::steady_clock::now();
+            // Fell behind (many threads, or a stall): no catching up in a burst.
+            if (next <= now) next = now;
+            else std::this_thread::sleep_until(next);
+        }
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (ThreadInfo& t : _threads) {
+            if (t.port != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), t.port);
+            t.port = MACH_PORT_NULL;
+        }
+    }
+
+#endif  // the platform halves
+
+#if GPUINSP_CPU_SAMPLER
     void Count(uint32_t frame, const ThreadInfo& thread, uint32_t stack, bool running) {
         std::lock_guard<std::mutex> lock(_mutex);
         const auto it = _threadIndex.find(thread.id);

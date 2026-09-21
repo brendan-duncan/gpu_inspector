@@ -13,7 +13,7 @@
 //     uses `packed_`, and reading it as the unpacked type shifts every member after it.
 //   * `bool` is one byte in memory (SPIR-V's is four), so a struct of bools reads differently.
 import { Dim } from "../debug/sampling.js";
-import type { ScalarKind, Value } from "../debug/values.js";
+import { OpaqueValue, type ScalarKind, type Value } from "../debug/values.js";
 
 export type AddressSpace = "thread" | "device" | "constant" | "threadgroup" | "ray_data" | "object_data";
 
@@ -50,6 +50,16 @@ export interface StructMember {
   /** Everything in its `[[...]]`: a member can be both `[[user(locn0)]]` and `[[flat]]`. */
   attributes: Attribute[];
 }
+
+/**
+ * The `<metal_raytracing>` types that are handles rather than values: they have methods and no
+ * layout a shader can read, so each is an `opaque` type whose methods are dispatched by name.
+ */
+export const RAY_TRACING_HANDLES = new Set([
+  "intersector", "instance_acceleration_structure", "primitive_acceleration_structure",
+  "acceleration_structure", "intersection_function_table", "visible_function_table",
+  "intersection_query", "intersection_params",
+]);
 
 const SCALAR_BYTES: Record<ScalarBase, number> = {
   bool: 1, char: 1, uchar: 1, short: 2, ushort: 2, int: 4, uint: 4, long: 8, ulong: 8, half: 2, float: 4,
@@ -171,6 +181,70 @@ export class TypeTable {
 
   structNamed(name: string): number | undefined {
     return this._structsByName.get(name);
+  }
+
+  /** Fills a declared struct's members. No size cache to invalidate: every size is computed on use. */
+  fillStruct(ref: number, members: StructMember[]): void {
+    const type = this.types[ref];
+    if (type?.kind !== "struct" || type.members.length) return;
+    type.members.push(...members);
+  }
+
+  /**
+   * The ray tracing types of `<metal_raytracing>`, interned on first use.
+   *
+   * `ray` and `intersection_result` are real structs with public members, so they are declared as
+   * structs and get member access, assignment and construction from the same code every other
+   * struct uses. The rest — `intersector`, the acceleration structures, the function tables — are
+   * handles with methods and no readable layout, so they are opaque and their methods are
+   * dispatched by name (msl/raytracing.ts, and the `rt.` builtins).
+   *
+   * `intersection_result`'s members are declared whether or not the intersector's tags would give
+   * them: a shader that reads `triangle_barycentric_coord` without `triangle_data` does not
+   * compile in Metal, so a debugger that offered the member anyway can only be read by a shader
+   * that was already valid. The alternative — a different struct per tag combination — would be a
+   * lot of machinery to reject code the compiler has already rejected.
+   */
+  rayTracing(name: string): number | undefined {
+    const bare = name.replace(/_ref$/, "");
+    if (bare === "ray") {
+      const existing = this.structNamed("ray");
+      if (existing !== undefined) return existing;
+      const float3 = this.vector(this.float, 3, false);
+      const type = this.declareStruct("ray");
+      this.fillStruct(type, [
+        { name: "origin", type: float3, attributes: [] },
+        { name: "direction", type: float3, attributes: [] },
+        { name: "min_distance", type: this.float, attributes: [] },
+        { name: "max_distance", type: this.float, attributes: [] },
+      ]);
+      return type;
+    }
+    if (bare === "intersection_result" || bare === "intersection_result_instance") {
+      const existing = this.structNamed("intersection_result");
+      if (existing !== undefined) return existing;
+      const float2 = this.vector(this.float, 2, false);
+      const float3 = this.vector(this.float, 3, false);
+      const float4x3 = this.matrix(float3, 4);
+      const type = this.declareStruct("intersection_result");
+      this.fillStruct(type, [
+        { name: "type", type: this.uint, attributes: [] },
+        { name: "distance", type: this.float, attributes: [] },
+        { name: "primitive_id", type: this.uint, attributes: [] },
+        { name: "geometry_id", type: this.uint, attributes: [] },
+        { name: "instance_id", type: this.uint, attributes: [] },
+        { name: "user_instance_id", type: this.uint, attributes: [] },
+        { name: "triangle_barycentric_coord", type: float2, attributes: [] },
+        { name: "triangle_front_facing", type: this.bool, attributes: [] },
+        { name: "world_space_origin", type: float3, attributes: [] },
+        { name: "world_space_direction", type: float3, attributes: [] },
+        { name: "object_to_world_transform", type: float4x3, attributes: [] },
+        { name: "world_to_object_transform", type: float4x3, attributes: [] },
+      ]);
+      return type;
+    }
+    if (RAY_TRACING_HANDLES.has(bare)) return this.intern({ kind: "opaque", name: bare });
+    return undefined;
   }
 
   /**
@@ -489,6 +563,12 @@ export class TypeTable {
       case "matrix": return Array.from({ length: t.columns }, () => this.zero(t.column));
       case "array": return Array.from({ length: Math.max(0, t.length) }, () => this.zero(t.element));
       case "struct": return t.members.map((m) => this.zero(m.type));
+      // An `intersector<...>` the shader declared: the handle its setters change and the next
+      // `intersect` reads (msl/raytracing.ts). Every other opaque type is a binding, which the
+      // invocation fills in, so null is the right answer for those.
+      case "opaque": return t.name === "intersector"
+        ? new OpaqueValue("intersector", [], { options: {}, tags: [] })
+        : null;
       default: return null;
     }
   }

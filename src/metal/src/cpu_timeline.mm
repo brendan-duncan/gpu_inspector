@@ -1,5 +1,8 @@
 #include "cpu_timeline.h"
 
+#include "cpu_sampler.h"
+#include "stacktrace.h"
+
 #include "frame_stats.h"
 #include "json_writer.h"
 #include "swizzle.h"
@@ -219,14 +222,12 @@ void BeginTimingCapture(uint32_t sampleHz) {
         for (double &v : g_frameCategoryMs) v = 0;
         g_timing.store(true, std::memory_order_relaxed);
     }
-    // sampleHz is accepted and ignored: the call-stack sampler is Windows-only
-    // (src/vulkan/src/cpu_sampler.h), so this records where the frame's calls went and not what
-    // the threads were doing between them. Said in the log rather than silently, so a user who
-    // asked for sampling knows they did not get it.
-    Log("timing capture: started%s", sampleHz > 0 ? ", without call stack sampling (not available on macOS)" : "");
+    const bool sampling = sampleHz > 0 && gpuinsp::CpuSampler::Get().Start(sampleHz);
+    Log("timing capture: started%s", sampling ? ", sampling call stacks" : "");
 }
 
 void EndTimingCapture() {
+    gpuinsp::CpuSampler::Get().Stop();
     std::lock_guard<std::mutex> lock(g_mutex);
     g_timing.store(false, std::memory_order_relaxed);
     Log("timing capture: stopped after %zu frames", g_frames.size());
@@ -238,6 +239,8 @@ bool TimingCaptureRunning() {
 
 void NoteFrameTiming(uint32_t frame, double frameMs) {
     if (!g_timing.load(std::memory_order_relaxed)) return;
+    // The frame that ends here is `frame`; what is sampled from now on is the next one's.
+    gpuinsp::CpuSampler::Get().NoteFrame(frame + 1);
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!g_timing.load(std::memory_order_relaxed)) return;
     FrameTiming t;
@@ -254,6 +257,50 @@ void NoteFrameTiming(uint32_t frame, double frameMs) {
         if (g_framesSent > g_frames.size()) g_framesSent = 0;
     }
     g_frames.push_back(t);
+}
+
+/**
+ * The call stacks sampled since the last call, as the TimingSamples message the Timing view reads
+ * (renderer/timing_samples.ts). The same shape all three libraries send, since the sampler is
+ * shared and the view does not care which API the frames came from.
+ */
+void SendTimingSamples() {
+    gpuinsp::CpuSampler::Batch batch;
+    if (!gpuinsp::CpuSampler::Get().Take(batch)) return;
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("TimingSamples");
+    w.Key("periodMs"); w.Double(batch.periodMs);
+    w.Key("threads"); w.BeginArray();
+    for (const auto &t : batch.threads) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(t.id);
+        if (!t.name.empty()) { w.Key("name"); w.String(t.name); }
+        w.EndObject();
+    }
+    w.EndArray();
+    // Only the stacks this batch is the first to use: an id means the same stack for the whole capture.
+    w.Key("stacks"); w.BeginArray();
+    for (const auto &s : batch.stacks) {
+        w.BeginObject();
+        w.Key("id"); w.Uint(s.id);
+        w.Key("addresses"); w.BeginArray();
+        for (uint64_t address : s.addresses) w.String(HexAddress(address));
+        w.EndArray();
+        w.EndObject();
+    }
+    w.EndArray();
+    // [frame, thread (an index into threads), stack id, running (1) or waiting (0), samples]
+    w.Key("samples"); w.BeginArray();
+    for (const auto &s : batch.samples) {
+        w.BeginArray();
+        w.Uint(s.frame); w.Uint(s.thread); w.Uint(s.stack); w.Uint(s.running ? 1 : 0); w.Uint(s.count);
+        w.EndArray();
+    }
+    w.EndArray();
+    if (batch.dropped != 0) { w.Key("dropped"); w.Uint(batch.dropped); }
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
 }
 
 void SendTimingFrames() {

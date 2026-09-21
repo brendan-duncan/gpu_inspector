@@ -35,7 +35,7 @@ import { pipelineUses, programStages, shaderProgram, stageLabel, stateStages } f
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
 import { renderFrameStats, SUBMIT_CALL, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
-import { buildTimelineTracks, defaultPassLabel, gpuSpan, submitToFirstPassMs, type LabelledPass } from "./timeline_tracks.js";
+import { buildTimelineTracks, defaultPassLabel, gpuSpan, submitToFirstPassMs, type LabeledPass } from "./timeline_tracks.js";
 import { accelerationScene, structureDrawing, type StructureDrawing } from "./acceleration_scene.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
@@ -80,13 +80,15 @@ import { SEVERITY_RANK } from "./vulkan/spirv_analysis.js";
 import { TimelineWidget, type TimelinePassCommand } from "./widget/timeline.js";
 import { Signal } from "./utils/signal.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
+import { encodeBase64 } from "./utils/base64.js";
+import { metalPipelineStages, type MetalPipelineStage } from "./metal/reflection.js";
 import { ImageView } from "./image_view.js";
 import { isAction, labelNameOf } from "./command_sets.js";
 import { fmt, isObject, num, refId, type VulkanObject } from "./vulkan/vulkan_object.js";
 import { d3d12AttributeNames, isD3D12Type } from "./d3d12/d3d12_object.js";
 import type { SessionContext } from "./session_panel.js";
 import { getHostPlatform } from "./launch_dialog.js";
-import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming } from "../shared/protocol.js";
+import type { ArgValue, CaptureCommand, CaptureTextureInfo, LayerMessage, PassTiming, ShaderReplacedMessage } from "../shared/protocol.js";
 import type { ValidationEntry } from "./vulkan/object_database.js";
 import { severityMark, validationItemText, worstSeverity } from "./validation_text.js";
 
@@ -423,10 +425,11 @@ export class CapturePanel {
       tooltip: "Record every frame's time and where its CPU went, for as long as it runs. A frame report averages five or six frames together and a hitch is one frame, so this is what finds one.",
       callback: () => this.toggleTiming() });
     c.push(this._timingButton);
-    // Call stacks sampled with it (src/vulkan/src/cpu_sampler.h), where the capture library can: the
-    // Windows ones. On by default, since the hitch nothing timed explains is the common one; off
-    // for a run whose frame times must not be touched at all (a sample stops a thread for microseconds).
-    if (getHostPlatform() === "win32") {
+    // Call stacks sampled with it (src/vulkan/src/cpu_sampler.h), where the capture library can:
+    // Windows through the thread contexts and macOS through Mach. On by default, since the hitch
+    // nothing timed explains is the common one; off for a run whose frame times must not be touched
+    // at all (a sample stops a thread for microseconds).
+    if (getHostPlatform() === "win32" || getHostPlatform() === "darwin") {
       this._sampleCheck = new Checkbox(row, { label: "Sample stacks", checked: true,
         tooltip: "Timing Capture: also sample every thread's call stack 250 times a second, and whether it was running or blocked there. The report then says what each thread was doing in the worst hitch, or in the stretch you drag out. Each sample stops a thread for a few microseconds." });
       c.push(this._sampleCheck);
@@ -560,6 +563,7 @@ export class CapturePanel {
     view.onLabelChanged.addListener(() => { handle.textElement.text = view.label; });
     view.onStatus.addListener(() => { if (this.activeView === view) this._updateStatus(); });
     view.onOpenTexture.addListener((target, options) => this._openTexture(view, target, options));
+    view.onCaptureAgain.addListener((then) => then(this.capture()));
     view.onOpenMesh.addListener((draw, options) => this._openMesh(view, draw, options));
     view.onOpenStructure.addListener((id) => this._openStructure(view, id));
     // Which acceleration structures can be viewed depends on the captures open, and a live
@@ -852,12 +856,6 @@ export class CapturePanel {
   }
 
   /**
-   * D3D12: the overlay of one draw, measured while the application's next frame records
-   * (src/d3d12/src/draw_overlay.cpp). The draw is named by its pass and its ordinal within it,
-   * since the frame captured now numbers its commands from the start; the new capture opens on its
-   * own render target tab with the overlay on, the way a Metal pixel history does.
-   */
-  /**
    * D3D12: one draw's vertex shader outputs, streamed out while the application's next frame
    * records (src/d3d12/src/mesh_output.cpp). As with a draw overlay, the draw is named by its pass
    * and its ordinal within it, and the new capture opens its own mesh tab on the result.
@@ -895,6 +893,13 @@ export class CapturePanel {
     live.onCaptureComplete.addListener(finish);
   }
 
+  /**
+   * Metal and D3D12: the overlay of one draw, measured while the application's next frame records
+   * (src/metal/src/draw_overlay.mm, src/d3d12/src/draw_overlay.cpp). The draw is named by its pass
+   * and its ordinal within it, since the frame captured now numbers its commands from the start;
+   * the new capture opens on its own render target tab with the overlay on, the way a Metal pixel
+   * history does.
+   */
   private _captureWithDrawOverlay(from: CaptureView, command: number, kind: DrawOverlayKind): void {
     const draw = from.data.commands[command];
     const pass = draw ? from.passOfDraw(draw) : null;
@@ -908,11 +913,9 @@ export class CapturePanel {
       this._statusLabel.text = "that draw is not one of its pass's";
       return;
     }
-    const attachment = from.data.textures.findIndex((t) => t.info.frame === pass.frame && t.info.commandBuffer === pass.commandBuffer
-      && t.info.passIndex === pass.passIndex && t.info.aspect === "color");
     const live = this.capture(undefined, undefined, undefined, undefined, { passIndex: pass.passIndex, drawIndex });
     if (!live) {
-      this._statusLabel.text = "not connected: a D3D12 draw overlay is measured while the application's next frame is captured";
+      this._statusLabel.text = "not connected: a Metal or Direct3D 12 draw overlay is measured while the application's next frame is captured";
       return;
     }
     this._statusLabel.text = `capturing the next frame, measuring draw ${drawIndex} of pass ${pass.passIndex}...`;
@@ -970,6 +973,11 @@ export class CapturePanel {
    * Starts or stops a timing capture. Starting clears what the last one recorded: two runs of an
    * application are two questions, and a graph spanning both would answer neither.
    */
+  /** Testing aid (--debug-timing-no-stacks): records frame times without sampling the stacks. */
+  setSampleStacks(on: boolean): void {
+    if (this._sampleCheck) this._sampleCheck.checked = on;
+  }
+
   /** Starts or stops a timing capture (the button, and --debug-timing). */
   toggleTiming(): void {
     if (!this.window.connected) {
@@ -1232,6 +1240,12 @@ export class CaptureView implements CaptureHost {
    * the history of the pixel clicked (the panel opens it, capture_texture_view.ts).
    */
   readonly onOpenTexture = new Signal<(target: CaptureTarget, options: CaptureTextureOptions) => void>();
+  /**
+   * The view asks for another frame to be captured and hands back the new view, since only the
+   * panel can take one. Used by --debug-view=shader-edit on a Metal capture, which has to see what
+   * the applied edit did to the *next* frame.
+   */
+  readonly onCaptureAgain = new Signal<(then: (live: CaptureView | null) => void) => void>();
   readonly onOpenMesh = new Signal<(draw: CaptureCommand, options: MeshViewOptions) => void>();
   /** Asks the panel for the acceleration structure tab, on this structure. */
   readonly onOpenStructure = new Signal<(structureId: number) => void>();
@@ -1439,7 +1453,7 @@ export class CaptureView implements CaptureHost {
     // Every timed pass, named from its command-list block where there is one. Driven by the timings
     // rather than the blocks so that a pass with no block — a command buffer submitted again in a
     // multi-frame capture — is still drawn (see defaultPassLabel).
-    const passes: LabelledPass[] = [...this.data.passTimings.entries()].map(([key, timing]) => {
+    const passes: LabeledPass[] = [...this.data.passTimings.entries()].map(([key, timing]) => {
       const block = this._passBlocks.get(key);
       return {
         timing, label: block?.label ?? defaultPassLabel(timing),
@@ -1887,6 +1901,9 @@ export class CaptureView implements CaptureHost {
         changed: this.shaderReplay.targets.filter((t) => t.differingTexels > 0).map((t) => ({ image: t.image, aspect: t.aspect, differingTexels: t.differingTexels, pixels: t.pixels?.byteLength ?? 0 })),
         problems: this.shaderReplay.problems.length,
       } : null,
+      // A shader edited and applied in the running application (Compile & Apply), which is what a
+      // Metal capture can do instead of replaying: the reply, and what the pixels did.
+      shaderApply: this.shaderApply,
       // Shader stages measured by ablation (Measure shader), with what each part saved.
       ablations: d.ablations.map((a) => ({
         pipeline: a.pipeline, stage: a.stage, command: a.command, baselineMs: a.baselineMs, stageMs: a.stageMs,
@@ -2325,7 +2342,7 @@ export class CaptureView implements CaptureHost {
       }
     }
     else if (name === "flame" || name === "flamegraph") void this._showFlameGraph();
-    else if (name === "shader-edit") void this._debugShaderEdit();
+    else if (name.startsWith("shader-edit")) void this._debugShaderEdit(name.split(":")[1] ?? "");
     else if (name.startsWith("flame:")) {
       // Testing aid (--debug-view=flame:draws|shader): the flame graph, then its Measure draws or
       // Measure shader button pressed, which is the whole of what a person does to measure.
@@ -2360,26 +2377,43 @@ export class CaptureView implements CaptureHost {
       else this._setStatus("this capture has no draws");
     }
     else if (name.startsWith("debugger")) {
-      // Testing aid (--debug-view=debugger[:vertex|pixel|compute[:<command>|last[:<lines>|end[:decompiled]]]]): the shader
-      // debugger on the first draw (or dispatch), or the one named, stepped over that many lines or run to the end, on the
-      // SPIR-V or on GLSL decompiled from it.
+      // Testing aid (--debug-view=debugger[:vertex|pixel|compute[:<command>|last[:<lines>|end[:decompiled|@x,y,z]]]]):
+      // the shader debugger on the first draw (or dispatch), or the one named, stepped over that
+      // many lines, to a line (`L158`), or run to the end, on the SPIR-V or on GLSL decompiled
+      // from it. `@x,y,z` names
+      // a compute invocation other than (0, 0, 0), which is what a ray tracing kernel needs: the
+      // corner thread of a traced image usually misses everything, so stepping it says nothing
+      // about whether the traversal works.
       const [, kind = "pixel", at, steps, code] = name.split(":");
       const compute = kind === "compute";
       const commands = this.data.commands.filter((c) => (compute ? this.data.sets.DISPATCH : this.data.sets.DRAW).has(c.method));
       const cmd = at === "last" ? commands[commands.length - 1] : at !== undefined && at !== "" ? this.data.commands[Number(at)] : commands[0];
-      const options: ShaderDebuggerOptions = steps === "end" ? { steps: -1 } : steps !== undefined && steps !== "" ? { steps: Number(steps) } : {};
+      // `L<n>` runs to that source line and stops: a step count cannot reach a line inside a loop,
+      // which is where a ray query is in every kernel that traverses.
+      const options: ShaderDebuggerOptions = steps === "end" ? { steps: -1 }
+        : steps?.startsWith("L") ? { stopAtLine: Number(steps.slice(1)) }
+        : steps !== undefined && steps !== "" ? { steps: Number(steps) } : {};
       if (code === "decompiled") options.decompiled = true;
+      const named = code?.startsWith("@") ? code.slice(1).split(",").map(Number) : null;
+      const invocation: [number, number, number] = named
+        ? [named[0] || 0, named[1] || 0, named[2] || 0] : [0, 0, 0];
       if (!cmd) this._setStatus(`this capture has no ${compute ? "dispatches" : "draws"}`);
-      else this.debugShader(compute ? { stage: "compute", command: cmd.index } : kind === "vertex" ? { stage: "vertex", command: cmd.index } : { stage: "fragment", command: cmd.index }, options);
+      else this.debugShader(compute ? { stage: "compute", command: cmd.index, invocation }
+        : kind === "vertex" ? { stage: "vertex", command: cmd.index } : { stage: "fragment", command: cmd.index }, options);
     }
     else if (name.startsWith("overlay")) {
-      // Testing aid (--debug-view=overlay[:<kind>[:<command>|last]]): a draw overlay, on the first draw of a
-      // pass with a render target unless a command (or the last such draw) is named.
+      // Testing aid (--debug-view=overlay[:<kind>[:<command>|#<n>|last]]): a draw overlay, on the
+      // first draw of a pass with a render target unless a command, the nth such draw (#<n>), or
+      // the last of them is named. The ordinal form is there because which *command* a draw is
+      // depends on everything else the frame recorded, while "the second draw that could be
+      // overlaid" is stable across a sample gaining a pass.
       const [, kind = "highlight", at] = name.split(":");
       const kinds: DrawOverlayKind[] = ["highlight", "depth", "stencil", "backface", "wireframe"];
       const overlay = kinds.includes(kind as DrawOverlayKind) ? (kind as DrawOverlayKind) : "highlight";
       const drawn = this.data.commands.filter((c) => this.data.sets.DRAW.has(c.method) && this.targetOfDraw(c));
-      const draw = at === "last" ? drawn[drawn.length - 1] : at !== undefined ? this.data.commands[Number(at)] : drawn[0];
+      const draw = at === "last" ? drawn[drawn.length - 1]
+        : at?.startsWith("#") ? drawn[Number(at.slice(1))]
+        : at !== undefined ? this.data.commands[Number(at)] : drawn[0];
       if (draw) this.openDrawOverlay(draw, overlay);
       else this._setStatus("no draw of this capture is in a pass with a render target");
     }
@@ -2795,7 +2829,12 @@ export class CaptureView implements CaptureHost {
    * compiled, and the capture replayed with it — what Edit and Compile & Replay do in the Inspect
    * panel, with the edit made here instead of typed.
    */
-  private async _debugShaderEdit(): Promise<void> {
+  private async _debugShaderEdit(mode = ""): Promise<void> {
+    if (this.data.api === "metal") {
+      if (mode === "compute") await this._debugMetalComputeEdit();
+      else await this._debugMetalShaderEdit(mode === "bad");
+      return;
+    }
     const db = this.window.database;
     const draw = this.data.commands.find((c) => this.data.sets.DRAW.has(c.method));
     const state = draw ? drawState(this.data, db, draw) : null;
@@ -2828,6 +2867,230 @@ export class CaptureView implements CaptureHost {
     }
     await this.replayWithShaders([{ pipeline: state.pipeline.id, stage: "fragment", code: new Uint8Array(compiled.spirv) }]);
   }
+
+  /**
+   * The Metal half of the testing aid above. A Metal capture cannot be replayed with an edit, so
+   * this exercises the other path — the one a person actually uses on Metal: the edited Shading
+   * Language goes to the running application, which compiles it and draws with it
+   * (src/metal/src/shader_edit.h), and the frame after that is captured to see what changed.
+   *
+   * The check is the pixels: the first draw's fragment function is edited to return magenta, so
+   * the render target of the new capture has magenta where the draw landed and the capture before
+   * it did not. A reply saying "ok" only proves the pipeline rebuilt.
+   */
+  private async _debugMetalShaderEdit(bad: boolean): Promise<void> {
+    const db = this.window.database;
+    const draw = this.data.commands.find((c) => this.data.sets.DRAW.has(c.method) && this.targetOfDraw(c));
+    const state = draw ? drawState(this.data, db, draw) : null;
+    const stage = state?.pipeline ? metalPipelineStages(state.pipeline, db).find((x: MetalPipelineStage) => x.stage === "fragment") : undefined;
+    const bytes = stage?.library && stage.blobIndex >= 0 ? await fetchBlob(this.window, stage.library, stage.blobIndex) : null;
+    if (!state?.pipeline || !stage || !bytes) {
+      this._setStatus("shader edit: the first draw's fragment function has no source the capture holds");
+      return;
+    }
+    const text = new TextDecoder().decode(bytes);
+    // The last `return float4(...)` of the library, which is the fragment function's in every
+    // sample here. A library whose fragment function returns some other way is reported rather
+    // than edited into something that will not compile.
+    const edited = text.replace(/return\s+float4\s*\([^;]*\)\s*;(?![\s\S]*return\s+float4)/,
+                                // `bad` (--debug-view=shader-edit:bad) does not compile, on purpose:
+                                // the compiler's own diagnostics are what the editor shows, and a
+                                // path that swallowed them would look exactly like a clean apply.
+                                bad ? "return not_a_function(nope);" : "return float4(1.0, 0.0, 1.0, 1.0);");
+    if (edited === text) {
+      this._setStatus("shader edit: the source has no color returned the way this testing aid edits one");
+      return;
+    }
+    const pipeline = state.pipeline.id;
+    this.shaderApply = { pipeline, stage: "fragment", ok: false, error: "", replacement: 0, share: -1, before: -1 };
+    const replied = new Promise<ShaderReplacedMessage>((resolve) => {
+      const db2 = this.window.database;
+      const listener = (msg: { action: string }): void => {
+        if (msg.action !== "ShaderReplaced") return;
+        const reply = msg as ShaderReplacedMessage;
+        if (reply.pipeline !== pipeline) return;
+        db2.onOtherMessage.removeListener(listener);
+        resolve(reply);
+      };
+      db2.onOtherMessage.addListener(listener);
+    });
+    // What the target looked like before, so "it is magenta now" can be told from "it always was".
+    const before = this._magentaShare(this, draw!);
+    this._setStatus(`shader edit: sending the edited fragment function to the application for pipeline ${pipeline}...`);
+    void this.window.send({ action: "ReplaceShader", pipeline, stage: "fragment", spirv: encodeBase64(new TextEncoder().encode(edited)) });
+    const msg = await replied;
+    this.shaderApply = { pipeline, stage: "fragment", ok: !!msg.ok, error: msg.error ?? "",
+                         replacement: msg.replacement ?? 0, share: -1, before };
+    if (!msg.ok) {
+      this._setStatus(`shader edit: the application would not compile it: ${(msg.error ?? "").split("\n")[0]}`);
+      return;
+    }
+
+    // The proof is in the pixels of the next frame, so one is captured and measured.
+    this._setStatus("shader edit: applied; capturing a frame to see what it changed...");
+    const live = await new Promise<CaptureView | null>((resolve) => this.onCaptureAgain.emit(resolve));
+    if (!live) {
+      this.shaderApply.error = "applied, but the application is no longer connected to capture a frame with it";
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => {
+        if (done) return;
+        done = true;
+        resolve();
+      };
+      live.onCaptureComplete.addListener(finish);
+      live.data.onTextureLoaded.addListener(() => {
+        if (live.data.textures.every((t: CapturedTexture) => t.data || t.info.error)) finish();
+      });
+    });
+    const after = live.data.commands.find((c: CaptureCommand) => live.data.sets.DRAW.has(c.method) && live.targetOfDraw(c));
+    this.shaderApply.share = after ? this._magentaShare(live, after) : -1;
+    this._setStatus(`shader edit: applied; the draw's render target is ${(this.shaderApply.share * 100).toFixed(1)}% magenta `
+      + `(was ${(before * 100).toFixed(1)}%)`);
+
+    // And back again: restoring has to put the application's own pipeline back, which is the half
+    // of the feature that is easy to get wrong without noticing -- a restore that only forgot the
+    // edit would leave the replacement bound and the frame magenta for good.
+    const restored = new Promise<ShaderReplacedMessage>((resolve) => {
+      const db2 = this.window.database;
+      const listener = (m: { action: string }): void => {
+        if (m.action !== "ShaderReplaced") return;
+        const reply = m as ShaderReplacedMessage;
+        if (reply.pipeline !== pipeline) return;
+        db2.onOtherMessage.removeListener(listener);
+        resolve(reply);
+      };
+      db2.onOtherMessage.addListener(listener);
+    });
+    void this.window.send({ action: "RestoreShader", pipeline, stage: "fragment" });
+    const back = await restored;
+    this.shaderApply.restored = !!back.ok;
+    if (!back.ok) {
+      this.shaderApply.error = back.error ?? "the restore failed";
+      return;
+    }
+    const third = await new Promise<CaptureView | null>((resolve) => this.onCaptureAgain.emit(resolve));
+    if (!third) return;
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => { if (!done) { done = true; resolve(); } };
+      third.onCaptureComplete.addListener(finish);
+      third.data.onTextureLoaded.addListener(() => {
+        if (third.data.textures.every((t: CapturedTexture) => t.data || t.info.error)) finish();
+      });
+    });
+    const last = third.data.commands.find((c: CaptureCommand) => third.data.sets.DRAW.has(c.method) && third.targetOfDraw(c));
+    this.shaderApply.shareAfterRestore = last ? this._magentaShare(third, last) : -1;
+    this._setStatus(`shader edit: applied (${(this.shaderApply.share * 100).toFixed(1)}% magenta) and restored `
+      + `(${(this.shaderApply.shareAfterRestore * 100).toFixed(1)}%)`);
+  }
+
+  /**
+   * Testing aid (--debug-view=shader-edit:compute): the frame's first compute kernel edited to
+   * write a constant, applied, and a frame captured to see the constant in the buffer it wrote.
+   *
+   * Its own case because a compute pipeline reaches the rebuild by a different road: the usual
+   * `newComputePipelineStateWithFunction:` has no descriptor at all, so the function is what the
+   * library remembered and the rebuild has to make a descriptor of its own
+   * (src/metal/src/shader_edit.mm). A render pipeline never exercises that.
+   */
+  private async _debugMetalComputeEdit(): Promise<void> {
+    const db = this.window.database;
+    const dispatch = this.data.commands.find((c) => this.data.sets.DISPATCH.has(c.method));
+    const state = dispatch ? drawState(this.data, db, dispatch) : null;
+    const stage = state?.pipeline ? metalPipelineStages(state.pipeline, db).find((x: MetalPipelineStage) => x.stage === "compute") : undefined;
+    const bytes = stage?.library && stage.blobIndex >= 0 ? await fetchBlob(this.window, stage.library, stage.blobIndex) : null;
+    if (!state?.pipeline || !stage || !bytes) {
+      this._setStatus("shader edit: the frame's first dispatch has no compute function the capture holds");
+      return;
+    }
+    const text = new TextDecoder().decode(bytes);
+    // A recognizable constant rather than a plausible one: 1337 as a float32 appears in no
+    // captured buffer by accident, which is what makes searching for it a check.
+    const edited = text.replace(/^(\s*)(\w+\[\w+\]\s*=)[^;]*;/m, "$1$2 1337.0;");
+    if (edited === text) {
+      this._setStatus("shader edit: the compute source has no store this testing aid can edit");
+      return;
+    }
+    const pipeline = state.pipeline.id;
+    this.shaderApply = { pipeline, stage: "compute", ok: false, error: "", replacement: 0, share: -1, before: -1 };
+    const replied = new Promise<ShaderReplacedMessage>((resolve) => {
+      const db2 = this.window.database;
+      const listener = (m: { action: string }): void => {
+        if (m.action !== "ShaderReplaced") return;
+        const reply = m as ShaderReplacedMessage;
+        if (reply.pipeline !== pipeline) return;
+        db2.onOtherMessage.removeListener(listener);
+        resolve(reply);
+      };
+      db2.onOtherMessage.addListener(listener);
+    });
+    void this.window.send({ action: "ReplaceShader", pipeline, stage: "compute", spirv: encodeBase64(new TextEncoder().encode(edited)) });
+    const msg = await replied;
+    this.shaderApply = { pipeline, stage: "compute", ok: !!msg.ok, error: msg.error ?? "",
+                         replacement: msg.replacement ?? 0, share: -1, before: this._constantShare(this, 1337) };
+    if (!msg.ok) {
+      this._setStatus(`shader edit: the application would not compile the kernel: ${(msg.error ?? "").split("\n")[0]}`);
+      return;
+    }
+    const live = await new Promise<CaptureView | null>((resolve) => this.onCaptureAgain.emit(resolve));
+    if (!live) {
+      this.shaderApply.error = "applied, but the application is no longer connected to capture a frame with it";
+      return;
+    }
+    await new Promise<void>((resolve) => {
+      let done = false;
+      const finish = (): void => { if (!done) { done = true; resolve(); } };
+      live.onCaptureComplete.addListener(finish);
+    });
+    this.shaderApply.share = this._constantShare(live, 1337);
+    this._setStatus(`shader edit: the edited kernel wrote 1337 to ${(this.shaderApply.share * 100).toFixed(1)}% of the captured floats`);
+  }
+
+  /** The share of every captured buffer's float32s equal to `value`, for the aid above. */
+  private _constantShare(view: CaptureView, value: number): number {
+    let hits = 0;
+    let total = 0;
+    for (const b of view.data.buffers.values()) {
+      if (!b.data || b.data.byteLength < 4) continue;
+      const floats = new Float32Array(b.data.buffer, b.data.byteOffset, Math.floor(b.data.byteLength / 4));
+      for (const f of floats) {
+        total++;
+        if (f === value) hits++;
+      }
+    }
+    return total ? hits / total : 0;
+  }
+
+  /**
+   * The share of a draw's render target that is magenta, for the testing aid above. -1 when the
+   * target was not read back or its format is one the UI cannot decode.
+   */
+  private _magentaShare(view: CaptureView, draw: CaptureCommand): number {
+    const target = view.targetOfDraw(draw);
+    const tex = target ? view.data.textures.find((t) => t.info.id === target.texture.info.id
+      && t.info.passIndex === target.texture.info.passIndex && (t.info.kind ?? "attachment") === "attachment") : null;
+    if (!tex?.data) return -1;
+    const rgba = decodeImage(tex.info, tex.data);
+    if (!rgba) return -1;
+    let magenta = 0;
+    for (let i = 0; i < rgba.length; i += 4) {
+      if (rgba[i] > 200 && rgba[i + 1] < 60 && rgba[i + 2] > 200) magenta++;
+    }
+    return magenta / Math.max(1, rgba.length / 4);
+  }
+
+  /**
+   * What --debug-view=shader-edit did on a Metal capture, for the debug dump. `share` and `before`
+   * are what the aid measured after and before applying the edit: for a fragment edit the share of
+   * the draw's render target that is magenta, and for a compute one the share of the captured
+   * floats the kernel was made to write. Either way, what is being asked is "did the edited code
+   * run", which the reply alone does not answer.
+   */
+  shaderApply: { pipeline: number; stage: string; ok: boolean; error: string; replacement: number;
+                 share: number; before: number; restored?: boolean; shareAfterRestore?: number } | null = null;
 
   /** Whether this capture can be run again: a Vulkan or a D3D12 one, once its commands are here. */
   get canReplay(): boolean {

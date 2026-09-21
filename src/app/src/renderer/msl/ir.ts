@@ -58,6 +58,16 @@ export type InstrBody =
   | { op: "bitcast"; dst: number; a: number; type: number }
   | { op: "call"; dst: number; target: number; args: number[]; type: number }
   | { op: "builtin"; dst: number; name: string; args: number[]; type: number }
+  /**
+   * `intersector::intersect(ray, structure, ...)`: a traversal of the captured scene
+   * (msl/raytracing.ts).
+   *
+   * Its own instruction rather than a `builtin` because it may have to *call* the shader's own
+   * intersection function, for a bounding box geometry whose shape only that function knows. A
+   * builtin is a function of its arguments and cannot push a frame; the interpreter drives this
+   * one, suspending on the same instruction until every candidate box has been asked about.
+   */
+  | { op: "rayQuery"; dst: number; args: number[]; type: number }
   | { op: "move"; dst: number; src: number; type: number }
   | { op: "jump"; target: number }
   | { op: "branch"; cond: number; then: number; otherwise: number }
@@ -71,7 +81,7 @@ export interface Symbol {
   id: number;
   name: string;
   type: number;
-  /** A compiler temporary the shader did not name, which the values table greys out. */
+  /** A compiler temporary the shader did not name, which the values table grays out. */
   temporary: boolean;
   kind: "register" | "local" | "param" | "global";
   /** Globals and entry-point parameters: what bound them. */

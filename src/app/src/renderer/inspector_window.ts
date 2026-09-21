@@ -203,7 +203,7 @@ export class InspectorWindow extends Window {
     }
     panel.debugCaptureWithout = this._debug?.captureWithout ?? null;
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
-    if (this._debug?.timingMs) this._debugTiming(panel, this._debug.timingMs);
+    if (this._debug?.timingMs) this._debugTiming(panel, this._debug.timingMs, this._debug.timingStacks);
     if (this._debug?.memoryMs) this._debugMemory(panel, this._debug.memoryMs);
   }
 
@@ -561,10 +561,11 @@ export class InspectorWindow extends Window {
   }
 
   /** --debug-timing=<ms>: a timing capture driven from the command line, for screenshots and tests. */
-  private _debugTiming(panel: SessionPanel, ms: number): void {
+  private _debugTiming(panel: SessionPanel, ms: number, stacks?: boolean | null): void {
     setTimeout(() => {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
       panel.showCaptureTab();
+      if (stacks === false) panel.capturePanel.setSampleStacks(false);
       panel.capturePanel.toggleTiming();
       setTimeout(() => panel.capturePanel.toggleTiming(), Math.max(500, ms));
     }, 1500);
@@ -605,11 +606,14 @@ export class InspectorWindow extends Window {
       if (view === "pixel-history") setTimeout(() => panel.capturePanel.debugCaptureHistory(), 5000);
       this._debugExport(panel, 5000);
       // --debug-save=<file>: save the capture once its data has had time to arrive.
+      // --debug-save-delay=<ms> waits longer, for a flow that takes a *second* capture and makes
+      // that one active: an overlay, a pixel history or a mesh output. Four seconds is enough for
+      // one capture's data and too early for the second.
       const save = this._debug?.saveCapture;
       if (save) {
         setTimeout(() => {
           void panel.capturePanel.saveActive(save).then((p) => console.log(p ? `capture saved: ${p}` : "capture save failed"));
-        }, 4000);
+        }, this._debug?.saveCaptureDelayMs ?? 4000);
       }
     }, this._debug?.captureDelayMs ?? 1500);
   }

@@ -19,9 +19,14 @@ export type Value = number | bigint | boolean | Value[] | Pointer | ImageValue |
  * interpreter reads: MSL's `level(1.5)` and `gradient2d(dx, dy)` sampling options, for instance.
  * Keeping one carrier here means a register can hold it without the shared value type growing a
  * case per language.
+ *
+ * `handle` is for an API object a register holds and no shared code looks inside — an acceleration
+ * structure, an intersection function table, an intersector (msl/raytracing.ts). `values` cannot
+ * carry one, since it holds `Value`s, and putting the classes in the union above would put
+ * MSL's ray tracing types in the layer SPIR-V shares.
  */
 export class OpaqueValue {
-  constructor(readonly kind: string, readonly values: Value[]) {}
+  constructor(readonly kind: string, readonly values: Value[], readonly handle?: unknown) {}
 }
 
 /** Where a variable's value lives. */

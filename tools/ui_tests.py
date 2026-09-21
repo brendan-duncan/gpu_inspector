@@ -92,7 +92,8 @@ def electron():
 
 
 class Case:
-    def __init__(self, name, args, checks, delay_ms=12000, companion=None, before=None, after=None, env=None):
+    def __init__(self, name, args, checks, delay_ms=12000, companion=None, before=None, after=None, env=None,
+                 then=None):
         self.name = name
         self.args = args
         self.checks = checks      # callable(dump, log) -> list of failure strings
@@ -100,6 +101,10 @@ class Case:
         self.companion = companion  # callable() -> Popen, started a few seconds after the UI (an app it did not launch)
         self.before = before        # callable() run before the UI starts (registration)
         self.after = after          # callable() run when the UI has quit (cleanup)
+        # callable(work) -> list of failure strings, run after the checks: for a case whose answer
+        # is outside the UI. Used by the ones that save a capture with --debug-save and then run
+        # mtlinsp_replay on it, since the replay's own report is where a replay is verified.
+        self.then = then
         # Extra environment for the UI, which the application it launches inherits: how a capture
         # library's own switches are set for a case (MTLINSP_SIMULATE_GPU_FAULT).
         self.env = env or {}
@@ -150,7 +155,32 @@ def run_case(case, work, keep):
         failures.append(f"dump failed: {state['error']}")
     else:
         failures += case.checks(state, log_text)
+    if case.then:
+        failures += case.then(work)
     return failures, time.time() - started
+
+
+def replay_report(capture_path, extra=()):
+    """`mtlinsp_replay` on a saved capture, as {problems, identical, differing, notCompared, text}."""
+    tool = find_metal_replay()
+    if not tool:
+        return {"text": "", "problems": ["no mtlinsp_replay build"], "identical": 0, "differing": 0, "notCompared": 0}
+    out = subprocess.run([tool, capture_path, *extra], capture_output=True, text=True, timeout=600)
+    text = out.stdout + out.stderr
+    report = {"text": text, "problems": [], "identical": 0, "differing": 0, "notCompared": 0}
+    m = re.search(r"(\d+) identical, (\d+) differing, (\d+) not compared", text)
+    if m:
+        report["identical"], report["differing"], report["notCompared"] = (int(m.group(i)) for i in (1, 2, 3))
+    for line in text.splitlines():
+        line = line.strip()
+        # "an exported frame has no window to present to" is how the replay reports presentDrawable:,
+        # which it deliberately does not do: there is no window. Not a problem with the frame.
+        if line.startswith("command ") and " left out: " in line and "no window to present" not in line:
+            report["problems"].append(line)
+        elif re.match(r"^(function table|acceleration structure|texture|buffer|library|compute pipeline) .*:", line) \
+                and "identical" not in line and "not compared" not in line and "differ" not in line:
+            report["problems"].append(line)
+    return report
 
 
 # ------------------------------------------------------------------------------------------ checks
@@ -590,7 +620,7 @@ def metal_debug_pixel(state, log):
 
 
 def cpu_categories(state):
-    """Which categories "Where the CPU went" totalled, by name -> milliseconds."""
+    """Which categories "Where the CPU went" totaled, by name -> milliseconds."""
     timeline = capture(state).get("cpuTimeline") or {}
     return {t["category"]: t.get("ms", 0.0) for t in timeline.get("categories") or []}
 
@@ -781,6 +811,149 @@ def metal_export_cpp(state, log):
         expect(os.path.isfile(data) and os.path.getsize(data) > 100000, "frame_data.bin is missing or too small to hold the captured targets")
 
 
+# Captures the ray tracing replay cases save and then run mtlinsp_replay on. A fixed path rather
+# than one in the work directory, since --debug-save takes an absolute path and the cases are built
+# before the work directory exists.
+saved_accel = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_metal_accel.gpucap")
+saved_accel_scene = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_metal_accel_scene.gpucap")
+
+
+def metal_debug_ray_triangle(state, log):
+    """A ray query in the shader debugger, against what the GPU wrote for the same thread.
+
+    The kernel of `mtlinsp_triangle --ray-tracing` writes
+    `float4(instance_id + 1, bary.x, bary.y, distance)` for the pixel it traced, and thread
+    (19, 32) of the 64x64 trace is one that hits the first instance. So the four numbers the
+    interpreter's last line computed are the four the hardware put in the texture, and the
+    comparison is exact rather than approximate: the traversal, the instance transform's inverse,
+    the barycentrics and the distance all have to be right for it to hold.
+    """
+    t = debugger_tab(state)
+    values = t.get("lastValues") or []
+    written = next((v.get("value") for v in values if len(v.get("value") or []) == 4), None)
+    return check_connected(state, log) + \
+        expect(t.get("status") == "returned", f"the kernel did not run to the end: {t.get('invocationError') or t.get('status')}") + \
+        expect(not t.get("warnings"), f"the traversal warned: {t.get('warnings')}") + \
+        expect(written is not None, f"the kernel's last line computed no float4 to compare: {values}") + \
+        expect(written is not None and abs(written[0] - 1.0) < 1e-4,
+               f"instance_id + 1 should be 1 (the first instance): {written}") + \
+        expect(written is not None and abs(written[1] - 0.30000001) < 1e-4 and abs(written[2] - 0.33125004) < 1e-4,
+               f"the barycentrics are not what the GPU wrote (0.30000001, 0.33125004): {written}") + \
+        expect(written is not None and abs(written[3] - 2.0) < 1e-4,
+               f"the hit distance should be 2 (the ray starts at z = 2, the triangle is at z = 0): {written}")
+
+
+def metal_debug_ray_boxes(state, log):
+    """The other half: a procedural geometry, where the traversal has to call the shader's own
+    intersection function.
+
+    test/path_tracer/metal is entirely bounding boxes, so a traversal that cannot call
+    `sphereIntersection` reports every ray as a miss — which is what this would catch. Stopped on
+    the line after `intersect`, so `hit` is what the query decided: a bounding box, at a distance,
+    with the primitive the function accepted.
+
+    Line 159 of the captured shader is `if (hit.type == intersection_type::none)`, the line after
+    the query. It moves when the sample's shader does, and the failure then is this case stopping
+    somewhere else rather than anything being wrong.
+    """
+    t = debugger_tab(state)
+    values = t.get("lastValues") or []
+    hit = next((v.get("value") for v in values if v.get("name") == "hit"), None)
+    return check_connected(state, log) + \
+        expect(t.get("line") == 159, f"the debugger stopped on line {t.get('line')}, not the line after the query") + \
+        expect(not t.get("warnings"), f"the traversal warned: {t.get('warnings')}") + \
+        expect(hit is not None, f"there is no `hit` among the values the line computed: {[v.get('name') for v in values]}") + \
+        expect(hit is not None and hit[0] == 2,
+               f"hit.type should be intersection_type::bounding_box (2), so the intersection function "
+               f"was called and accepted: {hit[0] if hit else None}") + \
+        expect(hit is not None and hit[1] > 0,
+               f"the hit distance should be the one the function reported: {hit[1] if hit else None}") + \
+        expect(hit is not None and hit[2] > 0,
+               f"primitive_id should name the box the function accepted: {hit[2] if hit else None}")
+
+
+def metal_accel_replay(_work):
+    """
+    `mtlinsp_replay` on the ray tracing capture the case saved: the builds re-run on this machine's
+    GPU and the traced image compared.
+
+    This is where ray tracing replay is actually verified, and the traced texture is the check that
+    matters. A replay can create every structure, issue every build and dispatch the trace with no
+    error at all and still have *every ray miss* — a structure built from a geometry descriptor
+    whose vertex format decoded as Invalid holds nothing, and nothing says so. What that looks like
+    is a clean run with a black image, which is exactly what a passing test would have looked like
+    without this.
+    """
+    path = saved_accel
+    if not os.path.isfile(path):
+        return ["the capture was not saved, so there is nothing to replay"]
+    r = replay_report(path)
+    return expect(not r["problems"], f"the replay left something out: {r['problems']}") + \
+        expect(r["differing"] == 0, f"{r['differing']} of the frame's targets differ:\n{r['text']}") + \
+        expect(r["identical"] >= 3,
+               f"{r['identical']} targets identical: the traced storage texture is one of them, and a "
+               f"frame whose rays all missed still compares its two color attachments\n{r['text']}")
+
+
+def metal_accel_scene_replay(_work):
+    """
+    The path tracer replayed: bounding box geometry and an intersection function table, which the
+    triangle sample has neither of.
+
+    Nothing is *compared* here, and that is the honest answer rather than a gap: the frame adds one
+    sample to a running mean whose earlier samples no capture recorded, so what it wrote continues
+    from contents nothing holds. What this case holds is that every command replayed — the builds,
+    the table's entries filled by function name, and the trace — since a table entry the replay
+    could not fill is reported as a problem.
+    """
+    path = saved_accel_scene
+    if not os.path.isfile(path):
+        return ["the capture was not saved, so there is nothing to replay"]
+    r = replay_report(path)
+    return expect(not r["problems"], f"the replay left something out: {r['problems']}") + \
+        expect(r["differing"] == 0, f"{r['differing']} of the frame's targets differ:\n{r['text']}") + \
+        expect("accumulates into a texture it also reads" in r["text"],
+               f"the traced image should be reported as unreproducible rather than compared:\n{r['text']}")
+
+
+def metal_export_cpp_accel(state, log):
+    # Export to C++ of a ray tracing frame: the acceleration structures, the builds with their
+    # descriptors rebuilt in source, and the traced storage texture read back to compare.
+    #
+    # The descriptor is the part worth checking in the *source* rather than only in the replay: the
+    # exported project is a second implementation of the same walk (mtl_raytracing.mm writes it
+    # rather than reflecting the objects it built), so a geometry the replay handles and the export
+    # does not is a real gap and one nothing else would catch.
+    projects = [os.path.join(exported_metal_cpp, d) for d in os.listdir(exported_metal_cpp)] if os.path.isdir(exported_metal_cpp) else []
+    project = projects[0] if projects else ""
+    create = commands = ""
+    for name, into in (("frame_create.mm", "create"), ("frame_commands.mm", "commands")):
+        path = os.path.join(project, name) if project else ""
+        if path and os.path.isfile(path):
+            with open(path, encoding="utf-8") as f:
+                text = f.read()
+            if into == "create":
+                create = text
+            else:
+                commands = text
+    return check_connected(state, log) + \
+        expect(bool(project), f"no project was exported into {exported_metal_cpp}") + \
+        expect("newAccelerationStructureWithSize:" in create,
+               "frame_create.mm makes no acceleration structure") + \
+        expect("MTLAccelerationStructureTriangleGeometryDescriptor" in commands,
+               "frame_commands.mm does not rebuild the triangle geometry descriptor") + \
+        expect("MTLInstanceAccelerationStructureDescriptor" in commands,
+               "frame_commands.mm does not rebuild the top level's descriptor") + \
+        expect("instancedAccelerationStructures" in commands,
+               "the exported top level names none of its bottom levels, so its instances index nothing") + \
+        expect("accelerationStructureSizesWithDescriptor:" in commands,
+               "the export takes no scratch size, so the build has nowhere to work") + \
+        expect("buildAccelerationStructure:" in commands, "frame_commands.mm issues no build") + \
+        expect("setAccelerationStructure:" in commands, "frame_commands.mm binds no acceleration structure") + \
+        expect(commands.count("ReadbackTexture(") >= 3,
+               f"{commands.count('ReadbackTexture(')} read-backs: the traced storage texture should be one of them")
+
+
 def accel_tab(state):
     """The acceleration structure tab's state, from the last capture that opened one."""
     for c in reversed(session(state).get("captures") or []):
@@ -797,7 +970,7 @@ def metal_accel_triangle(state, log):
     right and turned a quarter turn — so the scene's extent is only right if MTLPackedFloat4x3 was
     read as the transpose of the 3x4 the views use (renderer/metal/raytracing.ts). An untransposed
     read puts the translation in the wrong component and the rotation the other way, and neither
-    the centre nor the area below would come out.
+    the center nor the area below would come out.
     """
     a = accel_tab(state)
     tree = a.get("tree") or {}
@@ -811,7 +984,7 @@ def metal_accel_triangle(state, log):
         expect(preview.get("triangles") == 2, f"{preview.get('triangles')} triangles in the preview, expected 2") + \
         expect(abs((tree.get("area") or 0) - 1.2) < 0.01, f"world area {tree.get('area')}, expected 1.2 (0.6 twice)") + \
         expect((tree.get("memory") or 0) > 0, "the tree has no memory for the structures (resultSize)") + \
-        expect(abs(center[0] + 0.1) < 0.01, f"the scene's centre is {center}, expected about [-0.1, 0, 0]: "
+        expect(abs(center[0] + 0.1) < 0.01, f"the scene's center is {center}, expected about [-0.1, 0, 0]: "
                                             "the instance transforms were not read as Metal stores them")
 
 
@@ -862,7 +1035,7 @@ def metal_mesh_out(state, log):
     A Metal capture has no replay that serves analyses, so the draw's vertex function is run by the
     MSL interpreter instead — the same one the shader debugger steps
     (shader_debug_setup.ts, interpretedVertexOutputs). The sample draws one triangle with
-    instanceCount 3, so what comes out is nine vertices of position and colour.
+    instanceCount 3, so what comes out is nine vertices of position and color.
     """
     m = (capture(state).get("meshTab") or {})
     o = m.get("output") or {}
@@ -875,7 +1048,7 @@ def metal_mesh_out(state, log):
         expect(o.get("measured") is True and o.get("vertices") == 9,
                f"the three instances' nine vertices were not produced: {o}") + \
         expect("position" in outputs and "color" in outputs, f"the outputs are not all there: {outputs}") + \
-        expect(o.get("stride") == 28, f"stride {o.get('stride')}, expected 28 (float4 position + float3 colour)") + \
+        expect(o.get("stride") == 28, f"stride {o.get('stride')}, expected 28 (float4 position + float3 color)") + \
         expect(stats.get("behind") == 0 and stats.get("outside") == 0 and stats.get("degenerate") == 0,
                f"the triangles are in view and wound the right way, but: {stats}") + \
         expect(preview.get("triangles") == 3, f"the preview drew {preview.get('triangles')} triangles, expected 3")
@@ -902,19 +1075,41 @@ def metal_stencil(state, log):
 
 
 def metal_timing_capture(state, log):
-    """A timing capture on Metal: per-frame wall time and where each frame's calls went.
+    """A timing capture on Metal: per-frame wall time, where each frame's calls went, and the
+    threads' call stacks sampled beside them.
 
     The sample compiles a library and a pipeline inside every frame (--compile-hitch), so
     *Creating pipelines* has to account for a real share of the run — which is what says the
-    categories are attributed per frame rather than just totalled.
+    categories are attributed per frame rather than just totaled.
+
+    The sampler is the macOS half of src/vulkan/src/cpu_sampler.h, through Mach. Three things have
+    to hold for it to be worth anything, and each fails on its own: samples arrive at all; nearly
+    all of them resolve to named functions (an address walked off a clobbered frame pointer
+    symbolizes to nothing, and symbols are asked for lazily so the last batch's may not have been
+    resolved yet); and the application is still running at its display's rate, since a profiler
+    that causes hitches is no use for finding them.
     """
     s = session(state)
     cats = s.get("timingCategories") or []
+    samples = s.get("timingSamples") or {}
+    stacks = samples.get("stacks") or 0
     return check_connected(state, log) + \
         expect((s.get("timingFrames") or 0) > 100,
                f"{s.get('timingFrames')} frames recorded over the run") + \
         expect(cats == ["submit", "waitFences", "acquire", "pipeline"],
-               f"the categories are not the CPU timeline's: {cats}")
+               f"the categories are not the CPU timeline's: {cats}") + \
+        expect((samples.get("records") or 0) > 100, f"{samples.get('records')} sampled records: {samples}") + \
+        expect((samples.get("threads") or 0) >= 2,
+               f"{samples.get('threads')} threads sampled: a Metal application has more than one") + \
+        expect(stacks > 5, f"{stacks} distinct stacks: the walk is not reaching past the top frame") + \
+        expect((samples.get("named") or 0) >= stacks * 0.9,
+               f"{samples.get('named')} of {stacks} stacks resolve to named functions: an address walked off "
+               f"a clobbered frame pointer symbolizes to nothing, so a walk that went wrong shows up here") + \
+        expect((samples.get("waiting") or 0) > 0 and (samples.get("running") or 0) > 0,
+               f"every sample came back the same way, so running is not being told from blocked: {samples}") + \
+        expect((s.get("frameTimeMs") or 99) < 20,
+               f"the application is at {s.get('frameTimeMs')} ms a frame with sampling on: a profiler "
+               f"that causes hitches is no use for finding them")
 
 
 def metal_device_error(state, log):
@@ -990,11 +1185,52 @@ def metal_cases(triangle):
         Case("metal-stencil", [f"--launch={triangle}", "--args=--stencil",
                                "--debug-capture", "--debug-view=target:stencil"],
              metal_stencil, delay_ms=18000),
+        # Draw overlays, measured while the next frame records. All five kinds, because each one
+        # replays a different piece of the draw's state and they fail independently -- and each on
+        # a draw the kind can actually say something about:
+        #   depth    --occluded, last draw: the one behind the first, which must be rejected.
+        #   stencil  --stencil: a pass with no stencil attachment has no stencil test to replay.
+        #   backface --inside-out: wound the other way, so the draw culls away to nothing.
+        Case("metal-overlay-highlight", launch + ["--debug-capture", "--debug-view=overlay:highlight"],
+             measured_draw_overlay("highlight"), delay_ms=24000),
+        Case("metal-overlay-depth", [f"--launch={triangle}", "--args=--occluded",
+                                     "--debug-capture", "--debug-view=overlay:depth:#1"],
+             measured_draw_overlay("depth", metal_overlay_depth), delay_ms=24000),
+        Case("metal-overlay-stencil", [f"--launch={triangle}", "--args=--stencil",
+                                       "--debug-capture", "--debug-view=overlay:stencil"],
+             measured_draw_overlay("stencil", metal_overlay_stencil), delay_ms=24000),
+        Case("metal-overlay-backface", [f"--launch={triangle}", "--args=--inside-out",
+                                        "--debug-capture", "--debug-view=overlay:backface"],
+             measured_draw_overlay("backface", metal_overlay_backface, covers=False), delay_ms=24000),
+        Case("metal-overlay-wireframe", launch + ["--debug-capture", "--debug-view=overlay:wireframe"],
+             measured_draw_overlay("wireframe"), delay_ms=24000),
+        # Shader editing, both ways: source that compiles and source that does not.
+        Case("metal-shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit"],
+             metal_shader_edit, delay_ms=26000),
+        Case("metal-shader-edit-bad", launch + ["--debug-capture", "--debug-view=shader-edit:bad"],
+             metal_shader_edit_bad, delay_ms=22000),
+        Case("metal-shader-edit-compute", launch + ["--debug-capture", "--debug-view=shader-edit:compute"],
+             metal_shader_edit_compute, delay_ms=26000),
         # Ray tracing. Triangle geometry, which test/path_tracer/metal has none of, and instance
         # transforms that are not the identity, which is what makes the transposed read testable.
         Case("metal-accel-triangle", [f"--launch={triangle}", "--args=--ray-tracing",
                                       "--debug-capture", "--debug-view=accel:scene TLAS"],
              metal_accel_triangle, delay_ms=18000),
+        # Ray queries in the shader debugger: the traversal run on the CPU over the scene the
+        # capture read back (src/app/src/renderer/msl/raytracing.ts), against what the GPU wrote.
+        Case("metal-debug-ray-triangle", [f"--launch={triangle}", "--args=--ray-tracing", "--debug-capture",
+                                          "--debug-view=debugger:compute::end:@19,32,0"],
+             metal_debug_ray_triangle, delay_ms=22000),
+        # Export to C++ of the same frame, which writes the descriptors a second way.
+        Case("metal-export-cpp-accel", [f"--launch={triangle}", "--args=--ray-tracing", "--debug-capture",
+                                        f"--debug-export-cpp={exported_metal_cpp}"],
+             metal_export_cpp_accel, delay_ms=22000, before=remove_exported_metal_cpp),
+        # Ray tracing replay: the builds re-run on this machine's GPU and the traced image compared
+        # (src/metal/replay/src/mtl_raytracing.h). --debug-save-delay is past the capture so the
+        # file holds its data, and `then` runs mtlinsp_replay on it.
+        Case("metal-accel-replay", [f"--launch={triangle}", "--args=--ray-tracing", "--debug-capture",
+                                    f"--debug-save={saved_accel}", "--debug-save-delay=9000"],
+             lambda state, log: check_connected(state, log), delay_ms=20000, then=metal_accel_replay),
         # The same scene with the bottom level built once at start-up, so what is drawn can only
         # have come from the capture-start read-back of a private buffer.
         Case("metal-accel-static-blas", [f"--launch={triangle}", "--args=--static-blas",
@@ -1016,6 +1252,21 @@ def metal_path_tracer_cases():
               "--args=--rebuild --width 320 --height 180 --spp 1 --depth 4",
               "--debug-capture", "--debug-view=accel:scene TLAS"],
              metal_accel_path_tracer, delay_ms=20000),
+        # A ray query into procedural geometry, where the traversal calls the shader's own
+        # intersection function.
+        Case("metal-debug-ray-boxes",
+             [f"--launch={path_tracer}",
+              "--args=--rebuild --width 320 --height 180 --spp 1 --depth 4",
+              "--debug-capture", "--debug-view=debugger:compute::L159:@14,112,0"],
+             metal_debug_ray_boxes, delay_ms=22000),
+        # The same frame replayed: bounding box geometry and an intersection function table, which
+        # the triangle sample has neither of.
+        Case("metal-accel-scene-replay",
+             [f"--launch={path_tracer}",
+              "--args=--rebuild --width 320 --height 180 --spp 1 --depth 4",
+              "--debug-capture", f"--debug-save={saved_accel_scene}", "--debug-save-delay=9000"],
+             lambda state, log: check_connected(state, log), delay_ms=20000,
+             then=metal_accel_scene_replay),
     ]
 
 
@@ -1226,7 +1477,7 @@ def triangle_cases(triangle):
         cases.append(Case("overlay-backface", launch + ["--args=--inside-out", "--debug-capture", "--debug-view=overlay:backface:last",
                                                         "--debug-settle=9000"],
                           triangle_backface_overlay, delay_ms=24000))
-        cases.append(Case("overlay-stencil", launch + ["--args=--stencil", "--debug-capture", "--debug-view=overlay:stencil:last",
+        cases.append(Case("overlay-stencil", launch + ["--args=--stencil", "--debug-capture", "--debug-view=overlay:stencil",
                                                        "--debug-settle=9000"],
                           triangle_stencil_overlay, delay_ms=24000))
         cases.append(Case("mesh", launch + ["--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
@@ -1359,24 +1610,126 @@ def d3d12_mesh_output(state, log):
         expect("mesh output" in log, "the library never reported streaming a draw out")
 
 
-def d3d12_draw_overlay(state, log):
-    # A draw overlay on D3D12: the render target tab asks for one, the library measures it while
-    # the *next* frame records (src/d3d12/src/draw_overlay.cpp), and that capture opens its own
-    # tab with the overlay on. So the last capture is the measured one, and there must be exactly
-    # two: a tab opened on the measured draw must not ask for a capture of its own.
+def measured_draw_overlay(kind, extra=None, covers=True):
+    """
+    A draw overlay measured while capturing, which is what D3D12 and Metal both do
+    (src/d3d12/src/draw_overlay.cpp, src/metal/src/draw_overlay.mm) rather than replaying the
+    capture as Vulkan does: the render target tab asks for one, the library measures it while the
+    *next* frame records, and that capture opens its own tab with the overlay on. So the last
+    capture is the measured one, and there must be exactly two -- a tab opened on the measured
+    draw must not ask for a capture of its own.
+
+    `extra` takes the overlay and returns what the kind itself has to say, since each kind replays
+    a different piece of the draw's state and a shared check can only hold that *something* was
+    measured. `covers` is False for a draw whose own culling leaves nothing, which is the one case
+    where no pixel covered is the right answer.
+    """
+    def check(state, log):
+        caps = (session(state).get("captures") or [])
+        last = caps[-1] if caps else {}
+        t = last.get("textureTab") or {}
+        d = t.get("drawOverlay") or {}
+        return check_connected(state, log) + \
+            expect(len(caps) == 2, f"{len(caps)} captures: the overlay should take one more capture, and only one") + \
+            expect(t.get("overlay") == kind, f"the measured capture's tab did not open with the {kind} overlay: {t.get('overlay')}") + \
+            expect((t.get("target") or {}).get("kind") != "sampled",
+                   f"the tab opened on an image the frame sampled rather than the draw's render target: {t.get('target')}") + \
+            expect(not t.get("drawError"), f"the overlay was not measured: {t.get('drawError')}") + \
+            expect(d.get("measured") is True and d.get("mask") is True, f"the draw has no mask: {d}") + \
+            expect(((d.get("pixelsCovered") or 0) > 0) == covers,
+                   f"the draw {'covers no pixels' if covers else 'should have culled away to nothing'}: {d}") + \
+            (extra(d) if extra else []) + \
+            expect("draw overlay" in log, "the library never reported measuring a draw overlay")
+    return check
+
+
+d3d12_draw_overlay = measured_draw_overlay("depth")
+
+
+def metal_shader_edit(state, log):
+    # Shader editing on Metal: the first draw's fragment function edited to return magenta, sent to
+    # the running application, compiled by its own device and drawn with
+    # (src/metal/src/shader_edit.mm). Two captures: the one the edit was read from, and one taken
+    # after it was applied to see what it did.
+    #
+    # The check is the pixels rather than the reply. "ok" only says the pipeline rebuilt, and the
+    # way this fails quietly is a replacement that builds and is never bound -- which reads as a
+    # clean apply and an unchanged frame. So: nothing magenta before, the draw's own coverage
+    # magenta after.
     caps = (session(state).get("captures") or [])
-    last = caps[-1] if caps else {}
-    t = last.get("textureTab") or {}
-    d = t.get("drawOverlay") or {}
+    a = (caps[0].get("shaderApply") or {}) if caps else {}
     return check_connected(state, log) + \
-        expect(len(caps) == 2, f"{len(caps)} captures: the overlay should take one more capture, and only one") + \
-        expect(t.get("overlay") == "depth", f"the measured capture's tab did not open with the depth test overlay: {t.get('overlay')}") + \
-        expect((t.get("target") or {}).get("kind") != "sampled",
-               f"the tab opened on an image the frame sampled rather than the draw's render target: {t.get('target')}") + \
-        expect(not t.get("drawError"), f"the overlay was not measured: {t.get('drawError')}") + \
-        expect(d.get("measured") is True and d.get("mask") is True, f"the draw has no mask: {d}") + \
-        expect((d.get("pixelsCovered") or 0) > 0, f"the draw covers no pixels: {d}") + \
-        expect("draw overlay" in log, "the library never reported measuring a draw overlay")
+        expect(len(caps) == 3, f"{len(caps)} captures: the aid applies, captures, restores and captures again") + \
+        expect(a.get("ok") is True, f"the application would not compile the edit: {a.get('error')}") + \
+        expect((a.get("replacement") or 0) > 0, f"the rebuilt pipeline was not registered as an object: {a}") + \
+        expect((a.get("before") or 0) < 0.001, f"the target was already magenta before the edit, so the test proves nothing: {a}") + \
+        expect((a.get("share") or 0) > 0.10, f"the edited fragment function is not what drew: {a.get('share')} of the target is magenta") + \
+        expect(a.get("restored") is True, f"the restore failed: {a.get('error')}") + \
+        expect((a.get("shareAfterRestore") or 0) < 0.001,
+               f"restoring left the replacement bound: {a.get('magentaAfterRestore')} of the target is still magenta") + \
+        expect("shader edit" in log and "rebuilt as" in log, "the library never reported rebuilding the pipeline") + \
+        expect("restored" in log, "the library never reported restoring the pipeline")
+
+
+def metal_shader_edit_bad(state, log):
+    # The other half: source that does not compile. Metal's compiler is the application's own
+    # device, so its diagnostics are the only ones there are -- a path that swallowed them would
+    # leave the editor with nothing to show but "failed".
+    caps = (session(state).get("captures") or [])
+    a = (caps[0].get("shaderApply") or {}) if caps else {}
+    error = a.get("error") or ""
+    return check_connected(state, log) + \
+        expect(len(caps) == 1, f"{len(caps)} captures: an edit that did not compile should not capture a frame") + \
+        expect(a.get("ok") is False, f"source that does not compile was accepted: {a}") + \
+        expect((a.get("replacement") or 0) == 0, f"a failed edit should register no object: {a}") + \
+        expect("error:" in error and "undeclared identifier" in error,
+               f"the compiler's own diagnostics did not come back: {error!r}") + \
+        expect(re.search(r":\d+:\d+: error:", error) is not None,
+               f"the diagnostics carry no line and column, so the editor cannot mark them: {error!r}")
+
+
+def metal_shader_edit_compute(state, log):
+    # The compute half. Its own case because a compute pipeline reaches the rebuild by a different
+    # road: `newComputePipelineStateWithFunction:` has no descriptor to keep, so the library has to
+    # have remembered the function and make a descriptor of its own (src/metal/src/shader_edit.mm).
+    # A render pipeline never exercises that path, so this is the one that would catch it rotting.
+    caps = (session(state).get("captures") or [])
+    a = (caps[0].get("shaderApply") or {}) if caps else {}
+    return check_connected(state, log) + \
+        expect(a.get("stage") == "compute", f"the aid did not edit a compute stage: {a}") + \
+        expect(a.get("ok") is True, f"the application would not compile the kernel: {a.get('error')}") + \
+        expect((a.get("replacement") or 0) > 0, f"the rebuilt compute pipeline was not registered as an object: {a}") + \
+        expect((a.get("before") or 0) < 0.001, f"the constant was already in the buffers, so the test proves nothing: {a}") + \
+        expect((a.get("share") or 0) > 0.5,
+               f"the edited kernel is not what ran: {a.get('share')} of the captured floats carry the constant it writes") + \
+        expect("shader edit" in log and "rebuilt as" in log, "the library never reported rebuilding the pipeline")
+
+
+def metal_overlay_depth(d):
+    # --occluded's second draw is the same geometry at depth 0.8 behind the first at 0.4, so every
+    # fragment it rasterizes fails: rejected is not merely non-zero, it is all of them. A run that
+    # quietly skipped the depth test would report the opposite.
+    return expect(d.get("depthTested") is True, f"the depth-test run was not made: {d}") + \
+        expect((d.get("pixelsRejected") or 0) == (d.get("pixelsCovered") or 0) and (d.get("pixelsPassed") or 0) == 0,
+               f"every fragment of the draw behind should have been rejected: {d}")
+
+
+def metal_overlay_stencil(d):
+    # As with triangle_stencil_overlay: this sample compares ALWAYS, so nothing is rejected. What
+    # the case holds is that the stencil-only run was made on a pass that has a stencil at all,
+    # and reports against it rather than falling back to the depth test's answer.
+    return expect(d.get("stencilTested") is True, f"the stencil-only run was not made on a pass with a stencil: {d}") + \
+        expect(d.get("pixelsStencilRejected") == 0,
+               f"this sample's stencil test compares ALWAYS, so it rejects nothing: {d}")
+
+
+def metal_overlay_backface(d):
+    # --inside-out reverses the winding and culls back faces, so the draw leaves no pixel at all.
+    # The cull-off run is the only thing that can say where it would have been, which is the whole
+    # point: covered 0 and back-facing the triangle is a diagnosis, covered 0 alone is not.
+    return expect(d.get("backFaceTested") is True, f"the cull-off run was not made: {d}") + \
+        expect((d.get("pixelsBackFacing") or 0) > 0,
+               f"the draw culled away to nothing, so the cull-off run should show where it went: {d}")
 
 
 def d3d12_bundle(state, log):

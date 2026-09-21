@@ -343,10 +343,39 @@ DerivedPipeline PipelineCopy(id<MTLDevice> device, id state, PipelineVariant var
         } else {
             MTLRenderPipelineColorAttachmentDescriptorArray *colors =
                 ((id (*)(id, SEL))objc_msgSend)(descriptor, sel_registerName("colorAttachments"));
-            if (variant == PipelineVariant::OverdrawCount || variant == PipelineVariant::HistoryCover) {
+            if (variant == PipelineVariant::OverdrawCount || variant == PipelineVariant::HistoryCover
+                || variant == PipelineVariant::OverlayMask) {
+                // OverlayQuiet keeps the application's fragment function on purpose: a draw before
+                // the one being drawn has to behave as it did, discards included.
                 ((void (*)(id, SEL, id))objc_msgSend)(descriptor, sel_registerName("setFragmentFunction:"), fragment);
             }
-            if (variant == PipelineVariant::OverdrawCount) {
+            if (variant == PipelineVariant::OverlayMask || variant == PipelineVariant::OverlayQuiet) {
+                // One R8Unorm target holding 1 wherever a fragment landed. Unblended, unlike the
+                // overdraw count: a mask says which pixels, not how many fragments, and a run that
+                // added would saturate at 1 anyway.
+                for (NSUInteger i = 0; i < 8; i++) {
+                    MTLRenderPipelineColorAttachmentDescriptor *c = colors[i];
+                    if (i == 0) {
+                        c.pixelFormat = MTLPixelFormatR8Unorm;
+                        // The mask writes; the quiet copy only moves depth and stencil.
+                        c.writeMask = variant == PipelineVariant::OverlayMask ? MTLColorWriteMaskRed
+                                                                             : MTLColorWriteMaskNone;
+                        c.blendingEnabled = NO;
+                    } else {
+                        c.pixelFormat = MTLPixelFormatInvalid;
+                        c.blendingEnabled = NO;
+                    }
+                }
+                // The formats of the run's own attachments, which differ between the runs that test
+                // and the runs that do not: a pipeline's formats have to match the pass it is drawn
+                // in, and an overlay draws the same pipeline into both.
+                Send(descriptor, "setDepthAttachmentPixelFormat:", depthFormat);
+                Send(descriptor, "setStencilAttachmentPixelFormat:", stencilFormat);
+                Send(descriptor, "setSampleCount:", 1);
+                Send(descriptor, "setRasterSampleCount:", 1);
+                SendBool(descriptor, "setAlphaToCoverageEnabled:", NO);
+                SendBool(descriptor, "setAlphaToOneEnabled:", NO);
+            } else if (variant == PipelineVariant::OverdrawCount) {
                 for (NSUInteger i = 0; i < 8; i++) {
                     MTLRenderPipelineColorAttachmentDescriptor *c = colors[i];
                     if (i == 0) {
@@ -505,7 +534,12 @@ std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPas
         overdraw = g_overdraw;
     }
     const int historyAttachment = MatchPixelHistoryAttachment(descriptor);
-    if (!overdraw && historyAttachment < 0) return nullptr;   // nothing the capture measures renders here
+    // An overlay's pass is not known by its attachments but by its index, which the pass does not
+    // have yet (BeginOverdrawPass assigns it). So every pass is prepared while an overlay is
+    // wanted, and all but the one asked for are dropped at its end — the same trade the pixel
+    // history makes.
+    const bool overlay = DrawOverlayWanted();
+    if (!overdraw && !overlay && historyAttachment < 0) return nullptr;   // nothing the capture measures renders here
 
     auto pass = std::make_shared<OverdrawPass>();
     pass->commandBuffer = [commandBuffer retain];
@@ -557,7 +591,8 @@ std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPas
     }
     pass->combined = depth.texture != nil && depth.texture == stencil.texture;
     if (historyAttachment >= 0) PreparePixelHistory(*pass, commandBuffer, descriptor, historyAttachment);
-    if (!overdraw || pass->multisampled) return pass;
+    // An overlay's tested runs start from the same copies overdraw's do.
+    if ((!overdraw && !overlay) || pass->multisampled) return pass;
 
     // What the pass loads, copied before it can change it. The command buffer is free: the
     // application is asking for its next encoder.
@@ -599,6 +634,8 @@ std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPas
 void BeginOverdrawPass(id encoder, std::shared_ptr<OverdrawPass> pass, uint32_t passIndex) {
     if (!pass || encoder == nil) return;
     pass->passIndex = passIndex;
+    // Now the index is known, the overlay can say whether this is its pass.
+    pass->overlay = MatchDrawOverlayPass(passIndex);
     pass->segments.push_back({(__bridge const void *)encoder, {}});
     std::lock_guard<std::mutex> lock(g_mutex);
     if (!OverdrawActive()) return;
@@ -636,17 +673,25 @@ void EndOverdrawPass(id encoder) {
         }
     }
     if (pass->measureOverdraw) MeasurePass(*pass);
+    if (pass->overlay) MeasureDrawOverlay(*pass);
     if (pass->history) FollowPixel(*pass);
     // The recorded calls let go of what they held here, outside the lock.
 }
 
-void RememberRenderPipeline(id state, id descriptor) {
+void RememberPipelineDescriptor(id state, id descriptor) {
     if (state == nil || descriptor == nil) return;
     id kept = [descriptor copy];
     std::lock_guard<std::mutex> lock(g_stateMutex);
     id &slot = g_descriptors[(__bridge const void *)state];
     [slot release];
     slot = kept;
+}
+
+id CopyRememberedPipelineDescriptor(id state) {
+    if (state == nil) return nil;
+    std::lock_guard<std::mutex> lock(g_stateMutex);
+    auto it = g_descriptors.find((__bridge const void *)state);
+    return it != g_descriptors.end() ? [it->second copy] : nil;
 }
 
 void RememberDepthStencilState(id state, MTLDepthStencilDescriptor *descriptor) {

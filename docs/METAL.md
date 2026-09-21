@@ -39,19 +39,25 @@ its signature and notarization. Do it to a development build, not to a shipped c
 
 ## Starting an application by hand
 
-An application the inspector cannot launch itself can be started with these variables set, then
-picked up with the port box of **Attach...** on the main bar (or `npm start -- --connect=<port>`):
+An application the inspector cannot launch itself can be started with just the library set, then
+picked up from the list in **Attach...** on the main bar:
 
 | Variable | Value |
 |---|---|
 | `DYLD_INSERT_LIBRARIES` | the path to `libmtlinsp_capture.dylib` |
-| `MTLINSP_PORT` | the port to connect on |
+| `MTLINSP_PORT` | optional: the port to listen on, when one in particular is wanted |
 | `MTLINSP_LOG` | optional: `1` logs the intercepted calls to the session's **Log** tab |
 
-`MTLINSP_PORT` has to be set and has to be free: unlike the Vulkan and Direct3D 12 libraries,
-this one neither steps to a free port nor answers `--list-targets`, so its port is typed rather
-than read off a list, and probing it would take the connection from an attached inspector. The
-two pieces that are missing are marked in `src/metal/src/transport.mm`.
+`MTLINSP_PORT` is optional because the library steps to a free port when another inspected
+application has the default one, so several started by hand are all reachable without anybody
+choosing numbers — and each answers the probe the attach list sends, so it turns up by name with
+its pid and its port. A port named in `MTLINSP_PORT` is used as given and never stepped off, since
+that is where whoever named it is waiting.
+
+One difference from the other two libraries: an application with an inspector *already attached*
+is missing from the list rather than shown as busy. Its session runs on the thread that would
+otherwise be accepting the probe, so the probe times out
+([the reason, and what fixing it needs](../src/metal/README.md)).
 
 ## What works
 
@@ -70,9 +76,12 @@ two pieces that are missing are marked in `src/metal/src/transport.mm`.
   depth rejection per pass. See [Finding GPU bottlenecks](PROFILING.md).
 - **Timing Capture** — every frame's wall time and where its CPU went, over minutes, for finding
   [a hitch rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame). The
-  categories are the CPU timeline's, so a frame that stopped for a pipeline compile says so. What a
-  Windows capture also gets and this does not is sampled call stacks: the sampler is Windows-only in
-  all three backends.
+  categories are the CPU timeline's, so a frame that stopped for a pipeline compile says so. With
+  **Sample stacks** on it also samples every thread's call stack 250 times a second and whether it
+  was running or blocked, which is what answers the hitch none of the timed calls accounts for — the
+  application's own work between them. On macOS that goes through Mach (`task_threads`,
+  `thread_suspend`, `thread_get_state`) and walks frame pointers, which the arm64 ABI guarantees are
+  there; it needs no privilege and no second process, unlike the kernel traces this competes with.
 - **GPU faults** — a command buffer that fails is reported with its error and, where the driver
   supplies them, the state of every encoder in it: which one faulted, which were affected, which
   never ran, and the debug signposts each had passed. That is Metal's answer to Vulkan's
@@ -86,6 +95,27 @@ two pieces that are missing are marked in `src/metal/src/transport.mm`.
   them out of the running application; Metal has no replay that serves analyses, so it interprets
   instead — which also means the outputs need no second capture. Draws longer than 20,000 vertices
   are cut off, and the view says so rather than showing a short mesh as a whole one.
+- **Shader editing** — a pipeline's stage recompiled from edited Metal Shading Language and bound
+  in the running application from its next frame: **Edit** under a render or compute pipeline
+  state's Shader section, then **Compile & Apply**. Metal's is the least trouble of the three
+  backends, and for a reason worth knowing: a Vulkan or Direct3D 12 edit has to be compiled here,
+  by glslang or dxc, so it needs the Vulkan SDK on this machine — while a Metal capture holds the
+  Shading Language the application itself compiled, and the device that compiled it is in the
+  application. So nothing has to be installed, and the compiler's own diagnostics come back and
+  mark the lines of the text on screen. Function constants the stage was specialized with are
+  carried across, which matters for a library of `[[function_constant]]`-guarded variants: without
+  them the recompile would quietly build a different variant. **Restore Original** binds the
+  application's own pipeline again.
+
+  What Metal does not have is Direct3D 12's and Vulkan's **Compile & Replay** — running the edit
+  against the captured frame instead of the live application — because that needs a replay that
+  serves analyses, which `mtlinsp_replay` is not yet. A pipeline the inspector never saw created
+  cannot be rebuilt either, and says so.
+- **Draw-call overlays** — where one draw landed over its pass's render target, and what the depth
+  test, the stencil test and its own culling did with it: Highlight Draw, Depth Test, Stencil Test,
+  Backface Cull and Wireframe ([Draw-call overlays](REPORTS.md#draw-call-overlays)). Measured by
+  drawing the pass again inside the application, so asking for one captures the next frame — see
+  [Measuring a draw inside the application](#measuring-a-draw-inside-the-application).
 - **Depth and stencil read-back** — both aspects of a pass's depth/stencil attachment, each its own
   entry in the render targets. Two read-backs of one texture, because a blit may fetch depth or
   stencil but not both; the library also forces the store on, since an application that only *tests*
@@ -98,6 +128,21 @@ two pieces that are missing are marked in `src/metal/src/transport.mm`.
   ([Reports](REPORTS.md)); a structure built before the capture is read back as the capture starts,
   so a bottom level an engine built at load is still legible. An acceleration structure pass is
   timed like any other, so the frame's build cost is in the pass list.
+
+  **Ray queries are in the shader debugger.** Metal has no hit shaders — a kernel holds an
+  `intersector` and calls `intersect` — so the one line a traced frame is about is inside the
+  shader, and the debugger follows it: the traversal runs on the CPU over the geometry the capture
+  read back, and `intersection_result` comes back with the instance, the geometry, the primitive,
+  the barycentrics and the distance. For a *procedural* geometry it goes further and calls the
+  shader's own intersection function, stepping into it like any other call — which is the only way
+  to answer "why is this sphere not hit", since a bounding box says nothing about what is in it.
+
+  A ray tracing frame replays and exports: `mtlinsp_replay` re-creates the structures, re-runs the
+  builds and refits, fills the intersection function tables by function name, and compares the
+  traced storage texture as well as the render targets
+  ([Capture replay](REPLAY.md#metal)). This is less work on Metal than on either other API, because
+  a geometry descriptor names its buffers outright and a table entry names its function — where
+  Vulkan and Direct3D 12 have device addresses and opaque identifiers to map back.
 
   Metal has no shader binding table and no hit shaders — a kernel traverses the scene itself — so
   in place of the other two backends' binding table view there is the **intersection function
@@ -135,25 +180,39 @@ Two controls appear in the capture bar on macOS:
 | **Overdraw** | Draws every render pass a second time with a counting fragment shader, so the capture records how many fragments landed on each pixel, with and without the depth and stencil tests. Costs GPU and CPU time in the captured frame. See [Overdraw](REPORTS.md#overdraw) |
 | **Xcode Trace** | Writes the next frame as a `.gputrace` document to open in Xcode's Metal debugger, for shader debugging and per-line profiling. The path is printed in the **Log** tab |
 
-On Metal, [pixel history](REPORTS.md#pixel-history) is measured by capturing another frame while
-following the pixel, so it needs the application to still be running.
+## Measuring a draw inside the application
+
+Vulkan answers "what did this draw do" by replaying the capture on this machine's GPU. Metal has no
+replay that serves analyses, so the capture library measures inside the running application instead:
+it keeps every call a render pass records, and draws the pass again — up to the draw in question,
+then that draw on its own into a target of its own. This is the same machinery overdraw uses, with a
+different fragment function and a different target.
+
+What follows from that:
+
+- **The application has to still be running.** A `.gpucap` opened later holds whatever was measured
+  when it was taken, and nothing more.
+- **Asking captures another frame.** Choosing an overlay, or following a pixel, records the
+  application's *next* frame with the measurement in it, and opens that capture's own tab on the
+  answer. The draw is named by its pass and its ordinal within it, not by its command index, because
+  the new frame numbers its commands afresh.
+- **One draw per capture.** A tab opened on a draw that was already measured does not ask again.
+- **It costs the captured frame time**, as overdraw does: five extra runs of the pass for an
+  overlay.
+
+[Pixel history](REPORTS.md#pixel-history) and [draw overlays](REPORTS.md#draw-call-overlays) both
+work this way. Direct3D 12 does the same thing for the same reason
+([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)); the mesh
+view is the exception, since the Shading Language interpreter can compute a draw's vertex outputs
+without running anything on the GPU.
 
 ## What is not there yet
 
-- `mtlinsp_replay` does not replay acceleration structure builds or traces yet, so **Export to
-  C++** on a ray tracing frame leaves them out.
-- Ray queries are not in the shader debugger: a kernel that traverses a scene can be stepped, but
-  `intersector::intersect` is not followed into.
-- Shader editing is not wired up. The usual reason given — that it is built around SPIR-V — is only
-  half of it: a Metal capture holds the Shading Language the application compiled, so recompiling an
-  edited copy is *easier* than on either of the other two. What is missing is the plumbing to swap
-  the recompiled function into the pipeline and re-run the frame, which on Metal means rebuilding
-  the pipeline state rather than patching a module.
+- `mtlinsp_replay` leaves curve and motion geometry out of **Export to C++** (it replays both), and
+  does not set an opaque triangle intersection function — Metal's own rather than the application's,
+  named by signature rather than by a function.
 - PVRTC textures are not decoded (the format is mapped, but the UI has no decoder for it); every
   other pixel format Metal has is. It is an iOS format, so a macOS capture will not hold one.
-- No **CPU sampling**: a timing capture records where the frame's *calls* went, but does not sample
-  the threads' call stacks. This is not a Metal gap as such — the sampler is Windows-only in all
-  three backends, so a Vulkan capture on Linux lacks it too.
 - Only Apple Silicon has been verified.
 
 ## If it does not work

@@ -19,6 +19,12 @@
 //                                 pass with a depth attachment: every fragment of the second draw
 //                                 is rejected, which is what an overdraw measurement counting with
 //                                 and without the depth test has to tell apart
+//   mtlinsp_triangle --inside-out
+//                                 draw the triangle wound the other way, with back faces culled,
+//                                 so the draw rasterizes nothing at all. The bug the Backface Cull
+//                                 overlay is for: a draw that issues correctly, binds everything
+//                                 and leaves no pixel, which no other view can tell apart from a
+//                                 draw that was simply off-screen
 //   mtlinsp_triangle --stencil    give the triangle pass a combined depth/stencil attachment and a
 //                                 stencil state that always passes and writes 1, so a capture reads
 //                                 a stencil target back beside the depth one. Two aspects of one
@@ -56,6 +62,8 @@ const float kVertices[] = {
      0.6f, -0.4f,   0.2f, 0.2f, 1.0f,
 };
 const uint16_t kIndices[] = { 0, 1, 2 };
+/** --inside-out: the same triangle with its winding reversed, so culling removes it. */
+const uint16_t kIndicesReversed[] = { 0, 2, 1 };
 
 // Both stages in one library, plus a compute kernel, so the run keeps a compute pass in it, and
 // the pass that copies the resolved triangle to the drawable: a full-screen triangle from the
@@ -183,7 +191,7 @@ struct Uniforms {
 constexpr NSUInteger kWaveCount = 256;
 
 // --ray-tracing: the triangle as an acceleration structure needs float3 positions of its own — the
-// draw's vertices are position (float2) and colour (float3) interleaved at a stride of 20, which is
+// draw's vertices are position (float2) and color (float3) interleaved at a stride of 20, which is
 // not a layout a build can read as a position.
 const float kRayVertices[] = {
      0.0f,  0.6f, 0.0f,
@@ -211,13 +219,17 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 /** `occluded` is an initializer argument rather than a property: it decides the pipeline's depth
  *  attachment format, which is fixed when the pipeline is built. */
 - (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
-                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas;
+                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas insideOut:(BOOL)insideOut;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
 /** --occluded: the triangle drawn twice, the second behind the first, with a depth test. */
 @property(nonatomic, readonly) BOOL occluded;
 /** --stencil: a combined depth/stencil attachment, so both aspects are read back. */
 @property(nonatomic, readonly) BOOL stencil;
+/** --inside-out: reversed winding with back faces culled, so the draw leaves nothing. It is an
+ *  initializer argument for the same reason `occluded` is: it decides what goes in the index
+ *  buffer, which is filled once. */
+@property(nonatomic, readonly) BOOL insideOut;
 /** --present-direct: present through the drawable, the way Unity's macOS player does. */
 @property(nonatomic) BOOL presentDirect;
 /** --compile-hitch: build a library and a pipeline inside every frame. */
@@ -277,8 +289,9 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 }
 
 - (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
-                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas {
+                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas insideOut:(BOOL)insideOut {
     if (!(self = [super init])) return nil;
+    _insideOut = insideOut;
     _occluded = occluded;
     _stencil = stencil;
     _rayTracing = rayTracing;
@@ -411,7 +424,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         [upload commit];
         [upload waitUntilCompleted];
     }
-    _indices = [_device newBufferWithBytes:kIndices length:sizeof(kIndices)
+    _indices = [_device newBufferWithBytes:self.insideOut ? kIndicesReversed : kIndices
+                                    length:sizeof(kIndices)
                                    options:MTLResourceStorageModeShared];
     _indices.label = @"indices";
     _uniforms = [_device newBufferWithLength:sizeof(Uniforms) options:MTLResourceStorageModeShared];
@@ -752,6 +766,15 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     encoder.label = @"triangle";
     [encoder pushDebugGroup:@"triangles"];
     [encoder setRenderPipelineState:_pipeline];
+    // --inside-out: the draw that culls away to nothing.
+    if (self.insideOut) {
+        // The triangle's own winding, declared as the front face, with the index buffer feeding the
+        // other one: back faces culled is the ordinary setting, and the mesh is what is wrong. Both
+        // of these are encoder state in Metal rather than pipeline state, which is why one pipeline
+        // serves both modes.
+        [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
+        [encoder setCullMode:MTLCullModeBack];
+    }
     if (depthPass) [encoder setDepthStencilState:_depthState];
     if (self.stencil) [encoder setStencilReferenceValue:1];
     [encoder setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
@@ -830,6 +853,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL rayTracing;
 @property(nonatomic) BOOL staticBlas;
 @property(nonatomic) BOOL stencilPass;
+@property(nonatomic) BOOL insideOut;
 @end
 
 @implementation AppDelegate {
@@ -868,7 +892,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [NSApp activateIgnoringOtherApps:YES];
 
     _renderer = [[Renderer alloc] initWithLayer:layer occluded:self.occluded stencil:self.stencilPass
-                                     rayTracing:self.rayTracing staticBlas:self.staticBlas];
+                                     rayTracing:self.rayTracing staticBlas:self.staticBlas
+                                      insideOut:self.insideOut];
     _renderer.presentDirect = self.presentDirect;
     _renderer.compileHitch = self.compileHitch;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
@@ -897,12 +922,14 @@ int main(int argc, const char *argv[]) {
     BOOL rayTracing = NO;
     BOOL staticBlas = NO;
     BOOL stencil = NO;
+    BOOL insideOut = NO;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
         else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
         else if (strcmp(argv[i], "--occluded") == 0) occluded = YES;
         else if (strcmp(argv[i], "--stencil") == 0) stencil = YES;
+        else if (strcmp(argv[i], "--inside-out") == 0) insideOut = YES;
         else if (strcmp(argv[i], "--ray-tracing") == 0) rayTracing = YES;
         else if (strcmp(argv[i], "--static-blas") == 0) staticBlas = YES;
     }
@@ -917,6 +944,7 @@ int main(int argc, const char *argv[]) {
         delegate.compileHitch = compileHitch;
         delegate.occluded = occluded;
         delegate.stencilPass = stencil;
+        delegate.insideOut = insideOut;
         delegate.rayTracing = rayTracing;
         delegate.staticBlas = staticBlas;
         app.delegate = delegate;

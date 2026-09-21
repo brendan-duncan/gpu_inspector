@@ -23,6 +23,7 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -115,6 +116,23 @@ private:
     id CreateDepthStencil(const JValue& object, const Decoder& d, uint64_t captureId);
     id CreateSampler(const JValue& object, const Decoder& d, uint64_t captureId);
     id CreateHeap(const JValue& object, const Decoder& d, uint64_t captureId);
+    id CreateAccelerationStructure(const JValue& object, const Decoder& d, uint64_t captureId);
+    /** An intersection or visible function table, made from the pipeline it belongs to. */
+    id CreateFunctionTable(const JValue& object, const Decoder& d, uint64_t captureId, bool intersection);
+    /** A table made above, waiting for the objects its entries and buffers name. */
+    struct PendingTable {
+        id table = nil;
+        uint64_t captureId = 0;
+        id pipeline = nil;
+        uint64_t pipelineId = 0;
+        bool intersection = true;
+        uint64_t functionCount = 0;
+        std::string createdWith;
+        std::string exportName;
+    };
+    /** Fills every table made, once every object exists; the tables are made before their buffers. */
+    void FillFunctionTables();
+    void FillFunctionTable(const PendingTable& p);
 
     // ---- contents
     void UploadContents();
@@ -132,6 +150,8 @@ private:
     bool RenderCommand(const std::string& m, const Decoder& d, uint32_t index);
     bool ComputeCommand(const std::string& m, const Decoder& d, uint32_t index);
     bool BlitCommand(const std::string& m, const Decoder& d, uint32_t index);
+    /** A build, refit, copy or compacted-size write on an acceleration structure encoder. */
+    bool AccelerationCommand(const std::string& m, const Decoder& d, uint32_t index);
     bool CommonCommand(const std::string& m, const Decoder& d, uint32_t index);
     bool CommandBufferCommand(const std::string& m, const Decoder& d, uint32_t index);
     /** Residency and fences, which the render, compute and blit encoders all have. */
@@ -149,9 +169,25 @@ private:
     /** The exporter's name for an object, or "nil" when there is no export. */
     std::string ExportName(id object) const;
     void BindBufferContents(const Decoder& d, const JValue& command);
+    /** One CaptureBuffers range written into its buffer; each is written once. */
+    void UploadBufferRange(uint64_t dataId);
 
     // ---- read-back and comparison
     void QueuePassReadbacks();
+    /**
+     * Textures a compute pass of the frame wrote, read back after it and compared with what the
+     * capture holds.
+     *
+     * A render pass's attachments are compared at the end of the pass, which is where the capture
+     * read them. A storage texture a kernel wrote has no pass end to hang that on: the capture read
+     * it back because a later pass *sampled* it, so the manifest calls it a sampled texture and the
+     * replay would otherwise only upload it. That leaves a frame whose work is all in compute —
+     * test/path_tracer/metal, where the traced image is the whole output — comparing nothing.
+     *
+     * Only textures the replay saw bound writable to a compute encoder: one the frame merely reads
+     * was uploaded from the capture, so comparing it would be comparing the upload with itself.
+     */
+    void CompareWrittenTextures(MtlReplayReport& report);
     void CompleteReadbacks(MtlReplayReport& report);
 
     // ---- helpers
@@ -214,6 +250,37 @@ private:
     /** The parallel encoder a sub-encoder came from, still open under it. */
     id _parallel = nil;
     OpenPass _parallelPass;
+    /**
+     * Scratch buffers the acceleration structure builds are given, held until the replay is done
+     * with them: a build's scratch is the *driver's* size for a descriptor, so the replay makes its
+     * own rather than trusting the application's, which a different driver may have sized smaller.
+     */
+    std::vector<id<MTLBuffer>> _scratch;
+    /**
+     * Each compute pipeline's linked functions by name, for filling a function table made from it.
+     * A table entry names its function and nothing else, so the name is the only key there is.
+     */
+    std::unordered_map<uint64_t, std::vector<std::pair<std::string, id>>> _linkedFunctions;
+    std::vector<PendingTable> _pendingTables;
+    /**
+     * Textures a compute pass of the frame wrote, and whether what they hold can be reproduced
+     * (CompareWrittenTextures).
+     *
+     * A kernel that *reads* the texture it writes accumulates into it, so the frame continues from
+     * contents nothing captured — the capture holds them only as they were after the frame. Neither
+     * that texture nor anything else the same kernel wrote can be reproduced: the path tracer's
+     * tonemapped output is the accumulation tonemapped, and it differs for the same reason the
+     * accumulation does. So the verdict is taken per encoder, once it ends and every binding of it
+     * is known.
+     */
+    std::unordered_map<uint64_t, bool> _writtenTextures;   // id -> reproducible
+    /** Written textures bound to the open compute encoder, and whether any of them was read_write. */
+    std::vector<uint64_t> _encoderWrites;
+    bool _encoderAccumulates = false;
+    /** The compute pipeline last bound, whose reflection says how each texture slot is accessed. */
+    uint64_t _boundComputePipeline = 0;
+    /** "readOnly" / "writeOnly" / "readWrite" for a slot of a compute pipeline's reflection, or "". */
+    std::string ComputeTextureAccess(uint64_t pipelineId, uint64_t slot) const;
     std::vector<id<MTLCommandBuffer>> _committed;
     std::vector<Readback> _readbacks;
 

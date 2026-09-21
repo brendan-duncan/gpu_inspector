@@ -25,6 +25,7 @@ add_library(${CAPTURE_LIB} SHARED
     src/capture.mm
     src/cpu_timeline.h
     src/cpu_timeline.mm
+    src/draw_overlay.mm
     src/formats.h
     src/formats.mm
     src/function_constants.mm
@@ -44,6 +45,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/raytracing.mm
     src/reflection.h
     src/reflection.mm
+
+    src/shader_edit.mm
     src/stacktrace.h
     src/stacktrace.mm
     src/tracker.h
@@ -133,6 +136,7 @@ if(VKINSP_BUILD_REPLAY AND Python3_Interpreter_FOUND)
         replay/src/mtl_replayer.h
         replay/src/mtl_replayer.mm
         replay/src/mtl_commands.mm
+        replay/src/mtl_raytracing.mm
         replay/src/mtl_exporter.h
         replay/src/mtl_exporter.mm
         src/formats.mm

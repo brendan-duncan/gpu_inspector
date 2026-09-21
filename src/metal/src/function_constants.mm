@@ -26,6 +26,8 @@ struct ConstantValue {
 
 std::mutex g_mutex;
 std::unordered_map<const void *, std::vector<ConstantValue>> g_values;
+/** Function -> the values object it was specialized with, retained (see RememberFunctionConstants). */
+std::unordered_map<const void *, id> g_functionValues;
 
 /**
  * The scalar family a data type belongs to and its component count.
@@ -266,6 +268,22 @@ std::string FunctionConstantsJson(id values) {
     }
     w.EndArray();
     return std::move(w.str());
+}
+
+void RememberFunctionConstants(id function, id values) {
+    if (function == nil || values == nil) return;
+    id kept = [values retain];
+    std::lock_guard<std::mutex> lock(g_mutex);
+    id &slot = g_functionValues[(__bridge const void *)function];
+    [slot release];
+    slot = kept;
+}
+
+id FunctionConstantsOf(id function) {
+    if (function == nil) return nil;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_functionValues.find((__bridge const void *)function);
+    return it != g_functionValues.end() ? it->second : nil;
 }
 
 }  // namespace mtlinsp

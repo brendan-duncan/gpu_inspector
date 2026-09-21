@@ -29,7 +29,7 @@ import { encodeBase64 } from "./utils/base64.js";
 import { reflectSpirv, type ShaderStage } from "./vulkan/spirv_reflect.js";
 import { stageLabel } from "./shader_cache.js";
 import { renderReflection } from "./shader_reflection_view.js";
-import { metalReflection, metalStages } from "./metal/reflection.js";
+import { metalPipelineStages, metalReflection, metalStages } from "./metal/reflection.js";
 import { d3d12Reflection } from "./d3d12/reflection.js";
 import { hlslStub } from "./d3d12/hlsl_stub.js";
 import { isD3D12Texture } from "./d3d12/d3d12_object.js";
@@ -174,11 +174,18 @@ interface ShaderView {
   hlsl?: string;
   /** Why a D3D12 payload has no HLSL, for the generated stub's header comment. */
   hlslReason?: string;
+  /**
+   * A Metal pipeline state's stage: the Shading Language lives in the library the stage's function
+   * came from, not in the pipeline, so the payload has to be asked for from there. `functionName`
+   * is the entry point the pipeline uses, which is what the library recompiles and looks up
+   * (src/metal/src/shader_edit.h).
+   */
+  metal?: { libraryId: number; libraryBlob: number; functionName: string };
 }
 
 /** An edit made in the shader editor, kept per shader payload so it survives re-inspection. */
 interface ShaderEdit {
-  language: ShaderLanguage;
+  language: HighlightLanguage;
   source: string;
   /** Pipelines the edit was applied to and the layer's answer for each. */
   results: Map<number, string>;
@@ -204,7 +211,11 @@ const STAGE_FLAG: Record<string, string> = {
 };
 
 const LANGUAGE_OF_MODE: Record<ShaderViewMode, ShaderLanguage | null> = { dis: "spirv-asm", glsl: "glsl", hlsl: "hlsl", msl: null, source: null };
-const LANGUAGE_LABEL: Record<ShaderLanguage, string> = { glsl: "GLSL (glslangValidator)", hlsl: "HLSL (dxc)", "spirv-asm": "SPIR-V assembly (spirv-as)" };
+const LANGUAGE_LABEL: Record<HighlightLanguage, string> = { glsl: "GLSL (glslangValidator)", hlsl: "HLSL (dxc)", "spirv-asm": "SPIR-V assembly (spirv-as)",
+  // Metal's compiler is the application's own device, not a tool on this machine: the library
+  // compiles the text it is sent (src/metal/src/shader_edit.h), which is why this is the one
+  // language the inspector needs nothing installed to edit.
+  msl: "Metal Shading Language (the application's own compiler)" };
 
 /** Object list filters, after WebGPU Inspector's inspect panel filter panel. */
 interface Filters {
@@ -268,8 +279,12 @@ export class InspectPanel {
   private _libraryViews = new Map<number, { pre: Widget; name: string; ownerId: number; focus?: string }>();
   /** Shader edits by "<object id>:<blob index>"; the layer holds the applied state. */
   private _shaderEdits = new Map<string, ShaderEdit>();
-  /** The editor currently open, to route ShaderReplaced answers to its status line. */
-  private _openEditor: { key: string; targets: EditTargets; status: Div; view: ShaderView } | null = null;
+  /**
+   * The editor currently open, to route ShaderReplaced answers to its status line. `text` is there
+   * for the Metal case: its compiler is the application's own, so the diagnostics arrive with the
+   * answer rather than before it and the lines have to be marked from here (shader_edit.h).
+   */
+  private _openEditor: { key: string; targets: EditTargets; status: Div; view: ShaderView; text: CodeEditor } | null = null;
   private _imageView: ImageView | null = null;
   /** Descriptor sets whose contents have been requested from the layer (avoids re-asking on every re-render). */
   private _descriptorRequested = new Set<number>();
@@ -1165,7 +1180,10 @@ export class InspectPanel {
     if (object.type === "ID3D12PipelineState" || object.type === "ID3D12StateObject") this._buildD3D12ShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "MTLFunction") this._buildFunctionSection(object);
-    if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") this._buildMetalReflectionSection(object);
+    if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") {
+      this._buildMetalPipelineShaderSection(object);
+      this._buildMetalReflectionSection(object);
+    }
     if (object.type === "VkPhysicalDevice") renderPhysicalDeviceSections(this.inspectPanel, object, db);
     if (object.type === "VkDevice") renderDeviceSections(this.inspectPanel, object);
     if (object.type === "VkInstance") renderInstanceSections(this.inspectPanel, object);
@@ -1290,6 +1308,56 @@ export class InspectPanel {
       const grp = new collapsible(this.inspectPanel, { label, collapsed: true, class: "shader-reflection" });
       renderReflection(new Div(grp.body, { class: "shader-info" }), reflection);
     }
+  }
+
+  /**
+   * A Metal pipeline state's shaders: one section per stage, showing the Metal Shading Language of
+   * the library its function came from, scrolled to that function, with **Edit**.
+   *
+   * The source is on the library rather than on the pipeline, which is the one thing that makes
+   * this different from the D3D12 section: a pipeline names its stages' `MTLFunction`s, each of
+   * those belongs to a library, and the library is what holds the text. So the view asks the
+   * *library* for the payload and matches it up when it arrives.
+   *
+   * A stage whose library was loaded as a precompiled `metallib` has no source to show and cannot
+   * be edited: there is nothing to edit, and no decompiler for AIR bitcode. It is listed anyway,
+   * because "this stage is precompiled" is the answer to why Edit is not offered.
+   */
+  private _buildMetalPipelineShaderSection(object: VulkanObject): void {
+    this._shaderViews = new Map();
+    this._openEditor = null;
+    const stages = metalPipelineStages(object, this.database);
+    if (!stages.length) return;
+    stages.forEach((stage, index) => {
+      const key = `${object.id}:${index}`;
+      const edit = this._shaderEdits.get(key);
+      const label = `Shader: ${stage.stage}:${stage.functionName}${edit?.applied ? "  [edited]" : ""}`;
+      const grp = new collapsible(this.inspectPanel, { label, collapsed: index > 0 });
+      const bar = new Div(grp.body, { class: "shader-toolbar" });
+      const row = new Div(grp.body, { class: "font-md text-muted" });
+      new Span(row, { text: "In library ", style: "margin-right: 4px;" });
+      if (stage.library) objectLink(row, stage.library, (o) => this.revealObject(o));
+      else new Span(row, { text: "(not recorded)" });
+      const view: ShaderView = {
+        index, blobName: `${stage.stage}:${stage.functionName}`, pre: new Widget("pre"), mode: "msl", data: null,
+        text: "", buttons: {}, editButton: new Button(null), editor: null, body: grp.body, debug: null,
+        sourceFile: 0, disText: "", summary: new Div(null), fileBar: null, reflection: new collapsible(null),
+        analysis: new Div(null), group: grp,
+        metal: { libraryId: stage.library?.id ?? 0, libraryBlob: stage.blobIndex, functionName: stage.functionName },
+      };
+      view.editButton = new Button(bar, { label: edit?.applied ? "Edit (edited)" : "Edit", class: "btn btn-sm shader-edit-button", disabled: true,
+        tooltip: "Edit the Metal Shading Language and have the running application compile it and draw with it from its next frame. The application's own device is the compiler, so nothing has to be installed here.",
+        callback: () => this._openShaderEditor(object, view) });
+      view.pre = new Widget("pre", grp.body, { text: stage.blobIndex >= 0 ? "Loading..." : "", class: "shader-text" });
+      this._shaderViews.set(index, view);
+      if (stage.blobIndex < 0) {
+        view.pre.text = stage.library
+          ? "The library is a compiled metallib (AIR bitcode): there is no source to edit, and AIR cannot be decompiled."
+          : "The library this function came from was not recorded, so there is no source to show.";
+      } else if (stage.library) {
+        void this.window.send({ action: "RequestBlob", id: stage.library.id, index: stage.blobIndex });
+      }
+    });
   }
 
   private _buildLibrarySection(object: VulkanObject): void {
@@ -1574,6 +1642,26 @@ export class InspectPanel {
       }
       return;
     }
+    // A Metal pipeline's stage source belongs to the library the stage's function came from, so
+    // the payload arrives under the library's id rather than the inspected pipeline's.
+    for (const v of this._shaderViews.values()) {
+      if (!v.metal || v.metal.libraryId !== id || v.metal.libraryBlob !== index) continue;
+      if (!data) {
+        v.pre.text = "No shader code available.";
+        continue;
+      }
+      v.data = data;
+      v.text = new TextDecoder().decode(data);
+      const at = functionLine(v.text, v.metal.functionName);
+      if (at < 0) {
+        v.pre.html = highlight(v.text, "msl");
+      } else {
+        v.pre.html = highlightLines(v.text, "msl")
+          .map((line, i) => `<span class="code-line${i === at ? " code-line-active" : ""}">${line}</span>`).join("\n");
+        v.pre.element.querySelector(".code-line-active")?.scrollIntoView({ block: "center" });
+      }
+      v.editButton.disabled = !this._canEdit();
+    }
     if (this.inspectedObject?.id !== id) return;
     const view = this._shaderViews.get(index);
     if (!view) return;
@@ -1757,6 +1845,15 @@ export class InspectPanel {
   /** The pipelines an edit of this payload applies to: the pipeline itself, or every pipeline using the module. */
   private _editTargets(object: VulkanObject, view: ShaderView): EditTargets | null {
     if (!view.data) return null;
+    if (view.metal) {
+      // The library's ReplaceShader takes the UI's stage name and the Shading Language source, and
+      // the edit goes to the pipeline: a library is shared, so editing one pipeline's stage must
+      // not change another pipeline that happens to use the same function.
+      const [stage] = view.blobName.split(":");
+      if (!STAGE_FLAG[stage]) return null;
+      return { pipelines: [object], stage: stage as ShaderStage, stageFlag: stage,
+               entryPoint: view.metal.functionName || "main", spirvVersion: "" };
+    }
     if (view.d3d12) {
       // The library's ReplaceShader takes the UI's stage name ("vertex") and DXBC / DXIL bytecode.
       const sep = view.blobName.indexOf(":");
@@ -1798,7 +1895,8 @@ export class InspectPanel {
       return;
     }
     const key = `${object.id}:${view.index}`;
-    const language = view.d3d12 ? "hlsl" : view.mode === "source" ? sourceLanguageOf(view.debug) : LANGUAGE_OF_MODE[view.mode];
+    const language: HighlightLanguage | null = view.metal ? "msl"
+      : view.d3d12 ? "hlsl" : view.mode === "source" ? sourceLanguageOf(view.debug) : LANGUAGE_OF_MODE[view.mode];
     if (!language) return;
     const targets = this._editTargets(object, view);
     const existing = this._shaderEdits.get(key);
@@ -1811,8 +1909,16 @@ export class InspectPanel {
     const fromSource = view.mode === "source" && view.debug;
     const languageLabel = view.d3d12 ? "HLSL (dxc, shader model 6.0)" : LANGUAGE_LABEL[language];
     new Span(head, { text: fromSource ? `Editing the embedded ${view.debug!.files[view.sourceFile]?.name ?? "source"} as ${languageLabel}` : view.d3d12 && view.hlsl ? `Editing the recovered HLSL as ${languageLabel}` : `Editing as ${languageLabel}`, class: "font-md" });
+    if (view.metal) {
+      new Div(editor, { text: "This is the whole library the application compiled, not one function: Metal compiles a translation unit, "
+        + "so helpers and the other entry points in it can be edited too. The entry point the pipeline uses is looked up by name afterwards, "
+        + "so renaming it is the one change that cannot be applied. Function constants the application specialized this stage with are carried across.",
+        class: "text-muted font-sm" });
+    }
     if (targets) {
-      const where = object.type === "VkPipeline" || object.type === "ID3D12PipelineState" ? "this pipeline" : object.type === "VkShaderEXT" ? "this shader object"
+      const where = object.type === "VkPipeline" || object.type === "ID3D12PipelineState"
+        || object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState" ? "this pipeline"
+        : object.type === "VkShaderEXT" ? "this shader object"
         : `${targets.pipelines.length} pipeline${targets.pipelines.length === 1 ? "" : "s"} using this module`;
       new Span(head, { text: `  ${stageLabel(targets.stage)} stage, entry ${targets.entryPoint}, applies to ${where}`, class: "text-muted font-sm" });
     } else {
@@ -1831,6 +1937,7 @@ export class InspectPanel {
     // Embedded source carries the compiler's own prefix (comments, a #line directive before
     // #version) that a compiler will not take back; edit the clean text.
     const source = existing && existing.language === language ? existing.source
+      : view.metal ? view.text
       : view.d3d12 ? (view.hlsl || hlslStub(d3d12Reflection(object, targets?.stage ?? "vertex"), targets?.stage ?? "vertex",
           targets?.entryPoint ?? "main", { pipelineName: object.name, reason: view.hlslReason }))
       : fromSource ? compilableSource(view.text) : view.text;
@@ -1838,15 +1945,19 @@ export class InspectPanel {
     const buttons = new Div(editor, { class: "shader-toolbar" });
     const status = new Div(editor, { class: "shader-editor-status text-muted font-sm" });
     const log = new Div(editor, { class: "shader-editor-log", style: "display: none;" });
-    this._openEditor = targets ? { key, targets, status, view } : null;
+    this._openEditor = targets ? { key, targets, status, view, text } : null;
     if (existing?.results.size) status.text = [...existing.results.values()].join("\n");
 
-    // What compiles the text: the Vulkan SDK's compilers to SPIR-V, or dxc to DXIL for a D3D12 pipeline.
+    // What compiles the text: the Vulkan SDK's compilers to SPIR-V, dxc to DXIL for a D3D12
+    // pipeline, and for Metal nothing at all — the capture library hands the source to the
+    // application's own device (src/metal/src/shader_edit.h), so there is no tool to find on this
+    // machine and the compiler's diagnostics come back with the answer instead of before it.
     const compile = (t: EditTargets): Promise<CompileShaderResult> => {
-      if (!view.d3d12) return window.inspector.compileShader(text.value, language, t.stage, t.entryPoint, t.spirvVersion);
+      if (view.metal) return Promise.resolve({ ok: true, spirv: new TextEncoder().encode(text.value), tool: "Metal", log: "" });
+      if (!view.d3d12) return window.inspector.compileShader(text.value, language as ShaderLanguage, t.stage, t.entryPoint, t.spirvVersion);
       return window.inspector.compileDxil(text.value, t.stage, t.entryPoint, "6_0");
     };
-    const bytecodeWord = view.d3d12 ? "DXIL" : "SPIR-V";
+    const bytecodeWord = view.metal ? "Metal Shading Language" : view.d3d12 ? "DXIL" : "SPIR-V";
 
     /** Compiles the text, marks what the compiler complained of, and hands the bytecode on when there is some. */
     const compileThen = (then: (code: Uint8Array, tool: string, edit: ShaderEdit) => void): void => {
@@ -1891,7 +2002,7 @@ export class InspectPanel {
       }) });
     // The other place an edit can run: the captured frame, replayed with it. What it changed is
     // exact there, since every render target of that frame was read back (shader_replay.ts).
-    new Button(buttons, { label: "Compile & Replay", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length || !this.window.canReplayCapture,
+    if (!view.metal) new Button(buttons, { label: "Compile & Replay", class: "btn btn-success btn-sm", disabled: !targets || !targets.pipelines.length || !this.window.canReplayCapture,
       tooltip: "Compile the text and replay the open capture with it on this machine's GPU: every render target the edit changes is shown as captured, with the edit, and where the two differ. The application is not touched.",
       callback: () => compileThen((code, tool) => {
         if (!targets) return;
@@ -1936,6 +2047,19 @@ export class InspectPanel {
     edit.applied = [...edit.results.values()].some((l) => l.includes("edit applied"));
     open.status.text = [...edit.results.values()].join("\n");
     open.status.classList.toggle("inspect_info_error", !msg.ok);
+    // Metal's compiler reports in clang's form ("program_source:49:27: error: ..."), which the
+    // editor's log parser already reads: the lines it names are marked and the first is scrolled
+    // to, the same as a local compile's failure.
+    if (!msg.ok && msg.error) {
+      const errors = parseCompileErrors(msg.error);
+      if (errors.size) {
+        open.text.setErrors(errors);
+        const first = [...errors.keys()].sort((a, b) => a - b)[0];
+        if (first !== undefined) open.text.goToLine(first);
+      }
+    } else if (msg.ok) {
+      open.text.setErrors(new Map());
+    }
 
     // Mark the pipeline (and the module the edit came from) in the object list and in the open
     // section, without re-rendering the panel: the editor stays open with its text.

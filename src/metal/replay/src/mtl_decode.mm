@@ -14,7 +14,19 @@ int64_t Decoder::ParseEnum(const JValue* v, const EnumTable& table, int64_t fall
     int64_t value = 0;
     if (mtlinsp::EnumValue(table.entries, table.count, v->Str(), value)) return value;
     // A value no table names is written as its number, sometimes as a string.
-    return (int64_t)std::strtoll(std::string(v->Str()).c_str(), nullptr, 0);
+    //
+    // A string that is not a number either is a *name* this table does not have: an enumerator from
+    // a newer SDK than the replay was built against, or the same value written under another type's
+    // name (the capture writes an acceleration structure's vertex format under its MTLVertexFormat
+    // name, and the property is an MTLAttributeFormat). The caller's fallback is the right answer
+    // there, and zero is very much the wrong one — for most Metal enums zero *is* a value, usually
+    // "invalid", so a silent zero reads as a deliberate choice. That cost a day: a build given
+    // MTLAttributeFormatInvalid vertices produces a structure with nothing in it, and every ray of
+    // the frame misses, which looks exactly like a replay that worked.
+    const std::string text(v->Str());
+    char* end = nullptr;
+    const long long parsed = std::strtoll(text.c_str(), &end, 0);
+    return end != text.c_str() ? (int64_t)parsed : fallback;
 }
 
 uint64_t Decoder::ParseFlags(const JValue* v, const EnumTable& table, uint64_t fallback) {

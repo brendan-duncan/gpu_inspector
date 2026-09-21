@@ -122,10 +122,10 @@ Under the view:
 - **Overlaps** — the pairs of instances whose bounding boxes overlap, the most overlapped first, as a
   share of the smaller box. A ray through a region where several boxes overlap descends into every
   one of them, so an instance buried in another, or many stacked in one place, is where traversal
-  gets expensive. **Heatmap** colours every instance by how many others its box overlaps, from blue
-  to red, which is the **Overlap heat** colouring in **Color**.
+  gets expensive. **Heatmap** colors every instance by how many others its box overlaps, from blue
+  to red, which is the **Overlap heat** coloring in **Color**.
 
-Nsight Graphics also colours a scene by the traversal steps and intersections each ray took. Those
+Nsight Graphics also colors a scene by the traversal steps and intersections each ray took. Those
 are counted by the GPU's ray tracing units and only NVIDIA's driver can read them; no API exposes
 them, so they are not here.
 
@@ -221,21 +221,29 @@ see [Direct3D 12](D3D12.md)).
 
 ### Editing a shader
 
-**Edit** opens the shown text in an editor. **Compile & Apply** compiles it with the Vulkan SDK's
-compilers on this machine and swaps it into the running application — the next frame it draws uses
-your version. **Restore Original** binds the application's own pipeline again. An edited stage is
-marked `[edited]` in its heading.
+**Edit** opens the shown text in an editor. **Compile & Apply** compiles it and swaps it into the
+running application — the next frame it draws uses your version. **Restore Original** binds the
+application's own pipeline again. An edited stage is marked `[edited]` in its heading.
 
-GLSL, HLSL and SPIR-V assembly can all be edited; which compiler is needed depends on which one
-you edit (`glslangValidator`, `dxc`, `spirv-as`). A shader with embedded source is edited as that
-source. `#include` directives in GLSL and HLSL are resolved against the directories in
-**Source roots** ([shader sources](VULKAN.md#shader-sources)), so a shader split across files
-compiles as it did in your build.
+GLSL, HLSL, SPIR-V assembly and Metal Shading Language can all be edited; which compiler is needed
+depends on which one you edit. A shader with embedded source is edited as that source. `#include`
+directives in GLSL and HLSL are resolved against the directories in **Source roots**
+([shader sources](VULKAN.md#shader-sources)), so a shader split across files compiles as it did in
+your build.
 
-This works for Vulkan on the desktop and on [Android](ANDROID.md), where the shader is compiled
-here and sent to the device, and for [Direct3D 12](D3D12.md), where the HLSL is compiled with
-`dxc` for the stage's profile and the library rebuilds the pipeline state with it. It does not
-apply to [Metal](METAL.md).
+All three APIs:
+
+- **Vulkan**, on the desktop and on [Android](ANDROID.md), where the shader is compiled here with
+  `glslangValidator` or `spirv-as` and the SPIR-V sent to the device.
+- **[Direct3D 12](D3D12.md)**, where the HLSL is compiled with `dxc` for the stage's profile and
+  the library rebuilds the pipeline state with it.
+- **[Metal](METAL.md)**, where nothing is compiled here at all: the capture holds the Shading
+  Language the application compiled, so the *source* is sent and the application's own device
+  compiles it. Nothing has to be installed, and the compiler's diagnostics come back and mark the
+  lines of the text you are looking at. The whole library is edited rather than one function —
+  Metal compiles a translation unit — so helpers can be changed too; renaming the entry point the
+  pipeline uses is the one change that cannot be applied, since it is looked up by name afterwards.
+  Function constants the stage was specialized with are carried across.
 
 **Compile & Replay** runs the edit somewhere else: in the capture that is open, replayed on this
 machine's GPU with your version of the stage ([Capture replay](REPLAY.md#a-shader-edited-in-the-capture)).
@@ -247,7 +255,8 @@ out, with how many there are. Targets that came out identical are counted, which
 — nothing the frame shows depends on the change. If the driver refuses the edited stage (its
 inputs no longer match the stage before it, its bindings the layout), the tab says that first:
 the pipeline is then left out of the replay, and the targets differ by its draws being missing
-rather than by what the edit computes. Vulkan and Direct3D 12.
+rather than by what the edit computes. Vulkan and Direct3D 12 — a Metal capture has no replay that
+serves analyses yet, so a Metal edit goes to the running application or nowhere.
 
 A pipeline linked from graphics pipeline libraries shows and edits the stages its libraries hold.
 An application drawing with shader objects (`VK_EXT_shader_object`) edits a **VkShaderEXT** the
