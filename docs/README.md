@@ -27,6 +27,14 @@ Pick the one that matches the application you want to inspect.
 | [Android and Quest](ANDROID.md) | Vulkan applications on Android phones and headsets, over adb |
 | [Web pages and WebGPU](BROWSER.md) | A WebGPU page in Chrome, Edge, Brave or Firefox, captured through the browser's GPU process |
 
+## How-to guides
+
+Whole workflows for particular applications, where getting in is the hard part.
+
+| Page | What it covers |
+|---|---|
+| [Minecraft Bedrock](HOWTO_MINECRAFT.md) | Inspecting and capturing Minecraft for Windows, which the inspector has to wait for rather than launch |
+
 ## Using the inspector
 
 | Page | What it covers |
