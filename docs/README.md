@@ -9,7 +9,7 @@ Linux and Android, Direct3D 12 on Windows, and Metal on macOS — and, on Window
 
 ## Features
 
-Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on **Windows**, **macOS** and **Linux**.
+Supports **Vulkan**, **Direct3D 12**, **Metal**, **OpenGL ES**, on **Windows**, **macOS**, **Linux**, **Android** and **Quest**.
 
 * **Object inspection**: every GPU object, with how it was created and what it uses.
 * **Frame capture**: a frame's commands, with each draw's state, buffers, textures and render targets.
@@ -26,6 +26,7 @@ Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on *
 * **Render graph**: the frame's passes and the resources between them.
 * **WebGPU pages**: debug the D3D12 backend of WebGPU running in Chrome, Edge, Brave or Firefox.
 * **Claude Code**: a plugin that lets Claude analyze captures and drive applications.
+* **Custom plugins**: add custom plug-ins for console or NDA platforms.
 
 ## Getting started
 
@@ -46,7 +47,7 @@ Pick the one that matches the application you want to inspect.
 | [Metal](METAL.md) | Metal applications on macOS |
 | [Android and Quest](ANDROID.md) | Vulkan applications on Android phones and headsets, over adb |
 | [Web pages and WebGPU](BROWSER.md) | A WebGPU page in Chrome, Edge, Brave or Firefox, captured through the browser's GPU process |
-| [OpenGL ES](GLES.md) | OpenGL ES applications on Windows (the desktop driver's ES contexts, as Unity's -force-gles32 makes, and ANGLE), through the OpenGL ES plugin |
+| [OpenGL ES](GLES.md) | OpenGL ES applications on Windows (the desktop driver's ES contexts, and ANGLE), through the OpenGL ES plugin |
 
 ## How-to guides
 

@@ -3,7 +3,7 @@
 **GPU Inspector** captures and inspects frames from native graphics applications. It is the
 native counterpart of [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector).
 
-Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on **Windows**, **macOS** and **Linux**.
+Supports **Vulkan**, **Direct3D 12**, **Metal**, **OpenGL ES**, on **Windows**, **macOS**, **Linux**, **Android** and **Quest**.
 
 * **Object inspection**: every GPU object, with how it was created and what it uses.
 * **Frame capture**: a frame's commands, with each draw's state, buffers, textures and render targets.
@@ -20,6 +20,7 @@ Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on *
 * **Render graph**: the frame's passes and the resources between them.
 * **WebGPU pages**: debug the D3D12 backend of WebGPU running in Chrome, Edge, Brave or Firefox.
 * **Claude Code**: a plugin that lets Claude analyze captures and drive applications.
+* **Custom plugins**: add custom plug-ins for console or NDA platforms.
 
 ## Documentation
 
