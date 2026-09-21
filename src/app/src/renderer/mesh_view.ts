@@ -5,6 +5,7 @@
 // the preview selects its first vertex's row. Any attribute can color the mesh or give it its
 // normals, and VS In can take its positions from any attribute. The draw list steps through the
 // draws of the pass, keeping the view so their meshes line up.
+import { apiDisplayName } from "./backend.js";
 import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { Select } from "./widget/select.js";
@@ -264,7 +265,13 @@ export class MeshView {
         this._preview?.setMesh(null);
         return;
       }
-    } else if (this.host.data.api !== "vulkan") {
+    } else if (this.host.data.api !== "vulkan" && this.host.data.api !== "metal") {
+      // No replay, no stream-out and no interpreter: a plugin's API, unless its library measured it.
+      this._setStatus("");
+      this._setNotes([`What this draw's vertex shader wrote is not available for ${apiDisplayName(this.host.data.api)} captures: VS In has the vertices it read.`]);
+      this._preview?.setMesh(null);
+      return;
+    } else if (this.host.data.api === "metal") {
       // Metal: interpreted here rather than replayed. A Metal capture has no replay that serves
       // analyses, but the MSL interpreter can run the draw's vertex function over its own vertices
       // — which is what the shader debugger already does to rasterize a pixel's inputs

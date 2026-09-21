@@ -70,6 +70,33 @@ const targets = [
   },
 ];
 
+// Plugins (docs/PLUGINS.md): each src/plugins/<id> with a ui/backend.ts has it bundled into
+// build/plugins/<id>/ui/backend.js beside its plugin.json, which is where the app and the MCP server
+// look for a checkout's plugins (main/plugins.ts); CMake puts the plugin's native library there too.
+// A backend module stands alone: the types it imports from src/sdk/ts are gone once bundled.
+const pluginsDir = path.join("..", "plugins");
+const pluginsOut = path.join("..", "..", "build", "plugins");
+for (const id of fs.existsSync(pluginsDir) ? fs.readdirSync(pluginsDir) : []) {
+  const entry = path.join(pluginsDir, id, "ui", "backend.ts");
+  if (!fs.existsSync(entry)) continue;
+  targets.push({
+    ...common,
+    entryPoints: [entry],
+    outfile: path.join(pluginsOut, id, "ui", "backend.js"),
+    platform: "neutral",
+    format: "esm",
+  });
+}
+
+function copyPlugins() {
+  for (const id of fs.existsSync(pluginsDir) ? fs.readdirSync(pluginsDir) : []) {
+    const manifest = path.join(pluginsDir, id, "plugin.json");
+    if (!fs.existsSync(manifest)) continue;
+    fs.mkdirSync(path.join(pluginsOut, id), { recursive: true });
+    fs.copyFileSync(manifest, path.join(pluginsOut, id, "plugin.json"));
+  }
+}
+
 function copyStatic() {
   fs.mkdirSync(path.join(outdir, "renderer/css"), { recursive: true });
   fs.copyFileSync("src/renderer/index.html", path.join(outdir, "renderer/index.html"));
@@ -79,6 +106,7 @@ function copyStatic() {
 }
 
 copyStatic();
+copyPlugins();
 if (watch) {
   for (const t of targets) {
     const ctx = await context(t);

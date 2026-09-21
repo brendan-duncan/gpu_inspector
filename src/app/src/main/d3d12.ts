@@ -22,6 +22,7 @@
 // connects to the session's port. A target the library cannot be injected into (32-bit, protected)
 // is still started, with the reason on stderr, so a Vulkan application launched the same way keeps
 // working; when only one of the two libraries is built, the launch says which and goes on with it.
+import type { PluginLaunch } from "./plugins.js";
 import fs from "node:fs";
 import path from "node:path";
 import { vulkanLayerEnvironment, type VulkanLayerOptions } from "./launch_env.js";
@@ -127,10 +128,10 @@ export function d3d12Environment(o: D3D12EnvironmentOptions): NodeJS.ProcessEnv 
  * browser's GPU process is captured (`--type=gpu-process`; see FOLLOW_GPU_PROCESS).
  */
 export function wrapLaunch(tools: D3D12Tools, exe: string, args: string[], cwd?: string, follow: string[] = [],
-                           followChildren = false): { exe: string; args: string[] } {
+                           followChildren = false, extraDlls: string[] = []): { exe: string; args: string[] } {
   return {
     exe: tools.launcher,
-    args: ["--dll", tools.library, ...(cwd ? ["--cwd", cwd] : []),
+    args: ["--dll", tools.library, ...extraDlls.flatMap((d) => ["--dll", d]), ...(cwd ? ["--cwd", cwd] : []),
            ...(followChildren ? ["--follow-children"] : []), ...follow.flatMap((f) => ["--follow", f]),
            "--", exe, ...args],
   };
@@ -145,6 +146,9 @@ export interface D3D12WatchOptions extends D3D12EnvironmentOptions {
   followChildren?: boolean;
   /** Give up after this many seconds with nothing injected (the watcher then exits with WATCH_TIMED_OUT). */
   timeoutSeconds: number;
+  /** Plugins' capture libraries to inject beside the D3D12 one, and the settings they read (plugins.ts). */
+  extraDlls?: string[];
+  extraEnv?: Record<string, string>;
   /**
    * Inject into the first matching process only, and then stand in for it: the watcher waits for
    * that process and exits with its exit code, so a session sees it the way it sees a launch.
@@ -165,11 +169,11 @@ export const WATCH_TIMED_OUT = 3;
  * the library.
  */
 export function watchLaunch(tools: D3D12Tools, o: D3D12WatchOptions): { exe: string; args: string[] } {
-  const { image, timeoutSeconds, once, follow, followChildren, ...environment } = o;
-  const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+  const { image, timeoutSeconds, once, follow, followChildren, extraDlls, extraEnv, ...environment } = o;
+  const env = Object.entries({ ...d3d12Environment(environment), ...extraEnv }).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
   return {
     exe: tools.launcher,
-    args: ["--watch", image, "--dll", tools.library, ...(timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : []),
+    args: ["--watch", image, "--dll", tools.library, ...(extraDlls ?? []).flatMap((d) => ["--dll", d]), ...(timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : []),
       ...(once ? ["--once"] : []), ...(followChildren ? ["--follow-children"] : []),
       ...(follow ?? []).flatMap((f) => ["--follow", f]), ...env],
   };
@@ -190,6 +194,8 @@ export interface WindowsLaunchOptions {
   vulkan: VulkanLayerOptions | null;
   /** The D3D12 tools and the library's options, or null when they were not found. */
   d3d12: (D3D12EnvironmentOptions & { tools: D3D12Tools }) | null;
+  /** Plugins' capture libraries (plugins.ts), injected by the same launcher, so only with the D3D12 tools. */
+  plugins?: PluginLaunch[];
 }
 
 export interface WindowsLaunch {
@@ -216,10 +222,22 @@ export function windowsLaunch(o: WindowsLaunchOptions): WindowsLaunch {
   } else {
     notes.push("Vulkan layer not found: build it (docs/BUILDING.md); only D3D12 will be captured");
   }
+  // A plugin whose library is missing is left out (it has not been built); one that needs injecting
+  // needs the launcher, which comes with the D3D12 tools.
+  const plugins = (o.plugins ?? []).filter((p) => {
+    if (p.missing.length) notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
+    else if (p.inject.length && !o.d3d12) notes.push(`${p.plugin.manifest.name} capture library: not injected, since the launcher that injects it (the D3D12 tools) was not found`);
+    else return true;
+    return false;
+  });
+  for (const p of plugins) {
+    Object.assign(env, p.env);
+    notes.push(`${p.plugin.manifest.name} capture library: ${p.inject.join(", ")} (plugin ${p.plugin.dir})`);
+  }
   if (o.d3d12) {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false, plugins.flatMap((p) => p.inject)));
     notes.push(`D3D12 capture library: ${tools.library}${options.validation ? (options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)") : ""}`);
     if (o.followChildren) notes.push("capturing every process the target starts");
     if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);

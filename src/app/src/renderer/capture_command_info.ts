@@ -15,7 +15,7 @@ import { TextArea } from "./widget/text_area.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink, renderArgs } from "./args_view.js";
 import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view.js";
-import { layoutText, parseLayout, type LayoutRules } from "./vulkan/buffer_layout.js";
+import { layoutText, parseLayout, structFromMembers, type LayoutRules } from "./vulkan/buffer_layout.js";
 import { boundPipelineOf, isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer, type CommandSets } from "./command_sets.js";
 import { hasMetalReflection, metalBufferResource } from "./metal/reflection.js";
 import { d3d12AttributeNames, d3d12PipelineKind, d3d12ViewSubresource, isD3D12Type } from "./d3d12/d3d12_object.js";
@@ -50,6 +50,7 @@ import { d3d12TableRecords, traceStateObjectId } from "./d3d12/raytracing.js";
 import { structuresOfCommand } from "./acceleration_view.js";
 import { tableRecords } from "./binding_table.js";
 import type { SessionContext } from "./session_panel.js";
+import { backendFor, type DetailSection, type DetailValue } from "./backend.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type {
   ArgObject, ArgValue, CaptureCommand, CaptureDescriptor, CaptureDescriptorBinding, CaptureDescriptorSet, ImageDataMessage,
@@ -204,7 +205,29 @@ export class CommandInfoView {
     const traces = method === "DispatchRays" || method.startsWith("vkCmdTraceRays");
     this._renderStructures(container, cmd, traces ? drawState(this.panel.data, db, cmd) : null);
 
-    if (isAction(cmdSets, method)) {
+    // A plugin's API describes its commands itself (backend.ts, commandDetails); the built-in
+    // sections below still show what is API-neutral: vertex and index buffers, the render targets.
+    const backend = backendFor(this.panel.data.api);
+    const pluginSections = backend.commandDetails?.(cmd, {
+      data: this.panel.data, db, nameOf: (id) => db.getObject(id)?.name ?? (id ? `#${id}` : "(none)"),
+    }) ?? null;
+    if (pluginSections) this._renderSections(container, pluginSections);
+
+    if (isAction(cmdSets, method) && !backend.builtin) {
+      const state = drawState(this.panel.data, db, cmd);
+      if (cmdSets.DRAW.has(method) && state.bindPoint === cmdSets.graphicsBindPoint) {
+        const row = new Div(container, { class: "capture-mesh-row" });
+        new Button(row, { label: "View Mesh", class: "btn btn-sm", callback: () => this.panel.openMesh(cmd),
+          tooltip: "The draw's mesh in a tab: the vertices it read (VS In), as a wireframe and a table" });
+        this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
+        if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);
+      }
+      if (cmdSets.INDIRECT.has(method)) this._renderIndirect(container, cmd);
+      if (cmdSets.DRAW.has(method)) this._renderTargets(container, cmd);
+    } else if (!backend.builtin) {
+      // A plugin's binding commands are its sections' business; a pass shows its targets.
+      if (cmdSets.PASS_BEGIN.has(method) || cmdSets.PASS_END.has(method)) this._renderTargets(container, cmd);
+    } else if (isAction(cmdSets, method)) {
       const state = drawState(this.panel.data, db, cmd);
       const graphics = state.bindPoint === cmdSets.graphicsBindPoint;
       this._renderPipelineState(container, state);
@@ -1509,6 +1532,107 @@ export class CommandInfoView {
 
   // ---------------------------------------------------------------------------------------
   // Render targets
+
+  /** A plugin's command details (backend.ts, DetailSection): described by the backend, drawn here. */
+  private _renderSections(container: Widget, sections: DetailSection[]): void {
+    for (const section of sections) {
+      const grp = new collapsible(container, { label: section.title, collapsed: !!section.collapsed });
+      const body = grp.body;
+      // Buffer contents and image viewers open below the section's rows or table, not inside a cell.
+      const contents = (): Div => new Div(body, { class: "plugin-detail-contents" });
+      if (section.note) new Div(body, { text: section.note, class: "text-muted capture-note" });
+      if (section.rows?.length) {
+        const rows = new Div(body, { class: "draw-state" });
+        for (const [label, value] of section.rows) {
+          const row = new Div(rows, { class: "draw-state-row" });
+          new Span(row, { text: label, class: "draw-state-label" });
+          this._renderDetailValue(row, value, contents);
+        }
+      }
+      if (section.table) {
+        const wrap = new Div(body, { class: "plugin-detail-table-wrap" });
+        const table = new Widget("table", wrap, { class: "plugin-detail-table" });
+        const head = new Widget("tr", new Widget("thead", table));
+        for (const c of section.table.columns) new Widget("th", head, { text: c });
+        const tbody = new Widget("tbody", table);
+        for (const r of section.table.rows) {
+          const tr = new Widget("tr", tbody);
+          for (const cell of r) this._renderDetailValue(new Widget("td", tr), cell, contents);
+        }
+      }
+      if (section.code) {
+        const pre = new Widget("pre", body, { class: "plugin-detail-code" });
+        const language = section.code.language;
+        if (language === "glsl" || language === "hlsl" || language === "msl") pre.element.innerHTML = highlight(section.code.text, language);
+        else pre.element.textContent = section.code.text;
+      }
+    }
+  }
+
+  private _renderDetailValue(parent: Widget, value: DetailValue, contents: () => Div): void {
+    const db = this.db;
+    if (value === null || value === undefined) {
+      new Span(parent, { text: "-", class: "text-muted" });
+      return;
+    }
+    if (typeof value !== "object") {
+      new Span(parent, { text: String(value) });
+      return;
+    }
+    if ("object" in value) {
+      const obj = db.getObject(value.object);
+      if (obj) objectLink(parent, obj, this._link);
+      else new Span(parent, { text: value.text ?? (value.object ? `#${value.object}` : "(none)"), class: "text-muted" });
+      if (obj && value.text) new Span(parent, { text: `  ${value.text}`, class: "text-muted" });
+      return;
+    }
+    if ("texture" in value) {
+      const tex = this.panel.data.capturedImage(value.texture);
+      if (!tex) {
+        new Span(parent, { text: value.text ?? "not captured", class: "text-muted" });
+        return;
+      }
+      const canvas = this.panel.textureCanvas(tex, "capture-thumb loaded capture-texture-canvas plugin-detail-thumb");
+      canvas.title = `${value.text ? `${value.text}: ` : ""}${fmt(tex.info.format).replace(/^VK_FORMAT_/, "")} ${tex.info.width}x${tex.info.height}. Click to open in the image viewer`;
+      parent.element.appendChild(canvas);
+      canvas.onclick = () => {
+        if (!tex.data) return;
+        const box = contents();
+        new Button(box, { label: "Close viewer", class: "btn btn-sm", callback: () => box.remove() });
+        new ImageView(box, this.panel.window, db.getObject(tex.info.id), { info: tex.info, data: tex.data });
+      };
+      if (value.text) new Span(parent, { text: ` ${value.text}`, class: "text-muted" });
+      return;
+    }
+    if ("buffer" in value) {
+      const captured = this.panel.data.buffer(value.buffer);
+      if (!captured) {
+        new Span(parent, { text: value.text ?? "not captured", class: "text-muted" });
+        return;
+      }
+      const key = `plugin:${value.buffer}`;
+      if (!this._formats.has(key)) {
+        const rules = value.rules ?? "std140";
+        if (value.members?.length) {
+          this._formats.set(key, { type: structFromMembers(value.blockName ?? "Block", value.members, value.blockSize ?? 0), radix: this._radix, rules });
+        } else if (value.layout) {
+          try {
+            this._formats.set(key, { type: parseLayout(value.layout, rules), radix: this._radix, rules });
+          } catch {
+            // A layout the parser does not take shows the raw view.
+          }
+        }
+      }
+      new Button(parent, {
+        label: `${value.text ? `${value.text}: ` : ""}${formatBytes(captured.info.size)}`, class: "btn btn-sm",
+        tooltip: "Show the captured contents", callback: () => this._renderBufferContents(contents(), key, "uniform", null, captured),
+      });
+      return;
+    }
+    if ("args" in value) {
+      renderArgs(new Div(parent, { class: "args-tree" }), isObject(value.args) ? value.args : { value: value.args }, db, this._link);
+    }
+  }
 
   private _renderTargets(container: Widget, cmd: CaptureCommand): void {
     const pass = findPass(this.panel.data, cmd);

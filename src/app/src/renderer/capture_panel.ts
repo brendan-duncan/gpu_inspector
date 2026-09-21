@@ -34,12 +34,13 @@ import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { pipelineUses, programStages, shaderProgram, stageLabel, stateStages } from "./shader_cache.js";
 import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
-import { renderFrameStats, SUBMIT_CALL, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
+import { renderFrameStats, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
 import { buildTimelineTracks, defaultPassLabel, gpuSpan, submitToFirstPassMs, type LabeledPass } from "./timeline_tracks.js";
 import { accelerationScene, structureDrawing, type StructureDrawing } from "./acceleration_scene.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
+import { apiDisplayName, backendFor, type Backend } from "./backend.js";
 import { renderRenderGraph } from "./render_graph_view.js";
 import { renderBottleneckReport } from "./bottleneck_report.js";
 import { exportReportHtml } from "./report_export.js";
@@ -1165,7 +1166,7 @@ export class CapturePanel {
       return null;
     }
     if (!exportsToCpp(view.data.api)) {
-      this._statusLabel.text = `Export to C++ replays the capture to write it, and there is no replay for a ${view.data.api ?? "capture"} capture`;
+      this._statusLabel.text = `Export to C++ replays the capture to write it, and there is no replay for a ${apiDisplayName(view.data.api)} capture`;
       return null;
     }
     // The dialog opens where the last export went: bug reports tend to collect in one place.
@@ -1441,7 +1442,7 @@ export class CaptureView implements CaptureHost {
     if (!passes.length) return null;
     passes.sort((a, b) => b.durationMs - a.durationMs);
     const db = this.window.database;
-    return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes, submitCall: SUBMIT_CALL[this.data.api] };
+    return { frameMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, submitMs: db.submitMs, gpuSpanMs: maxEnd - minStart, gpuTotalMs: total, frames: this.data.frames, passes, submitCall: this.backend.submitCall };
   }
 
   /**
@@ -1737,7 +1738,7 @@ export class CaptureView implements CaptureHost {
         compute!.dispatches++;
       }
       if (sets.LABEL_BEGIN.has(cmd.method)) {
-        const name = labelNameOf(cmd);
+        const name = labelNameOf(cmd, this.data.sets);
         const block = new collapsible(current, { label: name, collapsed: false, class: `capture_debugGroup capture_debugGroup${stack.length % 5}` });
         this._addRow(block.titleBar, cmd, true);
         stack.push(current);
@@ -1778,6 +1779,9 @@ export class CaptureView implements CaptureHost {
   private _passLabel(cmd: CaptureCommand, passIndex: number): string {
     const db = this.window.database;
     const a = cmd.args;
+    // An API that names its passes itself (a plugin's; CommandSets.passLabel).
+    const own = this.data.sets.passLabel?.(cmd, passIndex, (v) => db.getObject(refId(v))?.name ?? "");
+    if (own) return own;
     if (a && isObject(a.pRenderPassBegin)) {
       const rp = db.getObject(refId(a.pRenderPassBegin.renderPass));
       const fb = db.getObject(refId(a.pRenderPassBegin.framebuffer));
@@ -1797,7 +1801,7 @@ export class CaptureView implements CaptureHost {
       return `Render Pass ${passIndex}: ${target?.name ?? `${colors} color attachment${colors === 1 ? "" : "s"}`}${depth}`;
     }
     // D3D12: OMSetRenderTargets / BeginRenderPass carry each target handle resolved to its resource.
-    if (a && (cmd.method === "OMSetRenderTargets" || cmd.method === "BeginRenderPass")) {
+    if (a && this.data.api === "d3d12" && (cmd.method === "OMSetRenderTargets" || cmd.method === "BeginRenderPass")) {
       const list = cmd.method === "OMSetRenderTargets" ? a.pRenderTargetDescriptors : a.pRenderTargets;
       const targets = Array.isArray(list) ? list.filter(isObject) : [];
       const first = targets.map((t) => (isObject(t.cpuDescriptor) ? t.cpuDescriptor : t)).find((t) => isObject(t.resource));
@@ -1840,7 +1844,7 @@ export class CaptureView implements CaptureHost {
         }
       }
       if (sets.LABEL_BEGIN.has(cmd.method)) {
-        const block = new collapsible(current, { label: labelNameOf(cmd), collapsed: false, class: `capture_debugGroup capture_debugGroup${stack.length % 5}` });
+        const block = new collapsible(current, { label: labelNameOf(cmd, sets), collapsed: false, class: `capture_debugGroup capture_debugGroup${stack.length % 5}` });
         this._addRow(block.titleBar, cmd, true);
         stack.push(current);
         current = block.body;
@@ -2224,8 +2228,8 @@ export class CaptureView implements CaptureHost {
       onSelectCommand: (index) => this.selectCommand(index),
       onInspect: (id) => this.window.showObject(id),
       // Per-draw and per-shader measurements replay the capture, which a Metal capture cannot be.
-      ...(this.data.api === "vulkan" || this.data.api === "d3d12"
-        ? { measureDraws: () => this.measureDraws(), measureShader: (t) => this.measureShader(t) } : {}),
+      ...(this.backend.replay.draws ? { measureDraws: () => this.measureDraws() } : {}),
+      ...(this.backend.replay.shaders ? { measureShader: (t: ShaderMeasureTarget) => this.measureShader(t) } : {}),
     });
   }
 
@@ -2295,7 +2299,7 @@ export class CaptureView implements CaptureHost {
     const body = this._reportBody("bottlenecks");
     if (!body) return;
     renderBottleneckReport(body, this.data, this.window.database, (index) => this.selectCommand(index),
-      this.data.api === "vulkan" || this.data.api === "d3d12"
+      this.backend.replay.hwCounters
         ? () => this.measureHwCounters().then((ok) => { if (ok) this._showBottlenecks(); return ok; }) : undefined);
   }
 
@@ -2530,6 +2534,11 @@ export class CaptureView implements CaptureHost {
 
   /** Opens the shader debugger on an invocation (Debug Vertex / Pixel / Invocation). */
   debugShader(request: DebugRequest, options: ShaderDebuggerOptions = {}): void {
+    // The debugger interprets SPIR-V and MSL, which is Vulkan, D3D12 (HLSL compiled to SPIR-V) and Metal.
+    if (!this.backend.builtin) {
+      this._setStatus(`the shader debugger does not step ${this.backend.displayName} shaders`);
+      return;
+    }
     this.onDebugShader.emit(request, options);
   }
 
@@ -2551,6 +2560,8 @@ export class CaptureView implements CaptureHost {
   }
 
   async vertexInputNames(cmd: CaptureCommand): Promise<Map<number, string>> {
+    const own = this.backend.vertexInputNames?.(cmd);
+    if (own) return own;
     const names = new Map<number, string>();
     const state = drawState(this.data, this.window.database, cmd);
     if ((!state.pipeline && !state.shaders.length) || state.pipeline?.type.startsWith("MTL")) return names;
@@ -2708,7 +2719,7 @@ export class CaptureView implements CaptureHost {
       }
       return parsePixelHistory(this.data.pixelHistory);
     }
-    if (this.data.api !== "vulkan") throw new Error("a pixel history needs either a replay or a capture library that follows the pixel while it captures");
+    if (!this.backend.replay.pixelHistory) throw new Error("a pixel history needs either a replay or a capture library that follows the pixel while it captures");
     this._setStatus(`pixel history: replaying the capture for pixel (${request.x}, ${request.y})...`);
     try {
       const result = await this._replay((r) => window.inspector.pixelHistory({ ...r, pixel: request }));
@@ -2745,7 +2756,7 @@ export class CaptureView implements CaptureHost {
         this._setStatus("this capture did not measure overdraw: capture again with Overdraw ticked");
         return;
       }
-      if (this.data.api !== "vulkan") {
+      if (!this.backend.replay.overdraw) {
         this._setStatus("overdraw is measured by replaying the capture, which this capture's API has no replay for");
         return;
       }
@@ -2772,8 +2783,8 @@ export class CaptureView implements CaptureHost {
    */
   async measureOverdraw(open?: OverdrawPassKey): Promise<boolean> {
     if (this._overdrawRun?.running) return false;
-    if (this.data.api !== "vulkan") {
-      this._setStatus(`overdraw is measured by replaying the capture, and ${this.data.api === "metal" ? "Metal" : "D3D12"} captures do not replay`);
+    if (!this.backend.replay.overdraw) {
+      this._setStatus(`overdraw is measured by replaying the capture, and ${this.backend.displayName} captures do not replay for it`);
       return false;
     }
     this._overdrawRun = { running: true };
@@ -3092,9 +3103,14 @@ export class CaptureView implements CaptureHost {
   shaderApply: { pipeline: number; stage: string; ok: boolean; error: string; replacement: number;
                  share: number; before: number; restored?: boolean; shareAfterRestore?: number } | null = null;
 
-  /** Whether this capture can be run again: a Vulkan or a D3D12 one, once its commands are here. */
+  /** The capture's API: what its commands mean and what can be measured of it (backend.ts). */
+  get backend(): Backend {
+    return backendFor(this.data.api);
+  }
+
+  /** Whether this capture can be run again with edits (a Vulkan or a D3D12 one), once its commands are here. */
   get canReplay(): boolean {
-    return (this.data.api === "vulkan" || this.data.api === "d3d12") && this.data.commands.length > 0;
+    return this.backend.replay.edits && this.data.commands.length > 0;
   }
 
   /** The last shader edit's effect on the frame, for the debug dump. */
@@ -3149,8 +3165,8 @@ export class CaptureView implements CaptureHost {
    */
   async measureDraws(): Promise<boolean> {
     if (this._drawRun?.running) return false;
-    if (this.data.api !== "vulkan" && this.data.api !== "d3d12") {
-      this._setStatus("per-draw measurements need the capture replayed, and Metal captures do not replay yet");
+    if (!this.backend.replay.draws) {
+      this._setStatus(`per-draw measurements need the capture replayed, and ${this.backend.displayName} captures do not replay for them`);
       return false;
     }
     this._drawRun = { running: true };
@@ -3181,8 +3197,8 @@ export class CaptureView implements CaptureHost {
     if (this._hwCounterRun?.running) return false;
     // Vulkan replays with vkinsp_replay; D3D12 with dxinsp_replay (dx_counters.cpp). Metal has no
     // replay, so its captures have no counters.
-    if (this.data.api !== "vulkan" && this.data.api !== "d3d12") {
-      this._setStatus("hardware counters need the capture replayed, and Metal captures do not replay yet");
+    if (!this.backend.replay.hwCounters) {
+      this._setStatus(`hardware counters need the capture replayed, and ${this.backend.displayName} captures do not replay for them`);
       return false;
     }
     this._hwCounterRun = { running: true };
@@ -3209,7 +3225,7 @@ export class CaptureView implements CaptureHost {
    * replaying the draw with variants of the stage that leave each out (vkinsp_replay --ablate).
    */
   async measureShader(target: ShaderMeasureTarget): Promise<boolean> {
-    if (this.data.api !== "vulkan" && this.data.api !== "d3d12") return false;
+    if (!this.backend.replay.shaders) return false;
     const drawMs = this.data.drawStats?.find((d) => d.command === target.command)?.ms ?? null;
     this._setStatus(`measuring the ${target.stage} shader at draw #${target.command}: replaying its variants...`);
     try {
@@ -3258,7 +3274,7 @@ export class CaptureView implements CaptureHost {
     } else {
       const strip = new Div(grp.body, { class: "capture_frameImages" });
       // A Vulkan draw's targets can show where it landed (replayed); Metal and D3D12 captures have no replay to draw it with.
-      const draw = command && this.data.api === "vulkan" && this.data.sets.DRAW.has(command.method) ? command : undefined;
+      const draw = command && this.backend.replay.drawOverlay && this.data.sets.DRAW.has(command.method) ? command : undefined;
       for (const tex of textures) this._renderTexture(strip, tex, draw);
     }
     this._renderPassOverdraw(container, frame, commandBufferId, passIndex);
@@ -3273,7 +3289,7 @@ export class CaptureView implements CaptureHost {
     const key: OverdrawPassKey = { frame, commandBuffer: commandBufferId, passIndex };
     const measurements = this.data.overdrawForPass(frame, commandBufferId, passIndex);
     if (!measurements.length) {
-      if (this.data.api === "vulkan") this._renderOverdrawReplay(container, key);
+      if (this.backend.replay.overdraw) this._renderOverdrawReplay(container, key);
       return;
     }
     const grp = new collapsible(container, { label: "Overdraw", collapsed: false });

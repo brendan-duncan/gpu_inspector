@@ -1,0 +1,18 @@
+{
+  "id": "gles",
+  "name": "OpenGL ES",
+  "version": "0.1.0",
+  "sdk": 1,
+  "api": "gles",
+  "description": "Captures OpenGL ES 2.0-3.2 applications through EGL: ANGLE on Windows.",
+  "backend": "ui/backend.js",
+  "capture": {
+    "win32": {
+      "inject": ["bin/glesinsp_capture.dll"],
+      "env": {
+        "GLESINSP_PORT": "${port}",
+        "GLESINSP_LOG": "${log}"
+      }
+    }
+  }
+}

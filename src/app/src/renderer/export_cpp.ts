@@ -2,6 +2,7 @@
 // src/replay/src/main.cpp), and how the capture bar says it. The export itself is the replay tool's:
 // the frame is replayed on this machine's GPU and written, as it replays, as a standalone C++ project
 // (src/replay/src/exporter.h, docs/REPLAY.md).
+import { backendFor } from "./backend.js";
 
 /** The summary of one export. */
 export interface ExportCppSummary {
@@ -53,7 +54,7 @@ export function exportSummaryText(e: ExportCppSummary): string {
 /** A folder name for a capture's project, from the capture's label. */
 /** The APIs whose captures Export to C++ writes: those with a replay to write it from (vkinsp_replay, dxinsp_replay, mtlinsp_replay). */
 export function exportsToCpp(api: string | undefined): boolean {
-  return api === "vulkan" || api === "d3d12" || api === "metal";
+  return !!api && backendFor(api).replay.exportCpp;
 }
 
 export function exportFolderName(label: string): string {

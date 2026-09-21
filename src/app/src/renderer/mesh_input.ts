@@ -83,12 +83,14 @@ export function meshInput(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
   const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
   // D3D12 names the topology on the list (IASetPrimitiveTopology), with the pipeline's type as the fallback.
   const topology = vkTopologyOfD3D(str(dynamicValue(state, "topology", assembly?.topology ?? d?.PrimitiveTopologyType))) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
-  const args = drawArgs(data, cmd, notes);
+  // An API with draw arguments of its own names says what they are (CommandSets.drawArgsOf).
+  const own = data.sets.drawArgsOf?.(cmd) ?? null;
+  const args: Record<string, number> = own ? { ...own, indexed: 0 } as Record<string, number> : drawArgs(data, cmd, notes);
 
   // Draw order: the index buffer's values, or the run of vertices from firstVertex.
   let ids: number[] = [];
   let indices: number[] | null = null;
-  const indexed = /Indexed/.test(cmd.method);
+  const indexed = own ? own.indexed : /Indexed/.test(cmd.method);
   if (indexed) {
     const ib = state.indexBuffer;
     const captured = ib ? data.buffer(ib.dataId) : null;

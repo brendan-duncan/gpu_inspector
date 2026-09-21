@@ -14,6 +14,7 @@ project(GpuInspector CXX)
 
 option(VKINSP_BUILD_TESTS "Build the test applications" ON)
 option(VKINSP_BUILD_REPLAY "Build vkinsp_replay, the capture replay tool" ON)
+option(VKINSP_BUILD_PLUGINS "Build the plugins in src/plugins (docs/PLUGINS.md)" ON)
 
 # The Vulkan layer does not build for Apple targets; macOS builds the Metal capture library and
 # its test application instead. See src/metal/README.md and the macOS section of README.md.
@@ -40,6 +41,14 @@ else()
         if(VKINSP_BUILD_TESTS)
             add_subdirectory(test/d3d12_triangle)
             add_subdirectory(test/path_tracer/d3d12)
+        endif()
+        # Plugins: APIs the app loads at run time rather than builds in (docs/PLUGINS.md). The OpenGL ES
+        # one is the example the plugin SDK (src/sdk) was written against; on Windows it captures ANGLE.
+        if(VKINSP_BUILD_PLUGINS)
+            add_subdirectory(src/plugins/gles)
+            if(VKINSP_BUILD_TESTS)
+                add_subdirectory(test/gles_triangle)
+            endif()
         endif()
     endif()
 endif()

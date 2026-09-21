@@ -9,9 +9,7 @@ import { buildRenderGraph, type NodeKind, type RawAccess, type RawPass, type Ren
 import { isAction, type CommandSets } from "./command_sets.js";
 import { passKey } from "./capture_data.js";
 import type { CaptureData } from "./capture_data.js";
-import { D3D12ResourceSource } from "./d3d12/frame_resources.js";
-import { MetalResourceSource } from "./metal/frame_resources.js";
-import { VulkanResourceSource } from "./vulkan/frame_resources.js";
+import { backendFor } from "./backend.js";
 import type { ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { CaptureCommand } from "../shared/protocol.js";
 
@@ -46,6 +44,15 @@ export interface ResourceSource {
    */
   syncPoint?(cmd: CaptureCommand): Omit<SyncPoint, "after"> | null;
 }
+
+/** The source of an API whose backend has none: its passes touch nothing the graph can see. */
+const NO_RESOURCES: ResourceSource = {
+  observe: () => {},
+  passAccesses: () => null,
+  actionAccesses: () => ({ accesses: [], unresolved: 0 }),
+  transferAccesses: () => null,
+  computePassLabel: (ordinal) => `Compute ${ordinal}`,
+};
 
 /**
  * Folds the accesses collected for one pass: a pass with 500 draws that all sample the same
@@ -246,6 +253,5 @@ export function buildFrameGraph(data: CaptureData, sets: CommandSets, source: Re
 
 /** The render graph of a capture, using the resource source of the API the capture came from. */
 export function frameRenderGraph(data: CaptureData, db: ObjectLookup): RenderGraph {
-  const source = data.api === "metal" ? new MetalResourceSource(db) : data.api === "d3d12" ? new D3D12ResourceSource(db) : new VulkanResourceSource(db);
-  return buildFrameGraph(data, data.sets, source);
+  return buildFrameGraph(data, data.sets, backendFor(data.api).resourceSource?.(db) ?? NO_RESOURCES);
 }

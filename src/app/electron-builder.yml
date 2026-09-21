@@ -25,6 +25,7 @@ files:
   - dist/**/*
   - "!dist/**/*.map"
   - "!dist/layer/**"
+  - "!dist/plugins/**"
   - package.json
 
 # The app looks for the layer in resources/layer and its icons in resources/assets
@@ -33,6 +34,9 @@ files:
 extraResources:
   - from: dist/layer
     to: layer
+  # Plugins built in this checkout (tools/stage_layer.mjs; docs/PLUGINS.md), found in resources/plugins.
+  - from: dist/plugins
+    to: plugins
   - from: assets
     to: assets
     filter:

@@ -1,6 +1,7 @@
 // Application window. The main window has the launch toolbar and one tab per inspected
 // application (a SessionPanel with its own Inspect / Capture / Log tabs). A session window
 // (opened with "Open in New Window") shows the sessions moved into it and has no launcher.
+import { loadPlugins } from "./plugin_loader.js";
 import { setDebugExpandStacks } from "./capture_command_info.js";
 import { Window } from "./widget/window.js";
 import { Div } from "./widget/div.js";
@@ -620,4 +621,5 @@ export class InspectorWindow extends Window {
 }
 
 applyTheme(new URLSearchParams(window.location.search).get("theme"));
-new InspectorWindow();
+// Plugins first: a capture opened at start-up has to read with its API's backend (plugin_loader.ts).
+void loadPlugins().finally(() => new InspectorWindow());

@@ -36,7 +36,7 @@
 // thread is running again. Breaking that rule does not crash: it deadlocks the application, some
 // of the time, which is worse.
 //
-// Two implementations, one behaviour. Windows gets the thread list from a Toolhelp snapshot,
+// Two implementations, one behavior. Windows gets the thread list from a Toolhelp snapshot,
 // suspends with SuspendThread, reads registers with GetThreadContext and unwinds with the
 // function tables. macOS does the same three things through Mach — `task_threads`,
 // `thread_suspend`, `thread_get_state` — and unwinds by walking frame pointers, which is reliable

@@ -101,3 +101,18 @@ if (fs.existsSync(path.join(androidSrc, "lib"))) {
 } else {
   console.log(`no Android layer in ${androidSrc} (build it with tools/build_android.py); the package will not support Android targets`);
 }
+
+// Plugins (docs/PLUGINS.md): each built plugin in build/plugins (its plugin.json, its backend module
+// from build.mjs, its native libraries from CMake) goes into dist/plugins, which the package ships as
+// resources/plugins, where the app looks for them after the user's own (src/main/plugins.ts).
+const pluginsSrc = process.env.INSPECTOR_PLUGINS_DIR ?? path.join(root, "build", "plugins");
+const pluginsDst = path.join(appDir, "dist", "plugins");
+fs.rmSync(pluginsDst, { recursive: true, force: true });
+fs.mkdirSync(pluginsDst, { recursive: true });
+for (const id of fs.existsSync(pluginsSrc) ? fs.readdirSync(pluginsSrc) : []) {
+  const dir = path.join(pluginsSrc, id);
+  if (!fs.existsSync(path.join(dir, "plugin.json"))) continue;
+  // Source maps stay behind, as they do for the app's own bundles.
+  fs.cpSync(dir, path.join(pluginsDst, id), { recursive: true, filter: (f) => !f.endsWith(".map") && !f.endsWith(".pdb") });
+  console.log(`staged plugin ${id} from ${dir}`);
+}

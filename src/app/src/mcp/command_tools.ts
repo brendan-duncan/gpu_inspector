@@ -1,6 +1,7 @@
 // The MCP server's command and object tools: the command list, one command with the state bound
 // at it (draw_state.ts reconstructs it, as for the command details view), the object graph, and
 // the validation messages.
+import { backendFor, type DetailSection, type DetailValue } from "../renderer/backend.js";
 import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer } from "../renderer/command_sets.js";
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type VertexLayout } from "../renderer/draw_state.js";
 import { argumentBufferEntries, isArgumentBufferType, type ArgumentEntry } from "../renderer/metal/argument_buffer.js";
@@ -365,6 +366,25 @@ function commandDetail(c: Capture, cmd: CaptureCommand, values: boolean): Record
     stack: cmd.stack?.length ? stackLines(cmd.stack.map((a) => db.symbols.get(a) ?? { address: a, offset: 0 })) : undefined,
   };
   const m = cmd.method;
+  // A plugin's API: what its backend says about the command (the sections the app shows), and of the
+  // bound state what is API-neutral -- the vertex and index buffers, the render targets.
+  const backend = backendFor(d.api);
+  if (!backend.builtin) {
+    const sections = backend.commandDetails?.(cmd, { data: d, db, nameOf: (id) => db.getObject(id)?.name ?? "" }) ?? [];
+    if (sections.length) out.details = sections.map((s) => sectionBrief(c, s));
+    if (isAction(sets, m)) {
+      const state = drawState(d, db, cmd);
+      const reader = new StateReader(c, state, values);
+      out.state = {
+        vertexBuffers: state.vertexBuffers.size ? reader.vertexBuffers([...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding)) : undefined,
+        indexBuffer: state.indexBuffer ? reader.indexBuffer(state.indexBuffer, cmd) : undefined,
+        renderTargets: sets.DRAW.has(m) ? reader.targetsOf(cmd) : undefined,
+      };
+    } else if (sets.PASS_BEGIN.has(m)) {
+      out.renderTargets = new StateReader(c, emptyDrawState(""), values).targetsOf(cmd);
+    }
+    return out;
+  }
   if (isAction(sets, m)) {
     out.state = new StateReader(c, drawState(d, db, cmd), values).action(cmd);
   } else if (sets.BIND_PIPELINE.has(m)) {
@@ -401,6 +421,32 @@ function commandDetail(c: Capture, cmd: CaptureCommand, values: boolean): Record
     out.renderTargets = new StateReader(c, emptyDrawState(""), values).targetsOf(cmd);
   }
   return out;
+}
+
+/** A plugin's detail value as text a model reads: objects by name, read-backs by their ids and sizes. */
+function detailValueBrief(c: Capture, v: DetailValue): unknown {
+  if (v === null || typeof v !== "object") return v;
+  if ("object" in v) return refText(c.db, v.object) ?? v.text ?? null;
+  if ("texture" in v) {
+    const t = c.data.capturedImage(v.texture);
+    return t ? `texture capture ${v.texture}: ${t.info.format.replace(/^VK_FORMAT_/, "")} ${t.info.width}x${t.info.height}${t.info.error ? ` (${t.info.error})` : ""} (read_texture)` : "not captured";
+  }
+  if ("buffer" in v) {
+    const b = c.data.buffer(v.buffer);
+    return b ? `buffer capture ${v.buffer}: ${b.info.size} bytes${b.info.error ? ` (${b.info.error})` : ""} (read_buffer)` : "not captured";
+  }
+  return compact(v.args, c.db);
+}
+
+/** A plugin's command details section (renderer/backend.ts DetailSection) for get_command. */
+function sectionBrief(c: Capture, s: DetailSection): Record<string, unknown> {
+  return {
+    title: s.title,
+    note: s.note,
+    ...(s.rows?.length ? { rows: Object.fromEntries(s.rows.map(([k, v]) => [k, detailValueBrief(c, v)])) } : {}),
+    ...(s.table ? { table: s.table.rows.map((r) => Object.fromEntries(s.table!.columns.map((col, i) => [col, detailValueBrief(c, r[i] ?? null)]))) } : {}),
+    ...(s.code ? { code: s.code.text.length > 4000 ? `${s.code.text.slice(0, 4000)}\n...` : s.code.text } : {}),
+  };
 }
 
 /** An object as its object database knows it, for get_object and get_live_object: its creation, updates, owner, graph and payloads. */

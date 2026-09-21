@@ -11,7 +11,7 @@
 // into one byte of OVERLAY_* bits per pixel (renderer/draw_overlay.ts):
 //
 //   Cover      the draw alone, its own culling, no depth or stencil test -> OVERLAY_COVERED
-//   Passed     the pass's earlier draws first, writing no colour but still moving depth and
+//   Passed     the pass's earlier draws first, writing no color but still moving depth and
 //              stencil, from the copies taken before the pass began; then the draw with its own
 //              tests -> OVERLAY_PASSED
 //   Wireframe  the draw alone, filled as lines -> OVERLAY_WIREFRAME
@@ -106,7 +106,7 @@ std::vector<PendingOverlay> g_pending;
  * One run's encoder, as the recorded calls see it.
  *
  * Every draw before the requested one is issued with the application's own fragment function and no
- * colour writes, so it still moves depth and stencil — which is what makes the Passed and Stencil
+ * color writes, so it still moves depth and stencil — which is what makes the Passed and Stencil
  * runs mean anything. The requested draw is issued with the mask function. Draws after it are not
  * issued at all.
  */
@@ -166,7 +166,7 @@ public:
         if (index > wanted_) return;                 // after the one asked for: nothing to draw
         if (rasterless_) return;                     // no fragments either way
         if (index < wanted_) {
-            // An earlier draw: the application's own shader, writing no colour, so depth and
+            // An earlier draw: the application's own shader, writing no color, so depth and
             // stencil move as they did. Not counted as the overlay's.
             if (!NeedsEarlierDraws()) return;
             const DerivedPipeline quiet = PipelineCopy(device_, appPipeline_, PipelineVariant::OverlayQuiet, nil,

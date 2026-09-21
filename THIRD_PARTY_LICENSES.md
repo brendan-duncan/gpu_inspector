@@ -22,6 +22,11 @@ Files that contain adapted code carry a header comment naming their origin.
 - License: Apache-2.0 OR MIT
 - Used for: code generation of the Vulkan dispatch tables and serializers from `vk.xml`.
 
+## OpenGL-Registry / gl.xml (Khronos)
+- Source: https://github.com/KhronosGroup/OpenGL-Registry (downloaded by `tools/gen_gles.py`, not vendored)
+- License: Apache-2.0, Copyright 2013-2026 The Khronos Group Inc.
+- Used for: code generation of the OpenGL ES plugin's entry points, enum names and constants (`src/plugins/gles/gen`).
+
 ## NVIDIA Nsight Perf SDK
 - Source: https://developer.nvidia.com/nsight-perf-sdk (the redistributable headers under `third_party/nvperf`, the same set RenderDoc ships)
 - License: the header-only utility library (`NvPerfUtility/include`) is Apache-2.0, Copyright 2021-2025 NVIDIA Corporation (`third_party/nvperf/NvPerfUtility/LICENSE`); the API headers (`third_party/nvperf/include`) are under the NVIDIA Nsight Perf SDK License (`third_party/nvperf/NVIDIA Nsight Perf SDK License (28Sept2022).pdf`), which permits redistributing this portion of the SDK.
@@ -30,7 +35,7 @@ Files that contain adapted code carry a header comment naming their origin.
 ## MinHook
 - Source: https://github.com/TsudaKageyu/minhook (the `third_party/minhook` submodule, built into `dxinsp_capture.dll`)
 - License: BSD-2-Clause, Copyright (C) 2009-2017 Tsuda Kageyu. Its Hacker Disassembler Engine (`src/hde`) is Copyright (c) 2008-2009 Vyacheslav Patkov, under the same terms.
-- Used for: hooking the `D3D12CreateDevice` and `CreateDXGIFactory*` entry points inline in the Direct3D 12 capture library (`src/d3d12/src/hook.cpp`).
+- Used for: hooking the `D3D12CreateDevice` and `CreateDXGIFactory*` entry points inline in the Direct3D 12 capture library (`src/d3d12/src/hook.cpp`), and ANGLE's exports in the OpenGL ES plugin's capture library (`src/plugins/gles/src/platform_win32.cpp`).
 
 The BSD-2-Clause license requires this notice to accompany binary distributions:
 

@@ -121,7 +121,7 @@ export class Capture {
         const key = `${c.object?.__id ?? 0}:${c.secondary ?? 0}`;
         let stack = stacks.get(key);
         if (!stack || c.method === "vkBeginCommandBuffer") stacks.set(key, (stack = []));
-        if (sets.LABEL_BEGIN.has(c.method)) stack.push(labelNameOf(c));
+        if (sets.LABEL_BEGIN.has(c.method)) stack.push(labelNameOf(c, sets));
         const labels = stack.join(" / ");
         if (sets.LABEL_END.has(c.method)) stack.pop();
         return labels;

@@ -29,6 +29,7 @@ import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironm
 import { listTargets, targetDisplayName } from "./target_probe.js";
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { WATCH_TIMED_OUT, findD3D12Tools as findD3D12ToolsIn, watchLaunch, windowsLaunch, type D3D12Tools } from "./d3d12.js";
+import { PLUGIN_SCHEME, applyPreloads, findPlugins, isInside, pluginInfo, pluginLaunches, pluginSearchDirs, type Plugin, type PluginLaunch } from "./plugins.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import { browserArgs, browserFollow, browserProfileDir, installedBrowsers, prepareProfile } from "./browsers.js";
 import {
@@ -36,7 +37,7 @@ import {
   type AndroidDeviceList,
   type AppConfig, type ConnectionState, type LaunchConfig, type LaunchResult, type LayerMessage, type OpenFileOptions, type SaveFileOptions, type SessionInfo,
   type CompileShaderResult, type ShaderLanguage, type ShaderTextMode, type ShaderTextResult, type ThemeName, type UiRequest,
-  type UpdateStatus, type StackFrame, type ImplicitLayerStatus,
+  type UpdateStatus, type StackFrame, type ImplicitLayerStatus, type PluginInfo,
 } from "../shared/protocol.js";
 
 const { app, BrowserWindow, ipcMain, dialog, nativeImage, shell } = electron;
@@ -233,6 +234,45 @@ const NO_D3D12_ERROR = "D3D12 capture library not found: build it (see src/d3d12
 function findLayerDir(): string | null {
   return findLayerDirIn([path.resolve(__dirname, "..", "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
 }
+
+let plugins: Plugin[] | null = null;
+
+/** The plugins (plugins.ts, docs/PLUGINS.md): from the user's directory, the checkout's build and the packaged app. Read once. */
+function loadedPlugins(): Plugin[] {
+  if (!plugins) {
+    plugins = findPlugins(pluginSearchDirs([path.resolve(__dirname, "..", "..", "..", "..")], [path.join(process.resourcesPath ?? "", "plugins")]));
+    for (const p of plugins) console.log(`plugin ${p.manifest.id} ${p.manifest.version} at ${p.dir}${p.error ? `: ${p.error}` : ""}`);
+  }
+  return plugins;
+}
+
+/** What the plugins put into a process launched for session `s`: their libraries and settings. */
+function launchPlugins(s: Session): PluginLaunch[] {
+  const c = s.config;
+  return pluginLaunches(loadedPlugins(), { port: s.port, log: c?.log ?? true, recordAlways: c?.recordAlways ?? false, stacktraces: c?.stacktraces ?? false });
+}
+
+/**
+ * The gpuinsp-plugin: scheme: gpuinsp-plugin://<id>/<path> is <path> inside plugin <id>'s directory,
+ * which is how the renderer imports a backend module (its CSP allows the scheme's scripts and no
+ * other file outside the app).
+ */
+function servePluginFile(request: Request): Response {
+  const url = new URL(request.url);
+  const plugin = loadedPlugins().find((p) => p.manifest.id === url.hostname && !p.error);
+  if (!plugin) return new Response(`no plugin ${url.hostname}`, { status: 404 });
+  const file = path.join(plugin.dir, ...decodeURIComponent(url.pathname).split("/").filter((s) => s.length));
+  if (!isInside(plugin.dir, file) || !fs.existsSync(file) || !fs.statSync(file).isFile()) return new Response("not found", { status: 404 });
+  const ext = path.extname(file).toLowerCase();
+  const type = ext === ".js" || ext === ".mjs" ? "text/javascript" : ext === ".json" ? "application/json" : ext === ".css" ? "text/css"
+    : ext === ".map" ? "application/json" : "application/octet-stream";
+  // The window's page is a file: URL, so every plugin module is a cross-origin fetch as far as the
+  // module loader is concerned: it needs the header, and the scheme `corsEnabled`.
+  return new Response(fs.readFileSync(file), { headers: { "content-type": type, "access-control-allow-origin": "*" } });
+}
+
+// A standard, secure scheme, so module scripts load from it and resolve their relative imports.
+electron.protocol.registerSchemesAsPrivileged([{ scheme: PLUGIN_SCHEME, privileges: { standard: true, secure: true, supportFetchAPI: true, corsEnabled: true } }]);
 
 /** The D3D12 capture library and launcher (src/d3d12/README.md), from the same places; Windows only. */
 function findD3D12Tools(): D3D12Tools | null {
@@ -528,7 +568,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   if (browser) s.appendLog(`${path.basename(config.exe)} ${args.join(" ")}`);
   if (process.platform === "win32") {
     const launch = windowsLaunch({
-      exe: config.exe, args, cwd, env: base, vulkan, follow,
+      exe: config.exe, args, cwd, env: base, vulkan, follow, plugins: launchPlugins(s),
       // "Capture child processes": every process the target starts, which `follow` then narrows.
       // A browser follows its own GPU process instead, and asks for nothing else.
       followChildren: !browser && !!config.followChildren,
@@ -541,7 +581,10 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
     return runTarget(s, launch.exe, launch.args, cwd, launch.env, launch.notes);
   }
   if (!vulkan) return { ok: false, error: NO_LAYER_ERROR };
-  return runTarget(s, config.exe, args, cwd, { ...base, ...vulkanLayerEnvironment(vulkan) }, [`layer: ${layerDir}`]);
+  // Linux: a plugin's library is preloaded, beside the layer the loader brings in.
+  const env: NodeJS.ProcessEnv = { ...base, ...vulkanLayerEnvironment(vulkan) };
+  const notes = [`layer: ${layerDir}`, ...applyPreloads(env, launchPlugins(s), "LD_PRELOAD")];
+  return runTarget(s, config.exe, args, cwd, env, notes);
 }
 
 /**
@@ -558,8 +601,10 @@ function spawnMetalTarget(s: Session, library: string, exe: string): LaunchResul
     ...parseEnvLines(config.env ?? ""),
     ...captureEnvironment(library, s.port, config.log ?? true, config.validation, config.stacktraces),
   };
+  // A plugin's library goes in the same way, inserted beside the Metal one.
+  const pluginNotes = applyPreloads(env, launchPlugins(s), "DYLD_INSERT_LIBRARIES");
   const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(exe);
-  return runTarget(s, exe, splitArgs(config.args ?? ""), cwd, env, [`capture library: ${library}${config.validation ? " (Metal validation on)" : ""}`]);
+  return runTarget(s, exe, splitArgs(config.args ?? ""), cwd, env, [`capture library: ${library}${config.validation ? " (Metal validation on)" : ""}`, ...pluginNotes]);
 }
 
 interface RunOptions {
@@ -803,7 +848,9 @@ function waitForD3D12Application(s: Session, d3d12: D3D12Tools): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
   const debugLog = cliOption("debug-log");
+  const extras = launchPlugins(s).filter((p) => !p.missing.length && p.inject.length);
   const watch = watchLaunch(d3d12, {
+    extraDlls: extras.flatMap((p) => p.inject), extraEnv: Object.assign({}, ...extras.map((p) => p.env)),
     image: config.exe, timeoutSeconds: WAIT_CONNECT_TIMEOUT_MS / 1000, once: true,
     followChildren: !!config.followChildren,
     port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces,
@@ -1250,6 +1297,7 @@ ipcMain.handle("inspector:setImplicitLayer", async (_e, on: boolean): Promise<Im
 ipcMain.handle("inspector:userEnvironment", () => userEnvironmentStatus());
 ipcMain.handle("inspector:setUserEnvironment", (_e, port: number | null) => setUserEnvironment(port === null ? null : Number(port)));
 ipcMain.handle("inspector:browsers", () => installedBrowsers());
+ipcMain.handle("inspector:plugins", (): PluginInfo[] => loadedPlugins().map(pluginInfo));
 ipcMain.handle("inspector:androidDevices", async (): Promise<AndroidDeviceList> => {
   const adb = findAdb();
   const layer = findAndroidLayerFiles() !== null;
@@ -1560,6 +1608,7 @@ if (cliOption("screenshot")) {
 
 void app.whenReady().then(() => {
   migrateSettings();
+  electron.protocol.handle(PLUGIN_SCHEME, servePluginFile);
   if (canUpdate) {
     configureUpdater();
     setTimeout(() => void checkForUpdates(), UPDATE_CHECK_DELAY_MS);

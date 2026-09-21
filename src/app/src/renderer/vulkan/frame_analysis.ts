@@ -40,6 +40,7 @@ import type { ObjectLookup } from "./vulkan_object.js";
 import { analyzeMetalFrame } from "../metal/frame_analysis.js";
 import { analyzeD3D12Frame } from "../d3d12/frame_analysis.js";
 import { analyzeCounters } from "../counter_rules.js";
+import { backendFor } from "../backend.js";
 import { analyzeSampling } from "../sampling_rules.js";
 import { textureReads, type TextureReads } from "./spirv_ablate.js";
 import { pipelineStages } from "../shader_cache.js";
@@ -652,9 +653,11 @@ export class FrameAnalysis {
  * reported twice in two wordings.
  */
 export function analyzeFrame(data: CaptureData, db: FrameAnalysisDatabase, graph?: RenderGraph | null): { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } {
-  const vulkan = data.api === "metal" || data.api === "d3d12" ? null : new FrameAnalysis(db);
+  // Each API's own rules: Vulkan's are this file's, a plugin's come with its backend.
+  const vulkan = data.api === "vulkan" ? new FrameAnalysis(db) : null;
   const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() }
-    : data.api === "d3d12" ? analyzeD3D12Frame(data, db) : analyzeMetalFrame(data, db);
+    : data.api === "d3d12" ? analyzeD3D12Frame(data, db) : data.api === "metal" ? analyzeMetalFrame(data, db)
+    : backendFor(data.api).analyzeFrame?.(data, db) ?? { findings: [], byCommand: new Map<number, FrameFinding[]>() };
   // The rules over the GPU counters read the same measurements for either API (counter_rules.ts),
   // and say nothing when the capture carries none; the sampling rules read descriptors both APIs
   // record (sampling_rules.ts).

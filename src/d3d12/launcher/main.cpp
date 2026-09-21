@@ -322,19 +322,45 @@ std::vector<wchar_t> SettingsBlock(const std::vector<std::wstring>& entries) {
 }
 
 /**
- * The offset of DxinspInitialize inside the library, from our own copy of it; the stub below adds
+ * The offset of the library's initializer inside it, from our own copy of it; the stub below adds
  * it to whatever base the target's loader chose. SIZE_MAX with `why` set when the library cannot
  * be read. Read once, since a watch injects into one process after another and loading a copy of
  * the library takes milliseconds the race for a device does not have.
+ *
+ * The initializer is GpuInspectorInitialize, the export a plugin's capture library provides
+ * (docs/PLUGINS.md), or DxinspInitialize, the D3D12 library's own name for the same thing.
  */
 uintptr_t InitOffset(const std::wstring& dllPath, std::wstring& why) {
     HMODULE local = LoadLibraryExW(dllPath.c_str(), nullptr, DONT_RESOLVE_DLL_REFERENCES);
     if (!local) { why = L"cannot load " + dllPath + L" (" + std::to_wstring(GetLastError()) + L")"; return SIZE_MAX; }
-    FARPROC init = GetProcAddress(local, "DxinspInitialize");
-    if (!init) { FreeLibrary(local); why = L"the library has no DxinspInitialize export"; return SIZE_MAX; }
+    FARPROC init = GetProcAddress(local, "GpuInspectorInitialize");
+    if (!init) init = GetProcAddress(local, "DxinspInitialize");
+    if (!init) { FreeLibrary(local); why = dllPath + L" has no GpuInspectorInitialize (or DxinspInitialize) export"; return SIZE_MAX; }
     uintptr_t offset = (uintptr_t)init - (uintptr_t)local;
     FreeLibrary(local);
     return offset;
+}
+
+/**
+ * A library to inject and its initializer's offset. The D3D12 library comes first; any others are
+ * the capture libraries of plugins (docs/PLUGINS.md), which go in the same way, one after another,
+ * while the process is still held.
+ */
+struct Library {
+    std::wstring path;
+    uintptr_t offset = SIZE_MAX;
+};
+
+/** The libraries whose initializer could be found, each failure noted with what `what` calls the target. */
+std::vector<Library> Resolve(const std::vector<std::wstring>& dlls) {
+    std::vector<Library> libs;
+    for (const std::wstring& dll : dlls) {
+        std::wstring why;
+        const uintptr_t offset = InitOffset(dll, why);
+        if (offset == SIZE_MAX) Note(L"%s; the target runs without it", why.c_str());
+        else libs.push_back({dll, offset});
+    }
+    return libs;
 }
 
 void Emit(std::vector<uint8_t>& code, std::initializer_list<uint8_t> bytes) {
@@ -488,8 +514,8 @@ bool Inject(HANDLE process, DWORD pid, const std::wstring& dllPath, uintptr_t of
               + L" (is that path readable by the target, and are the library's dependencies present?)";
         return false;
     }
-    if (got.initResult == kInitNotRun) { why = L"DxinspInitialize was not reached"; return false; }
-    if (got.initResult != 0) { why = L"DxinspInitialize returned " + std::to_wstring(got.initResult); return false; }
+    if (got.initResult == kInitNotRun) { why = L"the initializer was not reached"; return false; }
+    if (got.initResult != 0) { why = L"the initializer returned " + std::to_wstring(got.initResult); return false; }
     return true;
 }
 
@@ -503,7 +529,7 @@ struct WatchOptions {
     std::wstring image;
     /** `wanted` is a path: the process's own image path has to match it too. */
     bool fullPath = false;
-    std::wstring dll;
+    std::vector<std::wstring> dlls;
     std::vector<std::wstring> env;
     /** --follow: the children of the watched process to inject into as well (Follower). */
     std::vector<std::wstring> follow;
@@ -548,7 +574,7 @@ std::wstring ImagePath(HANDLE process) {
  * when the injection worked and the caller wants to wait for it (--once); otherwise the handle is
  * closed here.
  */
-bool InjectRunning(const std::wstring& dll, uintptr_t offset, DWORD pid, const std::wstring& image,
+bool InjectRunning(const std::vector<Library>& libs, DWORD pid, const std::wstring& image,
                    const std::vector<wchar_t>& settings, HANDLE* keep) {
     const DWORD rights = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
                          PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_SUSPEND_RESUME | SYNCHRONIZE;
@@ -578,16 +604,22 @@ bool InjectRunning(const std::wstring& dll, uintptr_t offset, DWORD pid, const s
         return false;
     }
     const ULONGLONG begun = GetTickCount64();
-    std::wstring why;
-    const bool ok = Inject(process, pid, dll, offset, settings, &freezer, why);
+    std::wstring injected;
+    for (const Library& lib : libs) {
+        std::wstring why;
+        if (Inject(process, pid, lib.path, lib.offset, settings, &freezer, why)) {
+            injected += (injected.empty() ? L"" : L", ") + lib.path;
+        } else {
+            Note(L"%s (pid %lu): injecting %s failed: %s", image.c_str(), pid, lib.path.c_str(), why.c_str());
+        }
+    }
     const int bursts = freezer.bursts();
     freezer.Release();
-    if (!ok) {
-        Note(L"%s (pid %lu): injection failed: %s", image.c_str(), pid, why.c_str());
+    if (injected.empty()) {
         CloseHandle(process);
         return false;
     }
-    Note(L"injected %s into pid %lu (%s), %llu ms after it started, in %llu ms (%s)", dll.c_str(), pid, image.c_str(), age,
+    Note(L"injected %s into pid %lu (%s), %llu ms after it started, in %llu ms (%s)", injected.c_str(), pid, image.c_str(), age,
          GetTickCount64() - begun,
          !held ? L"the application could not be held meanwhile, so this raced it"
                : (L"held meanwhile, let go " + std::to_wstring(bursts) + L" times for its own libraries").c_str());
@@ -668,9 +700,9 @@ bool ContainsNoCase(const std::wstring& line, const std::wstring& text) {
  */
 class Follower {
 public:
-    Follower(std::wstring dll, uintptr_t offset, std::vector<wchar_t> settings,
+    Follower(std::vector<Library> libs, std::vector<wchar_t> settings,
              std::vector<std::wstring> patterns, bool all, DWORD root)
-        : _dll(std::move(dll)), _offset(offset), _settings(std::move(settings)),
+        : _libs(std::move(libs)), _settings(std::move(settings)),
           _patterns(std::move(patterns)), _all(all), _root(root) {
         _known.insert(root);
         _tree.insert(root);
@@ -748,11 +780,10 @@ private:
             if (excluding) return;
             wanted = true;
         }
-        if (wanted) InjectRunning(_dll, _offset, pid, image, _settings, nullptr);
+        if (wanted) InjectRunning(_libs, pid, image, _settings, nullptr);
     }
 
-    std::wstring _dll;
-    uintptr_t _offset;
+    std::vector<Library> _libs;
     std::vector<wchar_t> _settings;
     std::vector<std::wstring> _patterns;
     /** --follow-children: every child of the target, rather than the ones the patterns name. */
@@ -778,17 +809,17 @@ constexpr DWORD kTreeGraceMs = 2000;
  * its processes are still running, and the launcher stands in for the tree the way it stands in for
  * a single target (the session's log, its status and its Stop then apply to the whole browser).
  */
-DWORD WaitForTarget(HANDLE process, DWORD pid, const std::wstring& dll, uintptr_t offset,
+DWORD WaitForTarget(HANDLE process, DWORD pid, const std::vector<Library>& libs,
                     const std::vector<std::wstring>& patterns, bool followAll,
                     const std::vector<wchar_t>& settings, DWORD pollMs) {
-    if ((patterns.empty() && !followAll) || dll.empty() || offset == SIZE_MAX) {
+    if ((patterns.empty() && !followAll) || libs.empty()) {
         WaitForSingleObject(process, INFINITE);
         DWORD code = 0;
         GetExitCodeProcess(process, &code);
         return code;
     }
     FineTimer timer;   // or the poll sleeps a scheduler tick, and children start in less
-    Follower follower(dll, offset, settings, patterns, followAll, pid);
+    Follower follower(libs, settings, patterns, followAll, pid);
     while (WaitForSingleObject(process, pollMs) == WAIT_TIMEOUT) follower.Poll();
     DWORD code = 0;
     GetExitCodeProcess(process, &code);
@@ -814,16 +845,11 @@ DWORD WaitForTarget(HANDLE process, DWORD pid, const std::wstring& dll, uintptr_
 /** Polls the process list and injects into each new match; see the exit codes at the top. */
 int Watch(const WatchOptions& o) {
     FineTimer timer;
-    if (GetFileAttributesW(o.dll.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        Note(L"the capture library is not at %s", o.dll.c_str());
-        return kExitFailed;
+    for (const std::wstring& dll : o.dlls) {
+        if (GetFileAttributesW(dll.c_str()) == INVALID_FILE_ATTRIBUTES) Note(L"the capture library is not at %s", dll.c_str());
     }
-    std::wstring why;
-    const uintptr_t offset = InitOffset(o.dll, why);
-    if (offset == SIZE_MAX) {
-        Note(L"%s", why.c_str());
-        return kExitFailed;
-    }
+    const std::vector<Library> libs = Resolve(o.dlls);
+    if (libs.empty()) return kExitFailed;
     const std::vector<wchar_t> settings = SettingsBlock(o.env);
     const DWORD self = GetCurrentProcessId();
     // Processes already tried, so each is reported once however long the watch runs. A pid is
@@ -856,7 +882,7 @@ int Watch(const WatchOptions& o) {
                 const std::wstring name = path.substr(path.find_last_of(L"\\/") + 1);
                 if (_wcsicmp(name.c_str(), o.image.c_str()) != 0) continue;
                 if (o.fullPath && _wcsicmp(Normalized(path).c_str(), o.wanted.c_str()) != 0) continue;
-                if (InjectRunning(o.dll, offset, pid, name, settings, o.once ? &injected : nullptr)) {
+                if (InjectRunning(libs, pid, name, settings, o.once ? &injected : nullptr)) {
                     injectedPid = pid;
                     if (o.once) break;
                 }
@@ -877,7 +903,7 @@ int Watch(const WatchOptions& o) {
     // it does for one it started, so the session sees it exit when the application does.
     DWORD code = 0;
     if (injected) {
-        code = WaitForTarget(injected, injectedPid, o.dll, offset, o.follow, o.followChildren, settings, (DWORD)o.pollMs);
+        code = WaitForTarget(injected, injectedPid, libs, o.follow, o.followChildren, settings, (DWORD)o.pollMs);
         CloseHandle(injected);
         Note(L"pid %lu exited with code %lu", injectedPid, code);
     }
@@ -894,13 +920,15 @@ int Usage() {
     fwprintf(stderr, L"       <text>, such as --follow --type=gpu-process for a browser's GPU process;\n");
     fwprintf(stderr, L"       --follow !<text> leaves a child holding <text> alone instead.\n");
     fwprintf(stderr, L"       --follow-children takes every child, which --follow !<text> can then narrow.\n");
+    fwprintf(stderr, L"       --dll may be given more than once: each library is injected in turn (a plugin's\n");
+    fwprintf(stderr, L"       capture library beside the D3D12 one), its GpuInspectorInitialize export run.\n");
     return kExitUsage;
 }
 
 }  // namespace
 
 int wmain(int argc, wchar_t** argv) {
-    std::wstring dll;
+    std::vector<std::wstring> dlls;
     std::wstring cwd;
     WatchOptions watch;
     std::vector<std::wstring> follow;
@@ -910,7 +938,7 @@ int wmain(int argc, wchar_t** argv) {
     int i = 1;
     for (; i < argc; ++i) {
         std::wstring a = argv[i];
-        if (a == L"--dll" && i + 1 < argc) dll = argv[++i];
+        if (a == L"--dll" && i + 1 < argc) dlls.push_back(argv[++i]);
         else if (a == L"--cwd" && i + 1 < argc) cwd = argv[++i];
         else if (a == L"--watch" && i + 1 < argc) { watching = true; watch.wanted = argv[++i]; }
         else if (a == L"--env" && i + 1 < argc) watch.env.push_back(argv[++i]);
@@ -932,11 +960,11 @@ int wmain(int argc, wchar_t** argv) {
             return Usage();
         }
         if (watch.wanted.empty()) return Usage();
-        if (dll.empty()) {
+        if (dlls.empty()) {
             Note(L"--watch needs --dll: there is nothing to inject");
             return kExitFailed;
         }
-        watch.dll = dll;
+        watch.dlls = dlls;
         watch.follow = follow;
         watch.followChildren = followChildren;
         size_t slash = watch.wanted.find_last_of(L"\\/");
@@ -974,17 +1002,20 @@ int wmain(int argc, wchar_t** argv) {
     }
 
     std::wstring why;
-    uintptr_t offset = dll.empty() ? SIZE_MAX : InitOffset(dll, why);
-    if (dll.empty()) {
+    std::vector<Library> libs = Resolve(dlls);
+    if (dlls.empty()) {
         Note(L"no --dll given: the target runs without the D3D12 capture library");
-    } else if (offset == SIZE_MAX) {
-        Note(L"%s; the target runs without the D3D12 capture library", why.c_str());
-    } else if (!IsX64Image(exe, why)) {
-        Note(L"%s: %s; the target runs without the D3D12 capture library", exe.c_str(), why.c_str());
-    } else if (!Inject(pi.hProcess, pi.dwProcessId, dll, offset, std::vector<wchar_t>(), nullptr, why)) {
-        Note(L"injection failed: %s; the target runs without the D3D12 capture library", why.c_str());
+    } else if (!libs.empty() && !IsX64Image(exe, why)) {
+        Note(L"%s: %s; the target runs without the capture libraries", exe.c_str(), why.c_str());
+        libs.clear();
     } else {
-        Note(L"injected %s into pid %lu", dll.c_str(), pi.dwProcessId);
+        for (const Library& lib : libs) {
+            if (!Inject(pi.hProcess, pi.dwProcessId, lib.path, lib.offset, std::vector<wchar_t>(), nullptr, why)) {
+                Note(L"injecting %s failed: %s; the target runs without it", lib.path.c_str(), why.c_str());
+            } else {
+                Note(L"injected %s into pid %lu", lib.path.c_str(), pi.dwProcessId);
+            }
+        }
     }
     if (followChildren) {
         Note(L"following every child of pid %lu every %d ms", pi.dwProcessId, followPollMs);
@@ -996,7 +1027,7 @@ int wmain(int argc, wchar_t** argv) {
     CloseHandle(pi.hThread);
     // A launched target inherited our environment, so its children have the library's settings
     // already and nothing has to be handed to their initializer.
-    const DWORD code = WaitForTarget(pi.hProcess, pi.dwProcessId, dll, offset, follow, followChildren,
+    const DWORD code = WaitForTarget(pi.hProcess, pi.dwProcessId, libs, follow, followChildren,
                                      std::vector<wchar_t>(), (DWORD)(followPollMs > 0 ? followPollMs : (int)kFollowPollMs));
     CloseHandle(pi.hProcess);
     return (int)code;

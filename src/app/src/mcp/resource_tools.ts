@@ -1,5 +1,6 @@
 // The MCP server's resource tools: the images and buffer ranges a capture read back, the vertices
 // a draw read, and shaders (reflection, embedded source, cross-compiled text, static analysis).
+import { apiDisplayName } from "../renderer/backend.js";
 import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { measureStageByAblation } from "../main/shader_ablation_run.js";
 import { shaderText } from "../main/shader_tools.js";
@@ -51,6 +52,11 @@ export interface ShaderSource { stage: string; entryPoint: string; object: Vulka
 
 /** What is said where a Vulkan capture would be replayed (docs/REPLAY.md) and a D3D12 one cannot be. */
 export const NO_D3D12_REPLAY = "not available for D3D12 captures (no replay)";
+
+/** NO_D3D12_REPLAY for whichever API a capture is of: a plugin's has no replay here either. */
+export function noReplay(api: string): string {
+  return api === "d3d12" ? NO_D3D12_REPLAY : `not available for ${apiDisplayName(api)} captures (no replay)`;
+}
 
 /** A D3D12 pipeline state: its shaders are DXBC/DXIL containers, not SPIR-V. */
 export function isD3D12Pipeline(o: VulkanObject): boolean {
@@ -784,7 +790,9 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
           return jsonResult({ capture: c.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures. For Metal shaders, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
         }
         if (d.api !== "vulkan") {
-          return jsonResult({ capture: c.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for D3D12 captures (DXBC/DXIL). get_shader has a D3D12 pipeline's reflection, source and disassembly." });
+          return jsonResult({ capture: c.id, note: d.api === "d3d12"
+            ? "The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for D3D12 captures (DXBC/DXIL). get_shader has a D3D12 pipeline's reflection, source and disassembly."
+            : `The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for ${apiDisplayName(d.api)} captures.` });
         }
         const rows: { score: number; row: Record<string, unknown> }[] = [];
         for (const [pipelineId, uses] of pipelineUses(d)) {
@@ -843,7 +851,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
           return jsonResult({ capture: c.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
         }
         if (c.data.api !== "vulkan") {
-          return jsonResult({ capture: c.id, note: `The flame graph weighs SPIR-V shaders, so it covers Vulkan captures, and its measured draws are ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's time and counters.` });
+          return jsonResult({ capture: c.id, note: `The flame graph weighs SPIR-V shaders, so it covers Vulkan captures, and its measured draws are ${noReplay(c.data.api)}. get_bottlenecks has each pass's time and counters.` });
         }
         // Per-draw timings and counters: replayed once, and kept with the open capture.
         let drawNote: string | undefined;
@@ -922,7 +930,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
           return jsonResult({ capture: c.id, note: "Ablation replays a Vulkan capture. For Metal, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
         }
         if (c.data.api !== "vulkan") {
-          return jsonResult({ capture: c.id, note: `Ablation replays a Vulkan capture: ${NO_D3D12_REPLAY}.` });
+          return jsonResult({ capture: c.id, note: `Ablation replays a Vulkan capture: ${noReplay(c.data.api)}.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) throw new Error(`Measuring a shader replays the capture, and ${NO_REPLAY_TOOL}`);

@@ -1,5 +1,6 @@
 // Live object inspection: grouped object lists on the left, details of the selected object on
 // the right. Structure follows WebGPU Inspector's devtools/inspect_panel.js (MIT, Brendan Duncan).
+import { backendForObjectType, shortTypeName } from "./backend.js";
 import { Button } from "./widget/button.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { collapsible } from "./widget/collapsible.js";
@@ -122,7 +123,10 @@ function typeLabel(type: string): string {
   if (type === D3D12_TEXTURES) return "Textures";
   if (type === D3D12_BUFFERS) return "Buffers";
   if (PLURALS[type]) return PLURALS[type];
-  const t = type.replace(/^Vk/, "").replace(/^ID3D12/, "").replace(/^IDXGI/, "DXGI ").replace(/(KHR|EXT|NV|AMD|INTEL|ARM)$/, "");
+  // A plugin's types lose their API's prefix the way Vulkan's do ("GLTexture" -> "Textures").
+  const plugin = backendForObjectType(type);
+  const t = plugin && !plugin.builtin ? shortTypeName(type)
+    : type.replace(/^Vk/, "").replace(/^ID3D12/, "").replace(/^IDXGI/, "DXGI ").replace(/(KHR|EXT|NV|AMD|INTEL|ARM)$/, "");
   const words = t.replace(/([a-z])([A-Z])/g, "$1 $2");
   if (words.endsWith("s")) return words + "es";
   // "MTLLibrary" would otherwise read "MTLLibrarys". No Vulkan type ends in y, so this only ever

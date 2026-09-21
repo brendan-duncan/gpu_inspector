@@ -6,6 +6,7 @@
 import { estimateImageBytes } from "./vk_format.js";
 import { d3d12PipelineKind, d3d12ResourceBytes, d3d12TextureShape, isD3D12Type } from "../d3d12/d3d12_object.js";
 import { dxgiFormatShort } from "../d3d12/dxgi_format.js";
+import { backendForObjectType, shortTypeName } from "../backend.js";
 import type { AddObjectMessage, ArgObject, ArgValue, BlobInfo, HandleRef } from "../../shared/protocol.js";
 
 export interface ObjectLookup {
@@ -106,12 +107,9 @@ export class VulkanObject {
     this.updates = {};
   }
 
+  /** The type without its API's prefix: "VkImage" -> "Image", "ID3D12Resource" -> "Resource" (backend.ts). */
   get shortType(): string {
-    if (this.type.startsWith("Vk")) return this.type.substring(2);
-    // "ID3D12Resource" -> "Resource", "IDXGISwapChain" -> "SwapChain".
-    if (this.type.startsWith("ID3D12")) return this.type.substring(6);
-    if (this.type.startsWith("IDXGI")) return this.type.substring(5);
-    return this.type;
+    return shortTypeName(this.type);
   }
 
   get name(): string {
@@ -140,6 +138,8 @@ export class VulkanObject {
     const a = this.args;
     if (!a) return null;
     if (this.type.startsWith("MTL")) return a;
+    // A plugin's objects are described the same way: the library sends what describes them as `args`.
+    if (backendForObjectType(this.type)?.builtin === false) return a;
     // A D3D12 object's descriptor is the creating call's pDesc (src/d3d12/README.md, "Talking to the
     // UI"); a call without one (GetBuffer, CreateFence) has only its parameters.
     if (isD3D12Type(this.type)) return isObject(a.pDesc) ? a.pDesc : a;
@@ -285,7 +285,7 @@ export class VulkanObject {
         return `${adapter?.summary(db) ?? ""}${level ? `  feature level ${level}` : ""}`.trim();
       }
       default:
-        return "";
+        return backendForObjectType(this.type)?.objectSummary?.(this) ?? "";
     }
   }
 }
@@ -328,7 +328,7 @@ export function objectMemoryBytes(o: VulkanObject, db: ObjectLookup | null): num
       return estimateImageBytes(str(d.format), num(e?.width), num(e?.height), num(e?.depth) || 1, num(d.mipLevels) || 1, num(d.arrayLayers) || 1, samples);
     }
     default:
-      return 0;
+      return backendForObjectType(o.type)?.objectBytes?.(o) ?? 0;
   }
 }
 

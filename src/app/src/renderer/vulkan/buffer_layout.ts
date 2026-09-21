@@ -127,6 +127,48 @@ function sizeOfType(t: ReflType): number {
   return t.kind === "opaque" ? 0 : t.size;
 }
 
+/**
+ * One member of a block whose layout the driver reported rather than a shader declared: its GLSL
+ * type name ("vec4", "mat3"), its byte offset, and for arrays and matrices the strides the driver
+ * chose (OpenGL ES's glGetActiveUniformsiv). What a plugin's command details hand over (backend.ts).
+ */
+export interface MemberLayout {
+  name: string;
+  type: string;
+  offset: number;
+  /** Array length; absent or 1 for a single value. */
+  count?: number;
+  arrayStride?: number;
+  matrixStride?: number;
+  rowMajor?: boolean;
+}
+
+/**
+ * A block type from members at the offsets given, rather than worked out by std140 rules: a block
+ * with the "shared" or "packed" layout has whatever offsets its driver picked. A member of a type
+ * this does not know is left out.
+ */
+export function structFromMembers(name: string, members: MemberLayout[], size = 0): StructType {
+  const out: StructType["members"] = [];
+  let end = 0;
+  for (const m of members) {
+    let type = parseTypeName(m.type, new Map(), "std430");
+    if (!type) continue;
+    if (type.kind === "matrix" && m.matrixStride) {
+      type = { ...type, stride: m.matrixStride, rowMajor: !!m.rowMajor, size: (m.rowMajor ? type.rows : type.columns) * m.matrixStride };
+    }
+    const count = m.count ?? 1;
+    if (count > 1 || m.arrayStride) {
+      const stride = m.arrayStride || sizeOfType(type);
+      type = { kind: "array", element: type, count, stride, size: count * stride };
+    }
+    out.push({ name: m.name, offset: m.offset, type });
+    end = Math.max(end, m.offset + sizeOfType(type));
+  }
+  out.sort((a, b) => a.offset - b.offset);
+  return { kind: "struct", name, members: out, size: Math.max(size, end) };
+}
+
 /** Writes a reflected type as layout text: nested structs first, the buffer's struct last. */
 export function layoutText(type: ReflType, rootName = "Buffer"): string {
   const out: string[] = [];

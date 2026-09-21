@@ -10,6 +10,7 @@
 // command stream, and a pass whose counters the GPU does not expose shows what is known and says
 // so, with a pointer at the Xcode trace for the rest. docs/PROFILING.md is the how-to that walks
 // through using it.
+import { apiDisplayName } from "./backend.js";
 import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
@@ -59,7 +60,8 @@ function renderHwCounters(root: Widget, data: CaptureData, m: FrameMetrics, onJu
       new Div(section, {
         text: data.api === "metal"
           ? "Apple's own instrumentation has these and no public Metal API exposes them; \"Xcode Trace\" in the capture bar writes a .gputrace that does."
-          : "The GPU's own counters are read by replaying the capture, which only Vulkan captures can be.",
+          : data.api === "d3d12" ? "The GPU's own counters are read by replaying the capture, which only Vulkan captures can be."
+          : `The GPU's own counters are read by replaying the capture, which ${apiDisplayName(data.api)} captures cannot be.`,
         class: "text-muted",
       });
       return;
@@ -284,7 +286,9 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
       ? "This GPU exposes only the timestamp counter set through public Metal, so the columns above that need invocation counts are empty."
       : d3d12
         ? "No pass carried counters. The library puts a pipeline statistics query around every render pass; a pass whose command list had a query of the application's open is not counted."
-        : "No pass carried counters. The device may not support pipelineStatisticsQuery, or the application enabled a feature set that excludes it; the layer's log says which.")
+        : data.api === "vulkan"
+          ? "No pass carried counters. The device may not support pipelineStatisticsQuery, or the application enabled a feature set that excludes it; the layer's log says which."
+          : "No pass carried counters.")
     : `${m.withCounters} of ${m.timed} timed passes carried counters.`;
   new Div(limits, { text: counterNote, class: "text-muted" });
   if (d3d12) {
@@ -292,12 +296,12 @@ export function renderBottleneckReport(container: Widget, data: CaptureData, db:
       text: "The vertex and fragment spans are Metal only: they come from timestamps at a pass's stage boundaries. Depth rejection needs the samples that survived the depth and stencil tests, which the D3D12 library counts with an occlusion query around each pass. Per-draw timings and shader costs come from replaying the capture, which only Vulkan captures can be.",
       class: "text-muted",
     });
-  } else if (!metal) {
+  } else if (data.api === "vulkan") {
     new Div(limits, {
       text: "The vertex and fragment spans are Metal only: they come from timestamps at a pass's stage boundaries, which Vulkan has no portable equivalent for. Depth rejection needs the samples that survived the depth and stencil tests, which the Vulkan layer counts with an occlusion query around each pass (skipped for a pass where the application has a query of its own open).",
       class: "text-muted",
     });
-  } else {
+  } else if (metal) {
     new Div(limits, {
       text: "Shader occupancy, the ALU and texture limiters, and per-line shader cost come from Apple's own instrumentation and have no public Metal API. \"Xcode Trace\" in the capture bar writes the next frame as a .gputrace document, which opens in Xcode's Metal debugger with all of them.",
       class: "text-muted",

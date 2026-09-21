@@ -2,6 +2,7 @@
 // the tools of server.ts on stdin and stdout. The applications it launched end with it.
 import process from "node:process";
 import { SessionManager, createServer } from "./server.js";
+import { loadPluginBackends } from "./plugins.js";
 
 // stdout is the protocol stream; anything the renderer modules log goes to stderr instead.
 console.log = console.info = console.debug = (...parts: unknown[]): void => {
@@ -14,6 +15,9 @@ const exit = (code: number): void => {
 };
 process.on("SIGINT", () => exit(0));
 process.on("SIGTERM", () => exit(0));
+
+// Plugins' backends before the first tool call, so their captures read as they do in the app.
+await loadPluginBackends();
 
 createServer(undefined, sessions).serve(process.stdin, process.stdout).then(
   () => exit(0),

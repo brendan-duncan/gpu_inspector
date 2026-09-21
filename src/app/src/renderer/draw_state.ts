@@ -2,6 +2,7 @@
 // stage buffers, push constants and dynamic viewport state bound before it, reconstructed by
 // walking back through its command buffer. The command details view (capture_command_info.ts)
 // renders it and the MCP server (src/mcp/) reports it, so both read one reconstruction.
+import { backendFor } from "./backend.js";
 import { decodeBase64 } from "./utils/base64.js";
 import {
   boundPipelineOf, type BoundIndexBuffer, type BoundRayObject, type BoundStageBuffer, type BoundStageSampler, type BoundStageTexture, type BoundVertexBuffer, type CommandSets,
@@ -137,6 +138,9 @@ export function pushConstantOf(c: CaptureCommand): PushConstantUpdate | null {
  * secondary starts with no state); commands of a primary skip the inlined ones.
  */
 export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureCommand, bindPoint = data.sets.bindPointOf(cmd.method)): DrawState {
+  // A plugin's library may attach the state to the draw itself, which its backend reads.
+  const own = backendFor(data.api).drawState?.(data, db, cmd);
+  if (own) return own;
   const cmdSets = data.sets;
   const commands = data.commands;
   const state = emptyDrawState(bindPoint);

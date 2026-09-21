@@ -3,6 +3,7 @@
 // carries them (src/metal/src/overdraw.h, src/d3d12/src/overdraw.h); vkinsp_replay --overdraw
 // measures the same for a Vulkan capture file (docs/REPLAY.md). Each pass has two: the fragments
 // that passed its depth and stencil tests in draw order, and every fragment its draws rasterized.
+import { backendFor } from "./backend.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import type { CapturedOverdraw } from "./capture_data.js";
 
@@ -13,7 +14,8 @@ import type { CapturedOverdraw } from "./capture_data.js";
  * capture again rather than to measure the capture in hand.
  */
 export function measuresWhileCapturing(api: string): boolean {
-  return api === "metal" || api === "d3d12";
+  const live = backendFor(api).live;
+  return live.overdraw || live.pixelHistory;
 }
 
 /**
@@ -24,7 +26,7 @@ export function measuresWhileCapturing(api: string): boolean {
  * backend could gain one without the other, as Metal did for a while.
  */
 export function measuresOverlayWhileCapturing(api: string): boolean {
-  return api === "metal" || api === "d3d12";
+  return backendFor(api).live.drawOverlay;
 }
 
 /** A render pass of a capture: which frame, which command buffer, and its index in that buffer. */

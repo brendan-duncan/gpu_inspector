@@ -1,6 +1,7 @@
 // The MCP server's frame-level tools: opening capture files, and the reports over a whole capture
 // (the summary, Frame Issues, GPU Bottlenecks, the render graph, two captures compared). The
 // command and object tools are command_tools.ts; buffers, textures and shaders resource_tools.ts.
+import { apiDisplayName, backendFor } from "../renderer/backend.js";
 import fs from "node:fs";
 import path from "node:path";
 import { REFRESH_SOURCE_NOTE, frameBound } from "../renderer/capture_statistics.js";
@@ -31,7 +32,7 @@ import {
 } from "./describe.js";
 import { checkoutRoots, installedLayerDirs } from "./live_session.js";
 import { encodePng, fitPixels } from "./png.js";
-import { NO_D3D12_REPLAY } from "./resource_tools.js";
+import { NO_D3D12_REPLAY, noReplay } from "./resource_tools.js";
 import { describeSearchPaths, setSearchPaths, splitPaths } from "./search_paths.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
@@ -135,7 +136,9 @@ function captureNotes(c: Capture): string[] {
       ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured."
       : d.api === "d3d12"
         ? "The passes carry timestamps but no pipeline statistics (the capture library's statistics queries did not resolve), so overdraw and fragments per primitive are not measured."
-        : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
+        : d.api === "vulkan"
+          ? "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured."
+          : "The passes carry timestamps but no pipeline statistics, so overdraw and fragments per primitive are not measured.");
   }
   const failedImages = d.textures.filter((t) => t.info.error).length;
   if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
@@ -543,7 +546,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
       handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
         if (c.data.api !== "vulkan") {
-          return jsonResult({ capture: c.id, note: `Hardware counters are read by replaying the capture, and ${c.data.api === "metal" ? "the Metal replay serves no analyses; use GPU Inspector's Xcode Trace for Metal's own counter sets" : "D3D12 captures do not replay yet"}.` });
+          return jsonResult({ capture: c.id, note: `Hardware counters are read by replaying the capture, and ${c.data.api === "metal" ? "the Metal replay serves no analyses; use GPU Inspector's Xcode Trace for Metal's own counter sets" : `${apiDisplayName(c.data.api)} captures do not replay for them here`}.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c.id, note: `Hardware counters need the capture replayed, and ${NO_REPLAY_TOOL}` });
@@ -718,7 +721,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           if (!c.data.pixelHistory) {
             return jsonResult({
               capture: c.id,
-              note: `This ${metal ? "Metal" : "D3D12"} capture did not follow a pixel. The capture library follows one while it captures: ` +
+              note: `This ${apiDisplayName(c.data.api)} capture did not follow a pixel. The capture library follows one while it captures: ` +
                 "capture_frames with pixelHistory { texture, x, y } (a render target's id from list_textures; " +
                 `${metal ? "a drawable's follows the next frame's drawable" : "a swap chain's back buffer follows whichever one the next frame renders into"}), ` +
                 "then get_pixel_history on that capture.",
@@ -790,6 +793,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         const cmd = c.data.commands[index];
         if (!cmd || !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_draw_overlay takes a draw command (list_commands with kind draw).`);
         let o: DrawOverlay | undefined;
+        if (c.data.api !== "vulkan" && !backendFor(c.data.api).live.drawOverlay) {
+          return jsonResult({ capture: c.id, command: index, note: `Draw overlays are not available for ${apiDisplayName(c.data.api)} captures: neither a replay nor the capture library measures them.` });
+        }
         if (c.data.api === "vulkan") {
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) return jsonResult({ capture: c.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
@@ -803,7 +809,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           o = c.data.drawOverlays.get(index);
           if (!o) {
             const measured = [...c.data.drawOverlays.values()][0];
-            const api = c.data.api === "metal" ? "Metal" : "D3D12";
+            const api = apiDisplayName(c.data.api);
             return jsonResult({ capture: c.id, command: index, note: measured
               ? `This capture measured draw ${measured.command}, not ${index}: a ${api} draw overlay is measured in the application as the frame is captured, one draw per capture.`
               : `A ${api} capture's draw overlays are measured in the application as the frame is captured, so this one has none: ask for one in the app's render target tab, which captures again.` });
@@ -856,7 +862,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           return jsonResult({ capture: c.id, command: index, note: "A Metal draw's vertex function outputs need a replay, which Metal captures do not have yet; read_vertices gives what the draw read." });
         }
         if (c.data.api !== "vulkan") {
-          return jsonResult({ capture: c.id, command: index, note: `The mesh output replays the draw's vertex shader: ${NO_D3D12_REPLAY}. read_vertices gives what the draw read.` });
+          return jsonResult({ capture: c.id, command: index, note: `The mesh output replays the draw's vertex shader: ${noReplay(c.data.api)}. read_vertices gives what the draw read.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });

@@ -10,6 +10,7 @@
 // pixel history it was taken with, measured in the application while it captured
 // (src/metal/src/overdraw.h, src/d3d12/src/overdraw.h); a Vulkan capture is replayed for all of
 // them (vkinsp_replay, docs/REPLAY.md).
+import { backendFor, type Backend } from "./backend.js";
 import { Button } from "./widget/button.js";
 import { Div } from "./widget/div.js";
 import { NumberInput } from "./widget/number_input.js";
@@ -350,9 +351,14 @@ export class CaptureTextureView {
     };
   }
 
+  /** The capture's API, which says what can be measured and how (backend.ts). */
+  private get _backend(): Backend {
+    return backendFor(this.host.data.api);
+  }
+
   private _buildToolbar(bar: Div): void {
     // Metal and D3D12 captures have no replay to draw a single draw again with.
-    const overlays = OVERLAYS.filter((o) => !o.vulkanOnly || this.host.data.api === "vulkan" ||
+    const overlays = OVERLAYS.filter((o) => !o.vulkanOnly || this._backend.replay.drawOverlay ||
                                           measuresOverlayWhileCapturing(this.host.data.api));
     const select = new Select(bar, {
       options: overlays.map((o) => o.label),
@@ -468,7 +474,7 @@ export class CaptureTextureView {
     if (!m) {
       if (measuresWhileCapturing(this.host.data.api)) {
         note("This capture did not measure overdraw: capture again with Overdraw ticked.");
-      } else if (this.host.data.api !== "vulkan") {
+      } else if (!this._backend.replay.overdraw) {
         note("Overdraw is measured by replaying the capture, which this capture's API has no replay for.");
       } else {
         note(this._measureError || "A Vulkan capture's overdraw is measured by replaying it on this machine's GPU.");
@@ -567,7 +573,7 @@ export class CaptureTextureView {
 
   /** Vulkan: measures the capture's overdraw when the overlay is switched on without it. */
   private async _ensureMeasured(): Promise<void> {
-    if (this._measuring || this._measurement() || this.host.data.api !== "vulkan") return;
+    if (this._measuring || this._measurement() || !this._backend.replay.overdraw) return;
     this._measuring = true;
     this._measureError = "";
     this._renderOverlayRow();
@@ -592,14 +598,14 @@ export class CaptureTextureView {
         const measured = [...this.host.data.drawOverlays.values()][0];
         this._drawError = `This capture measured draw #${measured.command}; a draw overlay is measured while the frame is captured, one draw per capture.`;
       } else if (kind && this.host.captureDrawOverlay) {
-        const api = this.host.data.api === "metal" ? "Metal" : "D3D12";
+        const api = this._backend.displayName;
         this._drawError = `Measuring in a new capture: ${api} draws the overlay inside the application, on its next frame.`;
         this.host.captureDrawOverlay(draw, kind);
       }
       this._renderOverlayRow();
       return;
     }
-    if (this.host.data.api !== "vulkan") return;
+    if (!this._backend.replay.drawOverlay) return;
     this._drawRunning = true;
     this._renderOverlayRow();
     try {
@@ -631,7 +637,7 @@ export class CaptureTextureView {
         { label: "Capture Next Frame", callback: () => this.host.captureHistory(pixel) });
       return;
     }
-    if (this.host.data.api !== "vulkan" && !measuresWhileCapturing(this.host.data.api)) {
+    if (!this._backend.replay.pixelHistory && !measuresWhileCapturing(this.host.data.api)) {
       this._history?.setPrompt("A pixel's history needs either a replay or a capture library that follows the pixel while it captures.");
       return;
     }

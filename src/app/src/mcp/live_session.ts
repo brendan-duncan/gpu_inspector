@@ -6,6 +6,9 @@
 // an ObjectDatabase as it feeds the app's session: live objects, frame statistics, validation
 // messages. A capture is requested, streamed into a CaptureData and saved as a .gpucap file, which
 // the capture tools then read like any other.
+import { applyPreloads } from "../main/plugins.js";
+import { launchPlugins } from "./plugins.js";
+import { backendForObjectType } from "../renderer/backend.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
 import net from "node:net";
@@ -23,7 +26,7 @@ import { captureFileName } from "../renderer/capture_format.js";
 import { resolveSymbols } from "../renderer/stack_requests.js";
 import { ObjectDatabase } from "../renderer/vulkan/object_database.js";
 import { isObject, str } from "../renderer/vulkan/vulkan_object.js";
-import type { AndroidDevice, CaptureRequest, FrameStatsMessage, ImageDataMessage, LayerMessage, ShaderReplacedMessage, UiRequest } from "../shared/protocol.js";
+import type { AndroidDevice, CaptureApi, CaptureRequest, FrameStatsMessage, ImageDataMessage, LayerMessage, ShaderReplacedMessage, UiRequest } from "../shared/protocol.js";
 import { searchPaths, symbolizeSymbolMap } from "./search_paths.js";
 
 const MAX_LOG_LINES = 2000;
@@ -221,11 +224,14 @@ export class LiveSession {
     return this._socket !== null && !this._socket.destroyed;
   }
 
-  /** The API the capture library reports objects of; null before any arrived. */
-  get api(): "vulkan" | "metal" | "d3d12" | null {
+  /**
+   * The API the capture library reports objects of, by their type names' prefixes (backend.ts):
+   * a built-in API's, or a plugin's; null before any arrived.
+   */
+  get api(): CaptureApi | null {
     for (const type of this.database.objectsByType.keys()) {
-      if (type.startsWith("MTL")) return "metal";
-      if (type.startsWith("ID3D12") || type.startsWith("IDXGI")) return "d3d12";
+      const b = backendForObjectType(type);
+      if (b && b.id !== "vulkan") return b.id;
     }
     return this.database.allObjects.size ? "vulkan" : null;
   }
@@ -594,6 +600,7 @@ export class SessionManager {
       if (blocked) throw new Error(blocked);
       env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
       notes.push(`capture library: ${library}`);
+      notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "DYLD_INSERT_LIBRARIES"));
     } else {
       const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
       // Windows: the D3D12 library goes in beside the Vulkan layer, through its launcher
@@ -616,6 +623,7 @@ export class SessionManager {
       if (process.platform === "win32") {
         const launch = windowsLaunch({
           exe: requested, args, cwd, env: { ...process.env, ...o.env }, vulkan, follow: o.follow,
+          plugins: launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true),
           d3d12: d3d12 ? { tools: d3d12, port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true,
             symbolDirs: searchPaths("symbolDirs").dirs.join(";"), validation: !!o.validation } : null,
         });
@@ -626,6 +634,8 @@ export class SessionManager {
       } else {
         env = { ...process.env, ...o.env, ...vulkanLayerEnvironment(vulkan!) };
         notes.push(`layer: ${layerDir}`);
+        // A plugin's library is preloaded beside the layer (docs/PLUGINS.md).
+        notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "LD_PRELOAD"));
       }
       if (validationNote) notes.push(validationNote);
     }
@@ -659,7 +669,9 @@ export class SessionManager {
     }
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const extras = launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true).filter((p) => !p.missing.length && p.inject.length);
     const watch = watchLaunch(d3d12, {
+      extraDlls: extras.flatMap((p) => p.inject), extraEnv: Object.assign({}, ...extras.map((p) => p.env)),
       image: o.image, timeoutSeconds: Math.ceil(waitMs / 1000), once: true,
       port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, validation: !!o.validation,
     });

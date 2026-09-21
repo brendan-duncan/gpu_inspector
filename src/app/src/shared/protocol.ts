@@ -126,8 +126,11 @@ export interface ObjectBlobMessage {
   __binary?: Uint8Array;
 }
 
-/** Which graphics API produced a capture: it decides how the UI classifies the command names. */
-export type CaptureApi = "vulkan" | "metal" | "d3d12";
+/**
+ * Which graphics API produced a capture: it decides how the UI classifies the command names. The
+ * three built into the app, or the id of a plugin's backend (renderer/backend.ts, docs/PLUGINS.md).
+ */
+export type CaptureApi = "vulkan" | "metal" | "d3d12" | (string & {});
 
 export interface CaptureFrameResultsMessage {
   action: "CaptureFrameResults";
@@ -1288,6 +1291,26 @@ export function targetDisplayName(t: InspectableTarget): string {
   const name = t.name.toLowerCase();
   const exe = t.exe.toLowerCase();
   return name === exe || name === exe.replace(/\.[^.]*$/, "") ? t.exe : `${t.name} (${t.exe})`;
+}
+
+/**
+ * The plugin contract this app implements (docs/PLUGINS.md): plugin.json's `sdk`, and what a backend
+ * module is told in its host. A plugin written for a later one is not loaded.
+ */
+export const PLUGIN_SDK_VERSION = 1;
+
+/** A plugin the app found (main/plugins.ts, inspector:plugins; docs/PLUGINS.md). */
+export interface PluginInfo {
+  id: string;
+  name: string;
+  version: string;
+  /** The `api` its captures carry, which its backend is registered under. */
+  api: string;
+  dir: string;
+  /** The backend module as a URL the renderer can import (the gpuinsp-plugin: scheme main.ts serves). */
+  backendUrl: string | null;
+  /** Why the plugin is not usable; null when it is. */
+  error: string | null;
 }
 
 export interface LaunchResult {

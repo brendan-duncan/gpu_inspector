@@ -632,7 +632,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
       }, ["pipeline", "stage", "source"]),
       handler: async (args) => {
         const s = sessions.get(stringArg(args, "session"));
-        if (s.api === "metal") throw new Error("Shader replacement is Vulkan and D3D12 only.");
+        if (s.api !== "vulkan" && s.api !== "d3d12") throw new Error("Shader replacement is Vulkan and D3D12 only.");
         if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
         const pipelineId = requireInt(args, "pipeline");
         const stageName = requireString(args, "stage").toLowerCase();

@@ -337,7 +337,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       made safe first, since the present shape serializes it by construction, and that is a change
       to the one path every session depends on for a refinement discovery does not need.
 - [x] The macOS half of the CPU sampler (`src/vulkan/src/cpu_sampler.h`, the `#elif` branch): the
-      same public surface, the same behaviour, through Mach — `task_threads` for the list,
+      same public surface, the same behavior, through Mach — `task_threads` for the list,
       `thread_suspend` / `thread_resume`, `thread_get_state` with `ARM_THREAD_STATE64`,
       `thread_info` with `THREAD_BASIC_INFO` for the thread's own CPU time *and* its run state,
       pthread for the name and the stack bounds — unwinding by walking frame pointers, which the
@@ -396,7 +396,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       the structures re-created at the size the capture recorded, the builds, refits and copies
       replayed with the descriptor rebuilt from the capture's JSON, the intersection function tables
       made from their pipeline and filled by function name, and the bindings. Cheaper than either
-      other backend for the reason the plan predicted: no `RemapAddress` analogue, because a Metal
+      other backend for the reason the plan predicted: no `RemapAddress` analog, because a Metal
       geometry descriptor holds the `id<MTLBuffer>`, and `Replayer::TraceRays`'s whole binding-table
       rewrite collapses into a name lookup among the pipeline's linked functions. Those linked
       functions had to be carried onto the pipeline descriptor — without them the table exists and

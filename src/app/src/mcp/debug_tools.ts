@@ -4,6 +4,7 @@
 // the stage's HLSL compiled to SPIR-V by dxc — on the capture's inputs
 // (renderer/shader_debug_setup.ts), with the values every source line computed in the order they
 // ran, the first NaN or infinity, the outputs, and how they compare with what the GPU produced.
+import { apiDisplayName, backendFor } from "../renderer/backend.js";
 import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
 import { findShaderSources } from "../main/shader_sources.js";
 import { compileHlslForDebugging, decompileForDebugging } from "../main/shader_tools.js";
@@ -79,6 +80,9 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         const isDispatch = c.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"] as const, isDispatch ? "compute" : "fragment");
+        if (!backendFor(c.data.api).builtin) {
+          return jsonResult({ capture: c.id, command, stage, note: `The shader debugger interprets SPIR-V (Vulkan, and D3D12's HLSL compiled to it) and MSL; ${apiDisplayName(c.data.api)} shaders are not among them.` });
+        }
         const state = drawState(c.data, c.db, cmd);
         const inputNames = new Map<number, string>();
         for (const v of vertexInputs(c, state)) if (v.location !== undefined && v.name) inputNames.set(v.location, v.name);

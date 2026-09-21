@@ -6,10 +6,10 @@
 // from every API at once, each API contributes a table and a capture selects the one for its own
 // (`CaptureData.sets`, from the `api` the capture library reported or the `.gpucap` recorded).
 //
-// The tables themselves live beside the rest of each API's code, in `vulkan/`, `metal/` and `d3d12/`.
-import { D3D12_SETS, d3d12PipelineOf } from "./d3d12/command_sets.js";
-import { METAL_SETS } from "./metal/command_sets.js";
-import { VULKAN_SETS } from "./vulkan/command_sets.js";
+// The tables themselves live beside the rest of each API's code, in `vulkan/`, `metal/` and `d3d12/`,
+// or in a plugin's backend module; backend.ts holds which table is whose.
+import { backendFor } from "./backend.js";
+import { d3d12PipelineOf } from "./d3d12/command_sets.js";
 import { isObject, str } from "./vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue, CaptureApi, CaptureCommand } from "../shared/protocol.js";
 
@@ -195,6 +195,29 @@ export interface CommandSets {
    * MCP server's command listing (src/mcp/) returns it. Undefined shows no summary.
    */
   summarize?(cmd: CaptureCommand, nameOf: (v: ArgValue | undefined) => string): string | undefined;
+
+  /** The name a LABEL_BEGIN command opens its group with, for an API whose arguments name it differently. */
+  labelOf?(cmd: CaptureCommand): string | undefined;
+
+  /** What a PASS_BEGIN command's pass is called in the command tree and the thumbnail strip ("Render Pass 2: GBuffer"). */
+  passLabel?(cmd: CaptureCommand, passIndex: number, nameOf: (v: ArgValue | undefined) => string): string | undefined;
+
+  /**
+   * What a draw draws, for an API whose draw arguments are not named like Vulkan's or D3D12's: the mesh
+   * view reads it. `firstIndex` counts from the start of the index data the capture read back.
+   */
+  drawArgsOf?(cmd: CaptureCommand): DrawArgs | null;
+}
+
+/** A draw's counts, in Vulkan's terms. */
+export interface DrawArgs {
+  indexed: boolean;
+  vertexCount?: number;
+  indexCount?: number;
+  firstVertex?: number;
+  firstIndex?: number;
+  vertexOffset?: number;
+  instanceCount?: number;
 }
 
 /** Draws, dispatches and ray tracing launches: the commands with reconstructed state. */
@@ -202,8 +225,13 @@ export function isAction(sets: CommandSets, method: string): boolean {
   return sets.DRAW.has(method) || sets.DISPATCH.has(method) || sets.TRACE.has(method);
 }
 
-/** The name a debug group command opens: Vulkan's label-info struct, or Metal's `label` (pushDebugGroup:). */
-export function labelNameOf(cmd: CaptureCommand): string {
+/**
+ * The name a debug group command opens: what the API's own sets say (CommandSets.labelOf), else
+ * Vulkan's label-info struct, or Metal's `label` (pushDebugGroup:).
+ */
+export function labelNameOf(cmd: CaptureCommand, sets?: CommandSets): string {
+  const own = sets?.labelOf?.(cmd);
+  if (own !== undefined) return own;
   const a = cmd.args;
   const info = a && (isObject(a.pLabelInfo) ? a.pLabelInfo : isObject(a.pMarkerInfo) ? a.pMarkerInfo : null);
   return info ? str(info.pLabelName ?? info.pMarkerName) : a && a.label !== undefined ? str(a.label) : cmd.method;
@@ -218,5 +246,5 @@ export function boundPipelineOf(a: ArgObject | null | undefined): ArgValue | und
 }
 
 export function setsFor(api: CaptureApi): CommandSets {
-  return api === "metal" ? METAL_SETS : api === "d3d12" ? D3D12_SETS : VULKAN_SETS;
+  return backendFor(api).sets;
 }

@@ -555,11 +555,9 @@ var VulkanObject = class {
     this.blobs = msg.blobs ?? [];
     this.updates = {};
   }
+  /** The type without its API's prefix: "VkImage" -> "Image", "ID3D12Resource" -> "Resource" (backend.ts). */
   get shortType() {
-    if (this.type.startsWith("Vk")) return this.type.substring(2);
-    if (this.type.startsWith("ID3D12")) return this.type.substring(6);
-    if (this.type.startsWith("IDXGI")) return this.type.substring(5);
-    return this.type;
+    return shortTypeName(this.type);
   }
   get name() {
     if (this.label) return this.label;
@@ -582,6 +580,7 @@ var VulkanObject = class {
     const a = this.args;
     if (!a) return null;
     if (this.type.startsWith("MTL")) return a;
+    if (backendForObjectType(this.type)?.builtin === false) return a;
     if (isD3D12Type(this.type)) return isObject(a.pDesc) ? a.pDesc : a;
     if (isObject(a.pCreateInfo)) return a.pCreateInfo;
     if (isObject(a.pAllocateInfo)) return a.pAllocateInfo;
@@ -722,7 +721,7 @@ var VulkanObject = class {
         return `${adapter?.summary(db) ?? ""}${level ? `  feature level ${level}` : ""}`.trim();
       }
       default:
-        return "";
+        return backendForObjectType(this.type)?.objectSummary?.(this) ?? "";
     }
   }
 };
@@ -757,7 +756,7 @@ function objectMemoryBytes(o, db) {
       return estimateImageBytes(str(d.format), num(e?.width), num(e?.height), num(e?.depth) || 1, num(d.mipLevels) || 1, num(d.arrayLayers) || 1, samples);
     }
     default:
-      return 0;
+      return backendForObjectType(o.type)?.objectBytes?.(o) ?? 0;
   }
 }
 function stageWord(flag) {
@@ -1157,6 +1156,332 @@ var D3D12_SETS = {
   },
   summarize
 };
+
+// src/renderer/d3d12/frame_resources.ts
+var SUBRESOURCE_ALL = 4294967295;
+var D3D12ResourceSource = class {
+  _db;
+  _bound = /* @__PURE__ */ new Map();
+  /** Vertex and index buffers bound per stream: stream -> "v<slot>" / "index" -> buffer id. */
+  _buffers = /* @__PURE__ */ new Map();
+  _resources = /* @__PURE__ */ new Map();
+  constructor(db) {
+    this._db = db;
+  }
+  observe(cmd, stream) {
+    if (cmd.descriptors) {
+      let byPoint = this._bound.get(stream);
+      if (!byPoint) this._bound.set(stream, byPoint = /* @__PURE__ */ new Map());
+      let sets = byPoint.get(cmd.descriptors.bindPoint);
+      if (!sets) byPoint.set(cmd.descriptors.bindPoint, sets = /* @__PURE__ */ new Map());
+      for (const s of cmd.descriptors.sets) sets.set(s.set, s);
+      return;
+    }
+    if (!cmd.args) return;
+    if (D3D12_SETS.BIND_VERTEX.has(cmd.method)) {
+      for (const vb of D3D12_SETS.vertexBuffersOf(cmd)) {
+        const id = refId(vb.buffer);
+        if (id !== null) this._streamBuffers(stream).set(`v${vb.binding}`, id);
+      }
+    } else if (D3D12_SETS.BIND_INDEX.has(cmd.method)) {
+      const id = refId(D3D12_SETS.indexBufferOf(cmd)?.buffer);
+      if (id !== null) this._streamBuffers(stream).set("index", id);
+    } else if (cmd.method === "SetGraphicsRootSignature" || cmd.method === "SetComputeRootSignature") {
+      this._bound.get(stream)?.delete(cmd.method.startsWith("SetCompute") ? "compute" : "graphics");
+    }
+  }
+  passAccesses(cmd, ordinal) {
+    const a = cmd.args;
+    if (!a) return null;
+    const accesses = [];
+    const targets = [];
+    if (cmd.method === "BeginRenderPass") {
+      const colors = Array.isArray(a.pRenderTargets) ? a.pRenderTargets.filter(isObject) : [];
+      colors.forEach((rt) => this._renderPassTarget(rt, "color", accesses, targets));
+      if (isObject(a.pDepthStencil)) this._renderPassTarget(a.pDepthStencil, "depth", accesses, targets);
+    } else {
+      const colors = Array.isArray(a.pRenderTargetDescriptors) ? a.pRenderTargetDescriptors : [];
+      for (const h of colors) this._target(h, "color attachment (load/store)", accesses, targets, false, false, "color");
+      this._target(a.pDepthStencilDescriptor, "depth attachment (load/store)", accesses, targets, false, false, "depth");
+    }
+    return { kind: "render", label: `Pass ${ordinal}${targets.length ? `: ${targets.join(", ")}` : ""}`, accesses };
+  }
+  actionAccesses(cmd, stream) {
+    const accesses = [];
+    let unresolved = 0;
+    const sets = this._bound.get(stream)?.get(D3D12_SETS.bindPointOf(cmd.method));
+    if (sets) {
+      for (const set of sets.values()) {
+        if (!set.bindings.length && set.descriptorSet) unresolved++;
+        for (const binding of set.bindings) {
+          const usage = descriptorUsage(binding.type);
+          if (!usage) continue;
+          for (const d of binding.descriptors) {
+            if (!d) continue;
+            const bufferId = refId(d.buffer);
+            if (bufferId !== null) {
+              const resource2 = this._bufferResource(bufferId);
+              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
+              continue;
+            }
+            const textureId = refId(d.resource);
+            if (textureId !== null) {
+              const sub = d3d12ViewSubresource(d.view);
+              const resource2 = this._imageResource(textureId, sub.mip, sub.slice);
+              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
+            }
+          }
+        }
+      }
+    }
+    if (!D3D12_SETS.DISPATCH.has(cmd.method) && !D3D12_SETS.TRACE.has(cmd.method)) {
+      for (const [binding, id] of this._streamBuffers(stream)) {
+        const resource2 = this._bufferResource(id);
+        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: binding === "index" ? "index buffer" : "vertex buffer" });
+      }
+    }
+    if (cmd.method === "ExecuteIndirect") {
+      for (const key of ["pArgumentBuffer", "pCountBuffer"]) {
+        const resource2 = this._bufferResource(refId(cmd.args?.[key]));
+        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "indirect buffer" });
+      }
+    }
+    return { accesses, unresolved };
+  }
+  transferAccesses(cmd) {
+    const a = cmd.args;
+    if (!a) return null;
+    const accesses = [];
+    const names = [];
+    const add = (id, mode, verb2, sub, discards = false, dropped = false) => {
+      if (id === null) return;
+      const object = this._db.getObject(id);
+      const resource2 = object && isD3D12Texture(object) ? this._imageResource(id, sub?.mip ?? 0, sub?.slice ?? 0) : this._bufferResource(id);
+      if (!resource2) return;
+      accesses.push({ resource: resource2, mode, usage: `${verb2} ${mode === "read" ? "src" : "dst"}`, discards: mode === "write" && discards, dropped });
+      if (mode === "write") names.push(resource2.label);
+    };
+    const full = () => num(a.NumRects) === 0 && !(Array.isArray(a.pRects) && a.pRects.length);
+    let verb = "";
+    switch (cmd.method) {
+      case "CopyResource":
+        verb = "copy";
+        add(refId(a.pSrcResource), "read", verb, null);
+        add(refId(a.pDstResource), "write", verb, null, true);
+        break;
+      case "CopyBufferRegion":
+      case "AtomicCopyBufferUINT":
+      case "AtomicCopyBufferUINT64":
+        verb = "copy";
+        add(refId(a.pSrcBuffer), "read", verb, null);
+        add(refId(a.pDstBuffer), "write", verb, null);
+        break;
+      case "CopyTextureRegion": {
+        verb = "copy";
+        const src = isObject(a.pSrc) ? a.pSrc : null;
+        const dst = isObject(a.pDst) ? a.pDst : null;
+        if (src) add(refId(src.pResource), "read", verb, this._subresource(refId(src.pResource), src.SubresourceIndex));
+        if (dst) add(refId(dst.pResource), "write", verb, this._subresource(refId(dst.pResource), dst.SubresourceIndex));
+        break;
+      }
+      case "ResolveSubresource":
+      case "ResolveSubresourceRegion":
+        verb = "resolve copy";
+        add(refId(a.pSrcResource), "read", verb, this._subresource(refId(a.pSrcResource), a.SrcSubresource));
+        add(refId(a.pDstResource), "write", verb, this._subresource(refId(a.pDstResource), a.DstSubresource), cmd.method === "ResolveSubresource");
+        break;
+      case "ClearRenderTargetView":
+      case "ClearDepthStencilView": {
+        verb = "clear";
+        const h = a[cmd.method === "ClearRenderTargetView" ? "RenderTargetView" : "DepthStencilView"];
+        if (isObject(h)) add(refId(h.resource), "write", verb, d3d12ViewSubresource(h.view), full());
+        break;
+      }
+      case "ClearUnorderedAccessViewUint":
+      case "ClearUnorderedAccessViewFloat": {
+        verb = "clear";
+        const h = isObject(a.ViewCPUHandle) ? a.ViewCPUHandle : null;
+        add(refId(a.pResource), "write", verb, h ? d3d12ViewSubresource(h.view) : null, full());
+        break;
+      }
+      case "DiscardResource":
+        verb = "discard";
+        add(refId(a.pResource), "write", verb, null, true, true);
+        break;
+      case "CopyTiles": {
+        verb = "copy tiles";
+        const toTiled = str(a.Flags).includes("LINEAR_BUFFER_TO_SWIZZLED_TILED_RESOURCE");
+        add(refId(toTiled ? a.pBuffer : a.pTiledResource), "read", verb, null);
+        add(refId(toTiled ? a.pTiledResource : a.pBuffer), "write", verb, null);
+        break;
+      }
+      default:
+        return null;
+    }
+    if (!accesses.length) return null;
+    const label = verb.charAt(0).toUpperCase() + verb.slice(1);
+    return { label: `${label} \u2192 ${names.join(", ") || cmd.method}`, accesses };
+  }
+  computePassLabel(ordinal) {
+    return `Compute ${ordinal}`;
+  }
+  /**
+   * The subresources a ResourceBarrier or an enhanced Barrier names. An aliasing barrier is
+   * structural (required by the API whatever the data does); a transition names the resource
+   * whose state changes, a UAV barrier the resource it orders (or every UAV, when it names none).
+   */
+  syncPoint(cmd) {
+    const a = cmd.args;
+    if (!a || cmd.method !== "ResourceBarrier" && cmd.method !== "Barrier") return null;
+    const resources = [];
+    let structural = false;
+    if (cmd.method === "ResourceBarrier") {
+      for (const b of arrayOf(a.pBarriers)) {
+        const type = str(b.Type);
+        if (type.endsWith("_ALIASING")) {
+          structural = true;
+          continue;
+        }
+        const detail = isObject(b.Transition) ? b.Transition : isObject(b.UAV) ? b.UAV : null;
+        if (isObject(b.Transition) && str(b.Transition.StateBefore) !== str(b.Transition.StateAfter)) structural = true;
+        const id = refId(detail?.pResource);
+        if (id === null) continue;
+        const sub = this._subresource(id, detail?.Subresource);
+        const object = this._db.getObject(id);
+        const resource2 = object && isD3D12Texture(object) ? this._imageResource(id, sub.mip, sub.slice) : this._bufferResource(id);
+        if (resource2) resources.push(resource2.key);
+      }
+    } else {
+      for (const g of arrayOf(a.pBarrierGroups)) {
+        for (const b of arrayOf(g.pTextureBarriers)) {
+          if (str(b.LayoutBefore) !== str(b.LayoutAfter)) structural = true;
+          const id = refId(b.pResource);
+          const range = isObject(b.Subresources) ? b.Subresources : null;
+          const resource2 = id === null ? null : this._imageResource(id, num(range?.IndexOrFirstMipLevel) === SUBRESOURCE_ALL ? 0 : num(range?.IndexOrFirstMipLevel), num(range?.FirstArraySlice));
+          if (resource2) resources.push(resource2.key);
+        }
+        for (const b of arrayOf(g.pBufferBarriers)) {
+          const resource2 = this._bufferResource(refId(b.pResource));
+          if (resource2) resources.push(resource2.key);
+        }
+      }
+    }
+    return { commandIndex: cmd.index, method: cmd.method, resources, structural };
+  }
+  // ------------------------------------------------------------------------------- targets
+  /** One BeginRenderPass target: its handle, beginning access and ending access. */
+  _renderPassTarget(rt, kind, accesses, targets) {
+    const handle = isObject(rt.cpuDescriptor) ? rt.cpuDescriptor : rt;
+    const beginning = kind === "color" ? rt.BeginningAccess : rt.DepthBeginningAccess;
+    const ending = kind === "color" ? rt.EndingAccess : rt.DepthEndingAccess;
+    const begin = accessType(beginning);
+    const end = accessType(ending);
+    const stencilBegin = kind === "depth" ? accessType(rt.StencilBeginningAccess) : "";
+    const stencilEnd = kind === "depth" ? accessType(rt.StencilEndingAccess) : "";
+    const loads = begin === "PRESERVE" || stencilBegin === "PRESERVE";
+    const stores = end === "PRESERVE" || stencilEnd === "PRESERVE";
+    const resolved = end === "RESOLVE" || stencilEnd === "RESOLVE";
+    const usage = `${kind} attachment (${loads ? "load" : begin === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : resolved ? "resolve" : "discard"})`;
+    this._target(handle, usage, accesses, targets, !loads, !stores && !resolved, kind, resolved);
+    const resolve = isObject(ending) && isObject(ending.Resolve) ? ending.Resolve : null;
+    const resolveId = resolved && resolve ? refId(resolve.pDstResource) : null;
+    if (resolveId !== null) {
+      const params = Array.isArray(resolve.pSubresourceParameters) && isObject(resolve.pSubresourceParameters[0]) ? resolve.pSubresourceParameters[0] : null;
+      const sub = this._subresource(resolveId, params?.DstSubresource);
+      const target = this._imageResource(resolveId, sub.mip, sub.slice);
+      if (target) accesses.push({ resource: target, mode: "write", usage: "resolve target (discard/store)", discards: true });
+    }
+  }
+  _target(handle, usage, accesses, targets, discards, dropped, kind, resolved = false) {
+    if (!isObject(handle)) return;
+    const id = refId(handle.resource);
+    if (id === null) return;
+    const sub = d3d12ViewSubresource(handle.view);
+    const resource2 = this._imageResource(id, sub.mip, sub.slice);
+    if (!resource2) return;
+    accesses.push({ resource: resource2, mode: "write", usage, discards, dropped, resolved });
+    if (kind === "color") targets.push(resource2.label);
+  }
+  // ------------------------------------------------------------------------------- resources
+  _streamBuffers(stream) {
+    let m = this._buffers.get(stream);
+    if (!m) this._buffers.set(stream, m = /* @__PURE__ */ new Map());
+    return m;
+  }
+  /** A subresource index as a mip and slice (D3D12 numbers them mip-fastest: index = mip + slice * mips). */
+  _subresource(id, index) {
+    const i = num(index);
+    if (id === null || i === SUBRESOURCE_ALL || i === 0) return { mip: 0, slice: 0 };
+    const shape = d3d12TextureShape(this._db.getObject(id), this._db);
+    const mips = Math.max(1, shape?.mips ?? 1);
+    return { mip: i % mips, slice: Math.floor(i / mips) % Math.max(1, shape?.layers ?? 1) };
+  }
+  _imageResource(imageId, mip, slice) {
+    if (imageId === null) return null;
+    const object = this._db.getObject(imageId);
+    if (!object) return null;
+    const key = `image:${imageId}:m${mip}:l${slice}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const shape = d3d12TextureShape(object, this._db);
+    const width = Math.max(1, (shape?.width ?? 0) >> mip);
+    const height = Math.max(1, (shape?.height ?? 0) >> mip);
+    const format = dxgiFormatShort(shape?.format);
+    const sub = [(shape?.mips ?? 1) > 1 ? `mip ${mip}` : "", (shape?.layers ?? 1) > 1 ? `slice ${slice}` : ""].filter(Boolean).join(" ");
+    const resource2 = {
+      key,
+      objectId: imageId,
+      type: "image",
+      label: sub ? `${object.name} ${sub}` : object.name,
+      detail: [shape ? `${width}x${height}` : "", format].filter(Boolean).join("  "),
+      bytes: width * height * (dxgiFormatBytes(shape?.format) || 4),
+      presented: isBackBuffer(object)
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+  _bufferResource(bufferId) {
+    if (bufferId === null) return null;
+    const object = this._db.getObject(bufferId);
+    if (!object) return null;
+    const key = `buffer:${bufferId}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const size2 = num(object.descriptor?.Width);
+    const resource2 = {
+      key,
+      objectId: bufferId,
+      type: "buffer",
+      label: object.name,
+      detail: size2 ? formatBytes2(size2) : "",
+      bytes: size2,
+      presented: false
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+};
+function descriptorUsage(type) {
+  if (type.endsWith("_UAV")) return { name: "unordered access", write: true };
+  if (type.endsWith("_SRV")) return { name: "shader resource", write: false };
+  if (type.endsWith("_CBV")) return { name: "constant buffer", write: false };
+  return null;
+}
+function accessType(v) {
+  const type = isObject(v) ? str(v.Type) : str(v);
+  return type.replace(/^D3D12_RENDER_PASS_(BEGINNING|ENDING)_ACCESS_TYPE_/, "");
+}
+function arrayOf(v) {
+  return Array.isArray(v) ? v.filter(isObject) : [];
+}
+function isBackBuffer(object) {
+  return object.cmd === "GetBuffer";
+}
+function formatBytes2(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
 
 // src/renderer/metal/command_sets.ts
 var DRAW2 = /* @__PURE__ */ new Set([
@@ -1562,6 +1887,259 @@ var METAL_SETS = {
   }
 };
 
+// src/renderer/metal/frame_resources.ts
+var PASS_KINDS = {
+  "renderCommandEncoderWithDescriptor:": "render",
+  "parallelRenderCommandEncoderWithDescriptor:": "render",
+  computeCommandEncoder: "compute",
+  "computeCommandEncoderWithDescriptor:": "compute",
+  "computeCommandEncoderWithDispatchType:": "compute",
+  blitCommandEncoder: "transfer",
+  "blitCommandEncoderWithDescriptor:": "transfer",
+  resourceStateCommandEncoder: "transfer",
+  "resourceStateCommandEncoderWithDescriptor:": "transfer",
+  accelerationStructureCommandEncoder: "compute",
+  "accelerationStructureCommandEncoderWithDescriptor:": "compute"
+};
+var BLITS = {
+  "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:": { verb: "copy", read: "sourceTexture", write: "destinationTexture" },
+  "copyFromTexture:toTexture:": { verb: "copy", read: "sourceTexture", write: "destinationTexture", full: true },
+  "copyFromTexture:sourceSlice:sourceLevel:toTexture:destinationSlice:destinationLevel:sliceCount:levelCount:": { verb: "copy", read: "sourceTexture", write: "destinationTexture", full: true },
+  "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:": { verb: "copy", read: "sourceTexture", write: "destinationBuffer" },
+  "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:options:": { verb: "copy", read: "sourceTexture", write: "destinationBuffer" },
+  "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:": { verb: "copy", read: "sourceBuffer", write: "destinationTexture" },
+  "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:options:": { verb: "copy", read: "sourceBuffer", write: "destinationTexture" },
+  "copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:": { verb: "copy", read: "sourceBuffer", write: "destinationBuffer" },
+  "generateMipmapsForTexture:": { verb: "generate mipmaps", read: "texture", write: "texture", full: true },
+  "fillBuffer:range:value:": { verb: "fill", write: "buffer", full: true }
+};
+var TEXTURE_BINDS = {
+  "setVertexTexture:atIndex:": "vertex",
+  "setFragmentTexture:atIndex:": "fragment",
+  "setTexture:atIndex:": "compute",
+  "setObjectTexture:atIndex:": "object",
+  "setMeshTexture:atIndex:": "mesh",
+  "setTileTexture:atIndex:": "tile"
+};
+var TEXTURE_BINDS_MANY = {
+  "setVertexTextures:withRange:": "vertex",
+  "setFragmentTextures:withRange:": "fragment",
+  "setTextures:withRange:": "compute",
+  "setObjectTextures:withRange:": "object",
+  "setMeshTextures:withRange:": "mesh",
+  "setTileTextures:withRange:": "tile"
+};
+var ARGUMENT_BUFFER_METHODS = /* @__PURE__ */ new Set([
+  "useResource:usage:",
+  "useResource:usage:stages:",
+  "useResources:count:usage:",
+  "useResources:count:usage:stages:",
+  "useHeap:",
+  "useHeaps:count:",
+  "useHeap:stages:",
+  "useHeaps:count:stages:"
+]);
+var MetalResourceSource = class {
+  _db;
+  /** Bound state per encoder; a command's `encoder` says which one it belongs to. */
+  _encoders = /* @__PURE__ */ new Map();
+  _resources = /* @__PURE__ */ new Map();
+  constructor(db) {
+    this._db = db;
+  }
+  observe(cmd, _stream) {
+    const a = cmd.args;
+    if (!a) return;
+    const state = this._state(cmd);
+    const single = TEXTURE_BINDS[cmd.method];
+    if (single) {
+      const id = refId(a.texture);
+      if (id !== null) state.textures.set(`${single}:${num(a.index)}`, id);
+      return;
+    }
+    const many = TEXTURE_BINDS_MANY[cmd.method];
+    if (many && Array.isArray(a.textures)) {
+      const first = isObject(a.range) ? num(a.range.location) : 0;
+      a.textures.forEach((t, i) => {
+        const id = refId(t);
+        if (id !== null) state.textures.set(`${many}:${first + i}`, id);
+      });
+      return;
+    }
+    if (ARGUMENT_BUFFER_METHODS.has(cmd.method)) {
+      state.opaque++;
+      return;
+    }
+    if (METAL_SETS.BIND_STAGE_BUFFER?.has(cmd.method) && METAL_SETS.stageBuffersOf) {
+      for (const b of METAL_SETS.stageBuffersOf(cmd)) {
+        const id = refId(b.buffer);
+        if (id !== null) state.buffers.set(`${b.stage}:${b.index}`, id);
+      }
+    }
+  }
+  passAccesses(cmd, ordinal) {
+    const kind = PASS_KINDS[cmd.method] ?? "render";
+    const a = cmd.args;
+    const accesses = [];
+    const targets = [];
+    if (kind === "render" && a) {
+      const colors = Array.isArray(a.colorAttachments) ? a.colorAttachments.filter(isObject) : [];
+      for (const c2 of colors) this._attachment(c2, "color", accesses, targets);
+      for (const key of ["depthAttachment", "stencilAttachment"]) {
+        const d = a[key];
+        if (isObject(d)) this._attachment(d, key === "depthAttachment" ? "depth" : "stencil", accesses, targets);
+      }
+    }
+    const encoder2 = this._db.getObject(cmd.encoder?.__id ?? null);
+    const name = encoder2?.label || targets.join(", ");
+    const what = kind === "render" ? "Pass" : kind === "compute" ? "Compute" : "Blit";
+    return { kind, label: `${what} ${ordinal}${name ? `: ${name}` : ""}`, accesses };
+  }
+  actionAccesses(cmd, _stream) {
+    const state = this._state(cmd);
+    const accesses = [];
+    for (const [key, id] of state.textures) {
+      const resource2 = this._textureResource(id, 0, 0);
+      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: `${key.split(":")[0]} texture` });
+    }
+    for (const [key, id] of state.buffers) {
+      const resource2 = this._bufferResource(id);
+      const stage = key.split(":")[0];
+      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: `${stage} buffer` });
+    }
+    const index = METAL_SETS.indexBufferOf(cmd);
+    if (index) {
+      const resource2 = this._bufferResource(refId(index.buffer));
+      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "index buffer" });
+    }
+    for (const key of ["indirectBuffer", "patchIndexBuffer", "controlPointIndexBuffer"]) {
+      const resource2 = this._bufferResource(refId(cmd.args?.[key]));
+      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "indirect buffer" });
+    }
+    return { accesses, unresolved: state.opaque };
+  }
+  transferAccesses(cmd) {
+    const spec = BLITS[cmd.method];
+    const a = cmd.args;
+    if (!spec || !a) return null;
+    const accesses = [];
+    const names = [];
+    const add = (field2, mode) => {
+      const id = refId(a[field2]);
+      if (id === null) return;
+      const isTexture = field2.toLowerCase().includes("texture");
+      const level = num(a[mode === "read" ? "sourceLevel" : "destinationLevel"]);
+      const slice = num(a[mode === "read" ? "sourceSlice" : "destinationSlice"]);
+      const resource2 = isTexture ? this._textureResource(id, level, slice) : this._bufferResource(id);
+      if (!resource2) return;
+      accesses.push({
+        resource: resource2,
+        mode,
+        usage: `${spec.verb} ${mode === "read" ? "src" : "dst"}`,
+        discards: mode === "write" && !!spec.full
+      });
+      if (mode === "write") names.push(resource2.label);
+    };
+    if (spec.read) add(spec.read, "read");
+    if (spec.write) add(spec.write, "write");
+    const verb = spec.verb.charAt(0).toUpperCase() + spec.verb.slice(1);
+    return { label: `${verb} \u2192 ${names.join(", ") || cmd.method}`, accesses };
+  }
+  computePassLabel(ordinal) {
+    return `Compute ${ordinal}`;
+  }
+  // ------------------------------------------------------------------------------- resources
+  _state(cmd) {
+    const id = cmd.encoder?.__id ?? 0;
+    let state = this._encoders.get(id);
+    if (!state) this._encoders.set(id, state = { textures: /* @__PURE__ */ new Map(), buffers: /* @__PURE__ */ new Map(), opaque: 0 });
+    return state;
+  }
+  _attachment(att, kind, accesses, targets) {
+    const id = refId(att.texture);
+    if (id === null) return;
+    const resource2 = this._textureResource(id, num(att.level), num(att.slice));
+    if (!resource2) return;
+    const load = str(att.loadAction).replace("MTLLoadAction", "");
+    const store = str(att.storeAction).replace("MTLStoreAction", "");
+    const stores = store === "Store" || store === "StoreAndMultisampleResolve" || store === "CustomSampleDepthStore";
+    accesses.push({
+      resource: resource2,
+      mode: "write",
+      usage: `${kind} attachment (${load.toLowerCase() || "unknown"}/${store.toLowerCase() || "unknown"})`,
+      discards: load !== "Load",
+      dropped: !stores && store !== "MultisampleResolve",
+      resolved: store.includes("MultisampleResolve")
+    });
+    if (kind === "color") targets.push(resource2.label);
+    const resolveId = refId(att.resolveTexture);
+    if (resolveId !== null && store.includes("MultisampleResolve")) {
+      const target = this._textureResource(resolveId, num(att.resolveLevel), num(att.resolveSlice));
+      if (target) accesses.push({ resource: target, mode: "write", usage: "resolve target (discard/store)", discards: true });
+    }
+  }
+  _textureResource(textureId, level, slice) {
+    if (textureId === null) return null;
+    const object = this._db.getObject(textureId);
+    if (!object) return null;
+    const key = `image:${textureId}:m${level}:l${slice}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const d = object.args ?? {};
+    const mips = num(d.mipmapLevelCount) || 1;
+    const layers = num(d.arrayLength) || 1;
+    const width = Math.max(1, num(d.width) >> level);
+    const height = Math.max(1, num(d.height) >> level);
+    const format = str(d.pixelFormat).replace("MTLPixelFormat", "");
+    const sub = [mips > 1 ? `level ${level}` : "", layers > 1 ? `slice ${slice}` : ""].filter(Boolean).join(" ");
+    const resource2 = {
+      key,
+      objectId: textureId,
+      type: "image",
+      label: sub ? `${object.name} ${sub}` : object.name,
+      detail: [width && height ? `${width}x${height}` : "", format].filter(Boolean).join("  "),
+      bytes: width * height * bytesPerPixel(format),
+      presented: isDrawableTexture(object)
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+  _bufferResource(bufferId) {
+    if (bufferId === null) return null;
+    const object = this._db.getObject(bufferId);
+    if (!object) return null;
+    const key = `buffer:${bufferId}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const size2 = num(object.args?.length);
+    const resource2 = {
+      key,
+      objectId: bufferId,
+      type: "buffer",
+      label: object.name,
+      detail: size2 ? formatBytes3(size2) : "",
+      bytes: size2,
+      presented: false
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+};
+function isDrawableTexture(object) {
+  return object.cmd.includes("nextDrawable");
+}
+function bytesPerPixel(format) {
+  const bits = [...format.matchAll(/[RGBADS](\d+)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
+  if (bits) return bits / 8;
+  if (/BC|ETC|ASTC|EAC|PVRTC/.test(format)) return 1;
+  return 4;
+}
+function formatBytes3(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
 // src/renderer/vulkan/command_sets.ts
 var DRAW_METHODS = /* @__PURE__ */ new Set([
   "vkCmdDraw",
@@ -1713,11 +2291,588 @@ var VULKAN_SETS = {
   }
 };
 
+// src/renderer/vulkan/pass_info.ts
+function loadStoreOp(v) {
+  return str(v).replace("VK_ATTACHMENT_LOAD_OP_", "").replace("VK_ATTACHMENT_STORE_OP_", "");
+}
+function sampleCount(v) {
+  const m = /VK_SAMPLE_COUNT_(\d+)_BIT/.exec(str(v));
+  return m ? Number(m[1]) : 1;
+}
+function pNextChain(o) {
+  const chain = o?.pNext;
+  return Array.isArray(chain) ? chain.filter(isObject) : [];
+}
+function imageOfView(db, viewId) {
+  const view = db.getObject(viewId);
+  return view ? refId(view.descriptor?.image) : null;
+}
+function viewSubresource(db, viewId) {
+  const view = db.getObject(viewId)?.descriptor ?? null;
+  const range = isObject(view?.subresourceRange) ? view.subresourceRange : null;
+  const layers = num(range?.layerCount);
+  return {
+    mipLevel: num(range?.baseMipLevel),
+    baseLayer: num(range?.baseArrayLayer),
+    // VK_REMAINING_ARRAY_LAYERS reads back as the raw 0xffffffff; report it as "all remaining" (0).
+    layerCount: layers === 4294967295 ? 0 : layers
+  };
+}
+function decodePass(cmd, db) {
+  const a = cmd.args;
+  if (!a) return null;
+  const pass = { width: 0, height: 0, viewMask: 0, attachments: [] };
+  if (cmd.method.startsWith("vkCmdBeginRendering")) {
+    const info = isObject(a.pRenderingInfo) ? a.pRenderingInfo : null;
+    if (!info) return pass;
+    const extent2 = isObject(info.renderArea) && isObject(info.renderArea.extent) ? info.renderArea.extent : null;
+    pass.width = num(extent2?.width);
+    pass.height = num(extent2?.height);
+    pass.viewMask = num(info.viewMask);
+    const colors = Array.isArray(info.pColorAttachments) ? info.pColorAttachments.filter(isObject) : [];
+    colors.forEach((c2, i) => pass.attachments.push(dynamicAttachment(db, c2, "color", i)));
+    for (const key of ["pDepthAttachment", "pStencilAttachment"]) {
+      const d = info[key];
+      if (isObject(d) && refId(d.imageView) !== null) pass.attachments.push(dynamicAttachment(db, d, "depth", colors.length));
+    }
+    return pass;
+  }
+  const begin = isObject(a.pRenderPassBegin) ? a.pRenderPassBegin : null;
+  if (!begin) return pass;
+  const rp = db.getObject(refId(begin.renderPass))?.descriptor ?? null;
+  const fb = db.getObject(refId(begin.framebuffer))?.descriptor ?? null;
+  const extent = isObject(begin.renderArea) && isObject(begin.renderArea.extent) ? begin.renderArea.extent : null;
+  pass.width = num(extent?.width) || num(fb?.width);
+  pass.height = num(extent?.height) || num(fb?.height);
+  if (!rp) return pass;
+  const subpasses = Array.isArray(rp.pSubpasses) ? rp.pSubpasses.filter(isObject) : [];
+  const mv = pNextChain(rp).find((s) => str(s.sType) === "VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO");
+  const masks = mv && Array.isArray(mv.pViewMasks) ? mv.pViewMasks.map(num) : subpasses.map((s) => num(s.viewMask));
+  pass.viewMask = masks.reduce((m, v) => m | v, 0);
+  let views = Array.isArray(fb?.pAttachments) ? fb.pAttachments : [];
+  const imageless = pNextChain(begin).find((s) => str(s.sType) === "VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO");
+  if (imageless && Array.isArray(imageless.pAttachments)) views = imageless.pAttachments;
+  const descs = Array.isArray(rp.pAttachments) ? rp.pAttachments : [];
+  const kinds = /* @__PURE__ */ new Map();
+  const resolvedColors = /* @__PURE__ */ new Set();
+  for (const s of subpasses) {
+    const refs = (key) => (Array.isArray(s[key]) ? s[key] : []).filter(isObject).map((r) => num(r.attachment)).filter((i) => i < 4294967295);
+    const colors = refs("pColorAttachments");
+    const resolves = refs("pResolveAttachments");
+    colors.forEach((c2, i) => {
+      kinds.set(c2, "color");
+      if (resolves[i] !== void 0) resolvedColors.add(c2);
+    });
+    for (const r of resolves) kinds.set(r, "resolve");
+    const ds = isObject(s.pDepthStencilAttachment) ? num(s.pDepthStencilAttachment.attachment) : 4294967295;
+    if (ds < 4294967295) kinds.set(ds, "depth");
+  }
+  descs.forEach((d, i) => {
+    if (!isObject(d)) return;
+    const kind = kinds.get(i);
+    if (!kind) return;
+    const viewId = refId(views[i]);
+    pass.attachments.push({
+      kind,
+      viewId,
+      imageId: imageOfView(db, viewId),
+      ...viewSubresource(db, viewId),
+      format: str(d.format),
+      samples: sampleCount(d.samples),
+      loadOp: loadStoreOp(d.loadOp),
+      storeOp: loadStoreOp(d.storeOp),
+      stencilLoadOp: loadStoreOp(d.stencilLoadOp),
+      stencilStoreOp: loadStoreOp(d.stencilStoreOp),
+      usage: "",
+      resolved: resolvedColors.has(i),
+      resolveViewId: null,
+      index: i
+    });
+  });
+  return pass;
+}
+function dynamicAttachment(db, att, kind, index) {
+  const viewId = refId(att.imageView);
+  const imageId = imageOfView(db, viewId);
+  const view = db.getObject(viewId)?.descriptor ?? null;
+  const image = db.getObject(imageId)?.descriptor ?? null;
+  return {
+    kind,
+    viewId,
+    imageId,
+    ...viewSubresource(db, viewId),
+    format: str(view?.format ?? image?.format),
+    samples: sampleCount(image?.samples),
+    loadOp: loadStoreOp(att.loadOp),
+    storeOp: loadStoreOp(att.storeOp),
+    stencilLoadOp: loadStoreOp(att.loadOp),
+    stencilStoreOp: loadStoreOp(att.storeOp),
+    usage: "",
+    resolved: refId(att.resolveImageView) !== null,
+    resolveViewId: refId(att.resolveImageView),
+    index
+  };
+}
+
+// src/renderer/vulkan/frame_resources.ts
+var TRANSFERS = {
+  vkCmdCopyBuffer: { read: ["srcBuffer"], write: ["dstBuffer"], verb: "copy" },
+  vkCmdCopyBuffer2: { read: ["srcBuffer"], write: ["dstBuffer"], nested: "pCopyBufferInfo", verb: "copy" },
+  vkCmdCopyBuffer2KHR: { read: ["srcBuffer"], write: ["dstBuffer"], nested: "pCopyBufferInfo", verb: "copy" },
+  vkCmdCopyImage: { read: ["srcImage"], write: ["dstImage"], verb: "copy" },
+  vkCmdCopyImage2: { read: ["srcImage"], write: ["dstImage"], nested: "pCopyImageInfo", verb: "copy" },
+  vkCmdCopyImage2KHR: { read: ["srcImage"], write: ["dstImage"], nested: "pCopyImageInfo", verb: "copy" },
+  vkCmdCopyBufferToImage: { read: ["srcBuffer"], write: ["dstImage"], verb: "copy" },
+  vkCmdCopyBufferToImage2: { read: ["srcBuffer"], write: ["dstImage"], nested: "pCopyBufferToImageInfo", verb: "copy" },
+  vkCmdCopyBufferToImage2KHR: { read: ["srcBuffer"], write: ["dstImage"], nested: "pCopyBufferToImageInfo", verb: "copy" },
+  vkCmdCopyImageToBuffer: { read: ["srcImage"], write: ["dstBuffer"], verb: "copy" },
+  vkCmdCopyImageToBuffer2: { read: ["srcImage"], write: ["dstBuffer"], nested: "pCopyImageToBufferInfo", verb: "copy" },
+  vkCmdCopyImageToBuffer2KHR: { read: ["srcImage"], write: ["dstBuffer"], nested: "pCopyImageToBufferInfo", verb: "copy" },
+  vkCmdBlitImage: { read: ["srcImage"], write: ["dstImage"], verb: "blit" },
+  vkCmdBlitImage2: { read: ["srcImage"], write: ["dstImage"], nested: "pBlitImageInfo", verb: "blit" },
+  vkCmdBlitImage2KHR: { read: ["srcImage"], write: ["dstImage"], nested: "pBlitImageInfo", verb: "blit" },
+  vkCmdResolveImage: { read: ["srcImage"], write: ["dstImage"], verb: "resolve copy" },
+  vkCmdResolveImage2: { read: ["srcImage"], write: ["dstImage"], nested: "pResolveImageInfo", verb: "resolve copy" },
+  vkCmdResolveImage2KHR: { read: ["srcImage"], write: ["dstImage"], nested: "pResolveImageInfo", verb: "resolve copy" },
+  vkCmdUpdateBuffer: { read: [], write: ["dstBuffer"], verb: "update" },
+  vkCmdFillBuffer: { read: [], write: ["dstBuffer"], verb: "fill" },
+  vkCmdClearColorImage: { read: [], write: ["image"], verb: "clear" },
+  vkCmdClearDepthStencilImage: { read: [], write: ["image"], verb: "clear" },
+  vkCmdCopyQueryPoolResults: { read: [], write: ["dstBuffer"], verb: "query results" }
+};
+var BARRIER_METHODS = /* @__PURE__ */ new Set([
+  "vkCmdPipelineBarrier",
+  "vkCmdPipelineBarrier2",
+  "vkCmdPipelineBarrier2KHR",
+  "vkCmdWaitEvents",
+  "vkCmdWaitEvents2",
+  "vkCmdWaitEvents2KHR"
+]);
+var FULL_WRITE_VERBS = /* @__PURE__ */ new Set(["clear", "fill", "update"]);
+var DESCRIPTOR_BUFFER_METHODS = /* @__PURE__ */ new Set([
+  "vkCmdSetDescriptorBufferOffsetsEXT",
+  "vkCmdSetDescriptorBufferOffsets2EXT",
+  "vkCmdBindDescriptorBufferEmbeddedSamplersEXT"
+]);
+var VulkanResourceSource = class {
+  _db;
+  _bound = /* @__PURE__ */ new Map();
+  /** Vertex and index buffers bound per stream: stream -> "v<binding>" / "index" -> buffer id. */
+  _buffers = /* @__PURE__ */ new Map();
+  /** Streams that bound a descriptor buffer, whose contents the capture cannot see. */
+  _descriptorBuffers = /* @__PURE__ */ new Set();
+  _resources = /* @__PURE__ */ new Map();
+  constructor(db) {
+    this._db = db;
+  }
+  observe(cmd, stream) {
+    if (cmd.descriptors) {
+      let byPoint = this._bound.get(stream);
+      if (!byPoint) this._bound.set(stream, byPoint = /* @__PURE__ */ new Map());
+      let sets = byPoint.get(cmd.descriptors.bindPoint);
+      if (!sets) byPoint.set(cmd.descriptors.bindPoint, sets = /* @__PURE__ */ new Map());
+      for (const s of cmd.descriptors.sets) sets.set(s.set, s);
+      if (DESCRIPTOR_BUFFER_METHODS.has(cmd.method) && cmd.descriptors.sets.some((s) => !s.bindings.length)) {
+        this._descriptorBuffers.add(stream);
+      }
+      return;
+    }
+    const a = cmd.args;
+    if (!a) return;
+    if (DESCRIPTOR_BUFFER_METHODS.has(cmd.method)) {
+      this._descriptorBuffers.add(stream);
+    } else if (BIND_VERTEX_METHODS.has(cmd.method) && Array.isArray(a.pBuffers)) {
+      const first = num(a.firstBinding);
+      a.pBuffers.forEach((b, i) => {
+        const id = refId(b);
+        if (id !== null) this._streamBuffers(stream).set(`v${first + i}`, id);
+      });
+    } else if (BIND_INDEX_METHODS.has(cmd.method)) {
+      const id = refId(a.buffer);
+      if (id !== null) this._streamBuffers(stream).set("index", id);
+    }
+  }
+  passAccesses(cmd, ordinal) {
+    const decoded = decodePass(cmd, this._db);
+    if (!decoded) return null;
+    const accesses = [];
+    for (const att of decoded.attachments) {
+      const resource2 = this._imageResource(att.imageId, att.mipLevel, att.baseLayer);
+      if (!resource2) continue;
+      const loads = att.loadOp === "LOAD" || att.kind === "depth" && att.stencilLoadOp === "LOAD";
+      const stores = att.storeOp === "STORE" || att.kind === "depth" && att.stencilStoreOp === "STORE";
+      const kind = att.kind === "resolve" ? "resolve target" : `${att.kind} attachment`;
+      accesses.push({
+        resource: resource2,
+        mode: "write",
+        usage: `${kind} (${loads ? "load" : att.loadOp === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : "discard"})`,
+        discards: !loads,
+        dropped: !stores,
+        resolved: att.resolved
+      });
+      const resolve = this._imageResource(imageOfView(this._db, att.resolveViewId), 0, 0);
+      if (resolve) accesses.push({ resource: resolve, mode: "write", usage: "resolve target (discard/store)", discards: true });
+    }
+    return { kind: "render", label: this._passLabel(cmd, ordinal), accesses };
+  }
+  actionAccesses(cmd, stream) {
+    const accesses = [];
+    let unresolved = 0;
+    const sets = this._bound.get(stream)?.get(bindPointOf2(cmd.method));
+    if (sets) {
+      for (const set of sets.values()) {
+        for (const binding of set.bindings) {
+          const usage = descriptorUsage2(binding.type);
+          if (!usage) continue;
+          for (const d of binding.descriptors) {
+            if (!d) continue;
+            const bufferId = refId(d.buffer);
+            if (bufferId !== null) {
+              const resource2 = this._bufferResource(bufferId);
+              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
+              continue;
+            }
+            const viewId = refId(d.imageView);
+            if (viewId !== null) {
+              const resource2 = this._viewResource(viewId);
+              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
+              continue;
+            }
+            if (!d.immutable && !d.sampler && !d.bufferView) unresolved++;
+          }
+        }
+      }
+    }
+    if (this._descriptorBuffers.has(stream)) unresolved++;
+    if (!DISPATCH_METHODS.has(cmd.method) && !TRACE_METHODS.has(cmd.method)) {
+      for (const [binding, id] of this._streamBuffers(stream)) {
+        const resource2 = this._bufferResource(id);
+        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: binding === "index" ? "index buffer" : "vertex buffer" });
+      }
+    }
+    if (INDIRECT_METHODS.has(cmd.method) || cmd.method.includes("Indirect")) {
+      for (const key of ["buffer", "countBuffer"]) {
+        const resource2 = this._bufferResource(refId(cmd.args?.[key]));
+        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "indirect buffer" });
+      }
+    }
+    return { accesses, unresolved };
+  }
+  transferAccesses(cmd) {
+    const spec = TRANSFERS[cmd.method];
+    if (!spec || !cmd.args) return null;
+    const nested = spec.nested ? cmd.args[spec.nested] : null;
+    const a = isObject(nested) ? nested : cmd.args;
+    const accesses = [];
+    const names = [];
+    const add = (field2, mode) => {
+      const value = a[field2];
+      const id = refId(value);
+      if (id === null) return;
+      const isImage = field2.toLowerCase().includes("image");
+      const sub = isImage ? copySubresource(a, mode) : null;
+      const resource2 = sub ? this._imageResource(id, sub.mip, sub.layer) : this._bufferResource(id);
+      if (!resource2) return;
+      accesses.push({
+        resource: resource2,
+        mode,
+        usage: `${spec.verb} ${mode === "read" ? "src" : "dst"}`,
+        // A clear, fill or update replaces everything it touches; a copy region may not, so it is
+        // reported as preserving what was there and depending on the previous writer.
+        discards: mode === "write" && FULL_WRITE_VERBS.has(spec.verb)
+      });
+      if (mode === "write") names.push(resource2.label);
+    };
+    for (const f of spec.read) add(f, "read");
+    for (const f of spec.write) add(f, "write");
+    const verb = spec.verb.charAt(0).toUpperCase() + spec.verb.slice(1);
+    return { label: `${verb} \u2192 ${names.join(", ") || cmd.method}`, accesses };
+  }
+  computePassLabel(ordinal) {
+    return `Compute ${ordinal}`;
+  }
+  /**
+   * The subresources a pipeline barrier or event wait names. A barrier that also transitions an
+   * image layout or moves a resource between queue families is marked structural: those are
+   * required by the API whatever the frame's data dependencies are, so no rule may question them.
+   */
+  syncPoint(cmd) {
+    if (!BARRIER_METHODS.has(cmd.method) || !cmd.args) return null;
+    const a = cmd.args;
+    const groups = isObject(a.pDependencyInfo) ? [a.pDependencyInfo] : [a];
+    const resources = [];
+    let structural = false;
+    for (const g of groups) {
+      for (const b of arrayOf2(g.pImageMemoryBarriers)) {
+        if (str(b.oldLayout) !== str(b.newLayout)) structural = true;
+        if (queueTransfer(b)) structural = true;
+        const range = isObject(b.subresourceRange) ? b.subresourceRange : null;
+        const resource2 = this._imageResource(refId(b.image), num(range?.baseMipLevel), num(range?.baseArrayLayer));
+        if (resource2) resources.push(resource2.key);
+      }
+      for (const b of arrayOf2(g.pBufferMemoryBarriers)) {
+        if (queueTransfer(b)) structural = true;
+        const resource2 = this._bufferResource(refId(b.buffer));
+        if (resource2) resources.push(resource2.key);
+      }
+    }
+    return { commandIndex: cmd.index, method: cmd.method, resources, structural };
+  }
+  _streamBuffers(stream) {
+    let m = this._buffers.get(stream);
+    if (!m) this._buffers.set(stream, m = /* @__PURE__ */ new Map());
+    return m;
+  }
+  // ------------------------------------------------------------------------------- resources
+  _viewResource(viewId) {
+    const view = this._db.getObject(viewId)?.descriptor ?? null;
+    const range = isObject(view?.subresourceRange) ? view.subresourceRange : null;
+    return this._imageResource(imageOfView(this._db, viewId), num(range?.baseMipLevel), num(range?.baseArrayLayer));
+  }
+  _imageResource(imageId, mip, layer) {
+    if (imageId === null) return null;
+    const object = this._db.getObject(imageId);
+    if (!object) return null;
+    const key = `image:${imageId}:m${mip}:l${layer}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const swapchain = isSwapchainImage(object) ? this._db.getObject(object.parentId)?.descriptor ?? null : null;
+    const d = object.descriptor;
+    const extent = isObject(d?.extent) ? d.extent : isObject(swapchain?.imageExtent) ? swapchain.imageExtent : null;
+    const mips = num(d?.mipLevels) || 1;
+    const layers = num(d?.arrayLayers) || num(swapchain?.imageArrayLayers) || 1;
+    const width = Math.max(1, num(extent?.width) >> mip);
+    const height = Math.max(1, num(extent?.height) >> mip);
+    const format = str(d?.format ?? swapchain?.imageFormat).replace("VK_FORMAT_", "");
+    const sub = [mips > 1 ? `mip ${mip}` : "", layers > 1 ? `layer ${layer}` : ""].filter(Boolean).join(" ");
+    const resource2 = {
+      key,
+      objectId: imageId,
+      type: "image",
+      label: sub ? `${object.name} ${sub}` : object.name,
+      detail: [width && height ? `${width}x${height}` : "", format].filter(Boolean).join("  "),
+      bytes: width * height * bytesPerPixel2(format),
+      presented: isSwapchainImage(object)
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+  _bufferResource(bufferId) {
+    if (bufferId === null) return null;
+    const object = this._db.getObject(bufferId);
+    if (!object) return null;
+    const key = `buffer:${bufferId}`;
+    const cached = this._resources.get(key);
+    if (cached) return cached;
+    const size2 = num(object.descriptor?.size);
+    const resource2 = {
+      key,
+      objectId: bufferId,
+      type: "buffer",
+      label: object.name,
+      detail: size2 ? formatBytes4(size2) : "",
+      bytes: size2,
+      presented: false
+    };
+    this._resources.set(key, resource2);
+    return resource2;
+  }
+  _passLabel(cmd, ordinal) {
+    const a = cmd.args;
+    const begin = a && isObject(a.pRenderPassBegin) ? a.pRenderPassBegin : null;
+    if (begin) {
+      const rp = this._db.getObject(refId(begin.renderPass));
+      const fb = this._db.getObject(refId(begin.framebuffer));
+      return `Pass ${ordinal}: ${rp?.label || rp?.name || "?"}${fb?.label ? ` (${fb.label})` : ""}`;
+    }
+    const info = a && isObject(a.pRenderingInfo) ? a.pRenderingInfo : null;
+    const colors = info && Array.isArray(info.pColorAttachments) ? info.pColorAttachments.length : 0;
+    return `Pass ${ordinal}: rendering, ${colors} color attachment${colors === 1 ? "" : "s"}`;
+  }
+};
+function descriptorUsage2(type) {
+  if (type.includes("STORAGE_IMAGE")) return { name: "storage image", write: true };
+  if (type.includes("STORAGE_BUFFER")) return { name: "storage buffer", write: true };
+  if (type.includes("STORAGE_TEXEL_BUFFER")) return { name: "storage texel buffer", write: true };
+  if (type.includes("SAMPLED_IMAGE") || type.includes("COMBINED_IMAGE_SAMPLER")) return { name: "sampled", write: false };
+  if (type.includes("INPUT_ATTACHMENT")) return { name: "input attachment", write: false };
+  if (type.includes("UNIFORM_BUFFER") || type.includes("UNIFORM_TEXEL_BUFFER")) return { name: "uniform buffer", write: false };
+  return null;
+}
+function copySubresource(a, mode) {
+  const regions = firstArray(a, ["pRegions", "pImageBlits", "pBlits", "pImageCopies", "pBufferImageCopies", "pImageResolves"]);
+  const region = regions && isObject(regions[0]) ? regions[0] : null;
+  if (region) {
+    const sub = region[mode === "read" ? "srcSubresource" : "dstSubresource"] ?? region.imageSubresource;
+    if (isObject(sub)) return { mip: num(sub.mipLevel), layer: num(sub.baseArrayLayer) };
+  }
+  const ranges = firstArray(a, ["pRanges"]);
+  const range = ranges && isObject(ranges[0]) ? ranges[0] : null;
+  if (range) return { mip: num(range.baseMipLevel), layer: num(range.baseArrayLayer) };
+  return { mip: 0, layer: 0 };
+}
+function arrayOf2(v) {
+  return Array.isArray(v) ? v.filter(isObject) : [];
+}
+function queueTransfer(b) {
+  const src = str(b.srcQueueFamilyIndex);
+  const dst = str(b.dstQueueFamilyIndex);
+  return src !== dst && src !== "" && dst !== "";
+}
+function firstArray(a, keys) {
+  for (const key of keys) {
+    const v = a[key];
+    if (Array.isArray(v) && v.length) return v;
+  }
+  return null;
+}
+function isSwapchainImage(object) {
+  return object.cmd === "vkGetSwapchainImagesKHR";
+}
+function bytesPerPixel2(format) {
+  const bits = [...format.matchAll(/[RGBADSEX](\d+)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
+  if (bits) return bits / 8;
+  if (format.includes("BC") || format.includes("ETC") || format.includes("ASTC")) return 1;
+  return 4;
+}
+function formatBytes4(bytes) {
+  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+  return `${bytes} B`;
+}
+
+// src/renderer/backend.ts
+var NO_REPLAY = { draws: false, shaders: false, hwCounters: false, overdraw: false, pixelHistory: false, drawOverlay: false, exportCpp: false, edits: false };
+var NOT_LIVE = { overdraw: false, pixelHistory: false, drawOverlay: false };
+var NONE = /* @__PURE__ */ new Set();
+var EMPTY_SETS = {
+  DRAW: NONE,
+  DISPATCH: NONE,
+  TRACE: NONE,
+  PASS_BEGIN: NONE,
+  PASS_END: NONE,
+  LABEL_BEGIN: NONE,
+  LABEL_END: NONE,
+  SUBMIT: NONE,
+  BIND_DESCRIPTOR: NONE,
+  BIND_VERTEX: NONE,
+  BIND_INDEX: NONE,
+  PUSH_CONSTANT: NONE,
+  INDIRECT: NONE,
+  COMPUTE_PASS_END: NONE,
+  RECORD_BEGIN: NONE,
+  RECORD_END: NONE,
+  BIND_PIPELINE: NONE,
+  bindPointOf: () => "graphics",
+  pipelineBindPointOf: () => "graphics",
+  graphicsBindPoint: "graphics",
+  vertexBuffersOf: () => [],
+  indexBufferOf: () => null
+};
+var BUILTIN = [
+  {
+    id: "vulkan",
+    displayName: "Vulkan",
+    objectTypePrefixes: ["Vk"],
+    builtin: true,
+    get sets() {
+      return VULKAN_SETS;
+    },
+    // vkinsp_replay serves every analysis (docs/REPLAY.md).
+    replay: { draws: true, shaders: true, hwCounters: true, overdraw: true, pixelHistory: true, drawOverlay: true, exportCpp: true, edits: true },
+    submitCall: "vkQueueSubmit",
+    live: NOT_LIVE,
+    resourceSource: (db) => new VulkanResourceSource(db)
+  },
+  {
+    id: "d3d12",
+    displayName: "Direct3D 12",
+    objectTypePrefixes: ["ID3D12", "IDXGI"],
+    builtin: true,
+    get sets() {
+      return D3D12_SETS;
+    },
+    // dxinsp_replay measures draws, shaders and counters; the library itself measures the rest.
+    replay: { ...NO_REPLAY, draws: true, shaders: true, hwCounters: true, exportCpp: true, edits: true },
+    submitCall: "ExecuteCommandLists",
+    live: { overdraw: true, pixelHistory: true, drawOverlay: true },
+    resourceSource: (db) => new D3D12ResourceSource(db)
+  },
+  {
+    id: "metal",
+    displayName: "Metal",
+    objectTypePrefixes: ["MTL", "CA"],
+    builtin: true,
+    get sets() {
+      return METAL_SETS;
+    },
+    // mtlinsp_replay compares and exports; it serves no analyses.
+    replay: { ...NO_REPLAY, exportCpp: true },
+    submitCall: "commit",
+    live: { overdraw: true, pixelHistory: true, drawOverlay: true },
+    resourceSource: (db) => new MetalResourceSource(db)
+  }
+];
+var registered = new Map(BUILTIN.map((b) => [b.id, b]));
+var unknown = /* @__PURE__ */ new Map();
+function registerBackend(backend) {
+  if (!backend || typeof backend.id !== "string" || !backend.id) throw new Error("a backend needs an id");
+  if (!backend.sets) throw new Error(`backend ${backend.id} has no command sets`);
+  if (registered.get(backend.id)?.builtin) throw new Error(`"${backend.id}" is built in and cannot be replaced by a plugin`);
+  const wrapped = Object.setPrototypeOf({
+    builtin: false,
+    objectTypePrefixes: backend.objectTypePrefixes ?? [],
+    replay: { ...NO_REPLAY, ...backend.replay },
+    live: { ...NOT_LIVE, ...backend.live }
+  }, backend);
+  registered.set(backend.id, wrapped);
+  unknown.delete(backend.id);
+}
+function backendFor(api) {
+  const id = api || "vulkan";
+  const known = registered.get(id);
+  if (known) return known;
+  let b = unknown.get(id);
+  if (!b) {
+    b = { id, displayName: id, objectTypePrefixes: [], sets: EMPTY_SETS, replay: NO_REPLAY, live: NOT_LIVE };
+    unknown.set(id, b);
+  }
+  return b;
+}
+function registeredBackends() {
+  return [...registered.values()];
+}
+function backendForObjectType(type) {
+  let best = null;
+  let length2 = 0;
+  for (const b of registered.values()) {
+    for (const p of b.objectTypePrefixes) {
+      if (p.length > length2 && type.startsWith(p)) {
+        best = b;
+        length2 = p.length;
+      }
+    }
+  }
+  return best;
+}
+function shortTypeName(type) {
+  const b = backendForObjectType(type);
+  if (!b) return type;
+  const prefix = b.objectTypePrefixes.filter((p) => type.startsWith(p)).sort((x, y) => y.length - x.length)[0] ?? "";
+  if (b.id === "metal") return type;
+  return type.length > prefix.length ? type.substring(prefix.length) : type;
+}
+function apiDisplayName(api) {
+  return backendFor(api).displayName;
+}
+
 // src/renderer/command_sets.ts
 function isAction(sets, method) {
   return sets.DRAW.has(method) || sets.DISPATCH.has(method) || sets.TRACE.has(method);
 }
-function labelNameOf(cmd) {
+function labelNameOf(cmd, sets) {
+  const own = sets?.labelOf?.(cmd);
+  if (own !== void 0) return own;
   const a = cmd.args;
   const info = a && (isObject(a.pLabelInfo) ? a.pLabelInfo : isObject(a.pMarkerInfo) ? a.pMarkerInfo : null);
   return info ? str(info.pLabelName ?? info.pMarkerName) : a && a.label !== void 0 ? str(a.label) : cmd.method;
@@ -1726,7 +2881,7 @@ function boundPipelineOf(a) {
   return a ? a.pipeline ?? d3d12PipelineOf(a) : void 0;
 }
 function setsFor(api) {
-  return api === "metal" ? METAL_SETS : api === "d3d12" ? D3D12_SETS : VULKAN_SETS;
+  return backendFor(api).sets;
 }
 
 // src/renderer/utils/signal.ts
@@ -1914,28 +3069,28 @@ var Signal = class _Signal {
       this.slots.delete(handle);
       return true;
     }
-    let found = false;
+    let found2 = false;
     for (const slot of this.slots) {
       const slotHandle = slot[0];
       const slotInfo = slot[1];
       if (callback && !object) {
         if (slotInfo[0] === callback || slotInfo[1] === callback) {
           this.slots.delete(slotHandle);
-          found = true;
+          found2 = true;
         }
       } else if (!callback && object) {
         if (slotInfo[1] === object) {
           this.slots.delete(slotHandle);
-          found = true;
+          found2 = true;
         }
       } else {
         if (slotInfo[0] === callback && slotInfo[1] === object) {
           this.slots.delete(slotHandle);
-          found = true;
+          found2 = true;
         }
       }
     }
-    return found;
+    return found2;
   }
   /**
    * Alias of disconnect(callback, object); the name the TypeScript Signal contract uses.
@@ -2798,7 +3953,7 @@ var COPY_METHODS = /* @__PURE__ */ new Set([
   "vkCmdClearDepthStencilImage",
   "vkCmdClearAttachments"
 ]);
-var BARRIER_METHODS = /* @__PURE__ */ new Set(["vkCmdPipelineBarrier", "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR", "vkCmdSetEvent", "vkCmdSetEvent2", "vkCmdWaitEvents", "vkCmdWaitEvents2"]);
+var BARRIER_METHODS2 = /* @__PURE__ */ new Set(["vkCmdPipelineBarrier", "vkCmdPipelineBarrier2", "vkCmdPipelineBarrier2KHR", "vkCmdSetEvent", "vkCmdSetEvent2", "vkCmdWaitEvents", "vkCmdWaitEvents2"]);
 var CaptureStatistics = class {
   frames = 0;
   apiCalls = 0;
@@ -2897,7 +4052,7 @@ var CaptureStatistics = class {
       } else if (COPY_METHODS.has(method)) {
         this.copyCommands++;
         this._memory(cmd, db);
-      } else if (BARRIER_METHODS.has(method)) {
+      } else if (BARRIER_METHODS2.has(method)) {
         this.barriers++;
       } else if (cmdSets.LABEL_BEGIN.has(method)) {
         this.debugLabels++;
@@ -3370,9 +4525,9 @@ function computeCriticalPath(graph) {
     }
   }
   if (!head || best <= 0) return;
-  const path12 = [];
-  for (let n = head; n; n = next.get(n) ?? null) path12.push(n);
-  graph.criticalPath = path12;
+  const path14 = [];
+  for (let n = head; n; n = next.get(n) ?? null) path14.push(n);
+  graph.criticalPath = path14;
   graph.criticalPathMs = best;
 }
 function usageClass(usage) {
@@ -3385,1036 +4540,15 @@ function usageClass(usage) {
   return "other";
 }
 
-// src/renderer/d3d12/frame_resources.ts
-var SUBRESOURCE_ALL = 4294967295;
-var D3D12ResourceSource = class {
-  _db;
-  _bound = /* @__PURE__ */ new Map();
-  /** Vertex and index buffers bound per stream: stream -> "v<slot>" / "index" -> buffer id. */
-  _buffers = /* @__PURE__ */ new Map();
-  _resources = /* @__PURE__ */ new Map();
-  constructor(db) {
-    this._db = db;
-  }
-  observe(cmd, stream) {
-    if (cmd.descriptors) {
-      let byPoint = this._bound.get(stream);
-      if (!byPoint) this._bound.set(stream, byPoint = /* @__PURE__ */ new Map());
-      let sets = byPoint.get(cmd.descriptors.bindPoint);
-      if (!sets) byPoint.set(cmd.descriptors.bindPoint, sets = /* @__PURE__ */ new Map());
-      for (const s of cmd.descriptors.sets) sets.set(s.set, s);
-      return;
-    }
-    if (!cmd.args) return;
-    if (D3D12_SETS.BIND_VERTEX.has(cmd.method)) {
-      for (const vb of D3D12_SETS.vertexBuffersOf(cmd)) {
-        const id = refId(vb.buffer);
-        if (id !== null) this._streamBuffers(stream).set(`v${vb.binding}`, id);
-      }
-    } else if (D3D12_SETS.BIND_INDEX.has(cmd.method)) {
-      const id = refId(D3D12_SETS.indexBufferOf(cmd)?.buffer);
-      if (id !== null) this._streamBuffers(stream).set("index", id);
-    } else if (cmd.method === "SetGraphicsRootSignature" || cmd.method === "SetComputeRootSignature") {
-      this._bound.get(stream)?.delete(cmd.method.startsWith("SetCompute") ? "compute" : "graphics");
-    }
-  }
-  passAccesses(cmd, ordinal) {
-    const a = cmd.args;
-    if (!a) return null;
-    const accesses = [];
-    const targets = [];
-    if (cmd.method === "BeginRenderPass") {
-      const colors = Array.isArray(a.pRenderTargets) ? a.pRenderTargets.filter(isObject) : [];
-      colors.forEach((rt) => this._renderPassTarget(rt, "color", accesses, targets));
-      if (isObject(a.pDepthStencil)) this._renderPassTarget(a.pDepthStencil, "depth", accesses, targets);
-    } else {
-      const colors = Array.isArray(a.pRenderTargetDescriptors) ? a.pRenderTargetDescriptors : [];
-      for (const h of colors) this._target(h, "color attachment (load/store)", accesses, targets, false, false, "color");
-      this._target(a.pDepthStencilDescriptor, "depth attachment (load/store)", accesses, targets, false, false, "depth");
-    }
-    return { kind: "render", label: `Pass ${ordinal}${targets.length ? `: ${targets.join(", ")}` : ""}`, accesses };
-  }
-  actionAccesses(cmd, stream) {
-    const accesses = [];
-    let unresolved = 0;
-    const sets = this._bound.get(stream)?.get(D3D12_SETS.bindPointOf(cmd.method));
-    if (sets) {
-      for (const set of sets.values()) {
-        if (!set.bindings.length && set.descriptorSet) unresolved++;
-        for (const binding of set.bindings) {
-          const usage = descriptorUsage(binding.type);
-          if (!usage) continue;
-          for (const d of binding.descriptors) {
-            if (!d) continue;
-            const bufferId = refId(d.buffer);
-            if (bufferId !== null) {
-              const resource2 = this._bufferResource(bufferId);
-              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
-              continue;
-            }
-            const textureId = refId(d.resource);
-            if (textureId !== null) {
-              const sub = d3d12ViewSubresource(d.view);
-              const resource2 = this._imageResource(textureId, sub.mip, sub.slice);
-              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
-            }
-          }
-        }
-      }
-    }
-    if (!D3D12_SETS.DISPATCH.has(cmd.method) && !D3D12_SETS.TRACE.has(cmd.method)) {
-      for (const [binding, id] of this._streamBuffers(stream)) {
-        const resource2 = this._bufferResource(id);
-        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: binding === "index" ? "index buffer" : "vertex buffer" });
-      }
-    }
-    if (cmd.method === "ExecuteIndirect") {
-      for (const key of ["pArgumentBuffer", "pCountBuffer"]) {
-        const resource2 = this._bufferResource(refId(cmd.args?.[key]));
-        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "indirect buffer" });
-      }
-    }
-    return { accesses, unresolved };
-  }
-  transferAccesses(cmd) {
-    const a = cmd.args;
-    if (!a) return null;
-    const accesses = [];
-    const names = [];
-    const add = (id, mode, verb2, sub, discards = false, dropped = false) => {
-      if (id === null) return;
-      const object = this._db.getObject(id);
-      const resource2 = object && isD3D12Texture(object) ? this._imageResource(id, sub?.mip ?? 0, sub?.slice ?? 0) : this._bufferResource(id);
-      if (!resource2) return;
-      accesses.push({ resource: resource2, mode, usage: `${verb2} ${mode === "read" ? "src" : "dst"}`, discards: mode === "write" && discards, dropped });
-      if (mode === "write") names.push(resource2.label);
-    };
-    const full = () => num(a.NumRects) === 0 && !(Array.isArray(a.pRects) && a.pRects.length);
-    let verb = "";
-    switch (cmd.method) {
-      case "CopyResource":
-        verb = "copy";
-        add(refId(a.pSrcResource), "read", verb, null);
-        add(refId(a.pDstResource), "write", verb, null, true);
-        break;
-      case "CopyBufferRegion":
-      case "AtomicCopyBufferUINT":
-      case "AtomicCopyBufferUINT64":
-        verb = "copy";
-        add(refId(a.pSrcBuffer), "read", verb, null);
-        add(refId(a.pDstBuffer), "write", verb, null);
-        break;
-      case "CopyTextureRegion": {
-        verb = "copy";
-        const src = isObject(a.pSrc) ? a.pSrc : null;
-        const dst = isObject(a.pDst) ? a.pDst : null;
-        if (src) add(refId(src.pResource), "read", verb, this._subresource(refId(src.pResource), src.SubresourceIndex));
-        if (dst) add(refId(dst.pResource), "write", verb, this._subresource(refId(dst.pResource), dst.SubresourceIndex));
-        break;
-      }
-      case "ResolveSubresource":
-      case "ResolveSubresourceRegion":
-        verb = "resolve copy";
-        add(refId(a.pSrcResource), "read", verb, this._subresource(refId(a.pSrcResource), a.SrcSubresource));
-        add(refId(a.pDstResource), "write", verb, this._subresource(refId(a.pDstResource), a.DstSubresource), cmd.method === "ResolveSubresource");
-        break;
-      case "ClearRenderTargetView":
-      case "ClearDepthStencilView": {
-        verb = "clear";
-        const h = a[cmd.method === "ClearRenderTargetView" ? "RenderTargetView" : "DepthStencilView"];
-        if (isObject(h)) add(refId(h.resource), "write", verb, d3d12ViewSubresource(h.view), full());
-        break;
-      }
-      case "ClearUnorderedAccessViewUint":
-      case "ClearUnorderedAccessViewFloat": {
-        verb = "clear";
-        const h = isObject(a.ViewCPUHandle) ? a.ViewCPUHandle : null;
-        add(refId(a.pResource), "write", verb, h ? d3d12ViewSubresource(h.view) : null, full());
-        break;
-      }
-      case "DiscardResource":
-        verb = "discard";
-        add(refId(a.pResource), "write", verb, null, true, true);
-        break;
-      case "CopyTiles": {
-        verb = "copy tiles";
-        const toTiled = str(a.Flags).includes("LINEAR_BUFFER_TO_SWIZZLED_TILED_RESOURCE");
-        add(refId(toTiled ? a.pBuffer : a.pTiledResource), "read", verb, null);
-        add(refId(toTiled ? a.pTiledResource : a.pBuffer), "write", verb, null);
-        break;
-      }
-      default:
-        return null;
-    }
-    if (!accesses.length) return null;
-    const label = verb.charAt(0).toUpperCase() + verb.slice(1);
-    return { label: `${label} \u2192 ${names.join(", ") || cmd.method}`, accesses };
-  }
-  computePassLabel(ordinal) {
-    return `Compute ${ordinal}`;
-  }
-  /**
-   * The subresources a ResourceBarrier or an enhanced Barrier names. An aliasing barrier is
-   * structural (required by the API whatever the data does); a transition names the resource
-   * whose state changes, a UAV barrier the resource it orders (or every UAV, when it names none).
-   */
-  syncPoint(cmd) {
-    const a = cmd.args;
-    if (!a || cmd.method !== "ResourceBarrier" && cmd.method !== "Barrier") return null;
-    const resources = [];
-    let structural = false;
-    if (cmd.method === "ResourceBarrier") {
-      for (const b of arrayOf(a.pBarriers)) {
-        const type = str(b.Type);
-        if (type.endsWith("_ALIASING")) {
-          structural = true;
-          continue;
-        }
-        const detail = isObject(b.Transition) ? b.Transition : isObject(b.UAV) ? b.UAV : null;
-        if (isObject(b.Transition) && str(b.Transition.StateBefore) !== str(b.Transition.StateAfter)) structural = true;
-        const id = refId(detail?.pResource);
-        if (id === null) continue;
-        const sub = this._subresource(id, detail?.Subresource);
-        const object = this._db.getObject(id);
-        const resource2 = object && isD3D12Texture(object) ? this._imageResource(id, sub.mip, sub.slice) : this._bufferResource(id);
-        if (resource2) resources.push(resource2.key);
-      }
-    } else {
-      for (const g of arrayOf(a.pBarrierGroups)) {
-        for (const b of arrayOf(g.pTextureBarriers)) {
-          if (str(b.LayoutBefore) !== str(b.LayoutAfter)) structural = true;
-          const id = refId(b.pResource);
-          const range = isObject(b.Subresources) ? b.Subresources : null;
-          const resource2 = id === null ? null : this._imageResource(id, num(range?.IndexOrFirstMipLevel) === SUBRESOURCE_ALL ? 0 : num(range?.IndexOrFirstMipLevel), num(range?.FirstArraySlice));
-          if (resource2) resources.push(resource2.key);
-        }
-        for (const b of arrayOf(g.pBufferBarriers)) {
-          const resource2 = this._bufferResource(refId(b.pResource));
-          if (resource2) resources.push(resource2.key);
-        }
-      }
-    }
-    return { commandIndex: cmd.index, method: cmd.method, resources, structural };
-  }
-  // ------------------------------------------------------------------------------- targets
-  /** One BeginRenderPass target: its handle, beginning access and ending access. */
-  _renderPassTarget(rt, kind, accesses, targets) {
-    const handle = isObject(rt.cpuDescriptor) ? rt.cpuDescriptor : rt;
-    const beginning = kind === "color" ? rt.BeginningAccess : rt.DepthBeginningAccess;
-    const ending = kind === "color" ? rt.EndingAccess : rt.DepthEndingAccess;
-    const begin = accessType(beginning);
-    const end = accessType(ending);
-    const stencilBegin = kind === "depth" ? accessType(rt.StencilBeginningAccess) : "";
-    const stencilEnd = kind === "depth" ? accessType(rt.StencilEndingAccess) : "";
-    const loads = begin === "PRESERVE" || stencilBegin === "PRESERVE";
-    const stores = end === "PRESERVE" || stencilEnd === "PRESERVE";
-    const resolved = end === "RESOLVE" || stencilEnd === "RESOLVE";
-    const usage = `${kind} attachment (${loads ? "load" : begin === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : resolved ? "resolve" : "discard"})`;
-    this._target(handle, usage, accesses, targets, !loads, !stores && !resolved, kind, resolved);
-    const resolve = isObject(ending) && isObject(ending.Resolve) ? ending.Resolve : null;
-    const resolveId = resolved && resolve ? refId(resolve.pDstResource) : null;
-    if (resolveId !== null) {
-      const params = Array.isArray(resolve.pSubresourceParameters) && isObject(resolve.pSubresourceParameters[0]) ? resolve.pSubresourceParameters[0] : null;
-      const sub = this._subresource(resolveId, params?.DstSubresource);
-      const target = this._imageResource(resolveId, sub.mip, sub.slice);
-      if (target) accesses.push({ resource: target, mode: "write", usage: "resolve target (discard/store)", discards: true });
-    }
-  }
-  _target(handle, usage, accesses, targets, discards, dropped, kind, resolved = false) {
-    if (!isObject(handle)) return;
-    const id = refId(handle.resource);
-    if (id === null) return;
-    const sub = d3d12ViewSubresource(handle.view);
-    const resource2 = this._imageResource(id, sub.mip, sub.slice);
-    if (!resource2) return;
-    accesses.push({ resource: resource2, mode: "write", usage, discards, dropped, resolved });
-    if (kind === "color") targets.push(resource2.label);
-  }
-  // ------------------------------------------------------------------------------- resources
-  _streamBuffers(stream) {
-    let m = this._buffers.get(stream);
-    if (!m) this._buffers.set(stream, m = /* @__PURE__ */ new Map());
-    return m;
-  }
-  /** A subresource index as a mip and slice (D3D12 numbers them mip-fastest: index = mip + slice * mips). */
-  _subresource(id, index) {
-    const i = num(index);
-    if (id === null || i === SUBRESOURCE_ALL || i === 0) return { mip: 0, slice: 0 };
-    const shape = d3d12TextureShape(this._db.getObject(id), this._db);
-    const mips = Math.max(1, shape?.mips ?? 1);
-    return { mip: i % mips, slice: Math.floor(i / mips) % Math.max(1, shape?.layers ?? 1) };
-  }
-  _imageResource(imageId, mip, slice) {
-    if (imageId === null) return null;
-    const object = this._db.getObject(imageId);
-    if (!object) return null;
-    const key = `image:${imageId}:m${mip}:l${slice}`;
-    const cached = this._resources.get(key);
-    if (cached) return cached;
-    const shape = d3d12TextureShape(object, this._db);
-    const width = Math.max(1, (shape?.width ?? 0) >> mip);
-    const height = Math.max(1, (shape?.height ?? 0) >> mip);
-    const format = dxgiFormatShort(shape?.format);
-    const sub = [(shape?.mips ?? 1) > 1 ? `mip ${mip}` : "", (shape?.layers ?? 1) > 1 ? `slice ${slice}` : ""].filter(Boolean).join(" ");
-    const resource2 = {
-      key,
-      objectId: imageId,
-      type: "image",
-      label: sub ? `${object.name} ${sub}` : object.name,
-      detail: [shape ? `${width}x${height}` : "", format].filter(Boolean).join("  "),
-      bytes: width * height * (dxgiFormatBytes(shape?.format) || 4),
-      presented: isBackBuffer(object)
-    };
-    this._resources.set(key, resource2);
-    return resource2;
-  }
-  _bufferResource(bufferId) {
-    if (bufferId === null) return null;
-    const object = this._db.getObject(bufferId);
-    if (!object) return null;
-    const key = `buffer:${bufferId}`;
-    const cached = this._resources.get(key);
-    if (cached) return cached;
-    const size2 = num(object.descriptor?.Width);
-    const resource2 = {
-      key,
-      objectId: bufferId,
-      type: "buffer",
-      label: object.name,
-      detail: size2 ? formatBytes2(size2) : "",
-      bytes: size2,
-      presented: false
-    };
-    this._resources.set(key, resource2);
-    return resource2;
-  }
-};
-function descriptorUsage(type) {
-  if (type.endsWith("_UAV")) return { name: "unordered access", write: true };
-  if (type.endsWith("_SRV")) return { name: "shader resource", write: false };
-  if (type.endsWith("_CBV")) return { name: "constant buffer", write: false };
-  return null;
-}
-function accessType(v) {
-  const type = isObject(v) ? str(v.Type) : str(v);
-  return type.replace(/^D3D12_RENDER_PASS_(BEGINNING|ENDING)_ACCESS_TYPE_/, "");
-}
-function arrayOf(v) {
-  return Array.isArray(v) ? v.filter(isObject) : [];
-}
-function isBackBuffer(object) {
-  return object.cmd === "GetBuffer";
-}
-function formatBytes2(bytes) {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
-// src/renderer/metal/frame_resources.ts
-var PASS_KINDS = {
-  "renderCommandEncoderWithDescriptor:": "render",
-  "parallelRenderCommandEncoderWithDescriptor:": "render",
-  computeCommandEncoder: "compute",
-  "computeCommandEncoderWithDescriptor:": "compute",
-  "computeCommandEncoderWithDispatchType:": "compute",
-  blitCommandEncoder: "transfer",
-  "blitCommandEncoderWithDescriptor:": "transfer",
-  resourceStateCommandEncoder: "transfer",
-  "resourceStateCommandEncoderWithDescriptor:": "transfer",
-  accelerationStructureCommandEncoder: "compute",
-  "accelerationStructureCommandEncoderWithDescriptor:": "compute"
-};
-var BLITS = {
-  "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:": { verb: "copy", read: "sourceTexture", write: "destinationTexture" },
-  "copyFromTexture:toTexture:": { verb: "copy", read: "sourceTexture", write: "destinationTexture", full: true },
-  "copyFromTexture:sourceSlice:sourceLevel:toTexture:destinationSlice:destinationLevel:sliceCount:levelCount:": { verb: "copy", read: "sourceTexture", write: "destinationTexture", full: true },
-  "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:": { verb: "copy", read: "sourceTexture", write: "destinationBuffer" },
-  "copyFromTexture:sourceSlice:sourceLevel:sourceOrigin:sourceSize:toBuffer:destinationOffset:destinationBytesPerRow:destinationBytesPerImage:options:": { verb: "copy", read: "sourceTexture", write: "destinationBuffer" },
-  "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:": { verb: "copy", read: "sourceBuffer", write: "destinationTexture" },
-  "copyFromBuffer:sourceOffset:sourceBytesPerRow:sourceBytesPerImage:sourceSize:toTexture:destinationSlice:destinationLevel:destinationOrigin:options:": { verb: "copy", read: "sourceBuffer", write: "destinationTexture" },
-  "copyFromBuffer:sourceOffset:toBuffer:destinationOffset:size:": { verb: "copy", read: "sourceBuffer", write: "destinationBuffer" },
-  "generateMipmapsForTexture:": { verb: "generate mipmaps", read: "texture", write: "texture", full: true },
-  "fillBuffer:range:value:": { verb: "fill", write: "buffer", full: true }
-};
-var TEXTURE_BINDS = {
-  "setVertexTexture:atIndex:": "vertex",
-  "setFragmentTexture:atIndex:": "fragment",
-  "setTexture:atIndex:": "compute",
-  "setObjectTexture:atIndex:": "object",
-  "setMeshTexture:atIndex:": "mesh",
-  "setTileTexture:atIndex:": "tile"
-};
-var TEXTURE_BINDS_MANY = {
-  "setVertexTextures:withRange:": "vertex",
-  "setFragmentTextures:withRange:": "fragment",
-  "setTextures:withRange:": "compute",
-  "setObjectTextures:withRange:": "object",
-  "setMeshTextures:withRange:": "mesh",
-  "setTileTextures:withRange:": "tile"
-};
-var ARGUMENT_BUFFER_METHODS = /* @__PURE__ */ new Set([
-  "useResource:usage:",
-  "useResource:usage:stages:",
-  "useResources:count:usage:",
-  "useResources:count:usage:stages:",
-  "useHeap:",
-  "useHeaps:count:",
-  "useHeap:stages:",
-  "useHeaps:count:stages:"
-]);
-var MetalResourceSource = class {
-  _db;
-  /** Bound state per encoder; a command's `encoder` says which one it belongs to. */
-  _encoders = /* @__PURE__ */ new Map();
-  _resources = /* @__PURE__ */ new Map();
-  constructor(db) {
-    this._db = db;
-  }
-  observe(cmd, _stream) {
-    const a = cmd.args;
-    if (!a) return;
-    const state = this._state(cmd);
-    const single = TEXTURE_BINDS[cmd.method];
-    if (single) {
-      const id = refId(a.texture);
-      if (id !== null) state.textures.set(`${single}:${num(a.index)}`, id);
-      return;
-    }
-    const many = TEXTURE_BINDS_MANY[cmd.method];
-    if (many && Array.isArray(a.textures)) {
-      const first = isObject(a.range) ? num(a.range.location) : 0;
-      a.textures.forEach((t, i) => {
-        const id = refId(t);
-        if (id !== null) state.textures.set(`${many}:${first + i}`, id);
-      });
-      return;
-    }
-    if (ARGUMENT_BUFFER_METHODS.has(cmd.method)) {
-      state.opaque++;
-      return;
-    }
-    if (METAL_SETS.BIND_STAGE_BUFFER?.has(cmd.method) && METAL_SETS.stageBuffersOf) {
-      for (const b of METAL_SETS.stageBuffersOf(cmd)) {
-        const id = refId(b.buffer);
-        if (id !== null) state.buffers.set(`${b.stage}:${b.index}`, id);
-      }
-    }
-  }
-  passAccesses(cmd, ordinal) {
-    const kind = PASS_KINDS[cmd.method] ?? "render";
-    const a = cmd.args;
-    const accesses = [];
-    const targets = [];
-    if (kind === "render" && a) {
-      const colors = Array.isArray(a.colorAttachments) ? a.colorAttachments.filter(isObject) : [];
-      for (const c2 of colors) this._attachment(c2, "color", accesses, targets);
-      for (const key of ["depthAttachment", "stencilAttachment"]) {
-        const d = a[key];
-        if (isObject(d)) this._attachment(d, key === "depthAttachment" ? "depth" : "stencil", accesses, targets);
-      }
-    }
-    const encoder2 = this._db.getObject(cmd.encoder?.__id ?? null);
-    const name = encoder2?.label || targets.join(", ");
-    const what = kind === "render" ? "Pass" : kind === "compute" ? "Compute" : "Blit";
-    return { kind, label: `${what} ${ordinal}${name ? `: ${name}` : ""}`, accesses };
-  }
-  actionAccesses(cmd, _stream) {
-    const state = this._state(cmd);
-    const accesses = [];
-    for (const [key, id] of state.textures) {
-      const resource2 = this._textureResource(id, 0, 0);
-      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: `${key.split(":")[0]} texture` });
-    }
-    for (const [key, id] of state.buffers) {
-      const resource2 = this._bufferResource(id);
-      const stage = key.split(":")[0];
-      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: `${stage} buffer` });
-    }
-    const index = METAL_SETS.indexBufferOf(cmd);
-    if (index) {
-      const resource2 = this._bufferResource(refId(index.buffer));
-      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "index buffer" });
-    }
-    for (const key of ["indirectBuffer", "patchIndexBuffer", "controlPointIndexBuffer"]) {
-      const resource2 = this._bufferResource(refId(cmd.args?.[key]));
-      if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "indirect buffer" });
-    }
-    return { accesses, unresolved: state.opaque };
-  }
-  transferAccesses(cmd) {
-    const spec = BLITS[cmd.method];
-    const a = cmd.args;
-    if (!spec || !a) return null;
-    const accesses = [];
-    const names = [];
-    const add = (field2, mode) => {
-      const id = refId(a[field2]);
-      if (id === null) return;
-      const isTexture = field2.toLowerCase().includes("texture");
-      const level = num(a[mode === "read" ? "sourceLevel" : "destinationLevel"]);
-      const slice = num(a[mode === "read" ? "sourceSlice" : "destinationSlice"]);
-      const resource2 = isTexture ? this._textureResource(id, level, slice) : this._bufferResource(id);
-      if (!resource2) return;
-      accesses.push({
-        resource: resource2,
-        mode,
-        usage: `${spec.verb} ${mode === "read" ? "src" : "dst"}`,
-        discards: mode === "write" && !!spec.full
-      });
-      if (mode === "write") names.push(resource2.label);
-    };
-    if (spec.read) add(spec.read, "read");
-    if (spec.write) add(spec.write, "write");
-    const verb = spec.verb.charAt(0).toUpperCase() + spec.verb.slice(1);
-    return { label: `${verb} \u2192 ${names.join(", ") || cmd.method}`, accesses };
-  }
-  computePassLabel(ordinal) {
-    return `Compute ${ordinal}`;
-  }
-  // ------------------------------------------------------------------------------- resources
-  _state(cmd) {
-    const id = cmd.encoder?.__id ?? 0;
-    let state = this._encoders.get(id);
-    if (!state) this._encoders.set(id, state = { textures: /* @__PURE__ */ new Map(), buffers: /* @__PURE__ */ new Map(), opaque: 0 });
-    return state;
-  }
-  _attachment(att, kind, accesses, targets) {
-    const id = refId(att.texture);
-    if (id === null) return;
-    const resource2 = this._textureResource(id, num(att.level), num(att.slice));
-    if (!resource2) return;
-    const load = str(att.loadAction).replace("MTLLoadAction", "");
-    const store = str(att.storeAction).replace("MTLStoreAction", "");
-    const stores = store === "Store" || store === "StoreAndMultisampleResolve" || store === "CustomSampleDepthStore";
-    accesses.push({
-      resource: resource2,
-      mode: "write",
-      usage: `${kind} attachment (${load.toLowerCase() || "unknown"}/${store.toLowerCase() || "unknown"})`,
-      discards: load !== "Load",
-      dropped: !stores && store !== "MultisampleResolve",
-      resolved: store.includes("MultisampleResolve")
-    });
-    if (kind === "color") targets.push(resource2.label);
-    const resolveId = refId(att.resolveTexture);
-    if (resolveId !== null && store.includes("MultisampleResolve")) {
-      const target = this._textureResource(resolveId, num(att.resolveLevel), num(att.resolveSlice));
-      if (target) accesses.push({ resource: target, mode: "write", usage: "resolve target (discard/store)", discards: true });
-    }
-  }
-  _textureResource(textureId, level, slice) {
-    if (textureId === null) return null;
-    const object = this._db.getObject(textureId);
-    if (!object) return null;
-    const key = `image:${textureId}:m${level}:l${slice}`;
-    const cached = this._resources.get(key);
-    if (cached) return cached;
-    const d = object.args ?? {};
-    const mips = num(d.mipmapLevelCount) || 1;
-    const layers = num(d.arrayLength) || 1;
-    const width = Math.max(1, num(d.width) >> level);
-    const height = Math.max(1, num(d.height) >> level);
-    const format = str(d.pixelFormat).replace("MTLPixelFormat", "");
-    const sub = [mips > 1 ? `level ${level}` : "", layers > 1 ? `slice ${slice}` : ""].filter(Boolean).join(" ");
-    const resource2 = {
-      key,
-      objectId: textureId,
-      type: "image",
-      label: sub ? `${object.name} ${sub}` : object.name,
-      detail: [width && height ? `${width}x${height}` : "", format].filter(Boolean).join("  "),
-      bytes: width * height * bytesPerPixel(format),
-      presented: isDrawableTexture(object)
-    };
-    this._resources.set(key, resource2);
-    return resource2;
-  }
-  _bufferResource(bufferId) {
-    if (bufferId === null) return null;
-    const object = this._db.getObject(bufferId);
-    if (!object) return null;
-    const key = `buffer:${bufferId}`;
-    const cached = this._resources.get(key);
-    if (cached) return cached;
-    const size2 = num(object.args?.length);
-    const resource2 = {
-      key,
-      objectId: bufferId,
-      type: "buffer",
-      label: object.name,
-      detail: size2 ? formatBytes3(size2) : "",
-      bytes: size2,
-      presented: false
-    };
-    this._resources.set(key, resource2);
-    return resource2;
-  }
-};
-function isDrawableTexture(object) {
-  return object.cmd.includes("nextDrawable");
-}
-function bytesPerPixel(format) {
-  const bits = [...format.matchAll(/[RGBADS](\d+)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
-  if (bits) return bits / 8;
-  if (/BC|ETC|ASTC|EAC|PVRTC/.test(format)) return 1;
-  return 4;
-}
-function formatBytes3(bytes) {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
-// src/renderer/vulkan/pass_info.ts
-function loadStoreOp(v) {
-  return str(v).replace("VK_ATTACHMENT_LOAD_OP_", "").replace("VK_ATTACHMENT_STORE_OP_", "");
-}
-function sampleCount(v) {
-  const m = /VK_SAMPLE_COUNT_(\d+)_BIT/.exec(str(v));
-  return m ? Number(m[1]) : 1;
-}
-function pNextChain(o) {
-  const chain = o?.pNext;
-  return Array.isArray(chain) ? chain.filter(isObject) : [];
-}
-function imageOfView(db, viewId) {
-  const view = db.getObject(viewId);
-  return view ? refId(view.descriptor?.image) : null;
-}
-function viewSubresource(db, viewId) {
-  const view = db.getObject(viewId)?.descriptor ?? null;
-  const range = isObject(view?.subresourceRange) ? view.subresourceRange : null;
-  const layers = num(range?.layerCount);
-  return {
-    mipLevel: num(range?.baseMipLevel),
-    baseLayer: num(range?.baseArrayLayer),
-    // VK_REMAINING_ARRAY_LAYERS reads back as the raw 0xffffffff; report it as "all remaining" (0).
-    layerCount: layers === 4294967295 ? 0 : layers
-  };
-}
-function decodePass(cmd, db) {
-  const a = cmd.args;
-  if (!a) return null;
-  const pass = { width: 0, height: 0, viewMask: 0, attachments: [] };
-  if (cmd.method.startsWith("vkCmdBeginRendering")) {
-    const info = isObject(a.pRenderingInfo) ? a.pRenderingInfo : null;
-    if (!info) return pass;
-    const extent2 = isObject(info.renderArea) && isObject(info.renderArea.extent) ? info.renderArea.extent : null;
-    pass.width = num(extent2?.width);
-    pass.height = num(extent2?.height);
-    pass.viewMask = num(info.viewMask);
-    const colors = Array.isArray(info.pColorAttachments) ? info.pColorAttachments.filter(isObject) : [];
-    colors.forEach((c2, i) => pass.attachments.push(dynamicAttachment(db, c2, "color", i)));
-    for (const key of ["pDepthAttachment", "pStencilAttachment"]) {
-      const d = info[key];
-      if (isObject(d) && refId(d.imageView) !== null) pass.attachments.push(dynamicAttachment(db, d, "depth", colors.length));
-    }
-    return pass;
-  }
-  const begin = isObject(a.pRenderPassBegin) ? a.pRenderPassBegin : null;
-  if (!begin) return pass;
-  const rp = db.getObject(refId(begin.renderPass))?.descriptor ?? null;
-  const fb = db.getObject(refId(begin.framebuffer))?.descriptor ?? null;
-  const extent = isObject(begin.renderArea) && isObject(begin.renderArea.extent) ? begin.renderArea.extent : null;
-  pass.width = num(extent?.width) || num(fb?.width);
-  pass.height = num(extent?.height) || num(fb?.height);
-  if (!rp) return pass;
-  const subpasses = Array.isArray(rp.pSubpasses) ? rp.pSubpasses.filter(isObject) : [];
-  const mv = pNextChain(rp).find((s) => str(s.sType) === "VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO");
-  const masks = mv && Array.isArray(mv.pViewMasks) ? mv.pViewMasks.map(num) : subpasses.map((s) => num(s.viewMask));
-  pass.viewMask = masks.reduce((m, v) => m | v, 0);
-  let views = Array.isArray(fb?.pAttachments) ? fb.pAttachments : [];
-  const imageless = pNextChain(begin).find((s) => str(s.sType) === "VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO");
-  if (imageless && Array.isArray(imageless.pAttachments)) views = imageless.pAttachments;
-  const descs = Array.isArray(rp.pAttachments) ? rp.pAttachments : [];
-  const kinds = /* @__PURE__ */ new Map();
-  const resolvedColors = /* @__PURE__ */ new Set();
-  for (const s of subpasses) {
-    const refs = (key) => (Array.isArray(s[key]) ? s[key] : []).filter(isObject).map((r) => num(r.attachment)).filter((i) => i < 4294967295);
-    const colors = refs("pColorAttachments");
-    const resolves = refs("pResolveAttachments");
-    colors.forEach((c2, i) => {
-      kinds.set(c2, "color");
-      if (resolves[i] !== void 0) resolvedColors.add(c2);
-    });
-    for (const r of resolves) kinds.set(r, "resolve");
-    const ds = isObject(s.pDepthStencilAttachment) ? num(s.pDepthStencilAttachment.attachment) : 4294967295;
-    if (ds < 4294967295) kinds.set(ds, "depth");
-  }
-  descs.forEach((d, i) => {
-    if (!isObject(d)) return;
-    const kind = kinds.get(i);
-    if (!kind) return;
-    const viewId = refId(views[i]);
-    pass.attachments.push({
-      kind,
-      viewId,
-      imageId: imageOfView(db, viewId),
-      ...viewSubresource(db, viewId),
-      format: str(d.format),
-      samples: sampleCount(d.samples),
-      loadOp: loadStoreOp(d.loadOp),
-      storeOp: loadStoreOp(d.storeOp),
-      stencilLoadOp: loadStoreOp(d.stencilLoadOp),
-      stencilStoreOp: loadStoreOp(d.stencilStoreOp),
-      usage: "",
-      resolved: resolvedColors.has(i),
-      resolveViewId: null,
-      index: i
-    });
-  });
-  return pass;
-}
-function dynamicAttachment(db, att, kind, index) {
-  const viewId = refId(att.imageView);
-  const imageId = imageOfView(db, viewId);
-  const view = db.getObject(viewId)?.descriptor ?? null;
-  const image = db.getObject(imageId)?.descriptor ?? null;
-  return {
-    kind,
-    viewId,
-    imageId,
-    ...viewSubresource(db, viewId),
-    format: str(view?.format ?? image?.format),
-    samples: sampleCount(image?.samples),
-    loadOp: loadStoreOp(att.loadOp),
-    storeOp: loadStoreOp(att.storeOp),
-    stencilLoadOp: loadStoreOp(att.loadOp),
-    stencilStoreOp: loadStoreOp(att.storeOp),
-    usage: "",
-    resolved: refId(att.resolveImageView) !== null,
-    resolveViewId: refId(att.resolveImageView),
-    index
-  };
-}
-
-// src/renderer/vulkan/frame_resources.ts
-var TRANSFERS = {
-  vkCmdCopyBuffer: { read: ["srcBuffer"], write: ["dstBuffer"], verb: "copy" },
-  vkCmdCopyBuffer2: { read: ["srcBuffer"], write: ["dstBuffer"], nested: "pCopyBufferInfo", verb: "copy" },
-  vkCmdCopyBuffer2KHR: { read: ["srcBuffer"], write: ["dstBuffer"], nested: "pCopyBufferInfo", verb: "copy" },
-  vkCmdCopyImage: { read: ["srcImage"], write: ["dstImage"], verb: "copy" },
-  vkCmdCopyImage2: { read: ["srcImage"], write: ["dstImage"], nested: "pCopyImageInfo", verb: "copy" },
-  vkCmdCopyImage2KHR: { read: ["srcImage"], write: ["dstImage"], nested: "pCopyImageInfo", verb: "copy" },
-  vkCmdCopyBufferToImage: { read: ["srcBuffer"], write: ["dstImage"], verb: "copy" },
-  vkCmdCopyBufferToImage2: { read: ["srcBuffer"], write: ["dstImage"], nested: "pCopyBufferToImageInfo", verb: "copy" },
-  vkCmdCopyBufferToImage2KHR: { read: ["srcBuffer"], write: ["dstImage"], nested: "pCopyBufferToImageInfo", verb: "copy" },
-  vkCmdCopyImageToBuffer: { read: ["srcImage"], write: ["dstBuffer"], verb: "copy" },
-  vkCmdCopyImageToBuffer2: { read: ["srcImage"], write: ["dstBuffer"], nested: "pCopyImageToBufferInfo", verb: "copy" },
-  vkCmdCopyImageToBuffer2KHR: { read: ["srcImage"], write: ["dstBuffer"], nested: "pCopyImageToBufferInfo", verb: "copy" },
-  vkCmdBlitImage: { read: ["srcImage"], write: ["dstImage"], verb: "blit" },
-  vkCmdBlitImage2: { read: ["srcImage"], write: ["dstImage"], nested: "pBlitImageInfo", verb: "blit" },
-  vkCmdBlitImage2KHR: { read: ["srcImage"], write: ["dstImage"], nested: "pBlitImageInfo", verb: "blit" },
-  vkCmdResolveImage: { read: ["srcImage"], write: ["dstImage"], verb: "resolve copy" },
-  vkCmdResolveImage2: { read: ["srcImage"], write: ["dstImage"], nested: "pResolveImageInfo", verb: "resolve copy" },
-  vkCmdResolveImage2KHR: { read: ["srcImage"], write: ["dstImage"], nested: "pResolveImageInfo", verb: "resolve copy" },
-  vkCmdUpdateBuffer: { read: [], write: ["dstBuffer"], verb: "update" },
-  vkCmdFillBuffer: { read: [], write: ["dstBuffer"], verb: "fill" },
-  vkCmdClearColorImage: { read: [], write: ["image"], verb: "clear" },
-  vkCmdClearDepthStencilImage: { read: [], write: ["image"], verb: "clear" },
-  vkCmdCopyQueryPoolResults: { read: [], write: ["dstBuffer"], verb: "query results" }
-};
-var BARRIER_METHODS2 = /* @__PURE__ */ new Set([
-  "vkCmdPipelineBarrier",
-  "vkCmdPipelineBarrier2",
-  "vkCmdPipelineBarrier2KHR",
-  "vkCmdWaitEvents",
-  "vkCmdWaitEvents2",
-  "vkCmdWaitEvents2KHR"
-]);
-var FULL_WRITE_VERBS = /* @__PURE__ */ new Set(["clear", "fill", "update"]);
-var DESCRIPTOR_BUFFER_METHODS = /* @__PURE__ */ new Set([
-  "vkCmdSetDescriptorBufferOffsetsEXT",
-  "vkCmdSetDescriptorBufferOffsets2EXT",
-  "vkCmdBindDescriptorBufferEmbeddedSamplersEXT"
-]);
-var VulkanResourceSource = class {
-  _db;
-  _bound = /* @__PURE__ */ new Map();
-  /** Vertex and index buffers bound per stream: stream -> "v<binding>" / "index" -> buffer id. */
-  _buffers = /* @__PURE__ */ new Map();
-  /** Streams that bound a descriptor buffer, whose contents the capture cannot see. */
-  _descriptorBuffers = /* @__PURE__ */ new Set();
-  _resources = /* @__PURE__ */ new Map();
-  constructor(db) {
-    this._db = db;
-  }
-  observe(cmd, stream) {
-    if (cmd.descriptors) {
-      let byPoint = this._bound.get(stream);
-      if (!byPoint) this._bound.set(stream, byPoint = /* @__PURE__ */ new Map());
-      let sets = byPoint.get(cmd.descriptors.bindPoint);
-      if (!sets) byPoint.set(cmd.descriptors.bindPoint, sets = /* @__PURE__ */ new Map());
-      for (const s of cmd.descriptors.sets) sets.set(s.set, s);
-      if (DESCRIPTOR_BUFFER_METHODS.has(cmd.method) && cmd.descriptors.sets.some((s) => !s.bindings.length)) {
-        this._descriptorBuffers.add(stream);
-      }
-      return;
-    }
-    const a = cmd.args;
-    if (!a) return;
-    if (DESCRIPTOR_BUFFER_METHODS.has(cmd.method)) {
-      this._descriptorBuffers.add(stream);
-    } else if (BIND_VERTEX_METHODS.has(cmd.method) && Array.isArray(a.pBuffers)) {
-      const first = num(a.firstBinding);
-      a.pBuffers.forEach((b, i) => {
-        const id = refId(b);
-        if (id !== null) this._streamBuffers(stream).set(`v${first + i}`, id);
-      });
-    } else if (BIND_INDEX_METHODS.has(cmd.method)) {
-      const id = refId(a.buffer);
-      if (id !== null) this._streamBuffers(stream).set("index", id);
-    }
-  }
-  passAccesses(cmd, ordinal) {
-    const decoded = decodePass(cmd, this._db);
-    if (!decoded) return null;
-    const accesses = [];
-    for (const att of decoded.attachments) {
-      const resource2 = this._imageResource(att.imageId, att.mipLevel, att.baseLayer);
-      if (!resource2) continue;
-      const loads = att.loadOp === "LOAD" || att.kind === "depth" && att.stencilLoadOp === "LOAD";
-      const stores = att.storeOp === "STORE" || att.kind === "depth" && att.stencilStoreOp === "STORE";
-      const kind = att.kind === "resolve" ? "resolve target" : `${att.kind} attachment`;
-      accesses.push({
-        resource: resource2,
-        mode: "write",
-        usage: `${kind} (${loads ? "load" : att.loadOp === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : "discard"})`,
-        discards: !loads,
-        dropped: !stores,
-        resolved: att.resolved
-      });
-      const resolve = this._imageResource(imageOfView(this._db, att.resolveViewId), 0, 0);
-      if (resolve) accesses.push({ resource: resolve, mode: "write", usage: "resolve target (discard/store)", discards: true });
-    }
-    return { kind: "render", label: this._passLabel(cmd, ordinal), accesses };
-  }
-  actionAccesses(cmd, stream) {
-    const accesses = [];
-    let unresolved = 0;
-    const sets = this._bound.get(stream)?.get(bindPointOf2(cmd.method));
-    if (sets) {
-      for (const set of sets.values()) {
-        for (const binding of set.bindings) {
-          const usage = descriptorUsage2(binding.type);
-          if (!usage) continue;
-          for (const d of binding.descriptors) {
-            if (!d) continue;
-            const bufferId = refId(d.buffer);
-            if (bufferId !== null) {
-              const resource2 = this._bufferResource(bufferId);
-              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
-              continue;
-            }
-            const viewId = refId(d.imageView);
-            if (viewId !== null) {
-              const resource2 = this._viewResource(viewId);
-              if (resource2) accesses.push({ resource: resource2, mode: usage.write ? "readwrite" : "read", usage: usage.name });
-              continue;
-            }
-            if (!d.immutable && !d.sampler && !d.bufferView) unresolved++;
-          }
-        }
-      }
-    }
-    if (this._descriptorBuffers.has(stream)) unresolved++;
-    if (!DISPATCH_METHODS.has(cmd.method) && !TRACE_METHODS.has(cmd.method)) {
-      for (const [binding, id] of this._streamBuffers(stream)) {
-        const resource2 = this._bufferResource(id);
-        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: binding === "index" ? "index buffer" : "vertex buffer" });
-      }
-    }
-    if (INDIRECT_METHODS.has(cmd.method) || cmd.method.includes("Indirect")) {
-      for (const key of ["buffer", "countBuffer"]) {
-        const resource2 = this._bufferResource(refId(cmd.args?.[key]));
-        if (resource2) accesses.push({ resource: resource2, mode: "read", usage: "indirect buffer" });
-      }
-    }
-    return { accesses, unresolved };
-  }
-  transferAccesses(cmd) {
-    const spec = TRANSFERS[cmd.method];
-    if (!spec || !cmd.args) return null;
-    const nested = spec.nested ? cmd.args[spec.nested] : null;
-    const a = isObject(nested) ? nested : cmd.args;
-    const accesses = [];
-    const names = [];
-    const add = (field2, mode) => {
-      const value = a[field2];
-      const id = refId(value);
-      if (id === null) return;
-      const isImage = field2.toLowerCase().includes("image");
-      const sub = isImage ? copySubresource(a, mode) : null;
-      const resource2 = sub ? this._imageResource(id, sub.mip, sub.layer) : this._bufferResource(id);
-      if (!resource2) return;
-      accesses.push({
-        resource: resource2,
-        mode,
-        usage: `${spec.verb} ${mode === "read" ? "src" : "dst"}`,
-        // A clear, fill or update replaces everything it touches; a copy region may not, so it is
-        // reported as preserving what was there and depending on the previous writer.
-        discards: mode === "write" && FULL_WRITE_VERBS.has(spec.verb)
-      });
-      if (mode === "write") names.push(resource2.label);
-    };
-    for (const f of spec.read) add(f, "read");
-    for (const f of spec.write) add(f, "write");
-    const verb = spec.verb.charAt(0).toUpperCase() + spec.verb.slice(1);
-    return { label: `${verb} \u2192 ${names.join(", ") || cmd.method}`, accesses };
-  }
-  computePassLabel(ordinal) {
-    return `Compute ${ordinal}`;
-  }
-  /**
-   * The subresources a pipeline barrier or event wait names. A barrier that also transitions an
-   * image layout or moves a resource between queue families is marked structural: those are
-   * required by the API whatever the frame's data dependencies are, so no rule may question them.
-   */
-  syncPoint(cmd) {
-    if (!BARRIER_METHODS2.has(cmd.method) || !cmd.args) return null;
-    const a = cmd.args;
-    const groups = isObject(a.pDependencyInfo) ? [a.pDependencyInfo] : [a];
-    const resources = [];
-    let structural = false;
-    for (const g of groups) {
-      for (const b of arrayOf2(g.pImageMemoryBarriers)) {
-        if (str(b.oldLayout) !== str(b.newLayout)) structural = true;
-        if (queueTransfer(b)) structural = true;
-        const range = isObject(b.subresourceRange) ? b.subresourceRange : null;
-        const resource2 = this._imageResource(refId(b.image), num(range?.baseMipLevel), num(range?.baseArrayLayer));
-        if (resource2) resources.push(resource2.key);
-      }
-      for (const b of arrayOf2(g.pBufferMemoryBarriers)) {
-        if (queueTransfer(b)) structural = true;
-        const resource2 = this._bufferResource(refId(b.buffer));
-        if (resource2) resources.push(resource2.key);
-      }
-    }
-    return { commandIndex: cmd.index, method: cmd.method, resources, structural };
-  }
-  _streamBuffers(stream) {
-    let m = this._buffers.get(stream);
-    if (!m) this._buffers.set(stream, m = /* @__PURE__ */ new Map());
-    return m;
-  }
-  // ------------------------------------------------------------------------------- resources
-  _viewResource(viewId) {
-    const view = this._db.getObject(viewId)?.descriptor ?? null;
-    const range = isObject(view?.subresourceRange) ? view.subresourceRange : null;
-    return this._imageResource(imageOfView(this._db, viewId), num(range?.baseMipLevel), num(range?.baseArrayLayer));
-  }
-  _imageResource(imageId, mip, layer) {
-    if (imageId === null) return null;
-    const object = this._db.getObject(imageId);
-    if (!object) return null;
-    const key = `image:${imageId}:m${mip}:l${layer}`;
-    const cached = this._resources.get(key);
-    if (cached) return cached;
-    const swapchain = isSwapchainImage(object) ? this._db.getObject(object.parentId)?.descriptor ?? null : null;
-    const d = object.descriptor;
-    const extent = isObject(d?.extent) ? d.extent : isObject(swapchain?.imageExtent) ? swapchain.imageExtent : null;
-    const mips = num(d?.mipLevels) || 1;
-    const layers = num(d?.arrayLayers) || num(swapchain?.imageArrayLayers) || 1;
-    const width = Math.max(1, num(extent?.width) >> mip);
-    const height = Math.max(1, num(extent?.height) >> mip);
-    const format = str(d?.format ?? swapchain?.imageFormat).replace("VK_FORMAT_", "");
-    const sub = [mips > 1 ? `mip ${mip}` : "", layers > 1 ? `layer ${layer}` : ""].filter(Boolean).join(" ");
-    const resource2 = {
-      key,
-      objectId: imageId,
-      type: "image",
-      label: sub ? `${object.name} ${sub}` : object.name,
-      detail: [width && height ? `${width}x${height}` : "", format].filter(Boolean).join("  "),
-      bytes: width * height * bytesPerPixel2(format),
-      presented: isSwapchainImage(object)
-    };
-    this._resources.set(key, resource2);
-    return resource2;
-  }
-  _bufferResource(bufferId) {
-    if (bufferId === null) return null;
-    const object = this._db.getObject(bufferId);
-    if (!object) return null;
-    const key = `buffer:${bufferId}`;
-    const cached = this._resources.get(key);
-    if (cached) return cached;
-    const size2 = num(object.descriptor?.size);
-    const resource2 = {
-      key,
-      objectId: bufferId,
-      type: "buffer",
-      label: object.name,
-      detail: size2 ? formatBytes4(size2) : "",
-      bytes: size2,
-      presented: false
-    };
-    this._resources.set(key, resource2);
-    return resource2;
-  }
-  _passLabel(cmd, ordinal) {
-    const a = cmd.args;
-    const begin = a && isObject(a.pRenderPassBegin) ? a.pRenderPassBegin : null;
-    if (begin) {
-      const rp = this._db.getObject(refId(begin.renderPass));
-      const fb = this._db.getObject(refId(begin.framebuffer));
-      return `Pass ${ordinal}: ${rp?.label || rp?.name || "?"}${fb?.label ? ` (${fb.label})` : ""}`;
-    }
-    const info = a && isObject(a.pRenderingInfo) ? a.pRenderingInfo : null;
-    const colors = info && Array.isArray(info.pColorAttachments) ? info.pColorAttachments.length : 0;
-    return `Pass ${ordinal}: rendering, ${colors} color attachment${colors === 1 ? "" : "s"}`;
-  }
-};
-function descriptorUsage2(type) {
-  if (type.includes("STORAGE_IMAGE")) return { name: "storage image", write: true };
-  if (type.includes("STORAGE_BUFFER")) return { name: "storage buffer", write: true };
-  if (type.includes("STORAGE_TEXEL_BUFFER")) return { name: "storage texel buffer", write: true };
-  if (type.includes("SAMPLED_IMAGE") || type.includes("COMBINED_IMAGE_SAMPLER")) return { name: "sampled", write: false };
-  if (type.includes("INPUT_ATTACHMENT")) return { name: "input attachment", write: false };
-  if (type.includes("UNIFORM_BUFFER") || type.includes("UNIFORM_TEXEL_BUFFER")) return { name: "uniform buffer", write: false };
-  return null;
-}
-function copySubresource(a, mode) {
-  const regions = firstArray(a, ["pRegions", "pImageBlits", "pBlits", "pImageCopies", "pBufferImageCopies", "pImageResolves"]);
-  const region = regions && isObject(regions[0]) ? regions[0] : null;
-  if (region) {
-    const sub = region[mode === "read" ? "srcSubresource" : "dstSubresource"] ?? region.imageSubresource;
-    if (isObject(sub)) return { mip: num(sub.mipLevel), layer: num(sub.baseArrayLayer) };
-  }
-  const ranges = firstArray(a, ["pRanges"]);
-  const range = ranges && isObject(ranges[0]) ? ranges[0] : null;
-  if (range) return { mip: num(range.baseMipLevel), layer: num(range.baseArrayLayer) };
-  return { mip: 0, layer: 0 };
-}
-function arrayOf2(v) {
-  return Array.isArray(v) ? v.filter(isObject) : [];
-}
-function queueTransfer(b) {
-  const src = str(b.srcQueueFamilyIndex);
-  const dst = str(b.dstQueueFamilyIndex);
-  return src !== dst && src !== "" && dst !== "";
-}
-function firstArray(a, keys) {
-  for (const key of keys) {
-    const v = a[key];
-    if (Array.isArray(v) && v.length) return v;
-  }
-  return null;
-}
-function isSwapchainImage(object) {
-  return object.cmd === "vkGetSwapchainImagesKHR";
-}
-function bytesPerPixel2(format) {
-  const bits = [...format.matchAll(/[RGBADSEX](\d+)/g)].reduce((sum, m) => sum + Number(m[1]), 0);
-  if (bits) return bits / 8;
-  if (format.includes("BC") || format.includes("ETC") || format.includes("ASTC")) return 1;
-  return 4;
-}
-function formatBytes4(bytes) {
-  if (bytes >= 1024 * 1024) return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-  if (bytes >= 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${bytes} B`;
-}
-
 // src/renderer/frame_graph.ts
+var NO_RESOURCES = {
+  observe: () => {
+  },
+  passAccesses: () => null,
+  actionAccesses: () => ({ accesses: [], unresolved: 0 }),
+  transferAccesses: () => null,
+  computePassLabel: (ordinal) => `Compute ${ordinal}`
+};
 var AccessSet = class {
   _byKey = /* @__PURE__ */ new Map();
   _usages = /* @__PURE__ */ new Map();
@@ -4580,8 +4714,7 @@ function buildFrameGraph(data, sets, source) {
   });
 }
 function frameRenderGraph(data, db) {
-  const source = data.api === "metal" ? new MetalResourceSource(db) : data.api === "d3d12" ? new D3D12ResourceSource(db) : new VulkanResourceSource(db);
-  return buildFrameGraph(data, data.sets, source);
+  return buildFrameGraph(data, data.sets, backendFor(data.api).resourceSource?.(db) ?? NO_RESOURCES);
 }
 
 // src/renderer/draw_stats.ts
@@ -6129,6 +6262,11 @@ function analyzeSpirvCached(data) {
 }
 
 // src/renderer/render_graph_analysis.ts
+var GENERIC_ADVICE = {
+  discard: "discarding the target at the end of the pass",
+  subpass: "On a tiled GPU the two passes cost a store and a load of the target; drawing both in one pass is what saves them. ",
+  transient: "a target that is discarded at the end of the pass and never stored, or one pass drawing both"
+};
 var SUPERSEDED_RULES = /* @__PURE__ */ new Set(["depth-store", "color-store", "mergeable-passes"]);
 var RULE_ORDER = ["overwritten-before-read", "mergeable-passes", "unread-store", "subpass-candidate", "transient-candidate", "oversynchronized-barrier"];
 var Folded = class {
@@ -6169,9 +6307,15 @@ var GraphAnalysis = class {
     this._blind = graph.nodes.some((n) => n.unresolvedReads > 0);
     this._api = graph.api;
   }
-  /** The API's own spelling of a piece of advice: the Vulkan, Metal or D3D12 wording. */
-  _wording(vulkan, metal, d3d12) {
-    return this._api === "metal" ? metal : this._api === "d3d12" ? d3d12 : vulkan;
+  /**
+   * The API's own spelling of a piece of advice: the Vulkan, Metal or D3D12 wording, or what a
+   * plugin's backend says for `key` (Backend.advice), or words that name no API at all.
+   */
+  _wording(vulkan, metal, d3d12, key) {
+    if (this._api === "metal") return metal;
+    if (this._api === "d3d12") return d3d12;
+    if (this._api === "vulkan") return vulkan;
+    return backendFor(this._api).advice?.[key] ?? GENERIC_ADVICE[key];
   }
   analyze() {
     this._unreadStores();
@@ -6211,7 +6355,7 @@ var GraphAnalysis = class {
       "unread-store",
       "medium",
       this._blind ? "medium" : "high",
-      `${count(folded.count, "write")} in the frame ${folded.count === 1 ? "reaches" : "reach"} memory that no later pass reads: ${folded.subjectText}. Discarding instead (${this._wording("store op DONT_CARE", "MTLStoreActionDontCare", "D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD in a BeginRenderPass, or DiscardResource after the pass")}) keeps the result in tile memory and skips the write. The graph only sees this capture, so a result the host reads back or the next frame consumes will look unread here${this._blindClause()}.`,
+      `${count(folded.count, "write")} in the frame ${folded.count === 1 ? "reaches" : "reach"} memory that no later pass reads: ${folded.subjectText}. Discarding instead (${this._wording("store op DONT_CARE", "MTLStoreActionDontCare", "D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD in a BeginRenderPass, or DiscardResource after the pass", "discard")}) keeps the result in tile memory and skips the write. The graph only sees this capture, so a result the host reads back or the next frame consumes will look unread here${this._blindClause()}.`,
       folded
     );
   }
@@ -6309,7 +6453,8 @@ var GraphAnalysis = class {
       `${count(folded.count, "render pass", "render passes")} ${folded.count === 1 ? "reads" : "read"} nothing but what the render pass right before rendered, at the same size: ${folded.subjectText}. ` + this._wording(
         "Recorded as a second subpass of one render pass, reading those images as input attachments, a tiled GPU keeps them in tile memory: no store, no sampling, and they can be transient. ",
         "Drawn in the same pass, a fragment shader can read the first result with framebuffer fetch ([[color(n)]]) and the intermediate target needs no memory. ",
-        "D3D12 has no subpasses; on a tiled GPU the two passes cost a store and a load of the target, so drawing both into one render target set is what saves them. "
+        "D3D12 has no subpasses; on a tiled GPU the two passes cost a store and a load of the target, so drawing both into one render target set is what saves them. ",
+        "subpass"
       ) + (allChecked ? "Their fragment shaders read each of those images once per pixel, which is what an input attachment offers, as long as that read is at the pixel's own position." : "That only holds where the shader reads each pixel once at its own position; one that filters its input, as a blur does, needs it as a texture."),
       folded
     );
@@ -6348,7 +6493,7 @@ var GraphAnalysis = class {
       "transient-candidate",
       "medium",
       this._blind ? "low" : "medium",
-      `${count(folded.count, "image")} ${folded.count === 1 ? "is" : "are"} written and then read only by the pass that follows, and never presented or copied: ${folded.subjectText}. A target used that way never has to reach memory: ${this._wording("TRANSIENT_ATTACHMENT usage with LAZILY_ALLOCATED memory, or an input attachment in a second subpass", "MTLStorageModeMemoryless, or an imageblock read in the second pass", "a transient render target (BeginRenderPass with DISCARD ending access, and a render pass tier that keeps it on chip), or one pass drawing both")}${this._blindClause()}.`,
+      `${count(folded.count, "image")} ${folded.count === 1 ? "is" : "are"} written and then read only by the pass that follows, and never presented or copied: ${folded.subjectText}. A target used that way never has to reach memory: ${this._wording("TRANSIENT_ATTACHMENT usage with LAZILY_ALLOCATED memory, or an input attachment in a second subpass", "MTLStorageModeMemoryless, or an imageblock read in the second pass", "a transient render target (BeginRenderPass with DISCARD ending access, and a render pass tier that keeps it on chip), or one pass drawing both", "transient")}${this._blindClause()}.`,
       folded
     );
   }
@@ -9901,8 +10046,8 @@ var FrameAnalysis = class {
   }
 };
 function analyzeFrame(data, db, graph) {
-  const vulkan = data.api === "metal" || data.api === "d3d12" ? null : new FrameAnalysis(db);
-  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() } : data.api === "d3d12" ? analyzeD3D12Frame(data, db) : analyzeMetalFrame(data, db);
+  const vulkan = data.api === "vulkan" ? new FrameAnalysis(db) : null;
+  const base = vulkan ? { findings: vulkan.analyze(data), byCommand: vulkan.byCommand() } : data.api === "d3d12" ? analyzeD3D12Frame(data, db) : data.api === "metal" ? analyzeMetalFrame(data, db) : backendFor(data.api).analyzeFrame?.(data, db) ?? { findings: [], byCommand: /* @__PURE__ */ new Map() };
   const sources = [base, analyzeCounters(data, db), analyzeSampling(data, db)];
   if (graph) sources.push(analyzeRenderGraph(graph, vulkan ? { filtersInput: (node2, imageId) => vulkan.filtersInput(node2.commandIndex, imageId) } : {}));
   const findings = [];
@@ -10572,9 +10717,9 @@ var ObjectDatabase = class _ObjectDatabase {
 
 // src/mcp/capture_store.ts
 var Capture = class {
-  constructor(id, path12, mtimeMs, bytes) {
+  constructor(id, path14, mtimeMs, bytes) {
     this.id = id;
-    this.path = path12;
+    this.path = path14;
     this.mtimeMs = mtimeMs;
     const capture = parseCaptureFile(bytes);
     const m = capture.manifest;
@@ -10665,7 +10810,7 @@ var Capture = class {
         const key = `${c2.object?.__id ?? 0}:${c2.secondary ?? 0}`;
         let stack = stacks.get(key);
         if (!stack || c2.method === "vkBeginCommandBuffer") stacks.set(key, stack = []);
-        if (sets.LABEL_BEGIN.has(c2.method)) stack.push(labelNameOf(c2));
+        if (sets.LABEL_BEGIN.has(c2.method)) stack.push(labelNameOf(c2, sets));
         const labels = stack.join(" / ");
         if (sets.LABEL_END.has(c2.method)) stack.pop();
         return labels;
@@ -10870,6 +11015,8 @@ function pushConstantOf(c2) {
   return { cmd: c2, stageFlags: str(a.stageFlags), offset: num(a.offset), size: num(a.size), data: pushConstantBytes(a) };
 }
 function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method)) {
+  const own = backendFor(data.api).drawState?.(data, db, cmd);
+  if (own) return own;
   const cmdSets = data.sets;
   const commands = data.commands;
   const state = emptyDrawState(bindPoint);
@@ -11156,7 +11303,7 @@ function argumentBufferEntries(type, data, db) {
   const index = new HandleIndex(db);
   const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
   const out = [];
-  const walk = (t, offset, path12, depth) => {
+  const walk = (t, offset, path14, depth) => {
     if (out.length >= MAX_ENTRIES || depth > 8) return;
     const handle = handleOf(t);
     if (handle) {
@@ -11175,16 +11322,16 @@ function argumentBufferEntries(type, data, db) {
           object = index.resource(value);
         }
       }
-      out.push({ path: path12, offset, kind: handle.metal, typeName: handle.name, value: value === null ? null : `0x${value.toString(16)}`, object, objectOffset });
+      out.push({ path: path14, offset, kind: handle.metal, typeName: handle.name, value: value === null ? null : `0x${value.toString(16)}`, object, objectOffset });
       return;
     }
     if (t.kind === "struct") {
-      for (const m of t.members) walk(m.type, offset + m.offset, path12 ? `${path12}.${m.name}` : m.name, depth + 1);
+      for (const m of t.members) walk(m.type, offset + m.offset, path14 ? `${path14}.${m.name}` : m.name, depth + 1);
     } else if (t.kind === "array") {
       const stride = t.stride || (t.element.kind === "opaque" ? 8 : t.element.size);
       if (stride <= 0) return;
       const count2 = t.count > 0 ? t.count : Math.floor((data.byteLength - offset) / stride);
-      for (let i = 0; i < count2 && out.length < MAX_ENTRIES; i++) walk(t.element, offset + i * stride, `${path12}[${i}]`, depth + 1);
+      for (let i = 0; i < count2 && out.length < MAX_ENTRIES; i++) walk(t.element, offset + i * stride, `${path14}[${i}]`, depth + 1);
     }
   };
   walk(type, 0, "", 0);
@@ -12149,6 +12296,23 @@ function commandDetail(c2, cmd, values) {
     stack: cmd.stack?.length ? stackLines(cmd.stack.map((a) => db.symbols.get(a) ?? { address: a, offset: 0 })) : void 0
   };
   const m = cmd.method;
+  const backend = backendFor(d.api);
+  if (!backend.builtin) {
+    const sections = backend.commandDetails?.(cmd, { data: d, db, nameOf: (id) => db.getObject(id)?.name ?? "" }) ?? [];
+    if (sections.length) out.details = sections.map((s) => sectionBrief(c2, s));
+    if (isAction(sets, m)) {
+      const state = drawState(d, db, cmd);
+      const reader = new StateReader(c2, state, values);
+      out.state = {
+        vertexBuffers: state.vertexBuffers.size ? reader.vertexBuffers([...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding)) : void 0,
+        indexBuffer: state.indexBuffer ? reader.indexBuffer(state.indexBuffer, cmd) : void 0,
+        renderTargets: sets.DRAW.has(m) ? reader.targetsOf(cmd) : void 0
+      };
+    } else if (sets.PASS_BEGIN.has(m)) {
+      out.renderTargets = new StateReader(c2, emptyDrawState(""), values).targetsOf(cmd);
+    }
+    return out;
+  }
   if (isAction(sets, m)) {
     out.state = new StateReader(c2, drawState(d, db, cmd), values).action(cmd);
   } else if (sets.BIND_PIPELINE.has(m)) {
@@ -12185,6 +12349,29 @@ function commandDetail(c2, cmd, values) {
     out.renderTargets = new StateReader(c2, emptyDrawState(""), values).targetsOf(cmd);
   }
   return out;
+}
+function detailValueBrief(c2, v) {
+  if (v === null || typeof v !== "object") return v;
+  if ("object" in v) return refText(c2.db, v.object) ?? v.text ?? null;
+  if ("texture" in v) {
+    const t = c2.data.capturedImage(v.texture);
+    return t ? `texture capture ${v.texture}: ${t.info.format.replace(/^VK_FORMAT_/, "")} ${t.info.width}x${t.info.height}${t.info.error ? ` (${t.info.error})` : ""} (read_texture)` : "not captured";
+  }
+  if ("buffer" in v) {
+    const b = c2.data.buffer(v.buffer);
+    return b ? `buffer capture ${v.buffer}: ${b.info.size} bytes${b.info.error ? ` (${b.info.error})` : ""} (read_buffer)` : "not captured";
+  }
+  return compact(v.args, c2.db);
+}
+function sectionBrief(c2, s) {
+  return {
+    title: s.title,
+    note: s.note,
+    ...s.rows?.length ? { rows: Object.fromEntries(s.rows.map(([k, v]) => [k, detailValueBrief(c2, v)])) } : {},
+    ...s.table ? { table: s.table.rows.map((r) => Object.fromEntries(s.table.columns.map((col, i) => [col, detailValueBrief(c2, r[i] ?? null)]))) } : {},
+    ...s.code ? { code: s.code.text.length > 4e3 ? `${s.code.text.slice(0, 4e3)}
+...` : s.code.text } : {}
+  };
 }
 function objectDetail(db, o) {
   const dependencies = [...o.dependencies];
@@ -12920,12 +13107,13 @@ function d3d12Environment(o) {
     ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
   };
 }
-function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false) {
+function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false, extraDlls = []) {
   return {
     exe: tools.launcher,
     args: [
       "--dll",
       tools.library,
+      ...extraDlls.flatMap((d) => ["--dll", d]),
       ...cwd ? ["--cwd", cwd] : [],
       ...followChildren ? ["--follow-children"] : [],
       ...follow.flatMap((f) => ["--follow", f]),
@@ -12936,8 +13124,8 @@ function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false) 
   };
 }
 function watchLaunch(tools, o) {
-  const { image, timeoutSeconds, once, follow, followChildren, ...environment } = o;
-  const env = Object.entries(d3d12Environment(environment)).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+  const { image, timeoutSeconds, once, follow, followChildren, extraDlls, extraEnv, ...environment } = o;
+  const env = Object.entries({ ...d3d12Environment(environment), ...extraEnv }).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
   return {
     exe: tools.launcher,
     args: [
@@ -12945,6 +13133,7 @@ function watchLaunch(tools, o) {
       image,
       "--dll",
       tools.library,
+      ...(extraDlls ?? []).flatMap((d) => ["--dll", d]),
       ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
       ...once ? ["--once"] : [],
       ...followChildren ? ["--follow-children"] : [],
@@ -12964,10 +13153,20 @@ function windowsLaunch(o) {
   } else {
     notes.push("Vulkan layer not found: build it (docs/BUILDING.md); only D3D12 will be captured");
   }
+  const plugins2 = (o.plugins ?? []).filter((p) => {
+    if (p.missing.length) notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
+    else if (p.inject.length && !o.d3d12) notes.push(`${p.plugin.manifest.name} capture library: not injected, since the launcher that injects it (the D3D12 tools) was not found`);
+    else return true;
+    return false;
+  });
+  for (const p of plugins2) {
+    Object.assign(env, p.env);
+    notes.push(`${p.plugin.manifest.name} capture library: ${p.inject.join(", ")} (plugin ${p.plugin.dir})`);
+  }
   if (o.d3d12) {
     const { tools, ...options } = o.d3d12;
     Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false, plugins2.flatMap((p) => p.inject)));
     notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
     if (o.followChildren) notes.push("capturing every process the target starts");
     if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
@@ -13332,9 +13531,9 @@ function spirvProfile(stage, target) {
   return `${prefix}_${model}`;
 }
 async function compileHlslForDebugging(container, stage, entryPoint, options = {}) {
-  const found = await dxbcSources(container, options.pdbDirs ?? []);
-  if (!found.ok) return { ok: false, log: found.text, tool: SHADER_TOOL };
-  const { files, compile } = found.sources;
+  const found2 = await dxbcSources(container, options.pdbDirs ?? []);
+  if (!found2.ok) return { ok: false, log: found2.text, tool: SHADER_TOOL };
+  const { files, compile } = found2.sources;
   const entry2 = entryPoint || compile?.entryPoint || "main";
   const profile = spirvProfile(stage, options.target || compile?.target || "");
   if (!profile) return { ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" };
@@ -13878,9 +14077,9 @@ var OpaqueValue = class {
   }
 };
 var Pointer = class {
-  constructor(cell, path12, type, storage, variable) {
+  constructor(cell, path14, type, storage, variable) {
     this.cell = cell;
-    this.path = path12;
+    this.path = path14;
     this.type = type;
     this.storage = storage;
     this.variable = variable;
@@ -14382,10 +14581,10 @@ var TypeTable = class {
    * Where an access path lands in a buffer: the byte offset and the type there. Null when the path
    * leaves the type (an index into a scalar), which the interpreter reports rather than guessing at.
    */
-  locate(ref, path12) {
+  locate(ref, path14) {
     let at = 0;
     let type = ref;
-    for (const index of path12) {
+    for (const index of path14) {
       const t = this.types[type];
       if (!t) return null;
       if (t.kind === "struct") {
@@ -19917,10 +20116,11 @@ function meshInput(data, db, cmd, names = /* @__PURE__ */ new Map()) {
   const d = state.pipeline?.descriptor;
   const assembly = d && isObject(d.pInputAssemblyState) ? d.pInputAssemblyState : null;
   const topology = vkTopologyOfD3D(str(dynamicValue(state, "topology", assembly?.topology ?? d?.PrimitiveTopologyType))) || "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST";
-  const args = drawArgs(data, cmd, notes);
+  const own = data.sets.drawArgsOf?.(cmd) ?? null;
+  const args = own ? { ...own, indexed: 0 } : drawArgs(data, cmd, notes);
   let ids = [];
   let indices = null;
-  const indexed = /Indexed/.test(cmd.method);
+  const indexed = own ? own.indexed : /Indexed/.test(cmd.method);
   if (indexed) {
     const ib = state.indexBuffer;
     const captured = ib ? data.buffer(ib.dataId) : null;
@@ -20311,8 +20511,8 @@ function accelerationScene(data, db, structureId) {
     const hit = parts2.get(blas);
     if (hit !== void 0) return hit;
     const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
-    const found = source ? geometryParts(data, source) : [];
-    const result = found.length ? found : null;
+    const found2 = source ? geometryParts(data, source) : [];
+    const result = found2.length ? found2 : null;
     parts2.set(blas, result);
     return result;
   };
@@ -20321,8 +20521,8 @@ function accelerationScene(data, db, structureId) {
     const hit = traversal.get(blas);
     if (hit !== void 0) return hit;
     const source = [...builds].reverse().find((b) => b.build.target === blas && !b.build.topLevel);
-    const found = source ? traversalGeometries(data, source) : [];
-    const result = found.length ? found : null;
+    const found2 = source ? traversalGeometries(data, source) : [];
+    const result = found2.length ? found2 : null;
     traversal.set(blas, result);
     return result;
   };
@@ -21317,11 +21517,11 @@ function memberMatrix(m, struct, member) {
   if (stride === void 0) return void 0;
   return { stride, rowMajor: m.memberDecoration(struct, member, 4 /* RowMajor */) !== void 0 };
 }
-function bufferLocation(m, blockType, path12, bytes) {
+function bufferLocation(m, blockType, path14, bytes) {
   let at = 0;
   let type = blockType;
   let matrix;
-  for (const index of path12) {
+  for (const index of path14) {
     const t = m.types.get(type);
     if (!t) return null;
     if (t.kind === "struct") {
@@ -22609,26 +22809,26 @@ var Invocation = class {
     for (let i = 0; i < ptr.path.length - 1; i++) parent = parent[ptr.path[i]];
     parent[ptr.path[ptr.path.length - 1]] = value;
   }
-  _loadBuffer(buffer, path12, limit = Infinity) {
+  _loadBuffer(buffer, path14, limit = Infinity) {
     const m = this.module;
-    const key = path12.join("/");
-    for (let n = path12.length; n >= 0; n--) {
-      const k = path12.slice(0, n).join("/");
+    const key = path14.join("/");
+    for (let n = path14.length; n >= 0; n--) {
+      const k = path14.slice(0, n).join("/");
       const stored = buffer.overrides.get(k);
       if (stored === void 0) continue;
       let value2 = stored;
-      for (const index of path12.slice(n)) value2 = Array.isArray(value2) ? value2[index] : 0;
+      for (const index of path14.slice(n)) value2 = Array.isArray(value2) ? value2[index] : 0;
       return cloneValue(value2);
     }
     const view = new DataView(buffer.bytes.buffer, buffer.bytes.byteOffset, buffer.bytes.byteLength);
     let value;
-    const loc = bufferLocation(m, buffer.type, path12, buffer.bytes.byteLength);
+    const loc = bufferLocation(m, buffer.type, path14, buffer.bytes.byteLength);
     if (loc) {
       value = readBuffer(m, view, loc.at, loc.type, loc.matrix, limit);
       if (loc.at >= buffer.bytes.byteLength && buffer.bytes.byteLength) this.warnings.add("a read past the captured end of a buffer reads zeros (the capture's Max KB truncated it?)");
     } else {
       value = readBuffer(m, view, 0, buffer.type, void 0, limit);
-      for (const index of path12) value = Array.isArray(value) ? value[index] : 0;
+      for (const index of path14) value = Array.isArray(value) ? value[index] : 0;
     }
     for (const [k, stored] of buffer.overrides) {
       if (!k.startsWith(key ? `${key}/` : "") || k === key) continue;
@@ -22848,8 +23048,8 @@ var Invocation = class {
         const x = a(0);
         const whole = mapScalars(x, (e) => Math.trunc(num3(e)));
         const member = this.module.types.get(inst.resultType);
-        const fs13 = member?.kind === "struct" ? scalarOf2(this.module, member.members[0]) : s;
-        const n = (value) => fs13 ? mapScalars(value, (e) => normalize(e, fs13)) : value;
+        const fs14 = member?.kind === "struct" ? scalarOf2(this.module, member.members[0]) : s;
+        const n = (value) => fs14 ? mapScalars(value, (e) => normalize(e, fs14)) : value;
         return [n(zipScalars(x, whole, (e, w) => num3(e) - num3(w))), n(whole)];
       }
       case 37:
@@ -24062,11 +24262,11 @@ function decodeAstcBlock(s, block, bw, bh, px, srgb) {
     for (let x = 0; x < bw; x++) {
       const gs = ds * x * (gw - 1) + 32 >> 6;
       const js = gs >> 4;
-      const fs13 = gs & 15;
-      const w11 = fs13 * ft + 8 >> 4;
+      const fs14 = gs & 15;
+      const w11 = fs14 * ft + 8 >> 4;
       const w10 = ft - w11;
-      const w01 = fs13 - w11;
-      const w00 = 16 - fs13 - ft + w11;
+      const w01 = fs14 - w11;
+      const w00 = 16 - fs14 - ft + w11;
       const infill = (plane) => weightAt(plane, js, jt) * w00 + weightAt(plane, js + 1, jt) * w01 + weightAt(plane, js, jt + 1) * w10 + weightAt(plane, js + 1, jt + 1) * w11 + 8 >> 4;
       const w0 = infill(0);
       const w1 = dual ? infill(1) : w0;
@@ -28439,20 +28639,201 @@ function coveredPixel(state, mesh, raster = rasterStateOf(state)) {
   return null;
 }
 
+// src/main/plugins.ts
+import fs9 from "node:fs";
+import os6 from "node:os";
+import path8 from "node:path";
+
+// src/shared/protocol.ts
+var PLUGIN_SDK_VERSION = 1;
+
+// src/main/plugins.ts
+function userPluginDir() {
+  if (process.env.GPU_INSPECTOR_HOME) return path8.join(process.env.GPU_INSPECTOR_HOME, "plugins");
+  const home = os6.homedir();
+  if (process.platform === "win32") return path8.join(process.env.APPDATA ?? path8.join(home, "AppData", "Roaming"), "gpu-inspector", "plugins");
+  if (process.platform === "darwin") return path8.join(home, "Library", "Application Support", "gpu-inspector", "plugins");
+  return path8.join(process.env.XDG_CONFIG_HOME ?? path8.join(home, ".config"), "gpu-inspector", "plugins");
+}
+function pluginSearchDirs(checkoutRoots2, packaged = []) {
+  const dirs = [];
+  for (const d of (process.env.GPU_INSPECTOR_PLUGINS ?? "").split(path8.delimiter)) if (d.trim()) dirs.push(d.trim());
+  dirs.push(userPluginDir());
+  for (const root of checkoutRoots2) dirs.push(path8.join(root, "build", "plugins"));
+  dirs.push(...packaged);
+  return dirs;
+}
+function readManifest(dir) {
+  const file = path8.join(dir, "plugin.json");
+  if (!fs9.existsSync(file)) return null;
+  let manifest;
+  try {
+    manifest = JSON.parse(fs9.readFileSync(file, "utf8"));
+  } catch (e) {
+    const id = path8.basename(dir);
+    return { manifest: { id, name: id, version: "", sdk: 0 }, dir, backend: null, error: `plugin.json does not parse: ${e.message}` };
+  }
+  const plugin = { manifest, dir, backend: null, error: null };
+  if (typeof manifest.id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(manifest.id)) {
+    plugin.error = "plugin.json needs an id: lower case letters, digits, - and _";
+    manifest.id = typeof manifest.id === "string" && manifest.id ? manifest.id : path8.basename(dir);
+    return plugin;
+  }
+  manifest.name ||= manifest.id;
+  manifest.version ||= "";
+  manifest.api ||= manifest.id;
+  if (typeof manifest.sdk !== "number" || manifest.sdk > PLUGIN_SDK_VERSION) {
+    plugin.error = `written for plugin SDK ${String(manifest.sdk)}; this GPU Inspector implements ${PLUGIN_SDK_VERSION}`;
+    return plugin;
+  }
+  if (manifest.backend) {
+    const backend = path8.resolve(dir, manifest.backend);
+    if (!isInside(dir, backend)) plugin.error = "the backend module is outside the plugin's directory";
+    else if (!fs9.existsSync(backend)) plugin.error = `the backend module ${manifest.backend} is missing (is the plugin built?)`;
+    else plugin.backend = backend;
+  }
+  return plugin;
+}
+function isInside(dir, file) {
+  const rel = path8.relative(path8.resolve(dir), path8.resolve(file));
+  return rel === "" || !rel.startsWith("..") && !path8.isAbsolute(rel);
+}
+function findPlugins(dirs) {
+  const found2 = /* @__PURE__ */ new Map();
+  const consider = (dir) => {
+    const p = readManifest(dir);
+    if (p && !found2.has(p.manifest.id)) found2.set(p.manifest.id, p);
+  };
+  for (const dir of dirs) {
+    let entries;
+    try {
+      if (!fs9.statSync(dir).isDirectory()) continue;
+      if (fs9.existsSync(path8.join(dir, "plugin.json"))) {
+        consider(dir);
+        continue;
+      }
+      entries = fs9.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) if (e.isDirectory()) consider(path8.join(dir, e.name));
+  }
+  return [...found2.values()];
+}
+function expand2(value, plugin, s) {
+  return value.replace(/\$\{port\}/g, String(s.port)).replace(/\$\{log\}/g, s.log ? "1" : "0").replace(/\$\{recordAlways\}/g, s.recordAlways ? "1" : "0").replace(/\$\{stacktraces\}/g, s.stacktraces ? "1" : "0").replace(/\$\{pluginDir\}/g, plugin.dir);
+}
+function pluginLaunches(plugins2, settings, platform = process.platform) {
+  const out = [];
+  for (const plugin of plugins2) {
+    if (plugin.error) continue;
+    const c2 = plugin.manifest.capture?.[platform];
+    if (!c2) continue;
+    const resolve = (files) => (files ?? []).map((f) => path8.resolve(plugin.dir, f));
+    const inject = platform === "win32" ? resolve(c2.inject) : [];
+    const preload = platform === "win32" ? [] : resolve(c2.preload);
+    const env = {};
+    for (const [k, v] of Object.entries(c2.env ?? {})) env[k] = expand2(String(v), plugin, settings);
+    const missing = [...inject, ...preload].filter((f) => !fs9.existsSync(f));
+    if (!inject.length && !preload.length && !Object.keys(env).length) continue;
+    out.push({ plugin, inject, preload, env, missing });
+  }
+  return out;
+}
+function applyPreloads(env, launches, variable) {
+  const notes = [];
+  const preload = [];
+  for (const p of launches) {
+    if (p.missing.length) {
+      notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
+      continue;
+    }
+    if (!p.preload.length) continue;
+    Object.assign(env, p.env);
+    preload.push(...p.preload);
+    notes.push(`${p.plugin.manifest.name} capture library: ${p.preload.join(", ")} (plugin ${p.plugin.dir})`);
+  }
+  if (preload.length) env[variable] = [...preload, ...env[variable] ? [env[variable]] : []].join(":");
+  return notes;
+}
+function pluginInfo(p) {
+  const rel = p.backend ? path8.relative(p.dir, p.backend).split(path8.sep).map(encodeURIComponent).join("/") : null;
+  return {
+    id: p.manifest.id,
+    name: p.manifest.name,
+    version: p.manifest.version,
+    api: p.manifest.api ?? p.manifest.id,
+    dir: p.dir,
+    backendUrl: rel ? `${PLUGIN_SCHEME}://${p.manifest.id}/${rel}` : null,
+    error: p.error
+  };
+}
+var PLUGIN_SCHEME = "gpuinsp-plugin";
+
+// src/mcp/plugins.ts
+import path9 from "node:path";
+import { pathToFileURL } from "node:url";
+
+// src/renderer/plugin_host.ts
+function pluginHost(context) {
+  return {
+    sdkVersion: PLUGIN_SDK_VERSION,
+    context,
+    emptySets: EMPTY_SETS,
+    util: { isObject, isHandleRef, num, str, refId, fmt, formatBytes }
+  };
+}
+async function activatePlugin(mod, info, context) {
+  const m = mod;
+  if (!m || typeof m.activate !== "function") throw new Error("the backend module exports no activate function");
+  const got = await m.activate(pluginHost(context));
+  const backends = Array.isArray(got) ? got : [got];
+  if (!backends.some((b) => b && b.id === info.api)) throw new Error(`activate returned no backend for "${info.api}", the api plugin.json names`);
+  for (const b of backends) {
+    registerBackend(Object.setPrototypeOf({ plugin: { id: info.id, version: info.version, dir: info.dir } }, b));
+  }
+  return registeredBackends().filter((b) => backends.some((x) => x.id === b.id));
+}
+
+// src/mcp/plugins.ts
+var found = null;
+function plugins() {
+  found ??= findPlugins(pluginSearchDirs(checkoutRoots(), installedLayerDirs().map((d) => path9.join(path9.dirname(d), "plugins"))));
+  return found;
+}
+async function loadPluginBackends() {
+  for (const p of plugins()) {
+    if (p.error || !p.backend) {
+      if (p.error) process.stderr.write(`gpu-inspector MCP server: plugin ${p.manifest.id}: ${p.error}
+`);
+      continue;
+    }
+    try {
+      await activatePlugin(await import(pathToFileURL(p.backend).href), pluginInfo(p), "mcp");
+    } catch (e) {
+      process.stderr.write(`gpu-inspector MCP server: plugin ${p.manifest.id}: the backend did not load: ${e.message}
+`);
+    }
+  }
+}
+function launchPlugins(port, recordAlways, stacktraces) {
+  return pluginLaunches(plugins(), { port, log: true, recordAlways, stacktraces });
+}
+
 // src/mcp/live_session.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs11 from "node:fs";
+import fs12 from "node:fs";
 import net2 from "node:net";
-import os7 from "node:os";
-import path10 from "node:path";
+import os8 from "node:os";
+import path12 from "node:path";
 import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/main/android.ts
 import { execFile as execFile4, execFileSync as execFileSync2, spawn as spawn2 } from "node:child_process";
 import crypto from "node:crypto";
-import fs9 from "node:fs";
-import os6 from "node:os";
-import path8 from "node:path";
+import fs10 from "node:fs";
+import os7 from "node:os";
+import path10 from "node:path";
 var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
 var LAYER_LIB = "libVkLayer_inspector_capture.so";
 var LAYER_APK = "gpu_inspector_layer.apk";
@@ -28470,18 +28851,18 @@ function findAdb() {
   const candidates = [];
   if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
   for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
-    if (process.env[v]) candidates.push(path8.join(process.env[v], "platform-tools", exe));
+    if (process.env[v]) candidates.push(path10.join(process.env[v], "platform-tools", exe));
   }
   if (process.platform === "win32") {
-    if (process.env.LOCALAPPDATA) candidates.push(path8.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
+    if (process.env.LOCALAPPDATA) candidates.push(path10.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
   } else if (process.platform === "darwin") {
-    candidates.push(path8.join(os6.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
+    candidates.push(path10.join(os7.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
   } else {
-    candidates.push(path8.join(os6.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
+    candidates.push(path10.join(os7.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
   }
-  for (const c2 of candidates) if (fs9.existsSync(c2)) return c2;
-  for (const dir of (process.env.PATH ?? "").split(path8.delimiter)) {
-    if (dir && fs9.existsSync(path8.join(dir, exe))) return path8.join(dir, exe);
+  for (const c2 of candidates) if (fs10.existsSync(c2)) return c2;
+  for (const dir of (process.env.PATH ?? "").split(path10.delimiter)) {
+    if (dir && fs10.existsSync(path10.join(dir, exe))) return path10.join(dir, exe);
   }
   return null;
 }
@@ -28549,19 +28930,19 @@ async function resolveActivity(adbPath, serial, pkg) {
 }
 function findAndroidLayer(candidates) {
   for (const dir of candidates) {
-    const libRoot = path8.join(dir, "lib");
-    if (!fs9.existsSync(libRoot)) continue;
+    const libRoot = path10.join(dir, "lib");
+    if (!fs10.existsSync(libRoot)) continue;
     const libs = {};
-    for (const abi of fs9.readdirSync(libRoot)) {
-      const lib = path8.join(libRoot, abi, LAYER_LIB);
-      if (fs9.existsSync(lib)) libs[abi] = lib;
+    for (const abi of fs10.readdirSync(libRoot)) {
+      const lib = path10.join(libRoot, abi, LAYER_LIB);
+      if (fs10.existsSync(lib)) libs[abi] = lib;
     }
     if (!Object.keys(libs).length) continue;
-    const apk = path8.join(dir, LAYER_APK);
+    const apk = path10.join(dir, LAYER_APK);
     let apkInfo = null;
-    if (fs9.existsSync(apk)) {
+    if (fs10.existsSync(apk)) {
       try {
-        apkInfo = JSON.parse(fs9.readFileSync(`${apk}.json`, "utf8"));
+        apkInfo = JSON.parse(fs10.readFileSync(`${apk}.json`, "utf8"));
       } catch {
         apkInfo = null;
       }
@@ -28728,7 +29109,7 @@ var AndroidTarget = class {
       throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
     }
     const lib = layer.libs[abi];
-    const local = crypto.createHash("md5").update(fs9.readFileSync(lib)).digest("hex");
+    const local = crypto.createHash("md5").update(fs10.readFileSync(lib)).digest("hex");
     let remote = "";
     try {
       remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${LAYER_LIB}`)).trim().split(/\s+/)[0] ?? "";
@@ -28880,43 +29261,43 @@ var FrameReader = class {
 
 // src/main/metal.ts
 import { execFileSync as execFileSync3, spawnSync } from "node:child_process";
-import fs10 from "node:fs";
-import path9 from "node:path";
+import fs11 from "node:fs";
+import path11 from "node:path";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
-var moduleDir2 = path9.dirname(fileURLToPath2(import.meta.url));
+var moduleDir2 = path11.dirname(fileURLToPath2(import.meta.url));
 var CAPTURE_LIBRARY2 = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path9.resolve(moduleDir2, "..", "..", "..", "..")], packaged = [path9.join(process.resourcesPath ?? "", "layer")]) {
+function findCaptureLibrary(roots = [path11.resolve(moduleDir2, "..", "..", "..", "..")], packaged = [path11.join(process.resourcesPath ?? "", "layer")]) {
   const candidates = [];
   if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
   for (const root of roots) {
     for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-      candidates.push(path9.join(root, dir, CAPTURE_LIBRARY2));
+      candidates.push(path11.join(root, dir, CAPTURE_LIBRARY2));
     }
   }
-  for (const dir of packaged) candidates.push(path9.join(dir, CAPTURE_LIBRARY2));
-  return candidates.find((p) => fs10.existsSync(p)) ?? null;
+  for (const dir of packaged) candidates.push(path11.join(dir, CAPTURE_LIBRARY2));
+  return candidates.find((p) => fs11.existsSync(p)) ?? null;
 }
 function resolveExecutable(exe) {
   if (!exe.endsWith(".app")) return exe;
-  const macOS = path9.join(exe, "Contents", "MacOS");
-  const plist = path9.join(exe, "Contents", "Info.plist");
-  if (fs10.existsSync(plist)) {
+  const macOS = path11.join(exe, "Contents", "MacOS");
+  const plist = path11.join(exe, "Contents", "Info.plist");
+  if (fs11.existsSync(plist)) {
     try {
       const name = execFileSync3(
         "/usr/libexec/PlistBuddy",
         ["-c", "Print :CFBundleExecutable", plist],
         { encoding: "utf8" }
       ).trim();
-      const candidate = path9.join(macOS, name);
-      if (name && fs10.existsSync(candidate)) return candidate;
+      const candidate = path11.join(macOS, name);
+      if (name && fs11.existsSync(candidate)) return candidate;
     } catch {
     }
   }
-  const byBundleName = path9.join(macOS, path9.basename(exe, ".app"));
-  if (fs10.existsSync(byBundleName)) return byBundleName;
+  const byBundleName = path11.join(macOS, path11.basename(exe, ".app"));
+  if (fs11.existsSync(byBundleName)) return byBundleName;
   try {
-    const entries = fs10.readdirSync(macOS);
-    if (entries.length === 1) return path9.join(macOS, entries[0]);
+    const entries = fs11.readdirSync(macOS);
+    if (entries.length === 1) return path11.join(macOS, entries[0]);
   } catch {
   }
   return exe;
@@ -28932,7 +29313,7 @@ function injectionBlockedReason(exe) {
   const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
   const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
   if (hasDyld && hasLibrary) return null;
-  return `${path9.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+  return `${path11.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
 
   /usr/bin/codesign --force --deep --sign - --options runtime \\
     --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
@@ -29246,34 +29627,34 @@ var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
 ]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
-  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path10.join(os7.tmpdir(), "gpu-inspector-captures");
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path12.join(os8.tmpdir(), "gpu-inspector-captures");
 }
 function checkoutRoots() {
   const roots = [];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  roots.push(path10.resolve(path10.dirname(fileURLToPath3(import.meta.url)), "..", ".."));
+  roots.push(path12.resolve(path12.dirname(fileURLToPath3(import.meta.url)), "..", ".."));
   return roots;
 }
 function installedLayerDirs() {
-  const home = os7.homedir();
+  const home = os8.homedir();
   if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path10.join(home, "AppData", "Local");
-    const apps = [path10.join(local, "Programs", "gpu-inspector"), path10.join(local, "Programs", "GPU Inspector")];
+    const local = process.env.LOCALAPPDATA ?? path12.join(home, "AppData", "Local");
+    const apps = [path12.join(local, "Programs", "gpu-inspector"), path12.join(local, "Programs", "GPU Inspector")];
     for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(path10.join(programFiles, "GPU Inspector"));
+      if (programFiles) apps.push(path12.join(programFiles, "GPU Inspector"));
     }
-    return apps.map((dir) => path10.join(dir, "resources", "layer"));
+    return apps.map((dir) => path12.join(dir, "resources", "layer"));
   }
   if (process.platform === "darwin") {
-    return ["/Applications", path10.join(home, "Applications")].map((dir) => path10.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+    return ["/Applications", path12.join(home, "Applications")].map((dir) => path12.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
   }
   return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
 }
 function androidLayer() {
   const candidates = [
     process.env.INSPECTOR_ANDROID_LAYER_DIR,
-    ...checkoutRoots().map((root) => path10.join(root, "build", "android")),
-    ...installedLayerDirs().map((dir) => path10.join(dir, "android"))
+    ...checkoutRoots().map((root) => path12.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path12.join(dir, "android"))
   ].filter((d) => !!d);
   return findAndroidLayer(candidates);
 }
@@ -29332,11 +29713,14 @@ var LiveSession = class {
   get connected() {
     return this._socket !== null && !this._socket.destroyed;
   }
-  /** The API the capture library reports objects of; null before any arrived. */
+  /**
+   * The API the capture library reports objects of, by their type names' prefixes (backend.ts):
+   * a built-in API's, or a plugin's; null before any arrived.
+   */
   get api() {
     for (const type of this.database.objectsByType.keys()) {
-      if (type.startsWith("MTL")) return "metal";
-      if (type.startsWith("ID3D12") || type.startsWith("IDXGI")) return "d3d12";
+      const b = backendForObjectType(type);
+      if (b && b.id !== "vulkan") return b.id;
     }
     return this.database.allObjects.size ? "vulkan" : null;
   }
@@ -29581,16 +29965,16 @@ var LiveSession = class {
     });
     let target;
     if (file) {
-      target = path10.resolve(file);
-      fs11.mkdirSync(path10.dirname(target), { recursive: true });
+      target = path12.resolve(file);
+      fs12.mkdirSync(path12.dirname(target), { recursive: true });
     } else {
       const dir = capturesDir();
-      fs11.mkdirSync(dir, { recursive: true });
+      fs12.mkdirSync(dir, { recursive: true });
       const name = captureFileName(this.name, data.frame, data.frames);
-      target = path10.join(dir, name);
-      for (let n = 2; fs11.existsSync(target); n++) target = path10.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+      target = path12.join(dir, name);
+      for (let n = 2; fs12.existsSync(target); n++) target = path12.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
     }
-    fs11.writeFileSync(target, bytes);
+    fs12.writeFileSync(target, bytes);
     return target;
   }
   /**
@@ -29668,8 +30052,8 @@ var SessionManager = class {
   _latest = null;
   /** Launches an application with the capture library in it and waits for it to connect. */
   async launch(o, waitMs) {
-    const requested = path10.resolve(o.exe);
-    if (!fs11.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const requested = path12.resolve(o.exe);
+    if (!fs12.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
     const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
@@ -29677,7 +30061,7 @@ var SessionManager = class {
     let spawnArgs = args;
     let env;
     const notes = [];
-    const cwd = o.cwd && fs11.existsSync(o.cwd) ? o.cwd : path10.dirname(requested);
+    const cwd = o.cwd && fs12.existsSync(o.cwd) ? o.cwd : path12.dirname(requested);
     if (process.platform === "darwin") {
       const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
       if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
@@ -29686,6 +30070,7 @@ var SessionManager = class {
       if (blocked) throw new Error(blocked);
       env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
       notes.push(`capture library: ${library}`);
+      notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "DYLD_INSERT_LIBRARIES"));
     } else {
       const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
       const d3d12 = process.platform === "win32" ? findD3D12Tools(checkoutRoots(), installedLayerDirs()) : null;
@@ -29718,6 +30103,7 @@ var SessionManager = class {
           env: { ...process.env, ...o.env },
           vulkan,
           follow: o.follow,
+          plugins: launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true),
           d3d12: d3d12 ? {
             tools: d3d12,
             port,
@@ -29735,10 +30121,11 @@ var SessionManager = class {
       } else {
         env = { ...process.env, ...o.env, ...vulkanLayerEnvironment(vulkan) };
         notes.push(`layer: ${layerDir}`);
+        notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "LD_PRELOAD"));
       }
       if (validationNote) notes.push(validationNote);
     }
-    const session = new LiveSession(`app-${++this._counter}`, `${path10.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    const session = new LiveSession(`app-${++this._counter}`, `${path12.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
     session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
     for (const note of notes) session.appendLog(note);
     this._sessions.set(session.id, session);
@@ -29759,7 +30146,7 @@ var SessionManager = class {
    */
   async waitForApp(o, waitMs) {
     if (process.platform !== "win32") throw new Error("Waiting for an application to start is a Windows and Direct3D 12 feature; on other platforms launch_app starts it with the capture library in it.");
-    const image = path10.basename(o.image);
+    const image = path12.basename(o.image);
     if (!image) throw new Error(`Pass the application's executable name ("TestVulkan.exe") or its full path as image.`);
     const d3d12 = findD3D12Tools(checkoutRoots(), installedLayerDirs());
     if (!d3d12) {
@@ -29767,7 +30154,10 @@ var SessionManager = class {
     }
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const extras = launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true).filter((p) => !p.missing.length && p.inject.length);
     const watch = watchLaunch(d3d12, {
+      extraDlls: extras.flatMap((p) => p.inject),
+      extraEnv: Object.assign({}, ...extras.map((p) => p.env)),
       image: o.image,
       timeoutSeconds: Math.ceil(waitMs / 1e3),
       once: true,
@@ -29927,6 +30317,9 @@ function debugTools(store) {
         const isDispatch = c2.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
         const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"], isDispatch ? "compute" : "fragment");
+        if (!backendFor(c2.data.api).builtin) {
+          return jsonResult({ capture: c2.id, command, stage, note: `The shader debugger interprets SPIR-V (Vulkan, and D3D12's HLSL compiled to it) and MSL; ${apiDisplayName(c2.data.api)} shaders are not among them.` });
+        }
         const state = drawState(c2.data, c2.db, cmd);
         const inputNames = /* @__PURE__ */ new Map();
         for (const v of vertexInputs(c2, state)) if (v.location !== void 0 && v.name) inputNames.set(v.location, v.name);
@@ -31159,20 +31552,20 @@ function entryOf(model) {
   if (!a) return null;
   return a.entryPoints.find((e) => e.name === model.entryPoint && e.stage === model.stage) ?? a.entryPoints.find((e) => e.name === model.entryPoint) ?? a.entryPoints.find((e) => e.stage === model.stage) ?? null;
 }
-function functionTree(fn, byId, factor, path12, depth) {
+function functionTree(fn, byId, factor, path14, depth) {
   const n = node("function", fn.name || `function ${fn.id}`);
   n.functionId = fn.id;
   n.totalCost = weighCost(fn.inclusive) * factor;
   n.selfCost = weighCost(fn.cost) * factor;
   n.dimension = dominantDimension(fn.inclusive);
   if (depth < 24) {
-    path12.add(fn.id);
+    path14.add(fn.id);
     for (const calleeId of fn.calls) {
       const callee = byId.get(calleeId);
-      if (!callee || path12.has(calleeId)) continue;
-      n.children.push(functionTree(callee, byId, factor, path12, depth + 1));
+      if (!callee || path14.has(calleeId)) continue;
+      n.children.push(functionTree(callee, byId, factor, path14, depth + 1));
     }
-    path12.delete(fn.id);
+    path14.delete(fn.id);
   }
   if (fn.lines.length) {
     const shown = fn.lines.slice(0, MAX_LINE_FRAMES);
@@ -31652,6 +32045,9 @@ var IMAGE_PARAMS = {
   texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "[x, y] texel coordinates to read exactly (up to 64)." }
 };
 var NO_D3D12_REPLAY = "not available for D3D12 captures (no replay)";
+function noReplay(api) {
+  return api === "d3d12" ? NO_D3D12_REPLAY : `not available for ${apiDisplayName(api)} captures (no replay)`;
+}
 function isD3D12Pipeline2(o) {
   return o.type === "ID3D12PipelineState";
 }
@@ -31864,7 +32260,7 @@ function reflectionDetail(r) {
   };
 }
 function sourceDetail(spirv, maxChars) {
-  const { info, found } = debugInfoWithSources(spirv);
+  const { info, found: found2 } = debugInfoWithSources(spirv);
   if (!info || !hasEmbeddedSource(info)) {
     const named = (info?.files ?? []).map((f) => f.name).filter(Boolean);
     const roots = searchPaths("sourceRoots").dirs;
@@ -31879,7 +32275,7 @@ function sourceDetail(spirv, maxChars) {
     left -= f.text.length;
     return { name: f.name || void 0, main: i === info.mainFile || void 0, fromThisMachine: f.fromHost || void 0, text };
   });
-  return { language: info.language, debugInfo: describeDebugInfo(info), foundOnThisMachine: found.length ? found : void 0, files };
+  return { language: info.language, debugInfo: describeDebugInfo(info), foundOnThisMachine: found2.length ? found2 : void 0, files };
 }
 function analysisDetail(spirv, entryPoint) {
   const a = analyzeSpirvCached(spirv);
@@ -32381,7 +32777,7 @@ function resourceTools(store) {
           return jsonResult({ capture: c2.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures. For Metal shaders, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
         }
         if (d.api !== "vulkan") {
-          return jsonResult({ capture: c2.id, note: "The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for D3D12 captures (DXBC/DXIL). get_shader has a D3D12 pipeline's reflection, source and disassembly." });
+          return jsonResult({ capture: c2.id, note: d.api === "d3d12" ? "The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for D3D12 captures (DXBC/DXIL). get_shader has a D3D12 pipeline's reflection, source and disassembly." : `The static shader analysis reads SPIR-V, so it covers Vulkan captures; it is not available for ${apiDisplayName(d.api)} captures.` });
         }
         const rows = [];
         for (const [pipelineId, uses] of pipelineUses(d)) {
@@ -32444,7 +32840,7 @@ function resourceTools(store) {
           return jsonResult({ capture: c2.id, note: "The flame graph weighs SPIR-V shaders, so it covers Vulkan captures. For Metal, get_bottlenecks has each pass's vertex/fragment split, and GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
         }
         if (c2.data.api !== "vulkan") {
-          return jsonResult({ capture: c2.id, note: `The flame graph weighs SPIR-V shaders, so it covers Vulkan captures, and its measured draws are ${NO_D3D12_REPLAY}. get_bottlenecks has each pass's time and counters.` });
+          return jsonResult({ capture: c2.id, note: `The flame graph weighs SPIR-V shaders, so it covers Vulkan captures, and its measured draws are ${noReplay(c2.data.api)}. get_bottlenecks has each pass's time and counters.` });
         }
         let drawNote;
         if (boolArg(args, "measureDraws", true) && !c2.data.drawStats) {
@@ -32482,9 +32878,9 @@ function resourceTools(store) {
         let root = result.root;
         const pass = optionalInt(args, "pass");
         if (pass !== void 0) {
-          const found = root.children.find((n) => n.command && c2.passOf(n.command.index) === pass);
-          if (!found) throw new Error(`Pass ${pass} is not in the flame graph: it has ${root.children.length} passes with draws or dispatches (get_bottlenecks lists every pass).`);
-          root = found;
+          const found2 = root.children.find((n) => n.command && c2.passOf(n.command.index) === pass);
+          if (!found2) throw new Error(`Pass ${pass} is not in the flame graph: it has ${root.children.length} passes with draws or dispatches (get_bottlenecks lists every pass).`);
+          root = found2;
         }
         const total = root.totalCost;
         const view = { c: c2, total, depth: intArg(args, "depth", 6, 1, 32), minShare: Math.min(1, Math.max(0, numberArg(args, "minShare") ?? 0.01)) };
@@ -32522,7 +32918,7 @@ function resourceTools(store) {
           return jsonResult({ capture: c2.id, note: "Ablation replays a Vulkan capture. For Metal, GPU Inspector's Xcode Trace button writes a .gputrace whose shader profiler has per-line costs." });
         }
         if (c2.data.api !== "vulkan") {
-          return jsonResult({ capture: c2.id, note: `Ablation replays a Vulkan capture: ${NO_D3D12_REPLAY}.` });
+          return jsonResult({ capture: c2.id, note: `Ablation replays a Vulkan capture: ${noReplay(c2.data.api)}.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) throw new Error(`Measuring a shader replays the capture, and ${NO_REPLAY_TOOL}`);
@@ -32538,10 +32934,10 @@ function resourceTools(store) {
             for (const ch2 of n.children) walk(ch2);
           };
           walk(tree.root);
-          const found = best;
-          if (!found || !found.command) throw new Error("No shader stage of the frame is weighed in the flame graph: pass a command.");
-          command = found.command.index;
-          stage = found.stage;
+          const found2 = best;
+          if (!found2 || !found2.command) throw new Error("No shader stage of the frame is weighed in the flame graph: pass a command.");
+          command = found2.command.index;
+          stage = found2.stage;
         }
         const cmd = c2.data.commands[command];
         if (!cmd) throw new Error(`The capture has no command ${command}.`);
@@ -32624,7 +33020,8 @@ function resourceTools(store) {
 
 // src/renderer/overdraw.ts
 function measuresWhileCapturing(api) {
-  return api === "metal" || api === "d3d12";
+  const live = backendFor(api).live;
+  return live.overdraw || live.pixelHistory;
 }
 var OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
 function overdrawCount(o, x, y) {
@@ -32698,8 +33095,8 @@ function parseOverdrawFile(bytes) {
 }
 
 // src/mcp/tools.ts
-import fs12 from "node:fs";
-import path11 from "node:path";
+import fs13 from "node:fs";
+import path13 from "node:path";
 
 // src/renderer/pixel_history.ts
 function hexBytes(text) {
@@ -32880,7 +33277,7 @@ function parseExportSummary(data) {
   };
 }
 function exportsToCpp(api) {
-  return api === "vulkan" || api === "d3d12" || api === "metal";
+  return !!api && backendFor(api).replay.exportCpp;
 }
 function exportFolderName(label) {
   const stem = label.replace(/\.gpucap$/i, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
@@ -33107,7 +33504,7 @@ function captureNotes(c2) {
   if (!d.passTimings.size) {
     notes.push('No pass timings: the capture was taken without "Profile passes", so it has no GPU times, no Frame Bound verdict and no GPU Bottlenecks report. Capture again with it on to profile.');
   } else if (!c2.metrics.withCounters) {
-    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : d.api === "d3d12" ? "The passes carry timestamps but no pipeline statistics (the capture library's statistics queries did not resolve), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured.");
+    notes.push(d.api === "metal" ? "The passes carry timestamps only (the GPU exposes no statistic counters through public Metal), so overdraw and fragments per primitive are not measured." : d.api === "d3d12" ? "The passes carry timestamps but no pipeline statistics (the capture library's statistics queries did not resolve), so overdraw and fragments per primitive are not measured." : d.api === "vulkan" ? "The passes carry timestamps but no pipeline statistics (the device lacks pipelineStatisticsQuery, or the layer could not enable it), so overdraw and fragments per primitive are not measured." : "The passes carry timestamps but no pipeline statistics, so overdraw and fragments per primitive are not measured.");
   }
   const failedImages = d.textures.filter((t) => t.info.error).length;
   if (failedImages) notes.push(`${failedImages} image read-backs failed (list_textures says why).`);
@@ -33361,7 +33758,7 @@ function captureTools(store) {
       readOnly: true,
       handler: () => {
         const open = store.list();
-        const recent = [...new Set(recentCaptureFiles().map((p) => path11.normalize(p)))];
+        const recent = [...new Set(recentCaptureFiles().map((p) => path13.normalize(p)))];
         return jsonResult({
           open: open.map((c2) => ({
             capture: c2.id,
@@ -33375,8 +33772,8 @@ function captureTools(store) {
           })),
           recent: recent.map((file) => ({
             file,
-            missing: fs12.existsSync(file) ? void 0 : true,
-            open: open.find((c2) => c2.path === path11.resolve(file))?.id
+            missing: fs13.existsSync(file) ? void 0 : true,
+            open: open.find((c2) => c2.path === path13.resolve(file))?.id
           })),
           note: recent.length ? void 0 : `No recent captures in ${settingsFile()}.`
         });
@@ -33509,8 +33906,8 @@ function captureTools(store) {
         }
         const { tool, missing } = findExportTool(c2.data.api, checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `Export to C++ needs the capture replayed, and ${missing}` });
-        const parent = stringArg(args, "directory") ?? path11.dirname(c2.path);
-        const dir = path11.join(parent, exportFolderName(path11.basename(c2.path)));
+        const parent = stringArg(args, "directory") ?? path13.dirname(c2.path);
+        const dir = path13.join(parent, exportFolderName(path13.basename(c2.path)));
         const run2 = await replayServers.run(tool, c2.path, { kind: "export", dir });
         if (!run2.data) return jsonResult({ capture: c2.id, note: `The replay could not export the capture: ${run2.error ?? "no project was written"}` });
         const e = parseExportSummary(run2.data);
@@ -33547,7 +33944,7 @@ function captureTools(store) {
       handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         if (c2.data.api !== "vulkan") {
-          return jsonResult({ capture: c2.id, note: `Hardware counters are read by replaying the capture, and ${c2.data.api === "metal" ? "the Metal replay serves no analyses; use GPU Inspector's Xcode Trace for Metal's own counter sets" : "D3D12 captures do not replay yet"}.` });
+          return jsonResult({ capture: c2.id, note: `Hardware counters are read by replaying the capture, and ${c2.data.api === "metal" ? "the Metal replay serves no analyses; use GPU Inspector's Xcode Trace for Metal's own counter sets" : `${apiDisplayName(c2.data.api)} captures do not replay for them here`}.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `Hardware counters need the capture replayed, and ${NO_REPLAY_TOOL}` });
@@ -33723,7 +34120,7 @@ function captureTools(store) {
           if (!c2.data.pixelHistory) {
             return jsonResult({
               capture: c2.id,
-              note: `This ${metal ? "Metal" : "D3D12"} capture did not follow a pixel. The capture library follows one while it captures: capture_frames with pixelHistory { texture, x, y } (a render target's id from list_textures; ${metal ? "a drawable's follows the next frame's drawable" : "a swap chain's back buffer follows whichever one the next frame renders into"}), then get_pixel_history on that capture.`
+              note: `This ${apiDisplayName(c2.data.api)} capture did not follow a pixel. The capture library follows one while it captures: capture_frames with pixelHistory { texture, x, y } (a render target's id from list_textures; ${metal ? "a drawable's follows the next frame's drawable" : "a swap chain's back buffer follows whichever one the next frame renders into"}), then get_pixel_history on that capture.`
             });
           }
           const h2 = parsePixelHistory(c2.data.pixelHistory);
@@ -33779,6 +34176,9 @@ function captureTools(store) {
         const cmd = c2.data.commands[index];
         if (!cmd || !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${index} is not a draw: get_draw_overlay takes a draw command (list_commands with kind draw).`);
         let o;
+        if (c2.data.api !== "vulkan" && !backendFor(c2.data.api).live.drawOverlay) {
+          return jsonResult({ capture: c2.id, command: index, note: `Draw overlays are not available for ${apiDisplayName(c2.data.api)} captures: neither a replay nor the capture library measures them.` });
+        }
         if (c2.data.api === "vulkan") {
           const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
           if (!tool) return jsonResult({ capture: c2.id, note: `A draw overlay replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
@@ -33789,7 +34189,7 @@ function captureTools(store) {
           o = c2.data.drawOverlays.get(index);
           if (!o) {
             const measured = [...c2.data.drawOverlays.values()][0];
-            const api = c2.data.api === "metal" ? "Metal" : "D3D12";
+            const api = apiDisplayName(c2.data.api);
             return jsonResult({ capture: c2.id, command: index, note: measured ? `This capture measured draw ${measured.command}, not ${index}: a ${api} draw overlay is measured in the application as the frame is captured, one draw per capture.` : `A ${api} capture's draw overlays are measured in the application as the frame is captured, so this one has none: ask for one in the app's render target tab, which captures again.` });
           }
         }
@@ -33837,7 +34237,7 @@ function captureTools(store) {
           return jsonResult({ capture: c2.id, command: index, note: "A Metal draw's vertex function outputs need a replay, which Metal captures do not have yet; read_vertices gives what the draw read." });
         }
         if (c2.data.api !== "vulkan") {
-          return jsonResult({ capture: c2.id, command: index, note: `The mesh output replays the draw's vertex shader: ${NO_D3D12_REPLAY}. read_vertices gives what the draw read.` });
+          return jsonResult({ capture: c2.id, command: index, note: `The mesh output replays the draw's vertex shader: ${noReplay(c2.data.api)}. read_vertices gives what the draw read.` });
         }
         const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
         if (!tool) return jsonResult({ capture: c2.id, note: `The mesh output replays the capture on this machine's GPU, and ${NO_REPLAY_TOOL}` });
@@ -34612,7 +35012,7 @@ function liveTools(sessions2, store) {
       }, ["pipeline", "stage", "source"]),
       handler: async (args) => {
         const s = sessions2.get(stringArg(args, "session"));
-        if (s.api === "metal") throw new Error("Shader replacement is Vulkan and D3D12 only.");
+        if (s.api !== "vulkan" && s.api !== "d3d12") throw new Error("Shader replacement is Vulkan and D3D12 only.");
         if (!s.connected) throw new Error(`${s.id} is not connected (${s.state}).`);
         const pipelineId = requireInt(args, "pipeline");
         const stageName = requireString(args, "stage").toLowerCase();
@@ -34827,6 +35227,7 @@ var exit = (code) => {
 };
 process2.on("SIGINT", () => exit(0));
 process2.on("SIGTERM", () => exit(0));
+await loadPluginBackends();
 createServer(void 0, sessions).serve(process2.stdin, process2.stdout).then(
   () => exit(0),
   (e) => {

@@ -23,7 +23,7 @@ what follows is the Vulkan side.
 | Distribution | electron-builder installers (Windows NSIS, Linux .deb, macOS .dmg) bundling the capture library under `resources/layer`, built by a GitHub Actions workflow on version tags, with electron-updater self-update from the GitHub releases. See `docs/RELEASING.md`. |
 | Handles | Pass-through. The layer never wraps Vulkan handles; it keeps side tables keyed by handle and uses the loader's dispatch pointer (first word of each dispatchable handle) to find its per-instance/per-device state. This is what RenderDoc's `vk_dispatchtables.cpp` does for tables, and it avoids RenderDoc's 20k+ lines of handle unwrapping. |
 | Code generation | Everything mechanical is generated from `vk.xml` (Vulkan-Headers submodule): dispatch tables, forwarding entry points, object create/destroy hooks, and JSON serializers for every struct, enum, bitmask and command signature. |
-| Multi-API | Vulkan first, Metal second, Direct3D 12 third. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources), so another API is another capture library speaking the same protocol. `src/d3d12/` is a library injected at process start by `dxinsp_launch.exe` that hooks the D3D12 and DXGI entry points and vtables, synthesizes the pass boundaries D3D12 does not have, and speaks the Vulkan layer's wire format byte for byte (`src/d3d12/README.md`). On Windows every local target is started with both the layer and the library, and the API is known by which one connects. |
+| Multi-API | Vulkan first, Metal second, Direct3D 12 third. The UI and protocol are API-neutral (objects with a class, a descriptor and dependencies; commands with arguments; passes; resources), so another API is another capture library speaking the same protocol. What differs per API is one `Backend` object each (`src/app/src/renderer/backend.ts`): its command classification, its object prefixes, what it can measure and how, and hooks for what the generic code cannot read. A plugin adds an API at run time with a backend module and a capture library (docs/PLUGINS.md); OpenGL ES is one (`src/plugins/gles`). `src/d3d12/` is a library injected at process start by `dxinsp_launch.exe` that hooks the D3D12 and DXGI entry points and vtables, synthesizes the pass boundaries D3D12 does not have, and speaks the Vulkan layer's wire format byte for byte (`src/d3d12/README.md`). On Windows every local target is started with both the layer and the library, and the API is known by which one connects. |
 | Reference code | WebGPU Inspector (MIT), RenderDoc (MIT), GFXReconstruct (Apache-2.0). Adapted files name their origin; see `THIRD_PARTY_LICENSES.md`. |
 
 ## Repository layout
@@ -36,6 +36,8 @@ src/vulkan/     the Vulkan capture layer, and the code generated from vk.xml
 src/metal/      the Metal capture library and its replay tool (macOS)
 src/d3d12/      the Direct3D 12 capture library, its launcher, its shader tool and its replay tool (Windows)
 src/replay/     vkinsp_replay, which re-executes a Vulkan capture
+src/sdk/        the plugin SDK: the C++ headers a plugin's capture library speaks the protocol with, and the backend types
+src/plugins/    plugins built with the app: gles/, OpenGL ES on ANGLE
 test/           the test applications each backend is exercised against
 tools/          the generators, the build and setup scripts, and the UI test harness
 docs/           this documentation

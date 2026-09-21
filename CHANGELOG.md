@@ -1,3 +1,15 @@
+## Unreleased
+
+### Added
+- **Plugins**: a graphics API can be added as a plugin, with a backend module and a capture library (docs/PLUGINS.md).
+- The plugin SDK in `src/sdk`: header-only C++ for a capture library's connection, and the backend types.
+- **OpenGL ES** on Windows, from the desktop driver through WGL (Unity's `-force-gles32`) or from ANGLE, as the first plugin (`src/plugins/gles`, docs/GLES.md).
+- `test/gles_triangle`, an OpenGL ES 3.0 test application on ANGLE.
+- `dxinsp_launch.exe` takes `--dll` more than once, and calls a library's `GpuInspectorInitialize` export.
+
+### Changed
+- How an API's commands and objects read and what it can measure now come from one backend object per API (`renderer/backend.ts`).
+
 ## v0.21.0
 
 ### Added

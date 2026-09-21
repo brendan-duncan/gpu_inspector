@@ -46,6 +46,7 @@ Pick the one that matches the application you want to inspect.
 | [Metal](METAL.md) | Metal applications on macOS |
 | [Android and Quest](ANDROID.md) | Vulkan applications on Android phones and headsets, over adb |
 | [Web pages and WebGPU](BROWSER.md) | A WebGPU page in Chrome, Edge, Brave or Firefox, captured through the browser's GPU process |
+| [OpenGL ES](GLES.md) | OpenGL ES applications on Windows (the desktop driver's ES contexts, as Unity's -force-gles32 makes, and ANGLE), through the OpenGL ES plugin |
 
 ## How-to guides
 
@@ -78,6 +79,7 @@ Whole workflows for particular applications, where getting in is the hard part.
 | [Building from source](BUILDING.md) | Prerequisites and build steps for each platform |
 | [Capture replay](REPLAY.md) | `vkinsp_replay`, the tool behind overdraw, draw overlays, mesh output, pixel history and Export to C++, and `dxinsp_replay` and `mtlinsp_replay`, which replay and export Direct3D 12 and Metal captures |
 | [Architecture](ARCHITECTURE.md) | How the layer, the protocol and the UI are put together (the Metal and Direct3D 12 libraries have their own accounts in `src/metal/README.md` and `src/d3d12/README.md`) |
+| [Plugins](PLUGINS.md) | Adding a graphics API as a plugin: the manifest, the backend module, the capture library and the SDK |
 | [Releasing](RELEASING.md) | How releases are built and published |
 | [Comparison](COMPARISON.md) | GPU Inspector's features next to RenderDoc, PIX and Nsight Graphics |
 
