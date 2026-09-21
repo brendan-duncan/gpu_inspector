@@ -36,6 +36,12 @@ export interface MeshViewHost {
    * since the measurement happens inside the application rather than in a replay of this capture.
    */
   captureMeshOutput?(command: number): void;
+  /**
+   * Metal: the draw's vertex function run over its vertices by the MSL interpreter, since a Metal
+   * capture has no replay to take transform feedback from. The same outputs the shader debugger
+   * rasterizes a pixel's inputs from (shader_debug_setup.ts, interpretedVertexOutputs).
+   */
+  interpretedMeshOutput?(cmd: CaptureCommand): Promise<MeshOutput>;
   /** The vertex shader's input names by location. */
   inputNames(cmd: CaptureCommand): Promise<Map<number, string>>;
   /** Vulkan: opens the shader debugger on a vertex (a VS In row, or the VS Out record). */
@@ -259,10 +265,28 @@ export class MeshView {
         return;
       }
     } else if (this.host.data.api !== "vulkan") {
-      this._setStatus("");
-      this._setNotes(["What a Metal draw's vertex function wrote needs a replay, which Metal captures do not have yet: VS In has the vertices it read."]);
-      this._preview?.setMesh(null);
-      return;
+      // Metal: interpreted here rather than replayed. A Metal capture has no replay that serves
+      // analyses, but the MSL interpreter can run the draw's vertex function over its own vertices
+      // — which is what the shader debugger already does to rasterize a pixel's inputs
+      // (shader_debug_setup.ts, interpretedVertexOutputs).
+      if (!this.host.interpretedMeshOutput) {
+        this._setStatus("");
+        this._setNotes(["What this draw's vertex function wrote is not available for this API: VS In has the vertices it read."]);
+        this._preview?.setMesh(null);
+        return;
+      }
+      this._outputRunning = true;
+      this._setStatus("Running the draw's vertex function in the Metal Shading Language interpreter...");
+      try {
+        const output = await this.host.interpretedMeshOutput(this._draw);
+        if (token !== this._token) return;
+        this._output = output;
+      } catch (e) {
+        if (token !== this._token) return;
+        this._outputError = e instanceof Error ? e.message.split("\n")[0] : String(e);
+      } finally {
+        if (token === this._token) this._outputRunning = false;
+      }
     }
     if (this.host.data.api === "vulkan") {
       this._outputRunning = true;

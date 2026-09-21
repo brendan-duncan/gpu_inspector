@@ -6,6 +6,7 @@
 #include "ui_messages.h"
 
 #include "capture.h"
+#include "cpu_timeline.h"
 #include "frame_pause.h"
 #include "gpu_trace.h"
 #include "hud.h"
@@ -102,6 +103,12 @@ void HandleMessage(const std::string &text) {
             }
             if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
+        } else if (action == "TimingCapture") {
+            // Frame timings over minutes, for finding a hitch rather than a slow frame
+            // (cpu_timeline.h). `sampleHz` is accepted and ignored: the call stack sampler is
+            // Windows-only.
+            if (message.GetBool("start", false)) BeginTimingCapture((uint32_t)message.GetNumber("sampleHz", 0));
+            else EndTimingCapture();
         } else if (action == "SaveGpuTrace") {
             RequestGpuTrace(message.GetString("path"));
         } else if (action == "RequestStacktraces") {

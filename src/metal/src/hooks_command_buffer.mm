@@ -98,6 +98,10 @@ id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor, R
         pass = [descriptor copy];
         for (NSUInteger i = 0; i < 8; i++) ForceStore(pass.colorAttachments[i]);
         ForceStore(pass.depthAttachment);
+        // The stencil too, or its read-back reads whatever the tile memory was left holding: an
+        // application that tests stencil but never reads it back sets DontCare, which is most of
+        // them.
+        ForceStore(pass.stencilAttachment);
         timing = ReserveRenderPassTiming(self, pass);
         // The depth and stencil the pass starts from, copied while the command buffer is free.
         overdraw = PrepareOverdrawPass(self, pass);
@@ -119,11 +123,17 @@ id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor, R
         if (rec) {
             for (NSUInteger i = 0; i < 8; i++) {
                 if (pass.colorAttachments[i].texture != nil) {
-                    AddPassAttachment(encoder, pass.colorAttachments[i], (uint32_t)i, false);
+                    AddPassAttachment(encoder, pass.colorAttachments[i], (uint32_t)i, PassAspect::Color);
                 }
             }
             if (pass.depthAttachment.texture != nil) {
-                AddPassAttachment(encoder, pass.depthAttachment, 0, true);
+                AddPassAttachment(encoder, pass.depthAttachment, 0, PassAspect::Depth);
+            }
+            // The stencil half, read separately: one blit cannot fetch both aspects of a combined
+            // format (capture.h). An application using a combined format sets both attachments to
+            // the same texture, which is then read once per aspect, as it should be.
+            if (pass.stencilAttachment.texture != nil) {
+                AddPassAttachment(encoder, pass.stencilAttachment, 0, PassAspect::Stencil);
             }
             RecordCommand(method, encoder, RenderPassArgs(descriptor));
             if (overdraw) NotePassBeginCommand(encoder, LastRecordedCommand());

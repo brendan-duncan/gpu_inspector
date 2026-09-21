@@ -92,7 +92,7 @@ def electron():
 
 
 class Case:
-    def __init__(self, name, args, checks, delay_ms=12000, companion=None, before=None, after=None):
+    def __init__(self, name, args, checks, delay_ms=12000, companion=None, before=None, after=None, env=None):
         self.name = name
         self.args = args
         self.checks = checks      # callable(dump, log) -> list of failure strings
@@ -100,6 +100,9 @@ class Case:
         self.companion = companion  # callable() -> Popen, started a few seconds after the UI (an app it did not launch)
         self.before = before        # callable() run before the UI starts (registration)
         self.after = after          # callable() run when the UI has quit (cleanup)
+        # Extra environment for the UI, which the application it launches inherits: how a capture
+        # library's own switches are set for a case (MTLINSP_SIMULATE_GPU_FAULT).
+        self.env = env or {}
 
 
 def run_case(case, work, keep):
@@ -113,6 +116,7 @@ def run_case(case, work, keep):
            f"--screenshot-delay={case.delay_ms}", "--quit-after-screenshot"]
     env = dict(os.environ)
     env.pop("ELECTRON_RUN_AS_NODE", None)   # VS Code's terminal exports it, which would start plain Node
+    env.update(case.env)
     started = time.time()
     if case.before:
         case.before()
@@ -603,7 +607,7 @@ def metal_cpu_timeline(state, log):
     return check_connected(state, log) + check_metal_capture(state, log) + \
         expect(bool(timeline), "the capture carries no CPU timeline") + \
         expect("submit" in cats, f"nothing was timed as submission (commit): {sorted(cats)}") + \
-        expect("acquire" in cats, f"nextDrawable was not timed as waiting for a swapchain image: {sorted(cats)}") + \
+        expect("acquire" in cats, f"nextDrawable was not timed as waiting for the display: {sorted(cats)}") + \
         expect(timeline.get("calibrated") is True,
                "the GPU and CPU clocks were not related, so the GPU lane cannot be laid over the commits") + \
         expect((timeline.get("frames") or 0) >= 1 and (timeline.get("spanMs") or 0) > 0,
@@ -852,6 +856,88 @@ def metal_accel_path_tracer(state, log):
                f"Memory Use does not count the four acceleration structures: {structures}")
 
 
+def metal_mesh_out(state, log):
+    """The mesh view's VS Out on a Metal capture.
+
+    A Metal capture has no replay that serves analyses, so the draw's vertex function is run by the
+    MSL interpreter instead — the same one the shader debugger steps
+    (shader_debug_setup.ts, interpretedVertexOutputs). The sample draws one triangle with
+    instanceCount 3, so what comes out is nine vertices of position and colour.
+    """
+    m = (capture(state).get("meshTab") or {})
+    o = m.get("output") or {}
+    stats = o.get("stats") or {}
+    preview = m.get("preview") or {}
+    outputs = o.get("outputs") or []
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(m), "--debug-view=mesh:out opened no mesh tab") + \
+        expect(not m.get("error"), f"the interpreter failed: {m.get('error')}") + \
+        expect(o.get("measured") is True and o.get("vertices") == 9,
+               f"the three instances' nine vertices were not produced: {o}") + \
+        expect("position" in outputs and "color" in outputs, f"the outputs are not all there: {outputs}") + \
+        expect(o.get("stride") == 28, f"stride {o.get('stride')}, expected 28 (float4 position + float3 colour)") + \
+        expect(stats.get("behind") == 0 and stats.get("outside") == 0 and stats.get("degenerate") == 0,
+               f"the triangles are in view and wound the right way, but: {stats}") + \
+        expect(preview.get("triangles") == 3, f"the preview drew {preview.get('triangles')} triangles, expected 3")
+
+
+def metal_stencil(state, log):
+    """--stencil: both aspects of a combined depth/stencil attachment read back.
+
+    Two read-backs of one texture, because a blit may fetch depth or stencil but not both. The
+    application sets storeAction DontCare on the stencil, as one that only tests it would, so this
+    also holds that the capture library forces the store — without it the read-back is whatever the
+    tile memory was left holding (0xFF, in testing).
+    """
+    c = capture(state)
+    targets = c.get("targets") or []
+    aspects = sorted({t.get("aspect") for t in targets if not t.get("error")})
+    t = (c.get("textureTab") or {})
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect("depth" in aspects and "stencil" in aspects,
+               f"the pass's aspects read back were {aspects}: both depth and stencil were expected") + \
+        expect(any(t.get("format") == "VK_FORMAT_S8_UINT" for t in targets),
+               f"no S8_UINT read-back among {[x.get('format') for x in targets]}") + \
+        expect(t.get("image") is not None, "--debug-view=target:stencil opened no render target tab")
+
+
+def metal_timing_capture(state, log):
+    """A timing capture on Metal: per-frame wall time and where each frame's calls went.
+
+    The sample compiles a library and a pipeline inside every frame (--compile-hitch), so
+    *Creating pipelines* has to account for a real share of the run — which is what says the
+    categories are attributed per frame rather than just totalled.
+    """
+    s = session(state)
+    cats = s.get("timingCategories") or []
+    return check_connected(state, log) + \
+        expect((s.get("timingFrames") or 0) > 100,
+               f"{s.get('timingFrames')} frames recorded over the run") + \
+        expect(cats == ["submit", "waitFences", "acquire", "pipeline"],
+               f"the categories are not the CPU timeline's: {cats}")
+
+
+def metal_device_error(state, log):
+    """A command buffer fault reported as a device loss.
+
+    Driven by MTLINSP_SIMULATE_GPU_FAULT rather than a real hang: the only reliable way to fault a
+    Metal command buffer is to hang the GPU, which on macOS takes the window server with it for
+    several seconds, and nothing a test suite runs should do that. What this holds is the reporting
+    path — the fault reaches the UI as both a validation error and a device-loss diagnosis, and the
+    advice it carries is Metal's own rather than Vulkan's "turn breadcrumbs on".
+    """
+    s = session(state)
+    r = s.get("deviceLost") or {}
+    return check_connected(state, log) + \
+        expect((s.get("validationErrors") or 0) >= 1, "the fault was not reported as a validation error") + \
+        expect(bool(r), "the fault did not arrive as a device-loss report") + \
+        expect(r.get("call") == "MTLCommandBuffer completion", f"reported against {r.get('call')}") + \
+        expect("Simulated GPU fault" in (r.get("message") or ""), f"unexpected message: {r.get('message')}") + \
+        expect("already on whenever the inspector is attached" in (r.get("note") or ""),
+               "the report does not carry Metal's own explanation of the missing encoder states, so the "
+               f"UI would show Vulkan's advice instead: {r.get('note')}")
+
+
 def metal_cases(triangle):
     launch = [f"--launch={triangle}"]
     export_cases = [Case("metal-export-cpp", launch + ["--debug-capture", f"--debug-export-cpp={exported_metal_cpp}"],
@@ -888,6 +974,22 @@ def metal_cases(triangle):
         # and taking a capture would leave the Capture tab in front so the screenshot would not
         # show the rows this case is about.
         Case("metal-memory", launch + ["--debug-select=MTLDevice"], metal_memory, delay_ms=16000),
+        # A timing capture: frame times and category totals over several seconds, with the
+        # per-frame pipeline compiles to attribute.
+        Case("metal-timing-capture", [f"--launch={triangle}", "--args=--compile-hitch",
+                                      "--debug-timing=6000"],
+             metal_timing_capture, delay_ms=22000),
+        # A command buffer fault, simulated rather than hung (see metal_device_error).
+        Case("metal-device-error", launch, metal_device_error, delay_ms=14000,
+             env={"MTLINSP_SIMULATE_GPU_FAULT": "20"}),
+        # The mesh view's VS Out, interpreted rather than replayed.
+        Case("metal-mesh-out", launch + ["--debug-capture", "--debug-view=mesh:out"],
+             metal_mesh_out, delay_ms=20000),
+        # Both aspects of a combined depth/stencil attachment, and the forced store that makes the
+        # stencil half readable at all.
+        Case("metal-stencil", [f"--launch={triangle}", "--args=--stencil",
+                               "--debug-capture", "--debug-view=target:stencil"],
+             metal_stencil, delay_ms=18000),
         # Ray tracing. Triangle geometry, which test/path_tracer/metal has none of, and instance
         # transforms that are not the identity, which is what makes the transposed read testable.
         Case("metal-accel-triangle", [f"--launch={triangle}", "--args=--ray-tracing",

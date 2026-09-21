@@ -864,8 +864,8 @@ to name, and a decoder needs the other direction.
 
 ## Not done
 
-Stencil attachments are not read back (color, depth and sampled textures are), and only the pixel
-formats in `PixelFormatDetails` are supported. Tessellation, object, mesh and tile stages are not
+Only the pixel formats in `PixelFormatDetails` are supported, which is now all of Metal's except
+the placeholder `Unspecialized`; PVRTC is mapped but the UI has no decoder for it. Tessellation, object, mesh and tile stages are not
 debugged, and a function constant that selects whether an entry point's *argument* exists
 (`[[function_constant(isEnabled)]]` on a parameter) is not honoured — the argument is bound
 regardless, which reads a resource the specialized function does not have. What an argument buffer points at is resolved one level

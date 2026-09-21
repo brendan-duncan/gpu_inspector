@@ -658,6 +658,14 @@ export interface DeviceLostMessage {
   lastCompletedCommand?: string;
   /** The diagnosis in words, ready to show. */
   message: string;
+  /**
+   * What to say instead of the generic "turn breadcrumbs on" advice when `breadcrumbs` is false.
+   *
+   * Supplied by a library whose breadcrumbs are not a launch option: Metal sets encoder execution
+   * status on every command buffer while a client is connected, so their absence means the driver
+   * filled nothing in, not that anything was switched off (src/metal/src/validation.mm).
+   */
+  note?: string;
 }
 
 /** One command list the D3D12 runtime was tracking when the device went (DRED auto-breadcrumbs). */

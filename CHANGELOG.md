@@ -1,6 +1,15 @@
 ## Unreleased
 
 ### Added
+- **Timing Capture** on Metal: every frame's wall time and category totals over minutes, which is how a hitch is told from a slow frame. The library already timed the same categories; what it lacked was the per-frame ring and the message.
+- A Metal command buffer fault the session will not survive — a timeout, a page fault, revoked access — is reported as a device loss, so the diagnosis goes to the top of the log rather than among the validation messages. The per-encoder execution status was already recorded; what was missing was surfacing it as what it is.
+- `MTLINSP_SIMULATE_GPU_FAULT=N` faults the Nth command buffer, so the reporting path can be exercised without hanging the GPU — the counterpart of `VKINSP_SIMULATE_DEVICE_LOST` and `DXINSP_SIMULATE_DEVICE_REMOVED`.
+- The mesh view's **VS Out** on a Metal capture: the draw's vertex function run by the Metal Shading Language interpreter, which needed no replay and no second capture — the shader debugger already ran it to rasterize a pixel's inputs, and the mesh view simply never asked.
+- Stencil attachments are read back on Metal, as a second read-back of the depth/stencil texture; a blit can fetch one aspect at a time.
+- The render target tab opens an image's depth or stencil half rather than whichever read-back came first: two aspects of one image share an id, in all three APIs.
+- The remaining Metal pixel formats: `RG8Unorm_sRGB`, the three-component formats macOS 27 added, and the stencil-only views (`X32_Stencil8`, `X24_Stencil8`). ASTC, ETC2 and EAC were already mapped, contrary to what the docs said.
+- `test/metal_triangle --stencil` gives the triangle pass a combined depth/stencil attachment, with the stencil store left at `DontCare` so the capture library's forced store is what makes it readable.
+- A capture's debug dump lists each render target's aspect and format, not only how many there were.
 - Metal ray tracing: every acceleration structure as an object, the builds, refits and copies an acceleration structure encoder records, and the geometry, bounding boxes and instances each build read.
 - A Metal acceleration structure opens in the structure tab like a Vulkan or Direct3D 12 one, with the tree, the instances, the overlaps and the mesh preview.
 - Metal acceleration structures built before a capture are read back as it starts, so a bottom level an engine built at load is still drawn.
@@ -13,6 +22,8 @@
 - `test/metal_triangle --ray-tracing` and `--static-blas`, the counterpart of `test/triangle`'s: triangle geometry in an acceleration structure, which `test/path_tracer/metal` has none of, and a bottom level built once at start-up.
 
 ### Fixed
+- "Waiting for a swapchain image" is now "Waiting for the display": the three APIs do not agree on the noun (a swapchain image, a drawable, a waitable object), and the Vulkan one was being shown for all of them.
+- A Metal pass's stencil was read back as whatever the tile memory held (0xFF, in testing): the capture library forced the store on colour and depth attachments but not stencil, and an application that only tests stencil sets `DontCare`.
 - Acceleration structure input buffers are read back whole on all three backends rather than truncated at `maxBufferSize` (64 KB by default), which clipped a real bottom level's geometry to its first few hundred triangles.
 - `setAccelerationStructure:atBufferIndex:` in a Metal capture recorded `null` for the structure it bound: nothing tracked `MTLAccelerationStructure`, so there was no object for the reference to name.
 - A stray connection reset from the target probe's own peer could fail whichever UI test happened to be running (`test/target_probe.test.js`).

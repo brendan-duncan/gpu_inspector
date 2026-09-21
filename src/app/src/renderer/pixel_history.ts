@@ -14,6 +14,15 @@ export interface PixelRequest {
   y: number;
   mip?: number;
   layer?: number;
+  /**
+   * Which aspect of the image to open: "color", "depth" or "stencil".
+   *
+   * Depth and stencil are two aspects of one image in all three APIs — one VkImage, one
+   * MTLTexture of a combined format — so they arrive as two read-backs sharing an id, and the id
+   * alone cannot say which was meant. Absent takes whichever came first, which is what every
+   * caller wanted before a stencil read-back existed to be confused with.
+   */
+  aspect?: string;
 }
 
 /**

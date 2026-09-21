@@ -150,6 +150,9 @@ uint64_t OnFrameEnded() {
             }
             g_accumMs += ms;
             g_count++;
+            // The frame that just ended, for a timing capture: its wall time and the totals the
+            // timed calls have accumulated for it (cpu_timeline.h).
+            NoteFrameTiming(g_frame, ms);
             if (g_intervals.size() < kWindow) g_intervals.push_back(ms);
             else g_intervals[g_intervalNext] = ms;
             g_intervalNext = (g_intervalNext + 1) % kWindow;
@@ -208,8 +211,10 @@ uint64_t OnFrameEnded() {
     }
     if (!message.empty()) {
         Transport::Get().SendJson(std::move(message));
-        // One sample of the memory series, on the report's own interval (cpu_timeline.h).
+        // One sample of the memory series, on the report's own interval (cpu_timeline.h), and the
+        // frames a timing capture has recorded since the last report.
         SendMemorySample(device);
+        SendTimingFrames();
     }
     return frame;
 }

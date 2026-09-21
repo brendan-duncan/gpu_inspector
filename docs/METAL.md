@@ -68,6 +68,28 @@ two pieces that are missing are marked in `src/metal/src/transport.mm`.
   listed in the Inspect tab.
 - **Bottleneck counters** — Metal's counter sets measure overdraw, fragments per primitive and
   depth rejection per pass. See [Finding GPU bottlenecks](PROFILING.md).
+- **Timing Capture** — every frame's wall time and where its CPU went, over minutes, for finding
+  [a hitch rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame). The
+  categories are the CPU timeline's, so a frame that stopped for a pipeline compile says so. What a
+  Windows capture also gets and this does not is sampled call stacks: the sampler is Windows-only in
+  all three backends.
+- **GPU faults** — a command buffer that fails is reported with its error and, where the driver
+  supplies them, the state of every encoder in it: which one faulted, which were affected, which
+  never ran, and the debug signposts each had passed. That is Metal's answer to Vulkan's
+  breadcrumbs and DRED's command lists, and unlike either it costs no per-draw markers — the option
+  is set on the command buffer and is always on while the inspector is attached. A fault the session
+  will not survive (a timeout, a page fault, revoked access) is also reported as a device loss, so
+  the diagnosis goes to the top of the log rather than among the validation messages.
+- **Mesh view** — a draw's **VS In** from the vertices it read, and its **VS Out** from running the
+  draw's own vertex function in the Metal Shading Language interpreter (`renderer/msl/`), the same
+  one the shader debugger steps. Vulkan gets its outputs from a replay and Direct3D 12 by streaming
+  them out of the running application; Metal has no replay that serves analyses, so it interprets
+  instead — which also means the outputs need no second capture. Draws longer than 20,000 vertices
+  are cut off, and the view says so rather than showing a short mesh as a whole one.
+- **Depth and stencil read-back** — both aspects of a pass's depth/stencil attachment, each its own
+  entry in the render targets. Two read-backs of one texture, because a blit may fetch depth or
+  stencil but not both; the library also forces the store on, since an application that only *tests*
+  stencil leaves `storeAction` at `DontCare` and there would otherwise be nothing in memory to read.
 - **Ray tracing** — every `MTLAccelerationStructure` as an object, the builds, refits and copies an
   acceleration structure encoder records, and what each build read: a geometry descriptor names its
   buffers outright, so the vertices, indices, bounding boxes and instance descriptions a structure
@@ -118,27 +140,20 @@ following the pixel, so it needs the application to still be running.
 
 ## What is not there yet
 
-- No **Timing Capture**: recording every frame's time and CPU split over minutes
-  ([a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame)) is
-  Vulkan and Direct3D 12 only so far. The library already times the same categories, so what is missing is the
-  per-frame ring and the message that carries it.
-- Stencil attachments are not read back (color, depth and sampled textures are).
 - `mtlinsp_replay` does not replay acceleration structure builds or traces yet, so **Export to
   C++** on a ray tracing frame leaves them out.
 - Ray queries are not in the shader debugger: a kernel that traverses a scene can be stepped, but
   `intersector::intersect` is not followed into.
-- Only the pixel formats `src/metal/src/formats.h` maps are decoded — no ASTC, ETC or PVRTC.
-- No **CPU sampling**: the other two backends sample every thread's call stack alongside the CPU
-  timeline, so a frame's time can be attributed to the functions that spent it rather than only to
-  the API calls the library times.
-- No device-loss report: Vulkan names the command the GPU was running when it stopped responding
-  (`VK_ERROR_DEVICE_LOST`) and Direct3D 12 reads the removal reason, so a hang on Metal says less
-  than one on either of the others.
 - Shader editing is not wired up. The usual reason given — that it is built around SPIR-V — is only
   half of it: a Metal capture holds the Shading Language the application compiled, so recompiling an
   edited copy is *easier* than on either of the other two. What is missing is the plumbing to swap
   the recompiled function into the pipeline and re-run the frame, which on Metal means rebuilding
   the pipeline state rather than patching a module.
+- PVRTC textures are not decoded (the format is mapped, but the UI has no decoder for it); every
+  other pixel format Metal has is. It is an iOS format, so a macOS capture will not hold one.
+- No **CPU sampling**: a timing capture records where the frame's *calls* went, but does not sample
+  the threads' call stacks. This is not a Metal gap as such — the sampler is Windows-only in all
+  three backends, so a Vulkan capture on Linux lacks it too.
 - Only Apple Silicon has been verified.
 
 ## If it does not work

@@ -225,13 +225,22 @@ PassTimingSlot ReserveAccelerationStructurePassTiming(id commandBuffer, id descr
  */
 uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTimingSlot &timing);
 
+/** Which half of an attachment a read-back is of. A combined format is read once per aspect. */
+enum class PassAspect { Color, Depth, Stencil };
+
 /**
  * Notes an attachment of the render pass just begun, for read-back at endEncoding. Multisample
  * attachments are read through their resolve texture; what cannot be read is reported with a
  * reason rather than dropped.
+ *
+ * A depth/stencil attachment is added twice, once per aspect: a blit may set
+ * MTLBlitOptionDepthFromDepthStencil or MTLBlitOptionStencilFromDepthStencil but not both, so one
+ * copy cannot fetch the two. The UI tells the two entries apart by `aspect`, which is also why the
+ * depth aspect had to start being sent at all — a depth attachment is announced under index 0 like
+ * color attachment 0, and without the aspect the second read-back landed on the first's entry.
  */
 void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *attachment,
-                       uint32_t index, bool depth);
+                       uint32_t index, PassAspect aspect);
 
 /** Just before the application's endEncoding is forwarded: the end-of-pass timestamp. */
 void BeforeEndEncoding(id encoder);

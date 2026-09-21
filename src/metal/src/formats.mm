@@ -21,6 +21,12 @@ const char *PixelFormatEnumName(MTLPixelFormat format) {
         case 30: return "MTLPixelFormatRG8Unorm";
         case 31: return "MTLPixelFormatRG8Unorm_sRGB";
         case 32: return "MTLPixelFormatRG8Snorm";
+        // The three-component formats arrived in macOS 27. Metal had none before it, which is
+        // why nothing in the table between 44 and 50 exists.
+        case 45: return "MTLPixelFormatRGB8Unorm";
+        case 46: return "MTLPixelFormatRGB8Snorm";
+        case 47: return "MTLPixelFormatRGB8Uint";
+        case 48: return "MTLPixelFormatRGB8Sint";
         case 33: return "MTLPixelFormatRG8Uint";
         case 34: return "MTLPixelFormatRG8Sint";
         case 40: return "MTLPixelFormatB5G6R5Unorm";
@@ -47,6 +53,11 @@ const char *PixelFormatEnumName(MTLPixelFormat format) {
         case 92: return "MTLPixelFormatRG11B10Float";
         case 93: return "MTLPixelFormatRGB9E5Float";
         case 94: return "MTLPixelFormatBGR10A2Unorm";
+        case 95: return "MTLPixelFormatRGB16Unorm";
+        case 96: return "MTLPixelFormatRGB16Snorm";
+        case 97: return "MTLPixelFormatRGB16Uint";
+        case 98: return "MTLPixelFormatRGB16Sint";
+        case 99: return "MTLPixelFormatRGB16Float";
         case 103: return "MTLPixelFormatRG32Uint";
         case 104: return "MTLPixelFormatRG32Sint";
         case 105: return "MTLPixelFormatRG32Float";
@@ -55,6 +66,9 @@ const char *PixelFormatEnumName(MTLPixelFormat format) {
         case 113: return "MTLPixelFormatRGBA16Uint";
         case 114: return "MTLPixelFormatRGBA16Sint";
         case 115: return "MTLPixelFormatRGBA16Float";
+        case 120: return "MTLPixelFormatRGB32Uint";
+        case 121: return "MTLPixelFormatRGB32Sint";
+        case 122: return "MTLPixelFormatRGB32Float";
         case 123: return "MTLPixelFormatRGBA32Uint";
         case 124: return "MTLPixelFormatRGBA32Sint";
         case 125: return "MTLPixelFormatRGBA32Float";
@@ -164,7 +178,14 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
         case 24: return {"VK_FORMAT_R16_SINT", 1, 1, 2};
         case 25: return {"VK_FORMAT_R16_SFLOAT", 1, 1, 2};
         case 30: return {"VK_FORMAT_R8G8_UNORM", 1, 1, 2};
+        case 31: return {"VK_FORMAT_R8G8_SRGB", 1, 1, 2};
         case 32: return {"VK_FORMAT_R8G8_SNORM", 1, 1, 2};
+        // Three components, one byte each: the only formats here whose row pitch is not a
+        // power of two, which is why the read-back passes the blit an explicit bytesPerRow.
+        case 45: return {"VK_FORMAT_R8G8B8_UNORM", 1, 1, 3};
+        case 46: return {"VK_FORMAT_R8G8B8_SNORM", 1, 1, 3};
+        case 47: return {"VK_FORMAT_R8G8B8_UINT", 1, 1, 3};
+        case 48: return {"VK_FORMAT_R8G8B8_SINT", 1, 1, 3};
         case 33: return {"VK_FORMAT_R8G8_UINT", 1, 1, 2};
         case 34: return {"VK_FORMAT_R8G8_SINT", 1, 1, 2};
         // Metal names components from the low bits up, Vulkan's PACK names from the high bits down.
@@ -192,6 +213,11 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
         case 92: return {"VK_FORMAT_B10G11R11_UFLOAT_PACK32", 1, 1, 4};
         case 93: return {"VK_FORMAT_E5B9G9R9_UFLOAT_PACK32", 1, 1, 4};
         case 94: return {"VK_FORMAT_A2R10G10B10_UNORM_PACK32", 1, 1, 4};
+        case 95: return {"VK_FORMAT_R16G16B16_UNORM", 1, 1, 6};
+        case 96: return {"VK_FORMAT_R16G16B16_SNORM", 1, 1, 6};
+        case 97: return {"VK_FORMAT_R16G16B16_UINT", 1, 1, 6};
+        case 98: return {"VK_FORMAT_R16G16B16_SINT", 1, 1, 6};
+        case 99: return {"VK_FORMAT_R16G16B16_SFLOAT", 1, 1, 6};
         case 103: return {"VK_FORMAT_R32G32_UINT", 1, 1, 8};
         case 104: return {"VK_FORMAT_R32G32_SINT", 1, 1, 8};
         case 105: return {"VK_FORMAT_R32G32_SFLOAT", 1, 1, 8};
@@ -200,6 +226,9 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
         case 113: return {"VK_FORMAT_R16G16B16A16_UINT", 1, 1, 8};
         case 114: return {"VK_FORMAT_R16G16B16A16_SINT", 1, 1, 8};
         case 115: return {"VK_FORMAT_R16G16B16A16_SFLOAT", 1, 1, 8};
+        case 120: return {"VK_FORMAT_R32G32B32_UINT", 1, 1, 12};
+        case 121: return {"VK_FORMAT_R32G32B32_SINT", 1, 1, 12};
+        case 122: return {"VK_FORMAT_R32G32B32_SFLOAT", 1, 1, 12};
         case 123: return {"VK_FORMAT_R32G32B32A32_UINT", 1, 1, 16};
         case 124: return {"VK_FORMAT_R32G32B32A32_SINT", 1, 1, 16};
         case 125: return {"VK_FORMAT_R32G32B32A32_SFLOAT", 1, 1, 16};
@@ -287,6 +316,11 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
         case 253: return {"VK_FORMAT_S8_UINT", 1, 1, 1};
         case 255: return {"VK_FORMAT_D24_UNORM_S8_UINT", 1, 1, 4};
         case 260: return {"VK_FORMAT_D32_SFLOAT_S8_UINT", 1, 1, 8};
+        // The stencil half of a combined format, as a view of it. One byte a texel: a blit with
+        // MTLBlitOptionStencilFromDepthStencil writes the stencil out packed, whatever the
+        // combined format's own stride is (see the stencil read-back in capture.mm).
+        case 261: return {"VK_FORMAT_S8_UINT", 1, 1, 1};
+        case 262: return {"VK_FORMAT_S8_UINT", 1, 1, 1};
         // Extended range: no Vulkan spelling, so the UI decodes these under Metal's names.
         case 552: return {"MTLPixelFormatBGRA10_XR", 1, 1, 8};
         case 553: return {"MTLPixelFormatBGRA10_XR_sRGB", 1, 1, 8};
@@ -345,6 +379,23 @@ PixelFormatInfo DepthReadbackDetails(MTLPixelFormat format, MTLBlitOption *optio
         case 260:                                            // Depth32Float_Stencil8
             if (option != nullptr) *option = MTLBlitOptionDepthFromDepthStencil;
             return {"VK_FORMAT_D32_SFLOAT", 1, 1, 4};
+        default: return {"", 0, 0, 0};
+    }
+}
+
+PixelFormatInfo StencilReadbackDetails(MTLPixelFormat format, MTLBlitOption *option) {
+    if (option != nullptr) *option = MTLBlitOptionNone;
+    switch ((NSUInteger)format) {
+        case 253:                                            // Stencil8
+        case 261:                                            // X32_Stencil8
+        case 262:                                            // X24_Stencil8
+            // Already stencil only: the copy takes the whole texel, so no option.
+            return {"VK_FORMAT_S8_UINT", 1, 1, 1};
+        case 255:                                            // Depth24Unorm_Stencil8
+        case 260:                                            // Depth32Float_Stencil8
+            if (option != nullptr) *option = MTLBlitOptionStencilFromDepthStencil;
+            // One byte a texel once the depth is left behind, whatever the combined stride was.
+            return {"VK_FORMAT_S8_UINT", 1, 1, 1};
         default: return {"", 0, 0, 0};
     }
 }

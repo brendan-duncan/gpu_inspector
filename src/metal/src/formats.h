@@ -52,6 +52,17 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format);
  */
 PixelFormatInfo DepthReadbackDetails(MTLPixelFormat format, MTLBlitOption *option);
 
+/**
+ * The same for the stencil aspect: one byte a texel (`VK_FORMAT_S8_UINT`), and the blit option that
+ * picks stencil out of a combined format.
+ *
+ * A combined depth/stencil texture is read twice, once per aspect, because a blit takes one of them
+ * at a time — `MTLBlitOptionDepthFromDepthStencil` and `MTLBlitOptionStencilFromDepthStencil` may
+ * not both be set on one copy. `MTLPixelFormatStencil8` and the `X*_Stencil8` views are stencil
+ * already and need no option.
+ */
+PixelFormatInfo StencilReadbackDetails(MTLPixelFormat format, MTLBlitOption *option);
+
 bool PixelFormatHasDepth(MTLPixelFormat format);
 bool PixelFormatHasStencil(MTLPixelFormat format);
 

@@ -752,6 +752,22 @@ export function pixelRasterState(ctx: DebugContext, cmd: CaptureCommand, state: 
   return rasterStateOf(state);
 }
 
+/**
+ * A draw's vertex shader outputs for the mesh view, for an API whose outputs are interpreted here
+ * rather than replayed.
+ *
+ * The mesh view has no DrawState of its own — it works from the command — so this reconstructs one
+ * and hands it to `vertexOutputsOf`, which the shader debugger's rasterizer already uses. Throws
+ * with the reason when the draw's outputs cannot be had, which the view shows as its note.
+ */
+export function interpretedVertexOutputs(ctx: DebugContext, cmd: CaptureCommand): Promise<MeshOutput> {
+  const state = drawState(ctx.data, ctx.db, cmd);
+  if (!interpretsVertexOutputs(state)) {
+    return Promise.reject(new Error("this draw's vertex outputs are not interpreted on this API"));
+  }
+  return vertexOutputsOf(ctx, cmd, state);
+}
+
 // ---------------------------------------------------------------------------------------------
 
 /** Prepares a debugging session for a target; throws with the reason it cannot be debugged. */

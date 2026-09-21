@@ -1053,6 +1053,26 @@ backend does. Ordered by value per effort.
     capture does not have.
   - Ray queries in the shader debugger, and the replay of builds and traces: both listed in their
     own sections above.
+- [x] The mesh view's **VS Out** on a Metal capture (`mesh_view.ts`, `interpretedVertexOutputs` in
+      `shader_debug_setup.ts`). This item had been written as needing a replay, and it did not: the
+      MSL interpreter already ran a draw's vertex function to rasterize a pixel's inputs for the
+      shader debugger (`metal/shader_debug.ts`, `interpretedMeshOutput`), and the mesh view simply
+      never called it. About eighty lines, most of it the branch and the note about the 20,000
+      vertex cut-off. Verified on `mtlinsp_triangle`: nine vertices of the three instances, stride
+      28, three primitives, nothing behind or degenerate (`metal-mesh-out`).
+- [x] Stencil read-back (`StencilReadbackDetails`, `PassAspect` in `src/metal/src/capture.h`). Two
+      read-backs of the one texture, because `MTLBlitOptionDepthFromDepthStencil` and
+      `MTLBlitOptionStencilFromDepthStencil` may not both be set on one copy. Two defects found by
+      testing rather than reading: `ForceStore` covered colour and depth but not stencil, so the
+      read-back returned whatever the tile memory held — uniformly 0xFF, which looks like data — and
+      the render target tab picked a target by image id alone, so the two aspects of one image were
+      indistinguishable (which affects Vulkan's `--stencil` equally, and is now fixed for all
+      three). `test/metal_triangle --stencil` and `metal-stencil` in `tools/ui_tests.py`; the
+      stencil reads 0 and 1 over 14.9% of the frame, the inverse of the depth image.
+- [x] The rest of Metal's pixel formats. The TODO and the docs both said ASTC, ETC and PVRTC were
+      unsupported; 135 of Metal's 152 formats were already mapped, those among them. What was
+      actually missing: `RG8Unorm_sRGB`, the three-component formats macOS 27 added, and the
+      stencil-only views. PVRTC is mapped but has no decoder in the UI, and is iOS-only.
 - [ ] Per-draw counter sampling (`MTLCounterSamplingPointAtDrawBoundary`, already probed in
       `capture.mm`) so the microtriangle and overdraw findings can name the draws inside a pass
       rather than the pass, the way Xcode's GPU Commands tab sorts by fragments per primitive.

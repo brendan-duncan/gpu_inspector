@@ -2,6 +2,7 @@
 
 #include "frame_stats.h"
 #include "json_writer.h"
+#include "swizzle.h"
 #include "transport.h"
 
 #import <Foundation/Foundation.h>
@@ -44,6 +45,24 @@ bool g_running = false;
 std::atomic<bool> g_recording{false};
 size_t g_dropped = 0;
 
+// Timing capture: a ring of per-frame totals, and the totals being accumulated for the frame now
+// in flight. Read without the lock on the hot path, like g_recording.
+std::atomic<bool> g_timing{false};
+
+/** One frame of a timing capture. */
+struct FrameTiming {
+    uint32_t frame = 0;
+    float durationMs = 0;
+    float categoryMs[(size_t)CpuCategory::Count] = {};
+};
+
+/** Frames kept: about twenty minutes at 60 fps, which is longer than anyone watches for a hitch. */
+constexpr size_t kMaxFrames = 72000;
+
+std::vector<FrameTiming> g_frames;
+size_t g_framesSent = 0;
+double g_frameCategoryMs[(size_t)CpuCategory::Count] = {};
+
 std::vector<uint64_t> g_threadIds;
 
 /** The GPU-to-host relation sampled at the end of the capture (see SampleCalibration). */
@@ -66,18 +85,27 @@ uint32_t ThreadIndex() {
 }  // namespace
 
 uint64_t CpuEventBegin() {
-    if (!g_recording.load(std::memory_order_relaxed)) return 0;
+    // Either a frame capture (which keeps every call) or a timing capture (which keeps per-frame
+    // totals) needs the clock; neither means two relaxed reads and nothing else.
+    if (!g_recording.load(std::memory_order_relaxed) && !g_timing.load(std::memory_order_relaxed)) return 0;
     return (uint64_t)Clock::now().time_since_epoch().count();
 }
 
 void CpuEventEnd(uint64_t started, CpuCategory category) {
-    if (!started || !g_recording.load(std::memory_order_relaxed)) return;
+    if (!started) return;
+    const bool recording = g_recording.load(std::memory_order_relaxed);
+    const bool timing = g_timing.load(std::memory_order_relaxed);
+    if (!recording && !timing) return;
     const uint64_t now = (uint64_t)Clock::now().time_since_epoch().count();
     // Read before this module's lock: FrameNumber takes frame_stats' own, and taking the two in a
     // fixed order is what keeps them from ever being taken in the opposite one.
     const uint32_t frame = (uint32_t)FrameNumber();
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_running) return;
+    // The frame's running total, which is all a timing capture keeps of an individual call.
+    if (timing && (size_t)category < (size_t)CpuCategory::Count) {
+        g_frameCategoryMs[(size_t)category] += (double)(now > started ? now - started : 0) / 1e6;
+    }
+    if (!recording || !g_running) return;
     const uint64_t originNs = (uint64_t)g_origin.time_since_epoch().count();
     if (started < originNs) return;   // began before the capture did
     if (g_events.size() >= kMaxEvents) {
@@ -173,6 +201,83 @@ void SendCpuTimeline() {
         w.Key("frame"); w.Uint(e.frame);
         w.Key("startMs"); w.Double((double)e.startNs / 1e6);
         w.Key("durationMs"); w.Double((double)e.durationNs / 1e6);
+        w.EndObject();
+    }
+    w.EndArray();
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
+// ---------------------------------------------------------------------------------------------
+// Timing capture
+
+void BeginTimingCapture(uint32_t sampleHz) {
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_frames.clear();
+        g_framesSent = 0;
+        for (double &v : g_frameCategoryMs) v = 0;
+        g_timing.store(true, std::memory_order_relaxed);
+    }
+    // sampleHz is accepted and ignored: the call-stack sampler is Windows-only
+    // (src/vulkan/src/cpu_sampler.h), so this records where the frame's calls went and not what
+    // the threads were doing between them. Said in the log rather than silently, so a user who
+    // asked for sampling knows they did not get it.
+    Log("timing capture: started%s", sampleHz > 0 ? ", without call stack sampling (not available on macOS)" : "");
+}
+
+void EndTimingCapture() {
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_timing.store(false, std::memory_order_relaxed);
+    Log("timing capture: stopped after %zu frames", g_frames.size());
+}
+
+bool TimingCaptureRunning() {
+    return g_timing.load(std::memory_order_relaxed);
+}
+
+void NoteFrameTiming(uint32_t frame, double frameMs) {
+    if (!g_timing.load(std::memory_order_relaxed)) return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_timing.load(std::memory_order_relaxed)) return;
+    FrameTiming t;
+    t.frame = frame;
+    t.durationMs = (float)frameMs;
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) {
+        t.categoryMs[i] = (float)g_frameCategoryMs[i];
+        g_frameCategoryMs[i] = 0;
+    }
+    // The oldest go when the ring is full: a timing capture left running should not grow without
+    // bound, and what matters is the recent minutes.
+    if (g_frames.size() >= kMaxFrames) {
+        g_frames.erase(g_frames.begin(), g_frames.begin() + (ptrdiff_t)(g_frames.size() - kMaxFrames + 1));
+        if (g_framesSent > g_frames.size()) g_framesSent = 0;
+    }
+    g_frames.push_back(t);
+}
+
+void SendTimingFrames() {
+    std::vector<FrameTiming> batch;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        if (g_framesSent >= g_frames.size()) return;
+        batch.assign(g_frames.begin() + (ptrdiff_t)g_framesSent, g_frames.end());
+        g_framesSent = g_frames.size();
+    }
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("TimingFrames");
+    w.Key("categories"); w.BeginArray();
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.String(kCpuCategoryNames[i]);
+    w.EndArray();
+    w.Key("frames"); w.BeginArray();
+    for (const FrameTiming &t : batch) {
+        w.BeginObject();
+        w.Key("frame"); w.Uint(t.frame);
+        w.Key("durationMs"); w.Double(t.durationMs);
+        w.Key("categoryMs"); w.BeginArray();
+        for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.Double(t.categoryMs[i]);
+        w.EndArray();
         w.EndObject();
     }
     w.EndArray();

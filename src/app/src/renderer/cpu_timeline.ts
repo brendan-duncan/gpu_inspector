@@ -16,7 +16,10 @@ export const CPU_CATEGORY_LABEL: Record<string, string> = {
   submit: "Submitting",
   present: "Presenting",
   waitFences: "Waiting on fences",
-  acquire: "Waiting for a swapchain image",
+  // Named by what it waits for rather than by what it waits on, because the three APIs do not
+  // agree on the noun: a swapchain image (vkAcquireNextImageKHR), a drawable
+  // (CAMetalLayer.nextDrawable), a waitable object. The verdict is the same in all three.
+  acquire: "Waiting for the display",
   waitIdle: "Waiting for idle",
   pipeline: "Creating pipelines",
 };

@@ -1077,6 +1077,13 @@ uint64_t QueueTextureCapture(id encoder, id texture) {
     if (pending.error.empty() && PixelFormatHasDepth(source.pixelFormat)) {
         info = DepthReadbackDetails(source.pixelFormat, &options);
         pending.aspect = "depth";
+    } else if (pending.error.empty() && PixelFormatHasStencil(source.pixelFormat)) {
+        // Stencil only (Stencil8, X32_Stencil8): a shader sampling one reads the stencil, so that
+        // is the aspect to fetch. A combined format took the depth branch above — a sampled
+        // combined texture is read as its depth, which is what a shader sampling it almost always
+        // wants; its stencil comes back when it is a pass's stencil attachment.
+        info = StencilReadbackDetails(source.pixelFormat, &options);
+        pending.aspect = "stencil";
     }
     pending.options = options;
 
@@ -1380,14 +1387,15 @@ uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTiming
 }
 
 void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *a, uint32_t index,
-                       bool depth) {
+                       PassAspect aspect) {
     if (a == nil || a.texture == nil || !g_options.captureTextures) return;
     id<MTLTexture> texture = a.texture;
 
     PendingTexture pending;
     pending.textureId = IdOf(texture);
     pending.attachment = index;
-    pending.aspect = depth ? "depth" : "color";
+    pending.aspect = aspect == PassAspect::Depth ? "depth"
+                   : aspect == PassAspect::Stencil ? "stencil" : "color";
 
     // Multisample attachments cannot be copied to a buffer; what can be read is the resolve.
     id<MTLTexture> source = texture;
@@ -1413,17 +1421,24 @@ void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *a, uint32_
     }
 
     MTLBlitOption options = MTLBlitOptionNone;
-    PixelFormatInfo info = depth ? DepthReadbackDetails(source.pixelFormat, &options)
-                                 : PixelFormatDetails(source.pixelFormat);
+    PixelFormatInfo info = aspect == PassAspect::Depth ? DepthReadbackDetails(source.pixelFormat, &options)
+                         : aspect == PassAspect::Stencil ? StencilReadbackDetails(source.pixelFormat, &options)
+                         : PixelFormatDetails(source.pixelFormat);
     if (pending.error.empty() && (info.name == nullptr || info.name[0] == '\0')) {
         const char *enumName = PixelFormatEnumName(source.pixelFormat);
         pending.error = std::string("unsupported pixel format ")
             + (enumName[0] != '\0' ? enumName : std::to_string((int)source.pixelFormat));
     }
-    if (pending.error.empty() && !depth && PixelFormatHasDepth(source.pixelFormat)) {
-        // A depth texture in a color slot: read it as depth.
-        info = DepthReadbackDetails(source.pixelFormat, &options);
-        pending.aspect = "depth";
+    if (pending.error.empty() && aspect == PassAspect::Color) {
+        // A depth or stencil texture in a color slot: read the aspect it actually has. Depth wins
+        // for a combined format, which the pass's own stencil attachment then asks for separately.
+        if (PixelFormatHasDepth(source.pixelFormat)) {
+            info = DepthReadbackDetails(source.pixelFormat, &options);
+            pending.aspect = "depth";
+        } else if (PixelFormatHasStencil(source.pixelFormat)) {
+            info = StencilReadbackDetails(source.pixelFormat, &options);
+            pending.aspect = "stencil";
+        }
     }
 
     pending.width = (uint32_t)std::max<NSUInteger>(1, source.width >> level);

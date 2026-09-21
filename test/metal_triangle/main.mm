@@ -19,6 +19,11 @@
 //                                 pass with a depth attachment: every fragment of the second draw
 //                                 is rejected, which is what an overdraw measurement counting with
 //                                 and without the depth test has to tell apart
+//   mtlinsp_triangle --stencil    give the triangle pass a combined depth/stencil attachment and a
+//                                 stencil state that always passes and writes 1, so a capture reads
+//                                 a stencil target back beside the depth one. Two aspects of one
+//                                 texture: a blit can fetch only one at a time, so the library
+//                                 copies it twice (src/metal/src/capture.h, PassAspect)
 //   mtlinsp_triangle --ray-tracing
 //                                 build a triangle bottom level and an instance top level over two
 //                                 copies of it, and trace the scene in a compute pass. The
@@ -205,12 +210,14 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @interface Renderer : NSObject
 /** `occluded` is an initializer argument rather than a property: it decides the pipeline's depth
  *  attachment format, which is fixed when the pipeline is built. */
-- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded
+- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
                   rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
 /** --occluded: the triangle drawn twice, the second behind the first, with a depth test. */
 @property(nonatomic, readonly) BOOL occluded;
+/** --stencil: a combined depth/stencil attachment, so both aspects are read back. */
+@property(nonatomic, readonly) BOOL stencil;
 /** --present-direct: present through the drawable, the way Unity's macOS player does. */
 @property(nonatomic) BOOL presentDirect;
 /** --compile-hitch: build a library and a pipeline inside every frame. */
@@ -269,10 +276,11 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     id<MTLTexture> _traceTarget;
 }
 
-- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded
+- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
                   rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas {
     if (!(self = [super init])) return nil;
     _occluded = occluded;
+    _stencil = stencil;
     _rayTracing = rayTracing;
     _staticBlas = staticBlas;
     _layer = layer;
@@ -317,8 +325,16 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     }
     pipelineDescriptor.vertexDescriptor = vertexDescriptor;
     pipelineDescriptor.colorAttachments[0].pixelFormat = layer.pixelFormat;
-    pipelineDescriptor.rasterSampleCount = occluded ? 1 : 4;
-    if (occluded) pipelineDescriptor.depthAttachmentPixelFormat = MTLPixelFormatDepth32Float;
+    // --stencil shares --occluded's single-sampled depth path: a multisampled depth attachment is
+    // deliberately not copied for the overdraw measurement, and the stencil read-back wants a
+    // target it can actually blit from.
+    const BOOL depthPass = occluded || stencil;
+    pipelineDescriptor.rasterSampleCount = depthPass ? 1 : 4;
+    if (depthPass) {
+        pipelineDescriptor.depthAttachmentPixelFormat =
+            stencil ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
+        if (stencil) pipelineDescriptor.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+    }
     _pipeline = [_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
     if (!_pipeline) {
         NSLog(@"pipeline creation failed: %@", error);
@@ -427,22 +443,37 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         _heapTexture.label = @"heap lightmap";
     }
 
-    if (self.occluded) {
+    if (self.occluded || self.stencil) {
         // A depth attachment for the triangle pass and a state that tests and writes it: without
-        // the write the second draw could not be rejected by the first.
+        // the write the second draw could not be rejected by the first. Under --stencil the format
+        // is combined, so the one texture carries both aspects.
+        const MTLPixelFormat depthFormat =
+            self.stencil ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
         MTLTextureDescriptor *depth =
-            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depthFormat
                                                                width:(NSUInteger)size.width
                                                               height:(NSUInteger)size.height
                                                            mipmapped:NO];
         depth.usage = MTLTextureUsageRenderTarget;
         depth.storageMode = MTLStorageModePrivate;
         _depthTarget = [_device newTextureWithDescriptor:depth];
-        _depthTarget.label = @"triangle depth";
+        _depthTarget.label = self.stencil ? @"triangle depth+stencil" : @"triangle depth";
         MTLDepthStencilDescriptor *depthState = [[MTLDepthStencilDescriptor alloc] init];
-        depthState.label = @"less, writing";
+        depthState.label = self.stencil ? @"less, writing, stencil 1" : @"less, writing";
         depthState.depthCompareFunction = MTLCompareFunctionLess;
         depthState.depthWriteEnabled = YES;
+        if (self.stencil) {
+            // Always passes and replaces with the reference (set to 1 on the encoder), so the
+            // stencil read-back holds 1 wherever the triangles landed and 0 everywhere else —
+            // which is what makes a wrong aspect or a missing store visible rather than plausible.
+            MTLStencilDescriptor *always = [[MTLStencilDescriptor alloc] init];
+            always.stencilCompareFunction = MTLCompareFunctionAlways;
+            always.depthStencilPassOperation = MTLStencilOperationReplace;
+            always.writeMask = 0xFF;
+            always.readMask = 0xFF;
+            depthState.frontFaceStencil = always;
+            depthState.backFaceStencil = always;
+        }
         _depthState = [_device newDepthStencilStateWithDescriptor:depthState];
     }
 
@@ -685,7 +716,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     MTLRenderPassDescriptor *trianglePass = [MTLRenderPassDescriptor renderPassDescriptor];
     trianglePass.colorAttachments[0].loadAction = MTLLoadActionClear;
     trianglePass.colorAttachments[0].clearColor = MTLClearColorMake(0.08, 0.09, 0.11, 1.0);
-    if (self.occluded) {
+    const BOOL depthPass = self.occluded || self.stencil;
+    if (depthPass) {
         // Single-sampled under --occluded: a multisampled pass's depth is deliberately not copied
         // for the overdraw measurement (src/metal/src/overdraw.mm), which is the one thing this
         // mode exists to exercise, so it renders straight into the resolve target instead.
@@ -696,11 +728,21 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         trianglePass.colorAttachments[0].resolveTexture = _resolved;
         trianglePass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
     }
-    if (self.occluded) {
+    if (depthPass) {
         trianglePass.depthAttachment.texture = _depthTarget;
         trianglePass.depthAttachment.loadAction = MTLLoadActionClear;
         trianglePass.depthAttachment.clearDepth = 1.0;
         trianglePass.depthAttachment.storeAction = MTLStoreActionDontCare;
+    }
+    if (self.stencil) {
+        // The same texture as the depth attachment, which is how a combined format is bound, and
+        // DontCare on purpose: an application that only tests stencil sets exactly this, and the
+        // capture library has to force the store for its read-back (ForceStore in
+        // src/metal/src/hooks_command_buffer.mm). Leaving it Store here would hide that.
+        trianglePass.stencilAttachment.texture = _depthTarget;
+        trianglePass.stencilAttachment.loadAction = MTLLoadActionClear;
+        trianglePass.stencilAttachment.clearStencil = 0;
+        trianglePass.stencilAttachment.storeAction = MTLStoreActionDontCare;
     }
 
     id<MTLParallelRenderCommandEncoder> parallel =
@@ -710,7 +752,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     encoder.label = @"triangle";
     [encoder pushDebugGroup:@"triangles"];
     [encoder setRenderPipelineState:_pipeline];
-    if (self.occluded) [encoder setDepthStencilState:_depthState];
+    if (depthPass) [encoder setDepthStencilState:_depthState];
+    if (self.stencil) [encoder setStencilReferenceValue:1];
     [encoder setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
     [encoder setVertexBuffer:_uniforms offset:0 atIndex:1];
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
@@ -786,6 +829,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL occluded;
 @property(nonatomic) BOOL rayTracing;
 @property(nonatomic) BOOL staticBlas;
+@property(nonatomic) BOOL stencilPass;
 @end
 
 @implementation AppDelegate {
@@ -823,7 +867,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
-    _renderer = [[Renderer alloc] initWithLayer:layer occluded:self.occluded
+    _renderer = [[Renderer alloc] initWithLayer:layer occluded:self.occluded stencil:self.stencilPass
                                      rayTracing:self.rayTracing staticBlas:self.staticBlas];
     _renderer.presentDirect = self.presentDirect;
     _renderer.compileHitch = self.compileHitch;
@@ -852,11 +896,13 @@ int main(int argc, const char *argv[]) {
     BOOL occluded = NO;
     BOOL rayTracing = NO;
     BOOL staticBlas = NO;
+    BOOL stencil = NO;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
         else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
         else if (strcmp(argv[i], "--occluded") == 0) occluded = YES;
+        else if (strcmp(argv[i], "--stencil") == 0) stencil = YES;
         else if (strcmp(argv[i], "--ray-tracing") == 0) rayTracing = YES;
         else if (strcmp(argv[i], "--static-blas") == 0) staticBlas = YES;
     }
@@ -870,6 +916,7 @@ int main(int argc, const char *argv[]) {
         delegate.presentDirect = presentDirect;
         delegate.compileHitch = compileHitch;
         delegate.occluded = occluded;
+        delegate.stencilPass = stencil;
         delegate.rayTracing = rayTracing;
         delegate.staticBlas = staticBlas;
         app.delegate = delegate;

@@ -9,8 +9,10 @@
 #import <Foundation/Foundation.h>
 #import <Metal/Metal.h>
 
+#include <atomic>
 #include <cstdarg>
 #include <cstdio>
+#include <cstdlib>
 #include <functional>
 #include <mutex>
 #include <unordered_map>
@@ -106,8 +108,108 @@ std::string Utf8(NSString *s) {
  * A command buffer completed: its error, with the encoder that faulted when the buffer was made
  * with encoder execution status, and whatever its shaders logged.
  */
+/**
+ * Whether a command buffer error means the GPU stopped rather than the command buffer being
+ * refused.
+ *
+ * Metal has no device-lost concept — the MTLDevice stays valid and the application can carry on —
+ * so this is the nearest thing there is to one, and the distinction matters. A timeout, a page
+ * fault or revoked access is the GPU having died under the work; out of memory or an invalid
+ * resource is one command buffer being turned away, which the validation list is the right place
+ * for and which the session survives.
+ */
+bool IsFatalCommandBufferError(NSInteger code) {
+    switch (code) {
+        case MTLCommandBufferErrorTimeout:
+        case MTLCommandBufferErrorPageFault:
+        case MTLCommandBufferErrorNotPermitted:
+        case MTLCommandBufferErrorInternal:
+            return true;
+        default:
+            // MTLCommandBufferErrorAccessRevoked is 4; spelled by value because it is macOS-only
+            // and this file builds for any target.
+            return code == 4;
+    }
+}
+
+/**
+ * The encoder the GPU was in when it stopped, from the per-encoder execution status
+ * (MTLCommandBufferEncoderInfoErrorKey). Metal's answer to Vulkan's breadcrumbs and DRED's
+ * command lists — and unlike either, it costs no per-draw markers: the option is set on the
+ * command buffer and the driver fills the states in.
+ */
+void SendDeviceLost(id<MTLCommandBuffer> cb, NSError *error, const std::string &message) {
+    std::string faulted;
+    std::string lastCompleted;
+    bool breadcrumbs = false;
+    if (@available(macOS 11.0, *)) {
+        NSArray *infos = error.userInfo[MTLCommandBufferEncoderInfoErrorKey];
+        breadcrumbs = infos != nil && infos.count != 0;
+        for (id<MTLCommandBufferEncoderInfo> info in infos) {
+            if (info.errorState == MTLCommandEncoderErrorStateFaulted && faulted.empty()) {
+                faulted = Utf8(info.label);
+            } else if (info.errorState == MTLCommandEncoderErrorStateCompleted) {
+                lastCompleted = Utf8(info.label);   // the last one to finish, in recorded order
+            }
+        }
+    }
+    vkinsp::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("DeviceLost");
+    // The call that reported it, as the other two backends name theirs
+    // ("vkQueueSubmit", "IDXGISwapChain::Present").
+    w.Key("call"); w.String("MTLCommandBuffer completion");
+    w.Key("breadcrumbs"); w.Boolean(breadcrumbs);
+    if (!breadcrumbs) {
+        // Not advice to turn an option on, the way the Vulkan layer's is: encoder execution status
+        // is set on every command buffer while a client is connected, so its absence here means
+        // the driver filled nothing in rather than that anything was switched off.
+        w.Key("note");
+        w.String("Metal reported no per-encoder execution status for this fault, so which encoder the GPU "
+                 "was in is not known. The option that asks for it is already on whenever the inspector is "
+                 "attached; a driver fills it in only for some faults.");
+    }
+    if (!faulted.empty()) { w.Key("hungCommand"); w.String("encoder \"" + faulted + "\""); }
+    if (!lastCompleted.empty()) { w.Key("lastCompletedCommand"); w.String("encoder \"" + lastCompleted + "\""); }
+    w.Key("message"); w.String(message);
+    w.EndObject();
+    Transport::Get().SendJson(std::move(w.str()));
+}
+
+/**
+ * MTLINSP_SIMULATE_GPU_FAULT=N: report a fault on the Nth completed command buffer, as though the
+ * GPU had timed out in it.
+ *
+ * The counterparts are VKINSP_SIMULATE_DEVICE_LOST and DXINSP_SIMULATE_DEVICE_REMOVED, and the
+ * reason for wanting one here is stronger than on either: the only reliable way to make a real
+ * Metal command buffer fault is to hang the GPU, which on macOS takes the window server with it
+ * for several seconds. Nothing that a test suite or a curious developer runs should do that, so
+ * the reporting path is exercised with a synthetic error instead. What cannot be checked this way
+ * is the driver's own encoder states, which only a real fault fills in — the log says so.
+ */
+NSError *SimulatedFault(id<MTLCommandBuffer> cb) {
+    static const int at = [] {
+        const char *v = getenv("MTLINSP_SIMULATE_GPU_FAULT");
+        if (v == nullptr || v[0] == '\0' || v[0] == '0') return 0;
+        const int n = atoi(v);
+        return n > 0 ? n : 1;
+    }();
+    if (at == 0) return nil;
+    static std::atomic<int> completed{0};
+    if (completed.fetch_add(1) + 1 != at) return nil;
+    Log("simulating a GPU fault on command buffer \"%s\" (MTLINSP_SIMULATE_GPU_FAULT)",
+        cb.label != nil ? cb.label.UTF8String : "");
+    return [NSError errorWithDomain:MTLCommandBufferErrorDomain
+                               code:MTLCommandBufferErrorTimeout
+                           userInfo:@{NSLocalizedDescriptionKey:
+                                          @"Simulated GPU fault (MTLINSP_SIMULATE_GPU_FAULT): the command "
+                                          @"buffer did not complete. No encoder states, because the GPU is in "
+                                          @"fact fine — only a real fault fills those in."}];
+}
+
 void ReportCommandBufferCompletion(id<MTLCommandBuffer> cb) {
     NSError *error = cb.error;
+    if (error == nil) error = SimulatedFault(cb);
     if (error != nil) {
         std::string message = Utf8(error.localizedDescription);
         if (@available(macOS 11.0, *)) {
@@ -127,6 +229,13 @@ void ReportCommandBufferCompletion(id<MTLCommandBuffer> cb) {
         }
         ReportValidation("error", "general", Utf8(error.domain), (int64_t)error.code, message, cb,
                          "MTLCommandBuffer");
+        // A fault the session does not survive also goes out as a device loss, so the diagnosis
+        // lands at the top of the log rather than among the validation messages — which is where
+        // the other two backends put theirs, and it is the same question being answered.
+        if ([error.domain isEqualToString:MTLCommandBufferErrorDomain] &&
+            IsFatalCommandBufferError(error.code)) {
+            SendDeviceLost(cb, error, message);
+        }
     }
     if (@available(macOS 11.0, *)) {
         id<MTLLogContainer> logs = cb.logs;

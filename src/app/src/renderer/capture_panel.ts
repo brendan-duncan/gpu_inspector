@@ -56,6 +56,7 @@ import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
 import { MeshView, type MeshViewOptions } from "./mesh_view.js";
 import { AccelerationView, STRUCTURE_TYPES } from "./acceleration_view.js";
 import { ShaderDebuggerView, type DebugRequest, type ShaderDebuggerOptions } from "./shader_debugger_view.js";
+import { interpretedVertexOutputs } from "./shader_debug_setup.js";
 import { summarizeCpuTimeline } from "./cpu_timeline.js";
 import { drawStatsSummary, parseDrawStats } from "./draw_stats.js";
 import { hwCountersSummary, parseHwCounters } from "./hw_counters.js";
@@ -710,6 +711,17 @@ export class CapturePanel {
       },
       meshOutput: (command, passDraws) => view.meshOutput(command, passDraws),
       captureMeshOutput: (command) => this._captureWithMeshOutput(view, command),
+      // Metal: the same interpreter the shader debugger steps, run over the draw's own vertices.
+      // The context is the debugger's, built once here (_meshDebugContext).
+      interpretedMeshOutput: async (cmd) => interpretedVertexOutputs({
+        data: view.data,
+        db: view.window.database,
+        // Resolved first: the interpreter names a draw's attributes through these, and unlike the
+        // debugger's context (which holds a map it fetched when the tab opened) the mesh view asks
+        // per draw.
+        inputNames: await view.vertexInputNames(cmd),
+        fetchBlob: (objectId, index) => view.fetchShaderBlob(objectId, index),
+      }, cmd),
       inputNames: (cmd) => view.vertexInputNames(cmd),
       debugVertex: (command, row, stage) => view.debugShader(stage === "in" ? { stage: "vertex", command, vertex: row, instance: 0 } : { stage: "vertex", command, record: row }),
     }, draw, options);
@@ -1860,6 +1872,13 @@ export class CaptureView implements CaptureHost {
       status: this.status, frame: d.frame, frames: d.frames, commands: d.commands.length, draws, passes,
       textures: d.textures.length, textureErrors: d.textures.filter((t) => !!t.info.error).length,
       texturesLoaded: d.textures.filter((t) => !!t.data).length,
+      // Each read-back's shape, which a count cannot answer for: which aspects of a pass came
+      // back, and under what format. A combined depth/stencil attachment is two of these sharing
+      // one image id, so the aspect is the only thing that tells them apart.
+      targets: d.textures.map((t) => ({
+        image: t.info.id, aspect: t.info.aspect, format: t.info.format, kind: t.info.kind,
+        ...(t.info.error ? { error: t.info.error } : {}), loaded: !!t.data,
+      })),
       buffers: d.buffers.size, passTimings: d.passTimings.size,
       overdraw: d.overdraw.length, overdrawCounts: d.overdraw.filter((o) => !!o.data).length,
       // A shader edited and run in the capture (Compile & Replay): what it did to the render targets.
@@ -2371,8 +2390,14 @@ export class CaptureView implements CaptureHost {
       const id = Number(which);
       const t = this.data.textures.find((x) => isRenderTarget(x.info) && !x.info.error
         && (Number.isFinite(id) ? x.info.id === id : x.info.aspect === which));
-      if (t) this.openTextureForPixel({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
-      else this._setStatus(`this capture has no ${which} render target`);
+      if (t) {
+        this.openTextureForPixel({
+          image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0,
+          // Named by aspect rather than by id: a combined depth/stencil image has two read-backs
+          // under one id, and "depth" or "stencil" is the only thing that picks between them.
+          ...(Number.isFinite(id) ? {} : { aspect: which }),
+        });
+      } else this._setStatus(`this capture has no ${which} render target`);
     }
     else if (name === "pixel-history") {
       // Testing aid (--debug-view=pixel-history): the pixel a Metal capture followed, else the
@@ -2391,10 +2416,16 @@ export class CaptureView implements CaptureHost {
     }
   }
 
-  /** The captured render target an image belongs to, with the pass that rendered it. */
-  private _targetOf(imageId: number, mip?: number): CaptureTarget | null {
-    const textures = this.data.textures.filter((t) => isRenderTarget(t.info) && t.info.id === imageId);
-    const tex = textures.find((t) => mip === undefined || t.info.mip === mip) ?? textures[0];
+  /**
+   * The captured render target an image belongs to, with the pass that rendered it.
+   *
+   * `aspect` tells the two halves of a depth/stencil image apart: they are one image with two
+   * read-backs, so without it the first of them answers for both.
+   */
+  private _targetOf(imageId: number, mip?: number, aspect?: string): CaptureTarget | null {
+    const all = this.data.textures.filter((t) => isRenderTarget(t.info) && t.info.id === imageId);
+    const textures = aspect ? all.filter((t) => t.info.aspect === aspect) : all;
+    const tex = textures.find((t) => mip === undefined || t.info.mip === mip) ?? textures[0] ?? all[0];
     if (!tex) return null;
     return { key: { frame: tex.info.frame, commandBuffer: tex.info.commandBuffer, passIndex: tex.info.passIndex }, texture: tex };
   }
@@ -2578,7 +2609,7 @@ export class CaptureView implements CaptureHost {
 
   /** Opens the render target tab following one pixel (a click in an image viewer, or Metal's own history). */
   openTextureForPixel(request: PixelRequest): void {
-    const target = this._targetOf(request.image, request.mip);
+    const target = this._targetOf(request.image, request.mip, request.aspect);
     if (!target) {
       this._setStatus("that image is not one of this capture's render targets");
       return;

@@ -65,6 +65,38 @@ bool SampleCalibration(id device, double nsPerTick);
 void SendCpuTimeline();
 
 // ---------------------------------------------------------------------------------------------
+// Timing capture.
+//
+// Where a frame capture keeps every timed call of one frame, a timing capture keeps each frame's
+// *totals* over minutes: the wall time and how much of it went to each category. That is what says
+// "the frame that hitched spent 38 of its 40 milliseconds waiting on a fence", and it is what the
+// app's Timing view reads (a hitch, rather than a slow frame — docs/PROFILING.md).
+//
+// The same shape as src/d3d12/src/cpu_timeline.h's: a ring of frames, batched out on the frame
+// report's interval, with the oldest dropped once it is full — a timing capture left running should
+// not grow without bound, and what matters is the recent minutes.
+//
+// `sampleHz` is accepted and ignored: sampling every thread's call stack is Windows-only
+// (src/vulkan/src/cpu_sampler.h), so on Metal a timing capture records where the frame's *calls*
+// went and not what the threads were doing between them.
+
+/** Starts recording per-frame timings, discarding anything a previous run held. */
+void BeginTimingCapture(uint32_t sampleHz = 0);
+/** Stops recording. What was taken stays until the next Begin. */
+void EndTimingCapture();
+/** Whether a timing capture is running. */
+bool TimingCaptureRunning();
+
+/**
+ * Closes off the frame that just ended, with its wall time: called from the frame boundary
+ * (frame_stats.mm). Quiet unless a timing capture is running.
+ */
+void NoteFrameTiming(uint32_t frame, double frameMs);
+
+/** Sends the frames recorded since the last call, if any. Called with the frame report. */
+void SendTimingFrames();
+
+// ---------------------------------------------------------------------------------------------
 // Memory over time.
 //
 // Metal has no heap table to enumerate the way Vulkan does, and no separate residency figure: the

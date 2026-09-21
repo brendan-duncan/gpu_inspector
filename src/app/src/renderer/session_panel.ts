@@ -176,9 +176,12 @@ export class SessionPanel extends Div implements SessionContext {
     this.database.onDeviceLost.addListener((r) => {
       this.appendLog(`GPU device lost (${r.call}): ${r.message}`);
       // Only the Vulkan layer has breadcrumbs to turn on; D3D12's come from the runtime, and its
-      // own message already says why there are none (src/d3d12/src/device_removed.h).
+      // own message already says why there are none (src/d3d12/src/device_removed.h). A library
+      // whose breadcrumbs are not an option explains itself in `note` instead — Metal's are always
+      // on while attached, so advising anyone to turn them on would be wrong.
       if (!r.breadcrumbs && r.action === "DeviceLost") {
-        this.appendLog("Launch with \"Device-lost breadcrumbs\" on to learn which command the GPU was running.");
+        this.appendLog(r.note
+          ?? "Launch with \"Device-lost breadcrumbs\" on to learn which command the GPU was running.");
       }
       // The command lists DRED was tracking, worst first: the one that stopped is the suspect.
       for (const list of (r.action === "DeviceRemoved" ? r.commandLists ?? [] : []).filter((l) => !l.complete)) {
@@ -255,6 +258,15 @@ export class SessionPanel extends Div implements SessionContext {
       name: this.info.name, state: this.info.state, detail: this.info.detail, pid: this.info.pid,
       objects: db.allObjects.size, validation: db.validation.length, validationLinked: linked,
       validationErrors: db.validation.filter((v) => v.severity === "error").length,
+      // The device-loss report, when one arrived: on Metal a command buffer fault the session does
+      // not survive (src/metal/src/validation.mm), on the other two a lost or removed device.
+      deviceLost: db.deviceLost ? {
+        action: db.deviceLost.action, call: db.deviceLost.call, breadcrumbs: db.deviceLost.breadcrumbs,
+        message: db.deviceLost.message,
+        ...(db.deviceLost.action === "DeviceLost" && db.deviceLost.hungCommand
+          ? { hungCommand: db.deviceLost.hungCommand } : {}),
+        ...(db.deviceLost.action === "DeviceLost" && db.deviceLost.note ? { note: db.deviceLost.note } : {}),
+      } : null,
       frameTimeMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, frameBoundary: db.frameBoundary,
       symbols: db.symbols.size, symbolsWithLines: [...db.symbols.values()].filter((f) => !!f.file).length,
       // Frames that stand for more than one source function: the inlined callers of each, which
