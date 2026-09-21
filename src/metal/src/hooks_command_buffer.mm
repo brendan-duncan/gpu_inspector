@@ -7,6 +7,7 @@
 #include "frame_stats.h"
 #include "hud.h"
 #include "overdraw.h"
+#include "raytracing.h"
 #include "transport.h"
 #include "validation.h"
 
@@ -280,7 +281,7 @@ id CB_blitCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor) {
     return CreateBlitEncoder(self, _cmd, reentry, true, descriptor);
 }
 
-/** Resource state and acceleration structure encoders: a pass, without recorded commands yet. */
+/** A resource state encoder: a pass, without recorded commands. */
 id CreateOtherEncoder(id self, SEL _cmd, Reentry &reentry, id encoder, const char *type) {
     if (reentry.outermost()) {
         g_encodersThisFrame++;
@@ -304,16 +305,66 @@ id CB_resourceStateCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor
     return CreateOtherEncoder(self, _cmd, reentry, encoder, "MTLResourceStateCommandEncoder");
 }
 
+/**
+ * An acceleration structure encoder: the frame's builds, and how long they took.
+ *
+ * The same shape as CreateBlitEncoder, including the one part that matters: an application that
+ * asks for `accelerationStructureCommandEncoder` passes no descriptor, and a descriptor is where a
+ * sample buffer attaches, so the call is re-issued as
+ * `accelerationStructureCommandEncoderWithDescriptor:` with a descriptor of the library's own. Build
+ * cost is otherwise unmeasurable on the form almost every application uses
+ * (`test/path_tracer/metal` does).
+ */
+id CreateAccelerationStructureEncoder(id self, SEL _cmd, Reentry &reentry, bool withDescriptor,
+                                      id descriptor) {
+    const bool outermost = reentry.outermost();
+    const bool rec = outermost && Recording();
+    PassTimingSlot timing;
+    id encoder = nil;
+    id ours = nil;
+    if (rec) {
+        // The descriptor form — and so an attachable sample buffer — is macOS 13. Before that the
+        // only timing there is comes from the encoder's own boundaries, which needs no descriptor,
+        // so the reservation happens either way and only the descriptor is guarded.
+        if (@available(macOS 13.0, *)) {
+            MTLAccelerationStructurePassDescriptor *pass = withDescriptor
+                ? [(MTLAccelerationStructurePassDescriptor *)descriptor copy]
+                : [[MTLAccelerationStructurePassDescriptor alloc] init];
+            ours = pass;
+            timing = ReserveAccelerationStructurePassTiming(self, pass);
+            if (withDescriptor) {
+                encoder = ORIG(id (*)(id, SEL, MTLAccelerationStructurePassDescriptor *))(self, _cmd, pass);
+            } else if (timing.sampleBuffer != nil && !timing.onEncoder) {
+                encoder = [(id<MTLCommandBuffer>)self accelerationStructureCommandEncoderWithDescriptor:pass];
+            }
+        } else {
+            timing = ReserveAccelerationStructurePassTiming(self, nil);
+        }
+    }
+    if (encoder == nil) {
+        encoder = withDescriptor ? ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor)
+                                 : ORIG(id (*)(id, SEL))(self, _cmd);
+    }
+    [ours release];
+    if (outermost) {
+        g_encodersThisFrame++;
+        RegisterEncoder(encoder, self, "MTLAccelerationStructureCommandEncoder", nil);
+        BeginPass(encoder, self, PassKind::Other, timing);
+        if (rec) RecordCommand(sel_getName(_cmd), encoder, {});
+        Log("commandBuffer.%s -> %s", sel_getName(_cmd), ClassName(encoder));
+    }
+    HookAccelerationStructureEncoderClass(encoder);
+    return encoder;
+}
+
 id CB_accelerationStructureCommandEncoder(id self, SEL _cmd) {
     Reentry reentry(self, _cmd);
-    id encoder = ORIG(id (*)(id, SEL))(self, _cmd);
-    return CreateOtherEncoder(self, _cmd, reentry, encoder, "MTLAccelerationStructureCommandEncoder");
+    return CreateAccelerationStructureEncoder(self, _cmd, reentry, false, nil);
 }
 
 id CB_accelerationStructureCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor) {
     Reentry reentry(self, _cmd);
-    id encoder = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
-    return CreateOtherEncoder(self, _cmd, reentry, encoder, "MTLAccelerationStructureCommandEncoder");
+    return CreateAccelerationStructureEncoder(self, _cmd, reentry, true, descriptor);
 }
 
 // --------------------------------------------------------------------------------------------

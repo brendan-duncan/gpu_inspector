@@ -441,7 +441,11 @@ ResolvedInput CaptureInput(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS addre
     out.offset = offset;
     // A size the build implies can run past the buffer when the application over-declared it.
     if (size > remaining) size = remaining;
-    if (rec && size) out.capture = Cap().QueueAddressCapture(rec, address, size);
+    // Whole, not truncated to maxBufferSize: a build's geometry is the one thing in a capture that
+    // is useless clipped. A real bottom level is megabytes, maxBufferSize defaults to 64 KB, and a
+    // mesh cut there draws as a corner of itself in the structure views. The per-capture total
+    // (maxBufferTotal) still bounds it, and the capture-start read-back below already passes it.
+    if (rec && size) out.capture = Cap().QueueAddressCapture(rec, address, size, /*whole=*/true);
     return out;
 }
 

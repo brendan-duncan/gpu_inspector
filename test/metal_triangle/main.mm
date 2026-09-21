@@ -19,6 +19,20 @@
 //                                 pass with a depth attachment: every fragment of the second draw
 //                                 is rejected, which is what an overdraw measurement counting with
 //                                 and without the depth test has to tell apart
+//   mtlinsp_triangle --ray-tracing
+//                                 build a triangle bottom level and an instance top level over two
+//                                 copies of it, and trace the scene in a compute pass. The
+//                                 counterpart of test/triangle --ray-tracing, and the one sample
+//                                 with *triangle* geometry in an acceleration structure —
+//                                 test/path_tracer/metal is bounding boxes only. Both are rebuilt
+//                                 every frame, so a captured frame holds the builds
+//   mtlinsp_triangle --static-blas
+//                                 with --ray-tracing: build the bottom level once at start-up and
+//                                 only rebuild the top level, which is what an engine does. A
+//                                 captured frame then holds no build of the bottom level, and what
+//                                 is in it can only come from the read-back the capture library
+//                                 takes when the capture begins (src/metal/src/raytracing.h,
+//                                 ReadBackEarlierStructures)
 //
 // Built unsigned by CMake, so DYLD_INSERT_LIBRARIES reaches it. See src/metal/README.md.
 #import <Cocoa/Cocoa.h>
@@ -112,6 +126,49 @@ kernel void hitch_main(device float *values [[buffer(0)]],
 }
 )MSL";
 
+// --ray-tracing. A library of its own rather than another entry point in kShaderSource: including
+// <metal_raytracing> in the main library would make the whole of it fail to compile on a device
+// without ray tracing, and would put types the MSL interpreter does not know yet in front of every
+// shader-debugger test (src/app/src/renderer/msl/).
+//
+// The scene is the triangle twice, placed by the two instance transforms, traced from a grid of
+// parallel rays down -Z. Each thread writes what it hit: the instance's user index, the triangle's
+// barycentrics, and the distance — enough that the output says whether the transforms were read the
+// way Metal stores them, since an untransposed transform puts the triangles somewhere else.
+NSString *const kRayTracingSource = @R"MSL(
+#include <metal_stdlib>
+#include <metal_raytracing>
+using namespace metal;
+using namespace metal::raytracing;
+
+struct TraceUniforms { float angle; float scale; float depth; };
+
+kernel void trace_main(texture2d<float, access::write> out [[texture(0)]],
+                       instance_acceleration_structure scene [[buffer(0)]],
+                       constant TraceUniforms &u [[buffer(1)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    const float2 size = float2(out.get_width(), out.get_height());
+    if (gid.x >= uint(size.x) || gid.y >= uint(size.y)) return;
+    // A ray per pixel, straight down -Z through the plane the triangles lie in.
+    const float2 uv = (float2(gid) + 0.5) / size;
+    ray r;
+    r.origin = float3((uv.x * 2.0 - 1.0) * 2.0, (1.0 - uv.y * 2.0) * 2.0, 2.0);
+    r.direction = float3(0.0, 0.0, -1.0);
+    r.min_distance = 0.0;
+    r.max_distance = 10.0;
+
+    intersector<instancing, triangle_data> isect;
+    isect.assume_geometry_type(geometry_type::triangle);
+    intersector<instancing, triangle_data>::result_type hit = isect.intersect(r, scene, 0xFF);
+    if (hit.type == intersection_type::none) {
+        out.write(float4(0.0, 0.0, 0.0, 1.0), gid);
+        return;
+    }
+    const float2 bary = hit.triangle_barycentric_coord;
+    out.write(float4(float(hit.instance_id) + 1.0, bary.x, bary.y, hit.distance), gid);
+}
+)MSL";
+
 struct Uniforms {
     float angle;
     float scale;
@@ -119,6 +176,22 @@ struct Uniforms {
 };
 
 constexpr NSUInteger kWaveCount = 256;
+
+// --ray-tracing: the triangle as an acceleration structure needs float3 positions of its own — the
+// draw's vertices are position (float2) and colour (float3) interleaved at a stride of 20, which is
+// not a layout a build can read as a position.
+const float kRayVertices[] = {
+     0.0f,  0.6f, 0.0f,
+    -0.6f, -0.4f, 0.0f,
+     0.6f, -0.4f, 0.0f,
+};
+const uint16_t kRayIndices[] = { 0, 1, 2 };
+
+/** How many instances the top level places the triangle at, and where. */
+constexpr NSUInteger kInstanceCount = 2;
+
+/** The traced image, small on purpose: it is read back with every capture. */
+constexpr NSUInteger kTraceSize = 64;
 
 // The heap is deliberately far larger than the two resources taken out of it, so that the
 // breakdown's "mostly empty" call-out (renderer/metal/metal_memory.ts, HEAP_OCCUPANCY_LOW) has
@@ -132,7 +205,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @interface Renderer : NSObject
 /** `occluded` is an initializer argument rather than a property: it decides the pipeline's depth
  *  attachment format, which is fixed when the pipeline is built. */
-- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded;
+- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded
+                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
 /** --occluded: the triangle drawn twice, the second behind the first, with a depth test. */
@@ -141,6 +215,10 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL presentDirect;
 /** --compile-hitch: build a library and a pipeline inside every frame. */
 @property(nonatomic) BOOL compileHitch;
+/** --ray-tracing: build a triangle scene and trace it in a compute pass. */
+@property(nonatomic, readonly) BOOL rayTracing;
+/** --static-blas: build the bottom level once at start-up rather than every frame. */
+@property(nonatomic, readonly) BOOL staticBlas;
 @end
 
 @implementation Renderer {
@@ -175,11 +253,28 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // are different code and only one of them is exercised by start-up allocations.
     NSMutableArray *_later;
     NSUInteger _frameCount;
+    // --ray-tracing: a triangle bottom level, a top level placing it twice, and the kernel that
+    // traces them. The scratch is one buffer both builds take their stretch of, the way an engine
+    // does rather than allocating per build.
+    id<MTLComputePipelineState> _trace;
+    id<MTLBuffer> _rayVertices;
+    id<MTLBuffer> _rayIndices;
+    MTLPrimitiveAccelerationStructureDescriptor *_blasDescriptor;
+    id<MTLAccelerationStructure> _blas;
+    MTLInstanceAccelerationStructureDescriptor *_tlasDescriptor;
+    id<MTLAccelerationStructure> _tlas;
+    id<MTLBuffer> _instances;
+    id<MTLBuffer> _scratch;
+    NSUInteger _tlasScratchOffset;
+    id<MTLTexture> _traceTarget;
 }
 
-- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded {
+- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded
+                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas {
     if (!(self = [super init])) return nil;
     _occluded = occluded;
+    _rayTracing = rayTracing;
+    _staticBlas = staticBlas;
     _layer = layer;
     _device = layer.device;
     _queue = [_device newCommandQueue];
@@ -351,8 +446,188 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         _depthState = [_device newDepthStencilStateWithDescriptor:depthState];
     }
 
+    [self setUpRayTracing];
+
     _later = [NSMutableArray array];
     return self;
+}
+
+/**
+ * --ray-tracing: the scene, and the kernel that traces it.
+ *
+ * The bottom level is one triangle; the top level places it twice, translated apart and the second
+ * one rotated, so the two are distinguishable in the traced image and the instance transforms are
+ * not the identity — an identity transform is its own transpose and would say nothing about whether
+ * MTLPackedFloat4x3 was read the right way round.
+ */
+- (void)setUpRayTracing {
+    if (!self.rayTracing) return;
+    if (!_device.supportsRaytracing) {
+        NSLog(@"--ray-tracing: this device has no ray tracing");
+        exit(1);
+    }
+
+    NSError *error = nil;
+    id<MTLLibrary> library = [_device newLibraryWithSource:kRayTracingSource options:nil error:&error];
+    if (!library) {
+        NSLog(@"ray tracing shader compilation failed: %@", error);
+        exit(1);
+    }
+    library.label = @"ray tracing shaders";
+    _trace = [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"trace_main"]
+                                                    error:&error];
+    if (!_trace) {
+        NSLog(@"trace pipeline creation failed: %@", error);
+        exit(1);
+    }
+
+    // Private storage for the geometry, which is what an engine uses and the case a capture has to
+    // blit to read: a shared buffer is only a memcpy away (src/metal/src/capture.h).
+    _rayVertices = [_device newBufferWithLength:sizeof(kRayVertices) options:MTLResourceStorageModePrivate];
+    _rayVertices.label = @"ray tracing vertices";
+    _rayIndices = [_device newBufferWithLength:sizeof(kRayIndices) options:MTLResourceStorageModePrivate];
+    _rayIndices.label = @"ray tracing indices";
+    {
+        id<MTLBuffer> stagingVertices = [_device newBufferWithBytes:kRayVertices length:sizeof(kRayVertices)
+                                                           options:MTLResourceStorageModeShared];
+        id<MTLBuffer> stagingIndices = [_device newBufferWithBytes:kRayIndices length:sizeof(kRayIndices)
+                                                          options:MTLResourceStorageModeShared];
+        id<MTLCommandBuffer> upload = [_queue commandBuffer];
+        upload.label = @"ray tracing upload";
+        id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
+        [blit copyFromBuffer:stagingVertices sourceOffset:0 toBuffer:_rayVertices destinationOffset:0
+                        size:sizeof(kRayVertices)];
+        [blit copyFromBuffer:stagingIndices sourceOffset:0 toBuffer:_rayIndices destinationOffset:0
+                        size:sizeof(kRayIndices)];
+        [blit endEncoding];
+        [upload commit];
+        [upload waitUntilCompleted];
+    }
+
+    MTLAccelerationStructureTriangleGeometryDescriptor *geometry =
+        [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
+    if (@available(macOS 12.0, *)) geometry.label = @"triangle";
+    geometry.vertexBuffer = _rayVertices;
+    geometry.vertexBufferOffset = 0;
+    geometry.vertexStride = sizeof(float) * 3;
+    geometry.indexBuffer = _rayIndices;
+    geometry.indexBufferOffset = 0;
+    geometry.indexType = MTLIndexTypeUInt16;
+    geometry.triangleCount = 1;
+    geometry.opaque = YES;
+    _blasDescriptor = [MTLPrimitiveAccelerationStructureDescriptor descriptor];
+    _blasDescriptor.geometryDescriptors = @[ geometry ];
+    // Refit, because --static-blas builds it once and an engine that builds once asks for this.
+    _blasDescriptor.usage = MTLAccelerationStructureUsageRefit;
+
+    MTLAccelerationStructureSizes blasSizes = [_device accelerationStructureSizesWithDescriptor:_blasDescriptor];
+    _blas = [_device newAccelerationStructureWithSize:blasSizes.accelerationStructureSize];
+    _blas.label = @"triangle BLAS";
+
+    // Two instances: one moved left, one moved right and turned a quarter turn about Z. The
+    // transform is an MTLPackedFloat4x3, four columns of three, so columns[3] is the translation.
+    _instances = [_device newBufferWithLength:kInstanceCount * sizeof(MTLAccelerationStructureInstanceDescriptor)
+                                     options:MTLResourceStorageModeShared];
+    _instances.label = @"scene instances";
+    auto *records = (MTLAccelerationStructureInstanceDescriptor *)_instances.contents;
+    for (NSUInteger n = 0; n < kInstanceCount; ++n) {
+        MTLAccelerationStructureInstanceDescriptor &r = records[n];
+        memset(&r, 0, sizeof(r));
+        if (n == 0) {
+            r.transformationMatrix.columns[0] = MTLPackedFloat3(1.0f, 0.0f, 0.0f);
+            r.transformationMatrix.columns[1] = MTLPackedFloat3(0.0f, 1.0f, 0.0f);
+        } else {
+            // A quarter turn about Z: x' = -y, y' = x. Column-major, so this is the transpose of
+            // how it reads on paper — which is the whole point of having it here.
+            r.transformationMatrix.columns[0] = MTLPackedFloat3(0.0f, 1.0f, 0.0f);
+            r.transformationMatrix.columns[1] = MTLPackedFloat3(-1.0f, 0.0f, 0.0f);
+        }
+        r.transformationMatrix.columns[2] = MTLPackedFloat3(0.0f, 0.0f, 1.0f);
+        r.transformationMatrix.columns[3] = MTLPackedFloat3(n == 0 ? -0.8f : 0.8f, 0.0f, 0.0f);
+        r.options = MTLAccelerationStructureInstanceOptionOpaque;
+        r.mask = n == 0 ? 0xFF : 0x0F;
+        r.intersectionFunctionTableOffset = 0;
+        r.accelerationStructureIndex = 0;   // both instances are the one bottom level
+    }
+    _tlasDescriptor = [MTLInstanceAccelerationStructureDescriptor descriptor];
+    _tlasDescriptor.instancedAccelerationStructures = @[ _blas ];
+    _tlasDescriptor.instanceCount = kInstanceCount;
+    _tlasDescriptor.instanceDescriptorBuffer = _instances;
+    // instanceDescriptorType is left at its default, which *is*
+    // MTLAccelerationStructureInstanceDescriptorTypeDefault — setting it would only add a macOS 12
+    // availability guard for no change.
+
+    MTLAccelerationStructureSizes tlasSizes = [_device accelerationStructureSizesWithDescriptor:_tlasDescriptor];
+    _tlas = [_device newAccelerationStructureWithSize:tlasSizes.accelerationStructureSize];
+    _tlas.label = @"scene TLAS";
+
+    // One scratch buffer, a stretch per build, so the two builds in one encoder do not write into
+    // each other.
+    _tlasScratchOffset = (blasSizes.buildScratchBufferSize + 255) & ~(NSUInteger)255;
+    _scratch = [_device newBufferWithLength:_tlasScratchOffset + tlasSizes.buildScratchBufferSize
+                                    options:MTLResourceStorageModePrivate];
+    _scratch.label = @"build scratch";
+
+    MTLTextureDescriptor *traced = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                                                                                     width:kTraceSize
+                                                                                    height:kTraceSize
+                                                                                 mipmapped:NO];
+    traced.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
+    traced.storageMode = MTLStorageModePrivate;
+    _traceTarget = [_device newTextureWithDescriptor:traced];
+    _traceTarget.label = @"traced";
+
+    // --static-blas: built once, here, so a frame captured later holds no build of it and what is
+    // in it can only come from the capture library's read-back at the start of the capture.
+    if (self.staticBlas) {
+        id<MTLCommandBuffer> commands = [_queue commandBuffer];
+        commands.label = @"build bottom level";
+        id<MTLAccelerationStructureCommandEncoder> encoder = [commands accelerationStructureCommandEncoder];
+        encoder.label = @"build bottom level";
+        [encoder buildAccelerationStructure:_blas descriptor:_blasDescriptor
+                             scratchBuffer:_scratch scratchBufferOffset:0];
+        [encoder endEncoding];
+        [commands commit];
+        [commands waitUntilCompleted];
+        if (commands.error) {
+            NSLog(@"building the bottom level failed: %@", commands.error);
+            exit(1);
+        }
+    }
+}
+
+/**
+ * --ray-tracing: the frame's builds and the trace that reads them.
+ *
+ * The top level is rebuilt every frame — what an engine does, since its instances move — and the
+ * bottom level with it unless --static-blas. Both in one encoder, so the pass holds two builds and
+ * the top level reads what the same encoder wrote just before it.
+ */
+- (void)encodeRayTracing:(id<MTLCommandBuffer>)commandBuffer {
+    if (!self.rayTracing) return;
+    id<MTLAccelerationStructureCommandEncoder> builds = [commandBuffer accelerationStructureCommandEncoder];
+    builds.label = @"build scene";
+    if (!self.staticBlas) {
+        [builds buildAccelerationStructure:_blas descriptor:_blasDescriptor
+                             scratchBuffer:_scratch scratchBufferOffset:0];
+    }
+    [builds buildAccelerationStructure:_tlas descriptor:_tlasDescriptor
+                         scratchBuffer:_scratch scratchBufferOffset:_tlasScratchOffset];
+    [builds endEncoding];
+
+    Uniforms uniforms = { .angle = (float)_frameCount * 0.02f, .scale = 0.8f, .depth = 0.0f };
+    id<MTLComputeCommandEncoder> trace = [commandBuffer computeCommandEncoder];
+    trace.label = @"trace scene";
+    [trace setComputePipelineState:_trace];
+    [trace setTexture:_traceTarget atIndex:0];
+    [trace setAccelerationStructure:_tlas atBufferIndex:0];
+    [trace setBytes:&uniforms length:sizeof(uniforms) atIndex:1];
+    // The bottom levels a top level references have to be named as used: the traversal reads them,
+    // and nothing else in the encoder mentions them.
+    [trace useResource:_blas usage:MTLResourceUsageRead];
+    [trace dispatchThreads:MTLSizeMake(kTraceSize, kTraceSize, 1)
+     threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+    [trace endEncoding];
 }
 
 /**
@@ -389,6 +664,9 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
     id<MTLCommandBuffer> commandBuffer = [_queue commandBuffer];
     commandBuffer.label = @"frame";
+
+    // --ray-tracing: the builds and the trace, before the rest of the frame.
+    [self encodeRayTracing:commandBuffer];
 
     // Compute pass first: Metal has a real compute encoder, so this is a pass of its own rather
     // than a run of dispatches the way it has to be inferred in Vulkan.
@@ -506,6 +784,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL presentDirect;
 @property(nonatomic) BOOL compileHitch;
 @property(nonatomic) BOOL occluded;
+@property(nonatomic) BOOL rayTracing;
+@property(nonatomic) BOOL staticBlas;
 @end
 
 @implementation AppDelegate {
@@ -543,7 +823,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
-    _renderer = [[Renderer alloc] initWithLayer:layer occluded:self.occluded];
+    _renderer = [[Renderer alloc] initWithLayer:layer occluded:self.occluded
+                                     rayTracing:self.rayTracing staticBlas:self.staticBlas];
     _renderer.presentDirect = self.presentDirect;
     _renderer.compileHitch = self.compileHitch;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
@@ -569,12 +850,18 @@ int main(int argc, const char *argv[]) {
     BOOL presentDirect = NO;
     BOOL compileHitch = NO;
     BOOL occluded = NO;
+    BOOL rayTracing = NO;
+    BOOL staticBlas = NO;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
         else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
         else if (strcmp(argv[i], "--occluded") == 0) occluded = YES;
+        else if (strcmp(argv[i], "--ray-tracing") == 0) rayTracing = YES;
+        else if (strcmp(argv[i], "--static-blas") == 0) staticBlas = YES;
     }
+    // --static-blas only means anything with a scene to build.
+    if (staticBlas) rayTracing = YES;
     @autoreleasepool {
         NSApplication *app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -583,6 +870,8 @@ int main(int argc, const char *argv[]) {
         delegate.presentDirect = presentDirect;
         delegate.compileHitch = compileHitch;
         delegate.occluded = occluded;
+        delegate.rayTracing = rayTracing;
+        delegate.staticBlas = staticBlas;
         app.delegate = delegate;
         [app run];
     }

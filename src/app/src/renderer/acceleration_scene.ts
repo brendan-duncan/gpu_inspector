@@ -18,7 +18,11 @@ import type { AccelerationScene } from "./ray_tracing_view.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ArgObject, ArgValue, CaptureCommand } from "../shared/protocol.js";
 import { buildCapture, d3d12StructureAddresses, parseD3D12Build } from "./d3d12/raytracing.js";
-import { isObject, num, type VulkanObject } from "./vulkan/vulkan_object.js";
+import {
+  METAL_BUILD_METHODS, METAL_FIELDS, instancedStructures, metalBuild, metalBuildCapture,
+  metalCaptureInputs, metalDescriptorOf, metalStructureBuild, parseMetalBuild, parseMetalInstances,
+} from "./metal/raytracing.js";
+import { isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
 
 /** What this needs of an object database: every acceleration structure, to resolve an instance's reference. */
 export interface StructureDatabase {
@@ -94,6 +98,27 @@ function earlierBuilds(data: CaptureData, db: StructureDatabase, built: Set<numb
     const parsed = parseBuild(info as unknown as ArgValue, ranges as unknown as ArgValue);
     if (parsed) out.push({ command, info: 0, build: parsed, fromCaptureStart: true });
   }
+  // Metal needs no reshaping at all: the library writes the same descriptor onto the structure as
+  // it puts in the build command's arguments, and the read-back's capture ids in the same
+  // `{geometry, field, capture}` shape the command's buildData uses. So the synthetic command is
+  // the two of them side by side (src/metal/src/raytracing.h, ReadBackEarlierStructures).
+  for (const o of db.getObjectsOfType("MTLAccelerationStructure")?.values() ?? []) {
+    if (built.has(o.id)) continue;
+    const read = metalCaptureInputs(o);
+    const descriptor = metalDescriptorOf(read) ?? metalDescriptorOf(metalStructureBuild(o));
+    if (!descriptor) continue;
+    const ours = ourInputs(data, read ?? undefined);
+    if (!ours.length) continue;
+    const command = {
+      index: -1, frame: 0, slot: 0,
+      method: "buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:",
+      args: { accelerationStructure: { __id: o.id }, descriptor, buildData: ours },
+    } as unknown as CaptureCommand;
+    out.push({
+      command, info: 0, fromCaptureStart: true,
+      build: metalBuild(o.id, descriptor, str(read?.mode) || "BUILD"),
+    });
+  }
   return out;
 }
 
@@ -118,9 +143,14 @@ function allBuilds(data: CaptureData, db: StructureDatabase): CapturedBuild[] {
 function buildsIn(data: CaptureData): CapturedBuild[] {
   const out: CapturedBuild[] = [];
   for (const c of data.commands) {
-    // D3D12 builds one structure per command; Vulkan's takes an array of them.
+    // D3D12 and Metal build one structure per command; Vulkan's takes an array of them.
     if (c.method === "BuildRaytracingAccelerationStructure") {
       const build = parseD3D12Build(c);
+      if (build) out.push({ command: c, info: 0, build });
+      continue;
+    }
+    if (METAL_BUILD_METHODS.has(c.method)) {
+      const build = parseMetalBuild(c);
       if (build) out.push({ command: c, info: 0, build });
       continue;
     }
@@ -150,6 +180,16 @@ function captureIdOf(command: CaptureCommand, info: number, geometry: number, fi
   // info index, since one command builds one structure.
   if (command.method === "BuildRaytracingAccelerationStructure") {
     return buildCapture(command, D3D12_FIELDS[field] === "InstanceDescs" ? -1 : geometry, D3D12_FIELDS[field] ?? field);
+  }
+  // Metal's inputs are named as its descriptor spells them, and the list is inside the command's
+  // own arguments rather than beside them — a Metal descriptor already says `buffer` and `offset`,
+  // so the capture id belongs there (metal/raytracing.ts).
+  if (METAL_BUILD_METHODS.has(command.method)) {
+    for (const name of METAL_FIELDS[field] ?? [field]) {
+      const id = metalBuildCapture(command.args as ArgValue, geometry, name);
+      if (id) return id;
+    }
+    return 0;
   }
   const list = Array.isArray(command.buildData) ? command.buildData : [];
   for (const e of list) {
@@ -199,10 +239,17 @@ export function accelerationScene(data: CaptureData, db: StructureDatabase, stru
 
   const instances: AccelerationInstance[] = [];
   const addresses = addressesOf(db);
+  // Metal's instance descriptor is neither the same layout nor named the same way (five layouts,
+  // a transposed transform, and the bottom level by index into the build's own array rather than by
+  // device address), so it has a parser of its own — metal/raytracing.ts says why in full.
+  const metalDescriptor = METAL_BUILD_METHODS.has(target.command.method)
+    ? metalDescriptorOf(target.command.args as ArgValue) : null;
   target.build.geometries.forEach((g, index) => {
     if (g.kind !== "instances") return;
     const bytes = bytesOf(data, captureIdOf(target.command, target.info, index, "data"));
-    if (bytes) instances.push(...parseInstances(bytes, addresses));
+    if (!bytes) return;
+    if (metalDescriptor) instances.push(...parseMetalInstances(bytes, metalDescriptor, instancedStructures(metalDescriptor)));
+    else instances.push(...parseInstances(bytes, addresses));
   });
   if (!instances.length) return null;
 
@@ -384,12 +431,20 @@ export function structureDrawing(data: CaptureData, db: StructureDatabase, struc
       shape: triangles.length ? "triangles" : "aabbs", instances: [], placed: 0, note: "", fromCaptureStart: early,
     };
   }
-  return NOTHING("This build's geometry was not read back, so what the structure holds is not known. "
-    + "A build reads its vertices by GPU address, and an address the capture could not tie to a buffer has no contents to fetch.");
+  // A Metal build names its buffers outright, so an input with no contents is one the capture could
+  // not read rather than an address it could not place — which is a different thing to say.
+  const metal = METAL_BUILD_METHODS.has(target.command.method);
+  return NOTHING(metal
+    ? "This build's geometry was not read back, so what the structure holds is not known. The build names its "
+      + "buffers directly, so this is a buffer the capture could not read — one in a storage mode with no "
+      + "contents to fetch, or past the capture's buffer budget."
+    : "This build's geometry was not read back, so what the structure holds is not known. "
+      + "A build reads its vertices by GPU address, and an address the capture could not tie to a buffer has no contents to fetch.");
 }
 
 /** Every type a capture's acceleration structures go under, whichever API took it. */
-export const STRUCTURE_TYPES = ["VkAccelerationStructureKHR", "VkAccelerationStructureNV", "ID3D12RaytracingAccelerationStructure"];
+export const STRUCTURE_TYPES = ["VkAccelerationStructureKHR", "VkAccelerationStructureNV",
+                                "ID3D12RaytracingAccelerationStructure", "MTLAccelerationStructure"];
 
 // ---------------------------------------------------------------------------------------------
 // Which structures a command names
@@ -408,13 +463,21 @@ export interface StructureReference {
 
 /** The role a structure plays in a command, from the field that names it. */
 function roleOf(key: string, method: string): string {
-  if (/^(DestAccelerationStructureData|dstAccelerationStructure|destStructure)$/.test(key)) {
-    return /Copy/.test(method) ? "copies to" : "builds";
+  if (/^(DestAccelerationStructureData|dstAccelerationStructure|destStructure|destinationAccelerationStructure)$/.test(key)) {
+    return /[Cc]opy/.test(method) ? "copies to" : "builds";
   }
-  if (/^(SourceAccelerationStructureData|srcAccelerationStructure)$/.test(key)) {
-    return /Copy/.test(method) ? "copies from" : "updates from";
+  if (/^(SourceAccelerationStructureData|srcAccelerationStructure|sourceAccelerationStructure)$/.test(key)) {
+    return /[Cc]opy/.test(method) ? "copies from" : "updates from";
   }
   if (/^pSourceAccelerationStructureData$/.test(key)) return "queries";
+  // Metal's build names its destination `accelerationStructure`, and its writeCompactedSize names
+  // the structure it measures the same way; everything else naming one is reading it.
+  if (key === "accelerationStructure") {
+    if (/^(build|refit)/.test(method)) return "builds";
+    if (/^writeCompacted/.test(method)) return "queries";
+  }
+  // A Metal top level's build names the bottom levels under it, which is neither a read nor a write.
+  if (key === "instancedAccelerationStructures") return "instances";
   return "traces";
 }
 

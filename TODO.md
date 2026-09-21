@@ -470,7 +470,16 @@ application with injected state. Route (a) is the general one and is the prerequ
   - `vkCmdTraceRaysIndirect*`, the NV ray tracing commands and the acceleration structure copies
     (`vkCmdCopyAccelerationStructure*`) are still left out.
   - Editing a ray tracing stage.
-  - Ray queries in the shader debugger.
+  - Ray queries in the shader debugger. **Metal is the cheapest place to build this first**: the
+    MSL interpreter is hand-written here (`renderer/msl/`, and `parser.ts` already reserves
+    `intersector` as a template name and does nothing with it), where Vulkan and D3D12 would need
+    `OpRayQuery*` in a SPIR-V interpreter and `TraceRay` in a DXIL one. The scene is already in the
+    capture — the geometry, the instances and the transforms are all read back
+    (`src/metal/src/raytracing.h`) — so `intersect` is a CPU traversal over captured buffers,
+    brute force being fine for the one thread being stepped. The piece with no precedent is calling
+    the intersection function from inside the traversal, which `test/path_tracer/metal` *requires*:
+    its geometry is entirely procedural, so a traversal that cannot call `sphereIntersection`
+    reports every ray as a miss.
 
 ## What Nsight Graphics has **(Nsight)**
 
@@ -685,7 +694,13 @@ vendor's driver is listed at the end so nobody spends time on it.
       landed on the color entry. The Vulkan layer had always sent the aspect for exactly this
       reason. Nothing in the UI had shown it, because a depth image and a color image of the same
       pass both render as an image.
-- [ ] Metal replay, the rest: acceleration structures and ray tracing, indirect command buffers,
+- [ ] Metal replay, the rest: acceleration structures and ray tracing (the capture side is done —
+      `src/metal/src/raytracing.h` — so the replay has descriptors that name their buffers
+      outright, with no `RemapAddress` analogue to write and no binding-table handle substitution:
+      `Replayer::TraceRays`'s whole rewrite collapses into re-filling an
+      `MTLIntersectionFunctionTable` by function name. `CreateObject` in `mtl_replayer.mm` names
+      acceleration structures as an explicit gap, and `OpenEncoder` in `mtl_commands.mm` bails out
+      of the encoder with `LeftOut`), indirect command buffers,
       argument encoders, mesh shader draws, and the analyses `vkinsp_replay` serves (overdraw is
       measured while capturing on Metal already, but overlays, mesh output, per-draw timing and
       ablation are not). Tile shading is recorded but is not on `MTLRenderCommandEncoder` in the
@@ -984,6 +999,60 @@ backend does. Ordered by value per effort.
       around a copy kernel or has to settle for per-encoder granularity.
       Layered passes want array shadows and a way to exercise them: neither the sample nor the
       Unity frame has one, so writing it now would repeat the "Untested on a Mac" mistake.
+- [x] Ray tracing (`src/metal/src/raytracing.h`, `renderer/metal/raytracing.ts`), the third
+      backend's. The smallest of the three, because Metal names things with objects where the other
+      two name them with numbers: an `MTLAccelerationStructure` is a real object with a `dealloc`
+      the tracker already watches (no `StructureRegistry` to mint one per address), a geometry
+      descriptor holds `id<MTLBuffer>` and an offset (no `AddressMap` to resolve), and a top level
+      names its bottom levels by *index* into `instancedAccelerationStructures` (no address map to
+      turn a reference into an object). The structure even carries its own `size`, which is the
+      `resultSize` the other two ask the driver for.
+
+      What is *not* shared, and where copying `d3d12/raytracing.ts` would have been wrong: its
+      "nothing to translate" note about instance descriptors does not carry over. A
+      `D3D12_RAYTRACING_INSTANCE_DESC` is byte for byte a `VkAccelerationStructureInstanceKHR`; a
+      Metal one is not, in four ways — an `MTLPackedFloat4x3` transform (the transpose of the
+      row-major 3x4 the views use), four unpacked `uint32`s instead of two 24/8 words, an index or
+      an `MTLResourceID` instead of an address, and five layouts instead of one. So
+      `parseMetalInstances` is a parser of its own; only the four option bits line up, under
+      Metal's names. Every layout is pinned in `test/metal_raytracing.test.js`, because a wrong
+      stride reads an instance out of the middle of its neighbour and still produces plausible
+      numbers.
+
+      Verified on an M1 Max: `mtlinsp_triangle --ray-tracing` (two instances of one triangle
+      bottom level, at non-identity transforms — the scene's centre is only right if the transform
+      was transposed), `--static-blas` (the bottom level built once at start-up, so its geometry
+      can only come from the capture-start read-back of a *private* buffer), and
+      `mtlinsp_path_tracer --rebuild` (three bounding-box bottom levels, three instances, the
+      intersection function table, and two timed build passes). `metal-accel-triangle`,
+      `metal-accel-static-blas` and `metal-accel-scene` in `tools/ui_tests.py`.
+
+      Worth keeping: two defects found by testing rather than by reading. `UpdateObject` spreads
+      its argument's *fields* into the message and uses the key only to decide which update a later
+      one replaces — so a `build` update has to nest itself under `"build"` explicitly, and until it
+      did, the structure tree showed no memory. And a build was only recorded while a capture was
+      recording, which is exactly backwards: an engine builds its bottom levels at load, so the one
+      case the feature exists for recorded nothing. The Vulkan layer had always recorded builds
+      unconditionally, for the same reason.
+- [x] Metal build cost: an acceleration structure encoder is timed like any other pass. It had no
+      timing slot at all — `CreateOtherEncoder` passed a default-constructed `PassTimingSlot()` —
+      and the form almost every application uses (`accelerationStructureCommandEncoder`, no
+      descriptor) has nowhere to attach a sample buffer, so the call is re-issued as
+      `accelerationStructureCommandEncoderWithDescriptor:` with a descriptor of the library's own,
+      the way `CreateBlitEncoder` already did. `MTLAccelerationStructurePassDescriptor` is macOS
+      13; below that the encoder-boundary path (gated on `MTLCounterSamplingPointAtBlitBoundary`,
+      there being no acceleration-structure sampling point) is the only one. No protocol change: an
+      acceleration structure pass is timed under the render key, as a blit pass already is.
+- [ ] Metal ray tracing, the rest:
+  - Curve geometry (`MTLAccelerationStructureCurveGeometryDescriptor`, macOS 15) is recorded but
+    not drawn — neither Vulkan nor D3D12 has it in core, so there is no shared path to reuse and
+    the mesh preview would need a curve tessellation of its own.
+  - An indirect instance descriptor's `MTLResourceID` is shown rather than resolved. The driver
+    hands out small ids that collide across objects (every structure in the path tracer reports
+    `0x1`), so a lookup would answer confidently and wrongly; resolving it needs something the
+    capture does not have.
+  - Ray queries in the shader debugger, and the replay of builds and traces: both listed in their
+    own sections above.
 - [ ] Per-draw counter sampling (`MTLCounterSamplingPointAtDrawBoundary`, already probed in
       `capture.mm`) so the microtriangle and overdraw findings can name the draws inside a pass
       rather than the pass, the way Xcode's GPU Commands tab sorts by fragments per primitive.

@@ -11,7 +11,7 @@
 // its space with, the more a ray there costs — what Nsight Graphics calls the instance overlap
 // heatmap. A driver's own boxes are tighter than these, but not by the amount that matters: two
 // instances whose geometry boxes overlap overlap in the driver's structure too.
-import type { SceneGroup } from "./acceleration_structure.js";
+import { unresolvedReference, type SceneGroup } from "./acceleration_structure.js";
 import type { StructureDrawing } from "./acceleration_scene.js";
 
 export interface Bounds {
@@ -167,7 +167,7 @@ export function structureTree(drawing: StructureDrawing, structure: number,
       ? "Names no bottom level this capture knows"
       : standIn ? "Its bottom level's geometry is not in this capture: drawn as a box where the transform puts it" : undefined;
     const blas: TreeNode = {
-      key: `i${at}b`, kind: "blas", label: blasFacts?.name ?? (instance.blas !== undefined ? `Structure ${instance.blas}` : `at ${instance.reference}`),
+      key: `i${at}b`, kind: "blas", label: blasFacts?.name ?? (instance.blas !== undefined ? `Structure ${instance.blas}` : unresolvedReference(instance)),
       objectId: instance.blas, groups, primitives, area: standIn ? null : sumArea(geometries),
       memory: blasFacts?.memory ?? null, bounds, children: geometries, note,
     };

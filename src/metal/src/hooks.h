@@ -37,7 +37,9 @@ void HookRenderEncoderClass(id encoder);
 void HookParallelEncoderClass(id encoder);
 void HookComputeEncoderClass(id encoder);
 void HookBlitEncoderClass(id encoder);
-/** Resource state and acceleration structure encoders: passes with no recorded commands yet. */
+/** A resource state encoder: a pass with no recorded commands yet. */
 void HookOtherEncoderClass(id encoder);
+// The acceleration structure encoder's installer is HookAccelerationStructureEncoderClass, declared
+// in raytracing.h beside the rest of the ray tracing hooks.
 
 }  // namespace mtlinsp

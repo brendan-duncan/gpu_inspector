@@ -516,6 +516,112 @@ const char *PrimitiveTypeEnumName(MTLPrimitiveType type) {
     }
 }
 
+const char *IndexTypeEnumName(MTLIndexType type) {
+    switch (type) {
+        case MTLIndexTypeUInt16: return "MTLIndexTypeUInt16";
+        case MTLIndexTypeUInt32: return "MTLIndexTypeUInt32";
+        default:                 return "";
+    }
+}
+
+// --------------------------------------------------------------------------------------------
+// Ray tracing (raytracing.h)
+//
+// Spelled by value rather than against the SDK's constants so this compiles against any SDK: the
+// curve and matrix layout enums arrived in macOS 15, and the rest between 11 and 14, while the
+// deployment target is 11. The values are fixed by the API.
+
+const char *InstanceDescriptorTypeEnumName(uint64_t type) {
+    switch (type) {
+        case 0: return "MTLAccelerationStructureInstanceDescriptorTypeDefault";
+        case 1: return "MTLAccelerationStructureInstanceDescriptorTypeUserID";
+        case 2: return "MTLAccelerationStructureInstanceDescriptorTypeMotion";
+        case 3: return "MTLAccelerationStructureInstanceDescriptorTypeIndirect";
+        case 4: return "MTLAccelerationStructureInstanceDescriptorTypeIndirectMotion";
+        default: return "";
+    }
+}
+
+const char *MatrixLayoutEnumName(uint64_t layout) {
+    switch (layout) {
+        case 0: return "MTLMatrixLayoutColumnMajor";
+        case 1: return "MTLMatrixLayoutRowMajor";
+        default: return "";
+    }
+}
+
+const char *MotionBorderModeEnumName(uint64_t mode) {
+    switch (mode) {
+        case 0: return "MTLMotionBorderModeClamp";
+        case 1: return "MTLMotionBorderModeVanish";
+        default: return "";
+    }
+}
+
+const char *CurveTypeEnumName(uint64_t type) {
+    switch (type) {
+        case 0: return "MTLCurveTypeRound";
+        case 1: return "MTLCurveTypeFlat";
+        default: return "";
+    }
+}
+
+const char *CurveBasisEnumName(uint64_t basis) {
+    switch (basis) {
+        case 0: return "MTLCurveBasisBSpline";
+        case 1: return "MTLCurveBasisCatmullRom";
+        case 2: return "MTLCurveBasisLinear";
+        case 3: return "MTLCurveBasisBezier";
+        default: return "";
+    }
+}
+
+const char *CurveEndCapsEnumName(uint64_t caps) {
+    switch (caps) {
+        case 0: return "MTLCurveEndCapsNone";
+        case 1: return "MTLCurveEndCapsDisk";
+        case 2: return "MTLCurveEndCapsSphere";
+        default: return "";
+    }
+}
+
+namespace {
+/** The short names of the bits set in `value`, joined by `|`; "None" for none. */
+std::string Flags(uint64_t value, const std::initializer_list<std::pair<uint64_t, const char *>> &bits) {
+    std::string out;
+    for (const auto &bit : bits) {
+        if ((value & bit.first) == 0) continue;
+        if (!out.empty()) out += '|';
+        out += bit.second;
+        value &= ~bit.first;
+    }
+    // A bit this table does not know, which a newer Metal would add.
+    if (value != 0) {
+        char hex[24];
+        std::snprintf(hex, sizeof(hex), "0x%llx", (unsigned long long)value);
+        if (!out.empty()) out += '|';
+        out += hex;
+    }
+    return out.empty() ? "None" : out;
+}
+}  // namespace
+
+std::string AccelerationStructureUsageFlags(uint64_t usage) {
+    return Flags(usage, {{1, "Refit"}, {2, "PreferFastBuild"}, {4, "ExtendedLimits"},
+                         {16, "PreferFastIntersection"}, {32, "MinimizeMemory"}});
+}
+
+std::string AccelerationStructureRefitOptionFlags(uint64_t options) {
+    return Flags(options, {{1, "VertexData"}, {2, "PerPrimitiveData"}});
+}
+
+std::string IntersectionFunctionSignatureFlags(uint64_t signature) {
+    return Flags(signature, {{1, "Instancing"}, {2, "TriangleData"}, {4, "WorldSpaceData"},
+                             {8, "InstanceMotion"}, {16, "PrimitiveMotion"}, {32, "ExtendedLimits"},
+                             {64, "MaxLevels"}, {128, "CurveData"},
+                             {256, "IntersectionFunctionBuffer"}, {512, "UserData"}});
+}
+
 uint64_t PixelFormatImageSize(const PixelFormatInfo &info, uint32_t width, uint32_t height,
                               uint64_t *bytesPerRow) {
     if (info.blockBytes == 0 || info.blockWidth == 0 || info.blockHeight == 0) {

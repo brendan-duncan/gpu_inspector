@@ -40,7 +40,7 @@ import type { SessionContext } from "./session_panel.js";
 import type { ObjectDatabase, ValidationEntry } from "./vulkan/object_database.js";
 import { validationItemText } from "./validation_text.js";
 import { renderObjectStack } from "./stacktrace_view.js";
-import { boundStructure, renderAccelerationStructure, renderShaderGroups, shaderGroupViewOf, structureViewOf } from "./ray_tracing_view.js";
+import { boundStructure, renderAccelerationStructure, renderFunctionTable, renderShaderGroups, shaderGroupViewOf, structureViewOf } from "./ray_tracing_view.js";
 import { STRUCTURE_TYPES } from "./acceleration_view.js";
 import type { CaptureDescriptorBinding, CompileShaderResult, HandleRef, LeakReportMessage, ShaderLanguage, ShaderReplacedMessage, ShaderTextMode } from "../shared/protocol.js";
 
@@ -68,6 +68,7 @@ const TYPE_ORDER = [
 
   "MTLDevice", "MTLCommandQueue", "MTLLibrary", "MTLFunction",
   "MTLRenderPipelineState", "MTLComputePipelineState", "MTLDepthStencilState",
+  "MTLAccelerationStructure", "MTLIntersectionFunctionTable", "MTLVisibleFunctionTable",
   "MTLTexture", "MTLBuffer", "MTLSamplerState", "MTLHeap",
 
   "ID3D12Device", "IDXGIAdapter", "IDXGISwapChain", "ID3D12CommandQueue", "ID3D12GraphicsCommandList", "ID3D12CommandList",
@@ -77,7 +78,8 @@ const TYPE_ORDER = [
 ];
 
 /** The types whose creation or destruction moves the memory meter. */
-const MEMORY_TYPES = new Set(["VkDeviceMemory", "VkBuffer", "VkImage", "MTLHeap", "MTLBuffer", "MTLTexture", "ID3D12Heap", "ID3D12Resource"]);
+const MEMORY_TYPES = new Set(["VkDeviceMemory", "VkBuffer", "VkImage", "MTLHeap", "MTLBuffer", "MTLTexture",
+                              "MTLAccelerationStructure", "ID3D12Heap", "ID3D12Resource"]);
 
 const PLURALS: Record<string, string> = {
   VkDeviceMemory: "Device Memory", VkSurfaceKHR: "Surfaces", VkSwapchainKHR: "Swapchains",
@@ -1146,6 +1148,9 @@ export class InspectPanel {
     }
 
     renderShaderGroups(this.inspectPanel, shaderGroupViewOf(object));
+    // Metal has no shader groups and no binding table; its stand-in is the function table a
+    // traversal reaches its intersection functions through (ray_tracing_view.ts).
+    renderFunctionTable(this.inspectPanel, object, db, onLink);
     if (object.updates.executables) this._buildCompilerStatistics(object);
     const structure = structureViewOf(object, db);
     if (structure) {

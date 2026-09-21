@@ -1683,7 +1683,11 @@ void CaptureManager::ReadBackEarlierStructures(DeviceData* dev, VkQueue queue, u
             VkDeviceSize offset = 0, remaining = 0;
             if (!reg.ResolveAddress(in.address, buffer, offset, remaining)) continue;
             PendingBufferCopy copy;
-            const uint32_t capture = PrepareBufferCopy(dev, buffer, offset, std::min(in.size, remaining), false, &copies, copy);
+            // Whole, as a build's inputs are when the build itself is captured (hooks.cpp,
+            // WriteBuildAddress): a structure read back at the capture's start is the one whose
+            // geometry there is no other account of, so clipping it to maxBufferSize would be the
+            // worst place to do it.
+            const uint32_t capture = PrepareBufferCopy(dev, buffer, offset, std::min(in.size, remaining), true, &copies, copy);
             if (copy.staging) copies.push_back(copy);
             // Shaped like a build command's buildData, as the one info of a build of its own.
             list += count++ ? "," : "";

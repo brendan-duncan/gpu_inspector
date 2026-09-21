@@ -38,6 +38,11 @@ function frame(object) {
  */
 async function listener(answer) {
   const server = net.createServer((sock) => {
+    // The probe hangs up as soon as it has its answer, on purpose — it does not wait for a library
+    // that has taken it for a client to finish sending a snapshot (target_probe.ts). So a reset
+    // here is the expected end of every one of these connections, and without a handler for it
+    // Node throws it as an unhandled error and fails whichever test happens to be running.
+    sock.on("error", () => {});
     sock.once("data", (chunk) => {
       const request = JSON.parse(chunk.subarray(5).toString("utf8"));
       answer(request, sock);

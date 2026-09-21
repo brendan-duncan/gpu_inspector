@@ -1,3 +1,22 @@
+## Unreleased
+
+### Added
+- Metal ray tracing: every acceleration structure as an object, the builds, refits and copies an acceleration structure encoder records, and the geometry, bounding boxes and instances each build read.
+- A Metal acceleration structure opens in the structure tab like a Vulkan or Direct3D 12 one, with the tree, the instances, the overlaps and the mesh preview.
+- Metal acceleration structures built before a capture are read back as it starts, so a bottom level an engine built at load is still drawn.
+- Metal acceleration structure passes are timed, so the frame's build cost is in the pass list — they had no timing slot at all before.
+- Metal intersection function tables: the function each entry holds, the buffers the table binds for them, and the pipeline's linked functions. Metal has no shader binding table, and this is what it has instead.
+- Frame rules for Metal ray tracing: a geometry naming an intersection function table entry that is not there (which Metal does not check), a structure built twice in one frame, a top level built from no instances, and opaque geometry naming an intersection function.
+- Metal acceleration structures count toward Memory Use, as the fourth kind beside buffers, textures and heaps.
+- The ray tracing bindings Metal has on every stage: `setVertex`/`setFragment`/`setTile` acceleration structures and function tables, and the plural forms. Only compute's `setAccelerationStructure:` was recorded before, so a draw that traced rays showed nothing.
+- `linkedFunctions` on a Metal render or compute pipeline: the intersection functions its traversal can call.
+- `test/metal_triangle --ray-tracing` and `--static-blas`, the counterpart of `test/triangle`'s: triangle geometry in an acceleration structure, which `test/path_tracer/metal` has none of, and a bottom level built once at start-up.
+
+### Fixed
+- Acceleration structure input buffers are read back whole on all three backends rather than truncated at `maxBufferSize` (64 KB by default), which clipped a real bottom level's geometry to its first few hundred triangles.
+- `setAccelerationStructure:atBufferIndex:` in a Metal capture recorded `null` for the structure it bound: nothing tracked `MTLAccelerationStructure`, so there was no object for the reference to name.
+- A stray connection reset from the target probe's own peer could fail whichever UI test happened to be running (`test/target_probe.test.js`).
+
 ## v0.20.0
 
 ### Added

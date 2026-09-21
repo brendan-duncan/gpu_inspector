@@ -59,7 +59,7 @@ is the best there is. The price is that it is NVIDIA-only.
 | OpenGL / OpenGL ES | ○ | ● | ○ | ◐ OpenGL 4.2–4.6 |
 | Metal | ● [macOS](METAL.md) | ◐ in development, not in releases | ○ | ○ |
 | WebGPU in a browser | ◐ [as the D3D12 under it](BROWSER.md) | ○ | ○ | ○ |
-| Ray tracing (DXR, VK\_KHR\_ray\_tracing) | ● [structures, instances, shader binding tables](INSPECT.md#acceleration-structures), Vulkan and D3D12, both replayed | ● | ● | ● best in class |
+| Ray tracing (DXR, VK\_KHR\_ray\_tracing, Metal) | ● [structures, instances, shader binding tables](INSPECT.md#acceleration-structures) on all three; Vulkan and D3D12 replayed | ● | ● | ● best in class |
 | Host OS | ● Windows, macOS, Linux | ● Windows, Linux | ◐ Windows | ◐ Windows, Linux |
 | Android / Quest | ● [Vulkan, over adb](ANDROID.md) | ● Vulkan and GLES | ○ | ○ |
 | Consoles | ○ | ◐ Switch, with a devkit | ● Xbox (PIX for Xbox) | ○ |
@@ -125,7 +125,7 @@ while it runs.
 | Step SPIR-V with no debug information, by line | ● [via decompiled GLSL, checked against the original](REPORTS.md#shader-debugger) | ◐ by instruction | n/a | ○ |
 | Shader edit and re-run inside the capture | ● [Compile & Replay, with the changed targets side by side: Vulkan, D3D12](INSPECT.md#editing-a-shader) | ● | ● Edit & Continue, with a diff | ● dynamic shader editing |
 | Shader edit applied to the **running application** | ● [Vulkan, D3D12, Android](INSPECT.md#editing-a-shader) | ○ | ○ | ◐ live editing during replay |
-| Acceleration structure contents and instances, drawn | ◐ [Vulkan, from the build](INSPECT.md#acceleration-structures) | ◐ | ◐ | ● the AS viewer, with overlap analysis |
+| Acceleration structure contents and instances, drawn | ● [all three backends, from the build, with overlap analysis](INSPECT.md#acceleration-structures) | ◐ | ◐ | ● the AS viewer, with overlap analysis |
 | Shader binding table records matched to their groups | ● [Vulkan](CAPTURE.md#reading-the-frame) | ◐ | ● | ● |
 
 ---

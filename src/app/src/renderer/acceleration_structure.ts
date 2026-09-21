@@ -18,12 +18,33 @@ import { vertexFormat } from "./vulkan/vk_format.js";
 /** Bytes of one VkAccelerationStructureInstanceKHR. Fixed by the specification. */
 export const INSTANCE_STRIDE = 64;
 
-/** The flag bits of VkGeometryInstanceFlagBitsKHR, which the instance packs into a byte. */
+/**
+ * The flag bits of VkGeometryInstanceFlagBitsKHR, which the instance packs into a byte.
+ *
+ * D3D12's D3D12_RAYTRACING_INSTANCE_FLAGS and Metal's MTLAccelerationStructureInstanceOptions have
+ * the same four bits with the same values under different names, so only the naming differs per
+ * API — see METAL_INSTANCE_FLAGS and flagNamesOf.
+ */
 export const INSTANCE_FLAGS: [number, string][] = [
   [0x1, "TRIANGLE_FACING_CULL_DISABLE"],
   [0x2, "TRIANGLE_FLIP_FACING"],
   [0x4, "FORCE_OPAQUE"],
   [0x8, "FORCE_NO_OPAQUE"],
+];
+
+/**
+ * The same four bits as Metal spells them (MTLAccelerationStructureInstanceOptions).
+ *
+ * Worth keeping apart rather than showing the Vulkan names on a Metal capture: the second bit is
+ * the one place the two APIs describe the same effect from opposite ends — Vulkan flips the winding
+ * it was given, Metal declares the winding to be counter-clockwise — and a reader checking the
+ * instance against their own code needs the name their API uses.
+ */
+export const METAL_INSTANCE_FLAGS: [number, string][] = [
+  [0x1, "DisableTriangleCulling"],
+  [0x2, "TriangleFrontFacingWindingCounterClockwise"],
+  [0x4, "Opaque"],
+  [0x8, "NonOpaque"],
 ];
 
 export interface AccelerationInstance {
@@ -34,18 +55,42 @@ export interface AccelerationInstance {
    * transposed into a convention it does not use.
    */
   transform: number[];
-  /** The value a shader reads as gl_InstanceCustomIndexEXT (24 bits). */
+  /** The value a shader reads as gl_InstanceCustomIndexEXT (24 bits); Metal's userID. */
   customIndex: number;
   /** Rays whose mask ANDs to zero with this skip the instance entirely (8 bits). */
   mask: number;
-  /** Which hit group the instance uses, as an offset into the binding table (24 bits). */
+  /**
+   * Which hit group the instance uses, as an offset into the binding table (24 bits). On Metal, the
+   * offset into the bound intersection function table — the same idea, and the only one of the two
+   * that Metal has.
+   */
   bindingTableOffset: number;
   flags: number;
   flagNames: string[];
-  /** The bottom level's device address, as a decimal string: it is 64-bit and past what a number holds. */
+  /**
+   * How the instance names its bottom level, as text, for when it resolves to no object: a device
+   * address in decimal on Vulkan and D3D12 (64-bit, past what a number holds exactly), and on Metal
+   * an index into the build's `instancedAccelerationStructures` or a resource id
+   * (metal/raytracing.ts). What it is is what `referenceKind` says.
+   */
   reference: string;
-  /** The object id of the bottom level that address resolved to, when the layer could resolve it. */
+  /** What `reference` is, for the wording beside an unresolved one. Absent means a device address. */
+  referenceKind?: "index" | "resourceId";
+  /** The object id of the bottom level the reference resolved to, when it could be resolved. */
   blas?: number;
+}
+
+/**
+ * How to name a bottom level the instance's reference did not resolve to, which depends on what the
+ * reference is: a device address no structure was built at, an index past the end of the build's own
+ * array, or a Metal resource id — which is deliberately not matched against anything, for the reason
+ * metal/raytracing.ts gives (the driver hands out small ids that collide across objects, so a lookup
+ * would resolve confidently to the wrong structure).
+ */
+export function unresolvedReference(i: AccelerationInstance): string {
+  if (i.referenceKind === "index") return `bottom level #${i.reference} (not in this capture)`;
+  if (i.referenceKind === "resourceId") return `resource ${i.reference}`;
+  return `structure at ${i.reference}`;
 }
 
 /** Translation of an instance's transform: the last column of the 3x4, which is where it sits. */
@@ -59,8 +104,8 @@ export function isIdentity(transform: number[]): boolean {
   return transform.length === 12 && identity.every((v, i) => Math.abs(transform[i] - v) < 1e-6);
 }
 
-function flagNamesOf(flags: number): string[] {
-  return INSTANCE_FLAGS.filter(([bit]) => (flags & bit) !== 0).map(([, name]) => name);
+export function flagNamesOf(flags: number, table: [number, string][] = INSTANCE_FLAGS): string[] {
+  return table.filter(([bit]) => (flags & bit) !== 0).map(([, name]) => name);
 }
 
 /**
@@ -243,6 +288,8 @@ export function transformPoint(m: number[], x: number, y: number, z: number): [n
  * read as positions.
  *
  * `maxVertex` is the highest index the build may read, so the vertex array holds one more than it.
+ * Undefined means the API does not say: a Metal triangle geometry carries a triangle count and no
+ * vertex count (metal/raytracing.ts), so there the bytes read back are the only bound there is.
  */
 export function triangleMesh(g: AccelerationGeometry, vertices: Uint8Array | null,
                              indices: Uint8Array | null): Float32Array | null {
@@ -250,7 +297,8 @@ export function triangleMesh(g: AccelerationGeometry, vertices: Uint8Array | nul
   const format = vertexFormat(`VK_FORMAT_${g.vertexFormat ?? ""}`);
   if (!format) return null;
   const view = new DataView(vertices.buffer, vertices.byteOffset, vertices.byteLength);
-  const count = Math.min((g.maxVertex ?? 0) + 1, Math.floor(vertices.byteLength / g.vertexStride));
+  const held = Math.floor(vertices.byteLength / g.vertexStride);
+  const count = g.maxVertex === undefined ? held : Math.min(g.maxVertex + 1, held);
   const positions: number[] = [];
   const at = (vertex: number): void => {
     const offset = vertex * g.vertexStride!;

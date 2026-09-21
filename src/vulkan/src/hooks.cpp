@@ -1394,7 +1394,11 @@ static ResolvedAddress WriteBuildAddress(JsonWriter& w, const char* key, VkDevic
         if (size > remaining) size = remaining;
         out.address = address;
         out.size = size;
-        if (rec && size) out.capture = CaptureManager::Get().QueueBufferCapture(dev, rec, buffer, offset, size);
+        // Whole, not truncated to maxBufferSize: a build's geometry is the one thing in a capture
+        // that is useless clipped. A real bottom level is megabytes, maxBufferSize defaults to
+        // 64 KB, and a mesh cut there draws as a corner of itself in the structure views. The
+        // per-capture total (maxBufferTotal) still bounds it.
+        if (rec && size) out.capture = CaptureManager::Get().QueueBufferCapture(dev, rec, buffer, offset, size, true);
         if (out.capture) { w.Key("capture"); w.Uint(out.capture); }
     }
     w.EndObject();

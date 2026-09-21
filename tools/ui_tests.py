@@ -46,6 +46,15 @@ def find_metal_triangle():
     return path if os.path.isfile(path) else None
 
 
+def find_metal_path_tracer():
+    """mtlinsp_path_tracer (test/path_tracer/metal): the bounding-box and intersection-function
+    half of Metal ray tracing, where metal_triangle --ray-tracing is the triangle half."""
+    if sys.platform != "darwin":
+        return None
+    path = os.path.join(ROOT, "build", "bin", "mtlinsp_path_tracer")
+    return path if os.path.isfile(path) else None
+
+
 def find_d3d12_triangle():
     """The Direct3D 12 sample (test/d3d12_triangle), which only builds on Windows."""
     if sys.platform != "win32":
@@ -768,6 +777,81 @@ def metal_export_cpp(state, log):
         expect(os.path.isfile(data) and os.path.getsize(data) > 100000, "frame_data.bin is missing or too small to hold the captured targets")
 
 
+def accel_tab(state):
+    """The acceleration structure tab's state, from the last capture that opened one."""
+    for c in reversed(session(state).get("captures") or []):
+        tab = c.get("accelTab")
+        if tab:
+            return tab
+    return {}
+
+
+def metal_accel_triangle(state, log):
+    """--ray-tracing: the top level's two instances of one triangle bottom level, drawn.
+
+    The instance transforms are the point. They are not the identity — one moved left, one moved
+    right and turned a quarter turn — so the scene's extent is only right if MTLPackedFloat4x3 was
+    read as the transpose of the 3x4 the views use (renderer/metal/raytracing.ts). An untransposed
+    read puts the translation in the wrong component and the rotation the other way, and neither
+    the centre nor the area below would come out.
+    """
+    a = accel_tab(state)
+    tree = a.get("tree") or {}
+    preview = a.get("preview") or {}
+    center = preview.get("center") or [0, 0, 0]
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(a), "--debug-view=accel opened no acceleration structure tab") + \
+        expect(a.get("shape") == "triangles", f"the scene drew {a.get('shape')}, not triangles") + \
+        expect(a.get("instances") == 2, f"{a.get('instances')} instances, expected 2") + \
+        expect(a.get("placed") == 2, f"{a.get('placed')} instances drawn with their own geometry, expected 2") + \
+        expect(preview.get("triangles") == 2, f"{preview.get('triangles')} triangles in the preview, expected 2") + \
+        expect(abs((tree.get("area") or 0) - 1.2) < 0.01, f"world area {tree.get('area')}, expected 1.2 (0.6 twice)") + \
+        expect((tree.get("memory") or 0) > 0, "the tree has no memory for the structures (resultSize)") + \
+        expect(abs(center[0] + 0.1) < 0.01, f"the scene's centre is {center}, expected about [-0.1, 0, 0]: "
+                                            "the instance transforms were not read as Metal stores them")
+
+
+def metal_accel_static(state, log):
+    """--static-blas: the bottom level is built once at start-up, so the captured frame holds no
+    build of it. Everything drawn comes from the read-back the capture library takes when the
+    capture begins (src/metal/src/raytracing.h, ReadBackEarlierStructures), out of a *private*
+    buffer — which it can only do by blitting it through the capture's own pass."""
+    a = accel_tab(state)
+    tree = a.get("tree") or {}
+    return check_connected(state, log) + check_metal_capture(state, log) + \
+        expect(bool(a), "--debug-view=accel opened no acceleration structure tab") + \
+        expect(a.get("shape") == "triangles", f"the bottom level drew {a.get('shape')}, not triangles") + \
+        expect(not a.get("note"), f"nothing was drawn: {a.get('note')}") + \
+        expect((a.get("preview") or {}).get("triangles") == 1, "the triangle was not read back at the capture's start") + \
+        expect(abs((tree.get("area") or 0) - 0.6) < 0.01, f"world area {tree.get('area')}, expected 0.6")
+
+
+def metal_accel_path_tracer(state, log):
+    """The path tracer: three bounding-box bottom levels under a top level of three instances, and
+    the intersection function table the traversal reaches sphereIntersection through.
+
+    Also the build cost: the two acceleration structure passes are timed, which they were not
+    before — CreateOtherEncoder gave them no timing slot at all."""
+    a = accel_tab(state)
+    tree = a.get("tree") or {}
+    overlaps = a.get("overlaps") or {}
+    c = capture(state)
+    memory = (session(state).get("metalMemory") or {}).get("groups") or []
+    structures = next((g for g in memory if g.get("label") == "Acceleration structures"), None)
+    return check_connected(state, log) + \
+        expect(bool(a), "--debug-view=accel opened no acceleration structure tab") + \
+        expect(a.get("instances") == 3, f"{a.get('instances')} instances, expected 3") + \
+        expect(a.get("placed") == 3, f"{a.get('placed')} instances drawn with their own geometry, expected 3") + \
+        expect(a.get("shape") == "aabbs", f"the scene drew {a.get('shape')}, not the bounding boxes it was built from") + \
+        expect(tree.get("primitives") == 484, f"{tree.get('primitives')} primitives, expected 484 (398 + 60 + 26)") + \
+        expect(tree.get("children") == 3, f"{tree.get('children')} instances under the top level, expected 3") + \
+        expect(overlaps.get("total") == 3, f"{overlaps.get('total')} overlapping pairs, expected 3: "
+                                           "the three materials' boxes each span the whole scene") + \
+        expect((c.get("passTimings") or 0) >= 4, f"{c.get('passTimings')} timed passes: the build passes are not timed") + \
+        expect(bool(structures) and structures.get("count") == 4,
+               f"Memory Use does not count the four acceleration structures: {structures}")
+
+
 def metal_cases(triangle):
     launch = [f"--launch={triangle}"]
     export_cases = [Case("metal-export-cpp", launch + ["--debug-capture", f"--debug-export-cpp={exported_metal_cpp}"],
@@ -804,6 +888,32 @@ def metal_cases(triangle):
         # and taking a capture would leave the Capture tab in front so the screenshot would not
         # show the rows this case is about.
         Case("metal-memory", launch + ["--debug-select=MTLDevice"], metal_memory, delay_ms=16000),
+        # Ray tracing. Triangle geometry, which test/path_tracer/metal has none of, and instance
+        # transforms that are not the identity, which is what makes the transposed read testable.
+        Case("metal-accel-triangle", [f"--launch={triangle}", "--args=--ray-tracing",
+                                      "--debug-capture", "--debug-view=accel:scene TLAS"],
+             metal_accel_triangle, delay_ms=18000),
+        # The same scene with the bottom level built once at start-up, so what is drawn can only
+        # have come from the capture-start read-back of a private buffer.
+        Case("metal-accel-static-blas", [f"--launch={triangle}", "--args=--static-blas",
+                                         "--debug-capture", "--debug-view=accel:triangle BLAS"],
+             metal_accel_static, delay_ms=18000),
+    ] + metal_path_tracer_cases()
+
+
+def metal_path_tracer_cases():
+    path_tracer = find_metal_path_tracer()
+    if not path_tracer:
+        print("  (no mtlinsp_path_tracer build: skipping the Metal ray tracing scene case)")
+        return []
+    # --rebuild so the captured frame holds the builds as well as the trace; small and cheap so the
+    # frame is quick to capture and read back.
+    return [
+        Case("metal-accel-scene",
+             [f"--launch={path_tracer}",
+              "--args=--rebuild --width 320 --height 180 --spp 1 --depth 4",
+              "--debug-capture", "--debug-view=accel:scene TLAS"],
+             metal_accel_path_tracer, delay_ms=20000),
     ]
 
 

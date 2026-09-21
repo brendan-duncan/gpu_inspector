@@ -27,7 +27,7 @@ import { Span } from "./widget/span.js";
 import { TextInput } from "./widget/text_input.js";
 import { MeshControls } from "./mesh_controls.js";
 import { MeshPreview, type PreviewAttribute, type PreviewGroup, type PreviewHit, type PreviewOverlay } from "./mesh_preview.js";
-import { instancePosition, isIdentity, type AccelerationInstance } from "./acceleration_structure.js";
+import { instancePosition, isIdentity, unresolvedReference, type AccelerationInstance } from "./acceleration_structure.js";
 import { structureDrawing, type StructureDrawing } from "./acceleration_scene.js";
 import {
   boundsLines, heatColor, heatColors, instanceBounds, instanceOverlaps, matchingKeys, structureTree, walkTree,
@@ -564,7 +564,7 @@ export class AccelerationView {
       const blas = i.blas !== undefined ? this.host.db.getObject(i.blas) : null;
       const cells = [
         String(i.index),
-        blas ? blas.name : `at ${i.reference}`,
+        blas ? blas.name : unresolvedReference(i),
         isIdentity(i.transform) ? "origin" : instancePosition(i).map((v) => v.toFixed(2)).join(", "),
         `0x${i.mask.toString(16).toUpperCase()}`,
         String(i.customIndex),

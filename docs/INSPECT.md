@@ -55,26 +55,32 @@ rather than as bytes.
 
 A ray tracing acceleration structure is opaque: the driver owns its layout and nothing reads one
 back. So the view of one is what it was *built from*, which the capture library records as the build
-goes by. Vulkan and Direct3D 12 are both covered and read the same in the panel, with one difference
-worth knowing: a `VkAccelerationStructureKHR` is a handle the application created, while a DXR
-structure is a range inside a UAV buffer with no object of its own, so the capture library mints one
-per address a build writes to. Those appear under **Raytracing Acceleration Structures** and carry
-the address instead of a handle.
+goes by. All three APIs are covered and read much the same in the panel, with two differences worth
+knowing. A `VkAccelerationStructureKHR` and an `MTLAccelerationStructure` are objects the
+application created; a DXR structure is a range inside a UAV buffer with no object of its own, so
+the capture library mints one per address a build writes to — those appear under **Raytracing
+Acceleration Structures** and carry the address instead of a handle. And a Metal structure carries
+its own size, where the other two have to be asked for it.
 
 **Acceleration Structure** is that build — its type and mode, and each geometry with its primitive
-count, and for triangles the vertex format, stride and index type. A build names the memory it reads
-by device address rather than by handle, so the layer resolves those addresses back to the buffers
-holding them and the section names the buffer and the offset into it. A structure that was filled
-before the inspector attached says **Not built while the inspector was watching**, which is the
-usual state of a bottom level: most applications build theirs once, at load.
+count, and for triangles the vertex format, stride and index type. A Vulkan or Direct3D 12 build
+names the memory it reads by device address rather than by handle, so the layer resolves those
+addresses back to the buffers holding them and the section names the buffer and the offset into it;
+a Metal geometry descriptor holds the buffer itself, so there is nothing to resolve. A structure
+that was filled before the inspector attached says **Not built while the inspector was watching**,
+which is the usual state of a bottom level: most applications build theirs once, at load.
 
 **Instances** on a top level lists what it was built out of: for each instance the bottom level it
 names, where its transform puts it, its visibility mask, and its custom index, hit group offset and
-flags where they are not the default. An instance refers to its bottom level by device address, not
-by handle, which is why the layer records the address of every structure the application asks for
-one of — that map is what turns the reference back into an object you can click. A
-`D3D12_RAYTRACING_INSTANCE_DESC` is byte for byte a `VkAccelerationStructureInstanceKHR`, down to
-the flag bits, so the two read identically here.
+flags where they are not the default. How an instance names its bottom level is the one place the
+three APIs really differ. A Vulkan or Direct3D 12 instance names it by device address, which is why
+the layer records the address of every structure the application asks for one of — that map is what
+turns the reference back into an object you can click; a `D3D12_RAYTRACING_INSTANCE_DESC` is byte
+for byte a `VkAccelerationStructureInstanceKHR`, down to the flag bits, so those two read
+identically. A Metal instance names it by *index* into the build's own list of bottom levels, so the
+link needs no map at all — but nothing else about its descriptor matches: the transform is stored
+transposed, the mask and offsets are separate fields rather than bit-packed, and there are five
+layouts rather than one. Only the four flag bits happen to line up, under Metal's names for them.
 
 ![A top level acceleration structure in Inspect: what it was built from, and its instances drawn as a scene](images/acceleration-structures.png)
 
@@ -90,8 +96,9 @@ A bottom level built before the capture began — which is how an engine builds 
 still drawn: the capture library remembers what each structure's last build read, and reads those
 ranges back as the capture starts. What comes back is what those buffers hold at that moment, which
 is what the build read for geometry that does not change, and not for a buffer the application has
-rewritten since; the view says so on every structure drawn that way. Both replays build these
-structures before the frame ([Capture replay](REPLAY.md)).
+rewritten since; the view says so on every structure drawn that way. The Vulkan and Direct3D 12
+replays build these structures before the frame ([Capture replay](REPLAY.md)); the Metal replay does
+not replay ray tracing yet.
 
 ### In a tab of its own
 
@@ -140,8 +147,9 @@ Almost always the reason is that the capture holds no build of it. An engine bui
 levels once, at load, and a frame captured after that reads them without ever writing them — so
 the capture knows what the structure *is* (the build was recorded as it went by) but not what is
 *in* it (its inputs were not read back, because nothing was capturing). Capture a frame that
-rebuilds it to see it: `dxinsp_path_tracer --rebuild` and `dxinsp_triangle --rebuild-blas` do, as an
-application with deforming geometry does every frame.
+rebuilds it to see it: `dxinsp_path_tracer --rebuild`, `mtlinsp_path_tracer --rebuild`,
+`mtlinsp_triangle --ray-tracing` and `dxinsp_triangle --rebuild-blas` all do, as an application with
+deforming geometry does every frame.
 
 ## Shader binding tables
 
@@ -170,6 +178,28 @@ shaders each names, then every other export the runtime gave an identifier for, 
 depth, payload and attribute sizes above them. A DXIL library the description exported wholesale
 (`NumExports` 0) can hold exports the capture never saw an identifier for, and the panel says so
 rather than letting a short list read as a complete one.
+
+### Metal: intersection function tables
+
+Metal has none of the above. There is no binding table, and no ray generation, miss or hit shaders:
+a compute kernel traverses the scene itself and shades what it finds. The only shaders a traversal
+calls are *intersection functions*, for geometry that is not opaque, and it reaches them through an
+`MTLIntersectionFunctionTable` — entry N for a primitive whose `intersectionFunctionTableOffset` is
+N.
+
+Selecting the table shows the pipeline that handed it out, the functions that pipeline was linked
+with, each entry with the function it holds (or the built-in triangle or curve intersection, with
+its signature), and the buffers the table binds for its own functions to read — a second set of
+arguments that appears on no encoder and that nothing else in a capture would show.
+
+None of it is read back or matched: the application sets the entries through the API, so the capture
+records exactly what was set, and no record can fail to resolve the way one in a binding table can.
+What *can* go wrong is the offset. A geometry or instance naming an entry past the end of the table
+reaches no function at all, the traversal carries on as though the primitive were unhandled, and
+neither Metal nor its validation layer says a word — so the frame's findings do
+(the Frame Issues card of [Frame Stats](REPORTS.md#frame-stats)). An offset on geometry marked
+`opaque` is flagged too, more
+gently: it is ignored rather than wrong, and usually means the geometry was meant not to be opaque.
 
 ## Shaders
 

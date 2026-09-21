@@ -1283,6 +1283,25 @@ function summarize2(cmd, nameOf) {
     case "pushDebugGroup:":
     case "insertDebugSignpost:":
       return quoted(a.label);
+    // The acceleration structure encoder's commands. Without these the generic fallback below
+    // would print the scratch buffer and an offset, which is the least interesting thing about a
+    // build: what it built and out of how much is what a reader is looking for.
+    case "buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:":
+    case "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:":
+    case "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:options:": {
+      const target = nameOf(a.accelerationStructure) || "(none)";
+      const d = isObject(a.descriptor) ? a.descriptor : null;
+      if (!d) return target;
+      const what = str(d.kind) === "instance" ? `${num(d.instanceCount).toLocaleString()} instances` : `${num(d.primitiveCount).toLocaleString()} primitives in ${Array.isArray(d.geometries) ? d.geometries.length : 0} geometries`;
+      const refit = m.startsWith("refit") ? " (refit)" : "";
+      return `${target} \u2190 ${what}${refit}`;
+    }
+    case "copyAccelerationStructure:toAccelerationStructure:":
+    case "copyAndCompactAccelerationStructure:toAccelerationStructure:":
+      return `${nameOf(a.sourceAccelerationStructure) || "(none)"} \u2192 ${nameOf(a.destinationAccelerationStructure) || "(none)"}`;
+    case "writeCompactedAccelerationStructureSize:toBuffer:offset:":
+    case "writeCompactedAccelerationStructureSize:toBuffer:offset:sizeDataType:":
+      return `${nameOf(a.accelerationStructure) || "(none)"} \u2192 ${nameOf(a.buffer) || "(none)"}`;
     case "drawPrimitives:vertexStart:vertexCount:":
     case "drawPrimitives:vertexStart:vertexCount:instanceCount:":
     case "drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:":
@@ -6367,21 +6386,45 @@ function analyzeRenderGraph(graph, options = {}) {
   return new GraphAnalysis(graph, options).analyze();
 }
 
+// src/renderer/acceleration_structure.ts
+var CUBE_EDGES = (() => {
+  const corner = (i) => [i & 1 ? 0.5 : -0.5, i & 2 ? 0.5 : -0.5, i & 4 ? 0.5 : -0.5];
+  const pairs = [];
+  for (let a = 0; a < 8; a++) {
+    for (const bit of [1, 2, 4]) {
+      const b = a ^ bit;
+      if (b > a) pairs.push(corner(a), corner(b));
+    }
+  }
+  return pairs;
+})();
+
+// src/renderer/metal/raytracing.ts
+var METAL_BUILD_METHODS = /* @__PURE__ */ new Set([
+  "buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:",
+  "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:",
+  "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:options:"
+]);
+
 // src/renderer/metal/frame_analysis.ts
 var TINY_DRAW_VERTICES = 12;
 var TINY_DRAW_COUNT = 32;
 var RULE_ORDER2 = [
+  "accel-table-offset-range",
   "undefined-load",
   "mergeable-passes",
   "msaa-store",
   "memoryless-candidate",
+  "accel-empty-top-level",
+  "accel-rebuilt-twice",
   "color-store",
   "depth-store",
   "color-load",
   "tiny-draws",
   "redundant-pipeline-bind",
   "redundant-buffer-bind",
-  "single-threadgroup-dispatch"
+  "single-threadgroup-dispatch",
+  "accel-opaque-with-function"
 ];
 var Folded2 = class {
   first = null;
@@ -6436,6 +6479,7 @@ var MetalFrameAnalysis = class {
     this._walk(data.commands);
     this._attachmentRules();
     this._memorylessRule();
+    this._rayTracingRules(data.commands);
     this.findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || RULE_ORDER2.indexOf(a.rule) - RULE_ORDER2.indexOf(b.rule));
     return this.findings;
   }
@@ -6664,6 +6708,104 @@ var MetalFrameAnalysis = class {
     if (folded.count) {
       this._addFolded("memoryless-candidate", "medium", "medium", `${folded.count} texture${folded.count === 1 ? "" : "s"} (${names.join(", ")}${folded.count > names.length ? ", ..." : ""}) ${folded.count === 1 ? "is" : "are"} only ever cleared or discarded and never stored or read: MTLStorageModeMemoryless would keep ${folded.count === 1 ? "it" : "them"} in tile memory with no allocation behind.`, folded);
     }
+  }
+  // ------------------------------------------------------------------------- ray tracing
+  //
+  // Four things a Metal frame can get wrong about ray tracing that nothing else reports. Metal's
+  // own validation layer says nothing about any of them: an intersection function table offset is
+  // not bounds-checked, and an offset on opaque geometry is silently ignored rather than refused.
+  //
+  // All four are read off the build descriptors and the bindings in the frame, so they need no
+  // replay and no counters.
+  _rayTracingRules(commands) {
+    const boundTables = /* @__PURE__ */ new Map();
+    for (const cmd of commands) {
+      if (!cmd.method.includes("IntersectionFunctionTable")) continue;
+      const a = cmd.args;
+      if (!a) continue;
+      const ids = [
+        refId(a.intersectionFunctionTable),
+        ...Array.isArray(a.intersectionFunctionTables) ? a.intersectionFunctionTables.map(refId) : []
+      ];
+      for (const id of ids) {
+        if (id === null) continue;
+        const table = this._db.getObject(id);
+        const update = table && isObject(table.updates.table) ? table.updates.table : null;
+        const count2 = num(update?.functionCount) || num(table?.descriptor?.functionCount);
+        boundTables.set(id, count2);
+      }
+    }
+    const largestTable = boundTables.size ? Math.max(...boundTables.values()) : null;
+    const builtTwice = /* @__PURE__ */ new Map();
+    const opaqueWithFunction = new Folded2();
+    const outOfRange = new Folded2();
+    let outOfRangeWorst = 0;
+    for (const cmd of commands) {
+      if (!METAL_BUILD_METHODS.has(cmd.method)) continue;
+      const a = cmd.args;
+      if (!a) continue;
+      const target = refId(a.accelerationStructure);
+      if (target !== null) {
+        const list = builtTwice.get(target);
+        if (list) list.push(cmd);
+        else builtTwice.set(target, [cmd]);
+      }
+      const descriptor = isObject(a.descriptor) ? a.descriptor : null;
+      if (!descriptor) continue;
+      if (str(descriptor.kind) === "instance" && num(descriptor.instanceCount) === 0) {
+        this._add(
+          "accel-empty-top-level",
+          "medium",
+          "high",
+          `${this._structureName(target)} was built from zero instances, so every ray traced against it misses. The build still costs its scratch and its submission.`,
+          cmd
+        );
+      }
+      const geometries = Array.isArray(descriptor.geometries) ? descriptor.geometries.filter(isObject) : [];
+      for (const g of geometries) {
+        const offset = num(g.intersectionFunctionTableOffset);
+        if (g.opaque === true && offset > 0) {
+          opaqueWithFunction.add(cmd);
+        }
+        if (largestTable !== null && offset >= largestTable) {
+          outOfRange.add(cmd);
+          outOfRangeWorst = Math.max(outOfRangeWorst, offset);
+        }
+      }
+    }
+    if (opaqueWithFunction.count) {
+      this._addFolded(
+        "accel-opaque-with-function",
+        "low",
+        "high",
+        `${opaqueWithFunction.count} geometr${opaqueWithFunction.count === 1 ? "y is" : "ies are"} marked opaque and also name an intersection function table offset. A traversal never calls an intersection function for opaque geometry, so the offset has no effect \u2014 if the geometry needs its function, it must not be opaque.`,
+        opaqueWithFunction
+      );
+    }
+    if (outOfRange.count && largestTable !== null) {
+      this._addFolded(
+        "accel-table-offset-range",
+        "high",
+        "high",
+        `${outOfRange.count} geometr${outOfRange.count === 1 ? "y names" : "ies name"} intersection function table offset ${outOfRangeWorst}, past the ${largestTable} entr${largestTable === 1 ? "y" : "ies"} of the largest table bound in this frame. A ray reaching those primitives calls no intersection function, and Metal does not report it.`,
+        outOfRange
+      );
+    }
+    for (const [target, list] of builtTwice) {
+      if (list.length < 2) continue;
+      this._add(
+        "accel-rebuilt-twice",
+        "medium",
+        "high",
+        `${this._structureName(target)} was built ${list.length} times in this frame. Only the last build decides what the structure holds, so the earlier ones are scratch, bandwidth and GPU time spent on a result that is overwritten.`,
+        list[0],
+        list.length
+      );
+    }
+  }
+  _structureName(id) {
+    const o = id === null ? null : this._db.getObject(id);
+    return o ? o.name : "An acceleration structure";
   }
   _add(rule, severity, confidence, message, cmd, count2 = 1) {
     const f = { rule, severity, confidence, message, commandIndex: cmd?.index, count: count2 };

@@ -14,11 +14,14 @@ import { Button } from "./widget/button.js";
 import { objectLink, type LinkHandler } from "./args_view.js";
 import { MeshPreview } from "./mesh_preview.js";
 import {
-  instancePosition, instanceScene, isIdentity, type GeometryPart,
+  instancePosition, instanceScene, isIdentity, unresolvedReference, type GeometryPart,
   type AccelerationInstance,
 } from "./acceleration_structure.js";
 import { bindingTableRegions, shaderGroups, stageFromFlag, stageLabel } from "./shader_cache.js";
 import { d3d12BindingTableRegions, d3d12ShaderGroups, stateObjectInfo } from "./d3d12/raytracing.js";
+import {
+  functionTableView, linkedFunctionNames, metalDescriptorOf, metalStructureBuild,
+} from "./metal/raytracing.js";
 import { unresolvedRecords, type BindingTableRecord } from "./binding_table.js";
 import { fmt, fmtFlags, formatBytes, isObject, num, refId, str, type ObjectLookup, type VulkanObject } from "./vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue } from "../shared/protocol.js";
@@ -233,7 +236,7 @@ function renderInstances(parent: Widget, s: AccelerationScene, db: ObjectLookup,
     const blas = i.blas !== undefined ? db.getObject(i.blas) : null;
     const r = row(grp.body, `Instance ${i.index}`, "");
     if (blas) objectLink(r, blas, onLink);
-    else new Span(r, { text: `structure at ${i.reference}`, class: "text-muted" });
+    else new Span(r, { text: unresolvedReference(i), class: "text-muted" });
     new Span(r, { text: `  ${placement(i)}, mask 0x${i.mask.toString(16).toUpperCase()}` });
     if (i.customIndex) new Span(r, { text: `, custom index ${i.customIndex}` });
     if (i.bindingTableOffset) new Span(r, { text: `, hit group +${i.bindingTableOffset}` });
@@ -326,10 +329,87 @@ function countPhrase(primitives: number, geometries: number): string {
   return `${primitives.toLocaleString()} in ${geometries} geometr${geometries === 1 ? "y" : "ies"}`;
 }
 
+/**
+ * An MTLAccelerationStructure: an ordinary Metal object, so unlike D3D12 there is nothing to mint
+ * and unlike Vulkan there is no buffer and offset to report — the structure *is* the allocation,
+ * and it carries its own size.
+ *
+ * A structure built before the capture is the common case and still says what it is: the library
+ * records the build whether or not anything is capturing, so `build` is there either way, and
+ * `captureInputs` is what was read back of it when the capture began
+ * (src/metal/src/raytracing.h).
+ */
+export function metalStructureView(object: VulkanObject, db: ObjectLookup): StructureView {
+  const facts: [string, string][] = [];
+  const d = object.descriptor;
+  const build = metalStructureBuild(object);
+  const descriptor = metalDescriptorOf(build) ?? (isObject(d?.descriptor) ? d!.descriptor as ArgObject : null);
+  if (descriptor) facts.push(["Type", str(descriptor.kind) === "instance" ? "Instance (top level)" : "Primitive (bottom level)"]);
+  if (d) facts.push(["Size", formatBytes(num(d.size))]);
+  // A structure in a heap is the one case where it has storage to name that is not its own.
+  const heap = db.getObject(refId(d?.heap));
+  const storage = heap ? { object: heap, note: `at offset ${num(d?.heapOffset)}` } : null;
+
+  const copied = build && num(build.copiedFrom) ? db.getObject(num(build.copiedFrom)) : null;
+  if (copied) facts.push(["Copied from", copied.name]);
+
+  return {
+    facts, storage,
+    notBuiltNote: "No build of this structure was seen. A structure is built by an acceleration structure "
+      + "encoder, and one built before the inspector attached is not recorded.",
+    build: build && descriptor ? {
+      title: `${str(build.method).replace(/:.*/, ":")} (${str(build.mode) || "BUILD"})`,
+      flags: str(descriptor.usage) && str(descriptor.usage) !== "None" ? fmtFlags(descriptor.usage) : "",
+      primitives: str(descriptor.kind) === "instance"
+        ? `${num(descriptor.instanceCount).toLocaleString()} instance${num(descriptor.instanceCount) === 1 ? "" : "s"}`
+        : countPhrase(num(descriptor.primitiveCount),
+                      Array.isArray(descriptor.geometries) ? descriptor.geometries.filter(isObject).length : 0),
+      geometries: metalGeometryRows(descriptor),
+    } : null,
+  };
+}
+
+/** One row per geometry of a Metal build: what it is and what it was built from. */
+function metalGeometryRows(descriptor: ArgObject): { label: string; detail: string }[] {
+  if (str(descriptor.kind) === "instance") {
+    const structures = Array.isArray(descriptor.instancedAccelerationStructures)
+      ? descriptor.instancedAccelerationStructures.length : 0;
+    const detail = `${num(descriptor.instanceCount).toLocaleString()} instances of stride `
+      + `${num(descriptor.instanceDescriptorStride)}, over ${structures} bottom level${structures === 1 ? "" : "s"}`
+      + (descriptor.indirect === true ? " (indirect: the count comes from a buffer)" : "");
+    return [{ label: `Instances (${fmt(descriptor.instanceDescriptorType)})`, detail }];
+  }
+  const raw = Array.isArray(descriptor.geometries) ? descriptor.geometries.filter(isObject) : [];
+  return raw.map((g, i) => {
+    const kind = str(g.kind);
+    let detail: string;
+    if (kind === "triangles" || kind === "motionTriangles") {
+      const indexed = str(g.indexType).endsWith("UInt16") || str(g.indexType).endsWith("UInt32");
+      detail = `${num(g.triangleCount).toLocaleString()} triangles, ${fmt(g.vertexFormat)} vertices `
+             + `(stride ${num(g.vertexStride)})`
+             + (indexed ? `, ${fmt(g.indexType)} indices` : ", no indices")
+             + (g.transformationMatrixBuffer ? ", with a transform" : "");
+    } else if (kind === "boundingBoxes" || kind === "motionBoundingBoxes") {
+      detail = `${num(g.boundingBoxCount).toLocaleString()} boxes, stride ${num(g.boundingBoxStride)}`;
+    } else if (kind === "curves" || kind === "motionCurves") {
+      detail = `${num(g.segmentCount).toLocaleString()} segments of ${num(g.segmentControlPointCount)} control points, `
+             + `${fmt(g.curveType)} ${fmt(g.curveBasis)}`;
+    } else {
+      detail = `${num(g.primitiveCount).toLocaleString()} primitives`;
+    }
+    // Which entry of the bound intersection function table this geometry's primitives reach, which
+    // Metal has in place of a hit group offset.
+    const reach = g.opaque === true ? "opaque" : `intersection function +${num(g.intersectionFunctionTableOffset)}`;
+    const label = `Geometry ${i} (${kind}${str(g.label) ? `: ${str(g.label)}` : ""})`;
+    return { label, detail: `${detail} — ${reach}` };
+  });
+}
+
 /** The view of whichever kind of structure was selected, or null when the object is not one. */
 export function structureViewOf(object: VulkanObject, db: ObjectLookup): StructureView | null {
   if (object.type === "VkAccelerationStructureKHR") return vulkanStructureView(object, db);
   if (object.type === "ID3D12RaytracingAccelerationStructure") return d3d12StructureView(object, db);
+  if (object.type === "MTLAccelerationStructure") return metalStructureView(object, db);
   return null;
 }
 
@@ -452,3 +532,81 @@ export const D3D12_UNRESOLVED_NOTE =
   "this state object never gave out — a table filled from another state object, or from identifiers fetched before "
   + "this one was rebuilt. Rays reaching those records run the wrong shader or none. A state object whose library "
   + "exports everything can also have exports the capture never saw an identifier for.";
+
+// ---------------------------------------------------------------------------------------------
+// Intersection function tables (Metal)
+//
+// Metal's place in the binding table's stead, and a different kind of thing. There is no table in
+// GPU memory and no opaque handle: a pipeline hands out an MTLIntersectionFunctionTable, the
+// application sets one entry per index through the API, and a traversal calls entry N when it
+// reaches a primitive whose `intersectionFunctionTableOffset` is N. So the capture knows the table
+// exactly — there is nothing to read back and nothing that can fail to resolve, which is why this
+// draws no "unresolved records" note the way the other two do.
+//
+// What *can* go wrong is the offset: a geometry or instance declaring one past the table's end
+// reaches no function at all, and neither Metal nor its validation layer says so.
+
+/** A function table as the panel draws it, with the pipeline's linked functions for context. */
+export function renderFunctionTable(parent: Widget, object: VulkanObject, db: ObjectLookup,
+                                    onLink: LinkHandler): void {
+  const view = functionTableView(object);
+  if (!view) return;
+  const intersection = object.type === "MTLIntersectionFunctionTable";
+  const label = intersection ? "Intersection Function Table" : "Visible Function Table";
+  const grp = new collapsible(parent, { label: `${label} (${view.entries.length})`, collapsed: false });
+
+  const pipeline = db.getObject(object.parentId);
+  if (pipeline) {
+    const r = row(grp.body, "Pipeline", "");
+    objectLink(r, pipeline, onLink);
+  }
+  row(grp.body, "Entries", String(view.functionCount));
+
+  // The functions the pipeline was linked with: what an entry is allowed to hold. An empty list on
+  // a table with entries means the pipeline was made without linkedFunctions, which cannot work —
+  // worth showing rather than leaving the section looking complete.
+  const linked = linkedFunctionNames(pipeline);
+  if (linked.length) row(grp.body, "Linked functions", linked.join(", "));
+
+  for (const e of view.entries) {
+    const detail = e.empty ? "nothing set — a ray reaching this entry calls no function"
+                 : e.opaque ? `built-in ${e.opaque} intersection${e.signature && e.signature !== "None" ? ` (${e.signature})` : ""}`
+                 : e.function || "(unnamed function)";
+    row(grp.body, `Entry ${e.index}`, detail);
+  }
+  if (!view.entries.length) {
+    new Div(grp.body, {
+      text: "Nothing was set in this table while the inspector was watching. A table filled before it attached "
+        + "is not recorded, so which function each entry holds is not known.",
+      class: "text-muted font-sm",
+    });
+  }
+
+  // The table's own bindings, which its intersection functions read through — a second set of
+  // arguments that nothing else in a capture would show, since they are not on any encoder.
+  for (const b of view.buffers) {
+    const buffer = db.getObject(b.buffer);
+    const r = row(grp.body, `Buffer ${b.index}`, "");
+    if (buffer) objectLink(r, buffer, onLink);
+    else new Span(r, { text: `buffer ${b.buffer}`, class: "text-muted" });
+    if (b.offset) new Span(r, { text: `  +${b.offset}`, class: "text-muted" });
+  }
+  for (const v of view.visibleFunctionTables) {
+    const table = db.getObject(v.table);
+    const r = row(grp.body, `Visible function table ${v.index}`, "");
+    if (table) objectLink(r, table, onLink);
+  }
+}
+
+/**
+ * Whether a geometry's or instance's table offset lands on an entry of `table`.
+ *
+ * The one correctness check this section is really for: an offset past the end reaches no function,
+ * the traversal treats the primitive as it would an unhandled one, and nothing else in a capture —
+ * nor Metal's own validation — reports it.
+ */
+export function tableOffsetIsInRange(table: VulkanObject | null, offset: number): boolean | null {
+  const view = table ? functionTableView(table) : null;
+  if (!view || !view.functionCount) return null;
+  return offset < view.functionCount;
+}

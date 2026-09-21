@@ -40,6 +40,8 @@ add_library(${CAPTURE_LIB} SHARED
     src/overdraw.mm
     src/pass_record.h
     src/pixel_history.mm
+    src/raytracing.h
+    src/raytracing.mm
     src/reflection.h
     src/reflection.mm
     src/stacktrace.h

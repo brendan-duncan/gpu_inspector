@@ -57,6 +57,49 @@ std::string UsageFlags(MTLTextureUsage usage) {
 }
 
 /**
+ * The functions linked into a pipeline besides its entry point: on a pipeline that traces rays, the
+ * intersection functions its traversal can call.
+ *
+ * Without these a Metal kernel that traces rays shows only the kernel, and the intersection
+ * function that decides what a procedural primitive even *is* appears nowhere — which for a
+ * bounding-box structure is the whole of its shape (`test/path_tracer/metal`). It is also what an
+ * intersection function table's entries name (raytracing.h).
+ */
+void WriteLinkedFunctions(Args &a, id descriptor) {
+    const SEL sel = sel_registerName("linkedFunctions");
+    if (descriptor == nil || ![descriptor respondsToSelector:sel]) return;
+    id linked = ((id (*)(id, SEL))objc_msgSend)(descriptor, sel);
+    if (linked == nil) return;
+    a.writer().Key("linkedFunctions");
+    a.writer().BeginObject();
+    // functions, binaryFunctions and privateFunctions differ in how they are compiled, not in what
+    // they are, so each is listed under its own name.
+    auto list = [&](const char *key) {
+        SEL each = sel_registerName(key);
+        if (![linked respondsToSelector:each]) return;
+        id functions = ((id (*)(id, SEL))objc_msgSend)(linked, each);
+        if (![functions isKindOfClass:[NSArray class]]) return;
+        a.writer().Key(key);
+        a.writer().BeginArray();
+        for (id<MTLFunction> f in (NSArray *)functions) {
+            a.writer().BeginObject();
+            if (IdOf(f) != 0) {
+                a.writer().Key("function");
+                WriteRef(a.writer(), f, "MTLFunction");
+            }
+            a.writer().Key("name");
+            a.writer().String(f.name != nil ? f.name.UTF8String : "");
+            a.writer().EndObject();
+        }
+        a.writer().EndArray();
+    };
+    list("functions");
+    list("binaryFunctions");
+    list("privateFunctions");
+    a.writer().EndObject();
+}
+
+/**
  * A pipeline's function: a reference to the tracked MTLFunction when the application made it
  * through a hooked library, so the Inspect panel links the pipeline to it, and its name beside
  * either way, since the reference alone reads as a number.
@@ -308,6 +351,7 @@ std::string RenderPipelineArgs(MTLRenderPipelineDescriptor *d, MTLRenderPipeline
         a.u("maxTessellationFactor", d.maxTessellationFactor)
          .u("tessellationPartitionMode", (uint64_t)d.tessellationPartitionMode);
     }
+    WriteLinkedFunctions(a, d);
     a.raw("reflection", RenderReflectionJson(reflection));
     return a.str();
 }
@@ -359,6 +403,7 @@ void WriteComputeState(Args &a, id<MTLComputePipelineState> state) {
      .u("threadExecutionWidth", state.threadExecutionWidth)
      .u("staticThreadgroupMemoryLength", state.staticThreadgroupMemoryLength);
 }
+
 }  // namespace
 
 std::string ComputePipelineFunctionArgs(id<MTLFunction> function, id<MTLComputePipelineState> state,
@@ -379,6 +424,7 @@ std::string ComputePipelineDescriptorArgs(MTLComputePipelineDescriptor *d,
     a.b("threadGroupSizeIsMultipleOfThreadExecutionWidth", d.threadGroupSizeIsMultipleOfThreadExecutionWidth)
      .u("maxTotalThreadsPerThreadgroupRequested", d.maxTotalThreadsPerThreadgroup)
      .b("supportIndirectCommandBuffers", d.supportIndirectCommandBuffers);
+    WriteLinkedFunctions(a, d);
     WriteComputeState(a, state);
     a.raw("reflection", ComputeReflectionJson(reflection));
     return a.str();

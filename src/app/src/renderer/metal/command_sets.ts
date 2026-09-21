@@ -160,6 +160,29 @@ function summarize(cmd: CaptureCommand, nameOf: (v: ArgValue | undefined) => str
     case "pushDebugGroup:":
     case "insertDebugSignpost:":
       return quoted(a.label);
+    // The acceleration structure encoder's commands. Without these the generic fallback below
+    // would print the scratch buffer and an offset, which is the least interesting thing about a
+    // build: what it built and out of how much is what a reader is looking for.
+    case "buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:":
+    case "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:":
+    case "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:options:": {
+      const target = nameOf(a.accelerationStructure) || "(none)";
+      const d = isObject(a.descriptor) ? a.descriptor : null;
+      if (!d) return target;
+      const what = str(d.kind) === "instance"
+        ? `${num(d.instanceCount).toLocaleString()} instances`
+        : `${num(d.primitiveCount).toLocaleString()} primitives in `
+          + `${Array.isArray(d.geometries) ? d.geometries.length : 0} geometries`;
+      const refit = m.startsWith("refit") ? " (refit)" : "";
+      return `${target} ← ${what}${refit}`;
+    }
+    case "copyAccelerationStructure:toAccelerationStructure:":
+    case "copyAndCompactAccelerationStructure:toAccelerationStructure:":
+      return `${nameOf(a.sourceAccelerationStructure) || "(none)"} → `
+           + `${nameOf(a.destinationAccelerationStructure) || "(none)"}`;
+    case "writeCompactedAccelerationStructureSize:toBuffer:offset:":
+    case "writeCompactedAccelerationStructureSize:toBuffer:offset:sizeDataType:":
+      return `${nameOf(a.accelerationStructure) || "(none)"} → ${nameOf(a.buffer) || "(none)"}`;
     case "drawPrimitives:vertexStart:vertexCount:":
     case "drawPrimitives:vertexStart:vertexCount:instanceCount:":
     case "drawPrimitives:vertexStart:vertexCount:instanceCount:baseInstance:":

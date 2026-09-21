@@ -6,6 +6,7 @@
 #include "frame_stats.h"
 #include "gpu_trace.h"
 #include "overdraw.h"
+#include "raytracing.h"
 #include "stacktrace.h"
 #include "validation.h"
 #include "json_writer.h"
@@ -142,6 +143,10 @@ std::atomic<bool> g_recording{false};
 CaptureOptions g_options;
 uint32_t g_wantFrames = 1;
 uint32_t g_frameIndex = 0;
+// Which capture this is, counting from 1. A structure's remembered build inputs know the capture
+// they were recorded in, so ReadBackEarlierStructures can skip the ones this capture built itself
+// (raytracing.h). The Vulkan layer's CaptureManager::CaptureSerial is the same counter.
+std::atomic<uint64_t> g_captureSerial{0};
 uint64_t g_bufferBytes = 0;   // captured so far, against maxBufferTotal
 std::vector<RecordedCommand> g_commands;
 std::vector<CapturedBuffer> g_buffers;
@@ -748,6 +753,7 @@ void AdvanceFrame() {
             g_bufferBytes = 0;
             g_outstanding = 0;
             g_finishPending = false;
+            ++g_captureSerial;
             ReleaseTiming(g_timing);
             // Before recording starts, so the first pass of the capture is measured too.
             StartPixelHistoryCapture(g_options.pixelHistory);
@@ -831,6 +837,10 @@ bool Recording() {
 uint32_t CaptureFrameIndex() {
     std::lock_guard<std::mutex> lock(g_mutex);
     return g_frameIndex;
+}
+
+uint64_t CaptureSerial() {
+    return g_captureSerial.load(std::memory_order_acquire);
 }
 
 uint64_t CommandBufferId(id commandBuffer) {
@@ -937,7 +947,7 @@ bool IsDrawableTexture(id texture) {
     return g_drawableOfTexture.count((__bridge const void *)texture) != 0;
 }
 
-uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size) {
+uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size, bool whole) {
     if (!g_recording || buffer == nil || !g_options.captureBuffers) return 0;
     const uint64_t bufferId = IdOf(buffer);
     if (bufferId == 0) return 0;
@@ -951,7 +961,7 @@ uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t siz
     CapturedBuffer captured;
     captured.bufferId = bufferId;
     captured.offset = offset;
-    if (want > g_options.maxBufferSize) {
+    if (want > g_options.maxBufferSize && !whole) {
         captured.originalSize = want;
         want = g_options.maxBufferSize;
     }
@@ -1283,6 +1293,45 @@ PassTimingSlot ReserveBlitPassTiming(id commandBuffer, MTLBlitPassDescriptor *de
     return slot;
 }
 
+PassTimingSlot ReserveAccelerationStructurePassTiming(id commandBuffer, id descriptor) {
+    PassTimingSlot slot;
+    if (!g_recording || commandBuffer == nil) return slot;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (!g_recording) return slot;
+    EnsureTiming(((id<MTLCommandBuffer>)commandBuffer).device);
+    if (g_timing.buffer == nil) return slot;
+    // MTLAccelerationStructurePassDescriptor is macOS 13; on 11 and 12 the encoder-boundary path
+    // below is the only one there is.
+    if (@available(macOS 13.0, *)) {
+        if (g_timing.stageBoundary && descriptor != nil) {
+            MTLAccelerationStructurePassDescriptor *pass = (MTLAccelerationStructurePassDescriptor *)descriptor;
+            for (NSUInteger i = 0; i < 4; i++) {
+                MTLAccelerationStructurePassSampleBufferAttachmentDescriptor *a = pass.sampleBufferAttachments[i];
+                if (a.sampleBuffer != nil) continue;
+                slot = ReserveSamples(false, false);
+                if (slot.sampleBuffer == nil) return slot;
+                slot.statisticBuffer = nil;
+                slot.utilizationBuffer = nil;
+                a.sampleBuffer = (id<MTLCounterSampleBuffer>)slot.sampleBuffer;
+                a.startOfEncoderSampleIndex = slot.startIndex;
+                a.endOfEncoderSampleIndex = slot.endIndex;
+                return slot;
+            }
+            return slot;
+        }
+    }
+    // No sampling point of its own; an encoder that is neither render nor compute samples where a
+    // blit encoder does (MTLCounterSamplingPointAtBlitBoundary), and
+    // sampleCountersInBuffer:atSampleIndex:withBarrier: is on MTLAccelerationStructureCommandEncoder
+    // as it is on MTLBlitCommandEncoder.
+    if (g_timing.blitBoundary) slot = ReserveSamples(true, false);
+    if (slot.sampleBuffer != nil) {
+        slot.statisticBuffer = nil;
+        slot.utilizationBuffer = nil;
+    }
+    return slot;
+}
+
 uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTimingSlot &timing) {
     const void *cb = (__bridge const void *)commandBuffer;
     uint32_t index = 0;
@@ -1322,6 +1371,11 @@ uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTiming
             }
         }
     }
+    // What the acceleration structures already hold, read back once per capture through the first
+    // pass of it — a bottom level an engine built at load has no build in any later frame, and a
+    // private input buffer needs an open pass to blit through (raytracing.h). Outside the lock: the
+    // read-back queues buffers, which takes it.
+    if (HasAccelerationStructures()) ReadBackEarlierStructures(encoder, CaptureSerial());
     return index;
 }
 

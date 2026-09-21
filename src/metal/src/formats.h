@@ -19,6 +19,7 @@
 #pragma once
 
 #include <cstdint>
+#include <string>
 
 #import <Metal/Metal.h>
 
@@ -70,6 +71,31 @@ const char *VertexFormatCanonicalName(MTLVertexFormat format);
 const char *LoadActionEnumName(MTLLoadAction action);
 const char *StoreActionEnumName(MTLStoreAction action);
 const char *PrimitiveTypeEnumName(MTLPrimitiveType type);
+const char *IndexTypeEnumName(MTLIndexType type);
+
+// The ray tracing enums (raytracing.h). A geometry's vertex format is an MTLAttributeFormat, whose
+// values are identical to MTLVertexFormat's — the two enums list the same 42 entries with the same
+// numbers — so both vertex format namers above serve it, and an acceleration structure's vertices
+// reach the UI's decoder under the same `VK_FORMAT_*` name a draw's do.
+
+/** Metal's own name for an instance descriptor type, e.g. "MTLAccelerationStructureInstanceDescriptorTypeUserID". */
+const char *InstanceDescriptorTypeEnumName(uint64_t type);
+/** Metal's own name for a transform layout, e.g. "MTLMatrixLayoutColumnMajor". */
+const char *MatrixLayoutEnumName(uint64_t layout);
+/** Metal's own name for a motion border mode, e.g. "MTLMotionBorderModeClamp". */
+const char *MotionBorderModeEnumName(uint64_t mode);
+const char *CurveTypeEnumName(uint64_t type);
+const char *CurveBasisEnumName(uint64_t basis);
+const char *CurveEndCapsEnumName(uint64_t caps);
+
+/**
+ * An option set as "Refit|PreferFastBuild": the short names joined by `|`, which is how the Vulkan
+ * layer and the rest of this library spell a flag set (UsageFlags in hooks_descriptors.mm).
+ * "None" for zero.
+ */
+std::string AccelerationStructureUsageFlags(uint64_t usage);
+std::string AccelerationStructureRefitOptionFlags(uint64_t options);
+std::string IntersectionFunctionSignatureFlags(uint64_t signature);
 
 /** Bytes a `width` x `height` region of this format occupies, rows padded to whole blocks. */
 uint64_t PixelFormatImageSize(const PixelFormatInfo &info, uint32_t width, uint32_t height,

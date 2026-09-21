@@ -1,6 +1,7 @@
 // Hooks on the encoders: MTLRenderCommandEncoder, MTLComputeCommandEncoder,
-// MTLBlitCommandEncoder, and what every encoder shares. See hooks_common.h for the shape every
-// hook has.
+// MTLBlitCommandEncoder, MTLAccelerationStructureCommandEncoder, and what every encoder shares.
+// See hooks_common.h for the shape every hook has; what the ray tracing ones record is in
+// raytracing.h.
 //
 // Metal has one selector per overload rather than optional arguments, so each has to be hooked
 // separately; a real renderer uses the base-vertex/base-instance forms that a hand-written sample
@@ -9,6 +10,7 @@
 #include "hooks.h"
 #include "hooks_common.h"
 #include "overdraw.h"
+#include "raytracing.h"
 
 #import <objc/message.h>
 
@@ -1635,13 +1637,69 @@ void C_memoryBarrierResources(id self, SEL _cmd, const id *resources, NSUInteger
     ORIG(void (*)(id, SEL, const id *, NSUInteger))(self, _cmd, resources, count);
 }
 
-void C_setAccelerationStructure(id self, SEL _cmd, id structure, NSUInteger index) {
+// The ray tracing bindings, on every stage that has them.
+//
+// Metal spells these once per stage and once per arity — setAccelerationStructure:atBufferIndex:,
+// setVertexIntersectionFunctionTable:atBufferIndex:, setTileVisibleFunctionTables:withBufferRange:
+// and a dozen more — and the three kinds differ only in which class the reference is of. So rather
+// than fifteen near-identical hooks, both arities are handled by one, with the selector saying
+// which kind and which stage it is: `sel_getName(_cmd)` is already what RecordCommand wants for the
+// method, and the class the reference is written under follows from the same name.
+
+/** The argument key and tracked class for a ray tracing binding, from the selector that set it. */
+struct RayTracingBinding {
+    const char *key;
+    const char *type;
+};
+
+RayTracingBinding BindingOf(SEL sel) {
+    const char *name = sel_getName(sel);
+    if (std::strstr(name, "IntersectionFunctionTable") != nullptr) {
+        return {"intersectionFunctionTable", "MTLIntersectionFunctionTable"};
+    }
+    if (std::strstr(name, "VisibleFunctionTable") != nullptr) {
+        return {"visibleFunctionTable", "MTLVisibleFunctionTable"};
+    }
+    return {"accelerationStructure", "MTLAccelerationStructure"};
+}
+
+void X_setRayTracingObject(id self, SEL _cmd, id object, NSUInteger index) {
     Reentry reentry(self, _cmd);
     if (Rec(reentry)) {
-        RecordCommand("setAccelerationStructure:atBufferIndex:", self,
-                      Args().ref("accelerationStructure", structure, "MTLAccelerationStructure").u("index", index).str());
+        const RayTracingBinding b = BindingOf(_cmd);
+        RecordCommand(sel_getName(_cmd), self, Args().ref(b.key, object, b.type).u("index", index).str());
     }
-    ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, structure, index);
+    ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, object, index);
+}
+
+void X_setRayTracingObjects(id self, SEL _cmd, const id *objects, NSRange range) {
+    Reentry reentry(self, _cmd);
+    if (Rec(reentry)) {
+        const RayTracingBinding b = BindingOf(_cmd);
+        // Plural, so the key is too: the UI reads a range of slots off `range` the way it does for
+        // setVertexBuffers:offsets:withRange:.
+        std::string key = std::string(b.key) + "s";
+        RecordCommand(sel_getName(_cmd), self,
+                      Args().refs(key.c_str(), objects, range.length, b.type).range("range", range).str());
+    }
+    ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, objects, range);
+}
+
+/** Every stage's spelling of the three, for one class. */
+void HookRayTracingBindings(Class cls, const char *const *prefixes, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        const std::string prefix = prefixes[i];
+        Hook(cls, sel_registerName((prefix + "AccelerationStructure:atBufferIndex:").c_str()),
+             (IMP)X_setRayTracingObject);
+        Hook(cls, sel_registerName((prefix + "IntersectionFunctionTable:atBufferIndex:").c_str()),
+             (IMP)X_setRayTracingObject);
+        Hook(cls, sel_registerName((prefix + "VisibleFunctionTable:atBufferIndex:").c_str()),
+             (IMP)X_setRayTracingObject);
+        Hook(cls, sel_registerName((prefix + "IntersectionFunctionTables:withBufferRange:").c_str()),
+             (IMP)X_setRayTracingObjects);
+        Hook(cls, sel_registerName((prefix + "VisibleFunctionTables:withBufferRange:").c_str()),
+             (IMP)X_setRayTracingObjects);
+    }
 }
 
 // --------------------------------------------------------------------------------------------
@@ -1897,6 +1955,117 @@ void B_optimizeIndirectCommandBuffer(id self, SEL _cmd, id icb, NSRange range) {
     ORIG(void (*)(id, SEL, id, NSRange))(self, _cmd, icb, range);
 }
 
+// --------------------------------------------------------------------------------------------
+// MTLAccelerationStructureCommandEncoder
+//
+// The builds, refits and copies. Each one also queues the buffers the descriptor names for
+// read-back, which is what makes an opaque structure legible at all — see raytracing.h.
+
+// A build is noted whether or not a capture is recording, and this is the whole point of it: an
+// engine builds its bottom levels once, at load, and a capture of any later frame would otherwise
+// know what its structures are but not what is in them. Recording decides only two things — whether
+// the command goes into the stream, and whether the input buffers are read back now (the encoder is
+// passed for that, and nil outside a capture). ReadBackEarlierStructures reads the rest when a
+// capture begins, from what was remembered here.
+//
+// The Vulkan layer's NoteAccelerationStructureBuilds does the same and for the same reason.
+
+void A_buildAccelerationStructure(id self, SEL _cmd, id structure, id descriptor, id scratch,
+                                  NSUInteger scratchOffset) {
+    Reentry reentry(self, _cmd);
+    if (reentry.outermost()) {
+        const bool rec = Recording();
+        const char *method = "buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:";
+        std::string args = NoteAccelerationStructureBuild(rec ? self : nil, method, structure,
+                                                          (MTLAccelerationStructureDescriptor *)descriptor,
+                                                          scratch, scratchOffset, nil);
+        if (rec) RecordCommand(method, self, args);
+    }
+    ORIG(void (*)(id, SEL, id, id, id, NSUInteger))(self, _cmd, structure, descriptor, scratch, scratchOffset);
+}
+
+/** A refit with no destination writes the source in place, so that is the structure it built. */
+void A_refitAccelerationStructure(id self, SEL _cmd, id source, id descriptor, id destination,
+                                  id scratch, NSUInteger scratchOffset) {
+    Reentry reentry(self, _cmd);
+    if (reentry.outermost()) {
+        const bool rec = Recording();
+        const char *method = "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:";
+        std::string args = NoteAccelerationStructureBuild(rec ? self : nil, method,
+                                                          destination != nil ? destination : source,
+                                                          (MTLAccelerationStructureDescriptor *)descriptor,
+                                                          scratch, scratchOffset, source);
+        if (rec) RecordCommand(method, self, args);
+    }
+    ORIG(void (*)(id, SEL, id, id, id, id, NSUInteger))(self, _cmd, source, descriptor, destination, scratch,
+                                                        scratchOffset);
+}
+
+void A_refitAccelerationStructureOptions(id self, SEL _cmd, id source, id descriptor, id destination,
+                                         id scratch, NSUInteger scratchOffset, NSUInteger options) {
+    Reentry reentry(self, _cmd);
+    if (reentry.outermost()) {
+        const bool rec = Recording();
+        const char *method = "refitAccelerationStructure:descriptor:destination:scratchBuffer:scratchBufferOffset:options:";
+        std::string args = NoteAccelerationStructureBuild(rec ? self : nil, method,
+                                                          destination != nil ? destination : source,
+                                                          (MTLAccelerationStructureDescriptor *)descriptor,
+                                                          scratch, scratchOffset, source);
+        // The options say what the refit rewrites — vertex data, per-primitive data, or both — which
+        // is the difference between a refit that answers for the geometry and one that does not.
+        if (rec) {
+            if (args.size() > 2) {
+                args.insert(args.size() - 1, ",\"options\":" + std::to_string((unsigned long long)options));
+            }
+            RecordCommand(method, self, args);
+        }
+    }
+    ORIG(void (*)(id, SEL, id, id, id, id, NSUInteger, NSUInteger))(self, _cmd, source, descriptor, destination,
+                                                                    scratch, scratchOffset, options);
+}
+
+void A_copyAccelerationStructure(id self, SEL _cmd, id source, id destination) {
+    Reentry reentry(self, _cmd);
+    if (reentry.outermost()) {
+        const char *method = "copyAccelerationStructure:toAccelerationStructure:";
+        std::string args = NoteAccelerationStructureCopy(method, source, destination, nil, 0);
+        if (Recording()) RecordCommand(method, self, args);
+    }
+    ORIG(void (*)(id, SEL, id, id))(self, _cmd, source, destination);
+}
+
+void A_copyAndCompactAccelerationStructure(id self, SEL _cmd, id source, id destination) {
+    Reentry reentry(self, _cmd);
+    if (reentry.outermost()) {
+        const char *method = "copyAndCompactAccelerationStructure:toAccelerationStructure:";
+        std::string args = NoteAccelerationStructureCopy(method, source, destination, nil, 0);
+        if (Recording()) RecordCommand(method, self, args);
+    }
+    ORIG(void (*)(id, SEL, id, id))(self, _cmd, source, destination);
+}
+
+void A_writeCompactedSize(id self, SEL _cmd, id structure, id buffer, NSUInteger offset) {
+    Reentry reentry(self, _cmd);
+    if (Rec(reentry)) {
+        RecordCommand("writeCompactedAccelerationStructureSize:toBuffer:offset:", self,
+                      Args().ref("accelerationStructure", structure, "MTLAccelerationStructure")
+                            .ref("buffer", buffer, "MTLBuffer").u("offset", offset).str());
+    }
+    ORIG(void (*)(id, SEL, id, id, NSUInteger))(self, _cmd, structure, buffer, offset);
+}
+
+void A_writeCompactedSizeDataType(id self, SEL _cmd, id structure, id buffer, NSUInteger offset,
+                                  NSUInteger sizeDataType) {
+    Reentry reentry(self, _cmd);
+    if (Rec(reentry)) {
+        RecordCommand("writeCompactedAccelerationStructureSize:toBuffer:offset:sizeDataType:", self,
+                      Args().ref("accelerationStructure", structure, "MTLAccelerationStructure")
+                            .ref("buffer", buffer, "MTLBuffer").u("offset", offset)
+                            .u("sizeDataType", sizeDataType).str());
+    }
+    ORIG(void (*)(id, SEL, id, id, NSUInteger, NSUInteger))(self, _cmd, structure, buffer, offset, sizeDataType);
+}
+
 }  // namespace
 
 // --------------------------------------------------------------------------------------------
@@ -2021,6 +2190,10 @@ void HookRenderEncoderClass(id encoder) {
     Hook(cls, sel_registerName("textureBarrier"), (IMP)R_textureBarrier);
     Hook(cls, @selector(setTessellationFactorBuffer:offset:instanceStride:), (IMP)R_setTessellationFactorBuffer);
     Hook(cls, @selector(setTessellationFactorScale:), (IMP)R_setTessellationFactorScale);
+    // A vertex, fragment or tile function can trace rays too (macOS 12), and until now a draw that
+    // did bound its structure and its function tables with nothing recorded of either.
+    static const char *const kRenderStages[] = {"setVertex", "setFragment", "setTile"};
+    HookRayTracingBindings(cls, kRenderStages, 3);
 }
 
 void HookComputeEncoderClass(id encoder) {
@@ -2057,7 +2230,10 @@ void HookComputeEncoderClass(id encoder) {
     Hook(cls, @selector(executeCommandsInBuffer:indirectBuffer:indirectBufferOffset:), (IMP)C_executeCommandsIndirect);
     Hook(cls, @selector(memoryBarrierWithScope:), (IMP)C_memoryBarrierScope);
     Hook(cls, @selector(memoryBarrierWithResources:count:), (IMP)C_memoryBarrierResources);
-    Hook(cls, sel_registerName("setAccelerationStructure:atBufferIndex:"), (IMP)C_setAccelerationStructure);
+    // A compute kernel is where Metal traces rays — there is no trace command and no ray tracing
+    // pipeline, so a dispatch against a bound acceleration structure *is* the trace.
+    static const char *const kComputeStages[] = {"set"};
+    HookRayTracingBindings(cls, kComputeStages, 1);
 }
 
 void HookBlitEncoderClass(id encoder) {
@@ -2100,6 +2276,40 @@ void HookBlitEncoderClass(id encoder) {
     Hook(cls, @selector(copyIndirectCommandBuffer:sourceRange:destination:destinationIndex:),
          (IMP)B_copyIndirectCommandBuffer);
     Hook(cls, @selector(optimizeIndirectCommandBuffer:withRange:), (IMP)B_optimizeIndirectCommandBuffer);
+}
+
+void HookAccelerationStructureEncoderClass(id encoder) {
+    if (encoder == nil) return;
+    Class cls = object_getClass(encoder);
+    if (!FirstSighting(cls)) return;
+    Log("hooking acceleration structure encoder class %s", class_getName(cls));
+    HookCommonEncoderMethods(cls);
+    // Spelled with sel_registerName rather than @selector so this file needs no ray tracing
+    // availability guards; the selectors are stable and the class is only ever the driver's own.
+    Hook(cls, sel_registerName("buildAccelerationStructure:descriptor:scratchBuffer:scratchBufferOffset:"),
+         (IMP)A_buildAccelerationStructure);
+    Hook(cls, sel_registerName("refitAccelerationStructure:descriptor:destination:scratchBuffer:"
+                               "scratchBufferOffset:"),
+         (IMP)A_refitAccelerationStructure);
+    Hook(cls, sel_registerName("refitAccelerationStructure:descriptor:destination:scratchBuffer:"
+                               "scratchBufferOffset:options:"),
+         (IMP)A_refitAccelerationStructureOptions);
+    Hook(cls, sel_registerName("copyAccelerationStructure:toAccelerationStructure:"),
+         (IMP)A_copyAccelerationStructure);
+    Hook(cls, sel_registerName("copyAndCompactAccelerationStructure:toAccelerationStructure:"),
+         (IMP)A_copyAndCompactAccelerationStructure);
+    Hook(cls, sel_registerName("writeCompactedAccelerationStructureSize:toBuffer:offset:"),
+         (IMP)A_writeCompactedSize);
+    Hook(cls, sel_registerName("writeCompactedAccelerationStructureSize:toBuffer:offset:sizeDataType:"),
+         (IMP)A_writeCompactedSizeDataType);
+    // Shared with the compute encoder, and identical on both: a build reaches its input buffers
+    // through `useResource:` when they live in a heap or an argument buffer.
+    Hook(cls, @selector(updateFence:), (IMP)C_updateFence);
+    Hook(cls, @selector(waitForFence:), (IMP)C_waitForFence);
+    Hook(cls, @selector(useResource:usage:), (IMP)C_useResource);
+    Hook(cls, @selector(useResources:count:usage:), (IMP)C_useResources);
+    Hook(cls, @selector(useHeap:), (IMP)C_useHeap);
+    Hook(cls, @selector(useHeaps:count:), (IMP)C_useHeaps);
 }
 
 void HookOtherEncoderClass(id encoder) {

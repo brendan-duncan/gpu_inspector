@@ -8,9 +8,9 @@
 //
 // What Metal does give is the size of every resource: `MTLResource.allocatedSize` is what the
 // object actually cost, which the library records on each one as it is created. So the breakdown
-// here is by *object kind* rather than by heap — buffers, textures, and the heaps themselves — and
-// it is a different shape from the other two on purpose, because the thing being counted is
-// different.
+// here is by *object kind* rather than by heap — buffers, textures, acceleration structures, and
+// the heaps themselves — and it is a different shape from the other two on purpose, because the
+// thing being counted is different.
 //
 // The one trap is double counting. A resource created from a heap is suballocated out of memory the
 // heap already reserved, so adding its `allocatedSize` to the heap's would count those bytes twice.
@@ -20,7 +20,7 @@ import { isObject, num, refId, type VulkanObject } from "../vulkan/vulkan_object
 import type { MemoryDatabase } from "../memory_heaps.js";
 
 export interface MetalMemoryGroup {
-  /** "Buffers", "Textures", "Heaps". */
+  /** "Buffers", "Textures", "Acceleration structures", "Heaps". */
   label: string;
   count: number;
   bytes: number;
@@ -92,7 +92,10 @@ export function metalMemory(db: MemoryDatabase): MetalMemory | null {
       add("Heaps", size);
       continue;
     }
-    if (o.type !== "MTLBuffer" && o.type !== "MTLTexture") continue;
+    // An acceleration structure is an MTLResource like the other two and reports its own
+    // allocatedSize, and a real scene's are not small — a few hundred megabytes on a large level —
+    // so leaving them out would under-report the total by whatever ray tracing costs.
+    if (o.type !== "MTLBuffer" && o.type !== "MTLTexture" && o.type !== "MTLAccelerationStructure") continue;
     sawResource = true;
     const bytes = sizeOf(o);
     if (heapOf(o) !== null) {
@@ -101,7 +104,7 @@ export function metalMemory(db: MemoryDatabase): MetalMemory | null {
       inHeaps.bytes += bytes;
       continue;
     }
-    add(o.type === "MTLBuffer" ? "Buffers" : "Textures", bytes);
+    add(o.type === "MTLBuffer" ? "Buffers" : o.type === "MTLTexture" ? "Textures" : "Acceleration structures", bytes);
   }
   if (!sawResource) return null;
 

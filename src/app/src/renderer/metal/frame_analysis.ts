@@ -16,12 +16,18 @@
 //   redundant-buffer-bind  binding the buffer, offset and slot the encoder already has
 //   single-threadgroup-dispatch  a dispatch of one threadgroup
 //   tiny-draws             many draws of a handful of vertices
+//   accel-table-offset-range  a geometry naming an intersection function table entry that is not
+//                          there, so a ray reaching it calls nothing
+//   accel-rebuilt-twice    an acceleration structure built more than once in one frame
+//   accel-empty-top-level  a top level built from no instances at all
+//   accel-opaque-with-function  opaque geometry naming an intersection function, which is ignored
 //
 // The rules over the GPU counters (../counter_rules.ts) and over sampling state
 // (../sampling_rules.ts) are shared with Vulkan and run beside these.
 //
 // Every finding names the command it is about so the UI can jump to it.
 import { METAL_SETS } from "./command_sets.js";
+import { METAL_BUILD_METHODS } from "./raytracing.js";
 import { isHandleRef, isObject, num, refId, str } from "../vulkan/vulkan_object.js";
 import { SEVERITY_RANK, type Confidence, type Severity } from "../vulkan/spirv_analysis.js";
 import type { FrameAnalysisDatabase, FrameFinding } from "../vulkan/frame_analysis.js";
@@ -31,9 +37,11 @@ import type { ArgObject, ArgValue, CaptureCommand } from "../../shared/protocol.
 const TINY_DRAW_VERTICES = 12;
 const TINY_DRAW_COUNT = 32;
 
-const RULE_ORDER = ["undefined-load", "mergeable-passes", "msaa-store", "memoryless-candidate",
+const RULE_ORDER = ["accel-table-offset-range", "undefined-load", "mergeable-passes", "msaa-store",
+  "memoryless-candidate", "accel-empty-top-level", "accel-rebuilt-twice",
   "color-store", "depth-store", "color-load",
-  "tiny-draws", "redundant-pipeline-bind", "redundant-buffer-bind", "single-threadgroup-dispatch"];
+  "tiny-draws", "redundant-pipeline-bind", "redundant-buffer-bind", "single-threadgroup-dispatch",
+  "accel-opaque-with-function"];
 
 interface Attachment {
   textureId: number;
@@ -112,6 +120,7 @@ export class MetalFrameAnalysis {
     this._walk(data.commands);
     this._attachmentRules();
     this._memorylessRule();
+    this._rayTracingRules(data.commands);
     this.findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || RULE_ORDER.indexOf(a.rule) - RULE_ORDER.indexOf(b.rule));
     return this.findings;
   }
@@ -346,6 +355,103 @@ export class MetalFrameAnalysis {
     if (folded.count) {
       this._addFolded("memoryless-candidate", "medium", "medium", `${folded.count} texture${folded.count === 1 ? "" : "s"} (${names.join(", ")}${folded.count > names.length ? ", ..." : ""}) ${folded.count === 1 ? "is" : "are"} only ever cleared or discarded and never stored or read: MTLStorageModeMemoryless would keep ${folded.count === 1 ? "it" : "them"} in tile memory with no allocation behind.`, folded);
     }
+  }
+
+  // ------------------------------------------------------------------------- ray tracing
+  //
+  // Four things a Metal frame can get wrong about ray tracing that nothing else reports. Metal's
+  // own validation layer says nothing about any of them: an intersection function table offset is
+  // not bounds-checked, and an offset on opaque geometry is silently ignored rather than refused.
+  //
+  // All four are read off the build descriptors and the bindings in the frame, so they need no
+  // replay and no counters.
+
+  private _rayTracingRules(commands: CaptureCommand[]): void {
+    /** Every intersection function table bound in the frame, by the entries its descriptor asked for. */
+    const boundTables = new Map<number, number>();
+    for (const cmd of commands) {
+      if (!cmd.method.includes("IntersectionFunctionTable")) continue;
+      const a = cmd.args;
+      if (!a) continue;
+      const ids = [refId(a.intersectionFunctionTable),
+                   ...(Array.isArray(a.intersectionFunctionTables) ? a.intersectionFunctionTables.map(refId) : [])];
+      for (const id of ids) {
+        if (id === null) continue;
+        const table = this._db.getObject(id);
+        const update = table && isObject(table.updates.table) ? table.updates.table : null;
+        const count = num(update?.functionCount) || num(table?.descriptor?.functionCount);
+        boundTables.set(id, count);
+      }
+    }
+    // The largest table bound anywhere in the frame is what an offset is judged against: a geometry
+    // does not name the table it will be traced with, so the most generous reading is the honest
+    // one — an offset past even the largest table reaches nothing whichever is bound.
+    const largestTable = boundTables.size ? Math.max(...boundTables.values()) : null;
+
+    const builtTwice = new Map<number, CaptureCommand[]>();
+    const opaqueWithFunction = new Folded();
+    const outOfRange = new Folded();
+    let outOfRangeWorst = 0;
+
+    for (const cmd of commands) {
+      if (!METAL_BUILD_METHODS.has(cmd.method)) continue;
+      const a = cmd.args;
+      if (!a) continue;
+      const target = refId(a.accelerationStructure);
+      if (target !== null) {
+        const list = builtTwice.get(target);
+        if (list) list.push(cmd); else builtTwice.set(target, [cmd]);
+      }
+      const descriptor = isObject(a.descriptor) ? a.descriptor : null;
+      if (!descriptor) continue;
+
+      if (str(descriptor.kind) === "instance" && num(descriptor.instanceCount) === 0) {
+        this._add("accel-empty-top-level", "medium", "high",
+          `${this._structureName(target)} was built from zero instances, so every ray traced against it misses. `
+          + "The build still costs its scratch and its submission.", cmd);
+      }
+
+      const geometries = Array.isArray(descriptor.geometries) ? descriptor.geometries.filter(isObject) : [];
+      for (const g of geometries) {
+        const offset = num(g.intersectionFunctionTableOffset);
+        // An opaque geometry never calls an intersection function, so an offset on one is a
+        // statement that does nothing — usually a geometry that was meant to be non-opaque.
+        if (g.opaque === true && offset > 0) {
+          opaqueWithFunction.add(cmd);
+        }
+        if (largestTable !== null && offset >= largestTable) {
+          outOfRange.add(cmd);
+          outOfRangeWorst = Math.max(outOfRangeWorst, offset);
+        }
+      }
+    }
+
+    if (opaqueWithFunction.count) {
+      this._addFolded("accel-opaque-with-function", "low", "high",
+        `${opaqueWithFunction.count} geometr${opaqueWithFunction.count === 1 ? "y is" : "ies are"} marked opaque `
+        + "and also name an intersection function table offset. A traversal never calls an intersection "
+        + "function for opaque geometry, so the offset has no effect — if the geometry needs its function, "
+        + "it must not be opaque.", opaqueWithFunction);
+    }
+    if (outOfRange.count && largestTable !== null) {
+      this._addFolded("accel-table-offset-range", "high", "high",
+        `${outOfRange.count} geometr${outOfRange.count === 1 ? "y names" : "ies name"} intersection function table `
+        + `offset ${outOfRangeWorst}, past the ${largestTable} `
+        + `entr${largestTable === 1 ? "y" : "ies"} of the largest table bound in this frame. A ray reaching `
+        + "those primitives calls no intersection function, and Metal does not report it.", outOfRange);
+    }
+    for (const [target, list] of builtTwice) {
+      if (list.length < 2) continue;
+      this._add("accel-rebuilt-twice", "medium", "high",
+        `${this._structureName(target)} was built ${list.length} times in this frame. Only the last build decides `
+        + "what the structure holds, so the earlier ones are scratch, bandwidth and GPU time spent on a result "
+        + "that is overwritten.", list[0], list.length);
+    }
+  }
+
+  private _structureName(id: number | null): string {
+    const o = id === null ? null : this._db.getObject(id);
+    return o ? o.name : "An acceleration structure";
   }
 
   private _add(rule: string, severity: Severity, confidence: Confidence, message: string, cmd: CaptureCommand | null, count = 1): FrameFinding {

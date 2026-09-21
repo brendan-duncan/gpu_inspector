@@ -869,8 +869,12 @@ formats in `PixelFormatDetails` are supported. Tessellation, object, mesh and ti
 debugged, and a function constant that selects whether an entry point's *argument* exists
 (`[[function_constant(isEnabled)]]` on a parameter) is not honoured — the argument is bound
 regardless, which reads a resource the specialized function does not have. What an argument buffer points at is resolved one level
-deep: the buffers it names are not themselves read back. Resource state and acceleration structure encoders are
-recorded as passes without their commands. `MTLIndirectCommandBuffer` contents are not read.
+deep: the buffers it names are not themselves read back. A resource state encoder is
+recorded as a pass without its commands. `MTLIndirectCommandBuffer` contents are not read.
+Curve geometry in an acceleration structure (`MTLAccelerationStructureCurveGeometryDescriptor`) is
+recorded but not drawn, and an indirect instance descriptor's `MTLResourceID` is shown rather than
+resolved to the structure it names — the driver hands out small ids that collide across objects, so
+a lookup would answer confidently and wrongly (`raytracing.h`).
 Intel and AMD class trees are unverified (only Apple Silicon is), and so is the encoder-boundary
 timing path those GPUs would take. Re-signing a hardened target is left to the user, on purpose.
 

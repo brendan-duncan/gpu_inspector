@@ -68,6 +68,16 @@ bool Recording();
 /** The frame of the capture being recorded, counting from 0: what a pass and its results are keyed by. */
 uint32_t CaptureFrameIndex();
 
+/**
+ * Which capture this is, counting from 1; 0 before the first.
+ *
+ * An acceleration structure's remembered build inputs know the capture they were recorded in, so
+ * that capture — which holds the build command itself — needs no second read-back of them
+ * (raytracing.h, ReadBackEarlierStructures). The Vulkan layer's CaptureManager::CaptureSerial is
+ * the same counter.
+ */
+uint64_t CaptureSerial();
+
 /** The index of the command this thread recorded last. */
 uint32_t LastRecordedCommand();
 
@@ -133,8 +143,13 @@ void RecordCommandWithTextures(const char *method, id object, const std::string 
  * buffer. `encoder` is the encoder the bind was made on, whose end is where those blits go.
  *
  * The same range bound twice in a capture — a uniform block bound at every draw — is read once.
+ *
+ * `whole`: not truncated to maxBufferSize. An acceleration structure's build inputs pass this
+ * (raytracing.h): a build's geometry is the one thing in a capture that is useless clipped, since a
+ * mesh cut at 64 KB draws as a corner of itself. The per-capture total (maxBufferTotal) still
+ * bounds it.
  */
-uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size);
+uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size, bool whole = false);
 
 /** Queues inline bytes (`setVertexBytes:` and friends) as a CaptureBuffers entry with no buffer. */
 uint64_t QueueBytesCapture(const void *bytes, uint64_t size);
@@ -191,11 +206,22 @@ struct PassTimingSlot {
 PassTimingSlot ReserveRenderPassTiming(id commandBuffer, MTLRenderPassDescriptor *descriptor);
 PassTimingSlot ReserveComputePassTiming(id commandBuffer, MTLComputePassDescriptor *descriptor);
 PassTimingSlot ReserveBlitPassTiming(id commandBuffer, MTLBlitPassDescriptor *descriptor);
+/**
+ * The same for an acceleration structure pass, which is how long the frame's builds took.
+ *
+ * `descriptor` is an MTLAccelerationStructurePassDescriptor, typed as `id` because the class
+ * arrived in macOS 11 and this header is included by sources that predate needing it. There is no
+ * acceleration-structure counter sampling point of Metal's own, so the encoder-boundary path is
+ * gated on MTLCounterSamplingPointAtBlitBoundary — the same capability a blit pass uses, and the
+ * one that means "an encoder that is neither render nor compute can sample".
+ */
+PassTimingSlot ReserveAccelerationStructurePassTiming(id commandBuffer, id descriptor);
 
 /**
  * Registers a pass beginning, and returns the pass index the UI will give it: its ordinal among
- * the passes of its command buffer, render, compute and blit alike, because the UI's PASS_BEGIN
- * set holds all three and it numbers them in one sequence per command buffer.
+ * the passes of its command buffer, render, compute, blit and acceleration structure alike,
+ * because the UI's PASS_BEGIN set holds all of them and it numbers them in one sequence per
+ * command buffer.
  */
 uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTimingSlot &timing);
 

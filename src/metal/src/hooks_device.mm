@@ -8,6 +8,7 @@
 #include "hooks_common.h"
 #include "hud.h"
 #include "overdraw.h"
+#include "raytracing.h"
 
 #import <QuartzCore/CAMetalLayer.h>
 
@@ -23,6 +24,11 @@ uint64_t Track(id object, const char *type, const char *cmd, id parent, const st
     if (cls != nil && [object respondsToSelector:@selector(setLabel:)]) {
         Hook(cls, @selector(setLabel:), (IMP)Replaced_setLabel);
     }
+    // A pipeline state is the only thing that hands out an intersection or visible function table,
+    // and the application may ask for one at any time after creating it — so the class is hooked
+    // here, where every pipeline of both kinds passes, rather than at each of the fourteen creation
+    // hooks that make one.
+    HookPipelineStateClass(object, type);
     return id;
 }
 
@@ -301,6 +307,184 @@ id D_newHeapWithDescriptor(id self, SEL _cmd, MTLHeapDescriptor *descriptor) {
     }
     HookHeapClass(heap);
     return heap;
+}
+
+// --------------------------------------------------------------------------------------------
+// Acceleration structures
+//
+// An MTLAccelerationStructure is an ordinary Metal object, which is why the Metal library needs no
+// registry of them where the D3D12 one has to mint an object per destination address
+// (src/d3d12/src/raytracing.h). Two forms: from a descriptor, which is the rarer one and the only
+// one that says what the structure holds before any build, and from a size, which is what an
+// application that asked `accelerationStructureSizesWithDescriptor:` first uses.
+
+id D_newAccelerationStructureWithSize(id self, SEL _cmd, NSUInteger size) {
+    Reentry reentry(self, _cmd);
+    id structure = ORIG(id (*)(id, SEL, NSUInteger))(self, _cmd, size);
+    if (reentry.outermost()) {
+        NoteAccelerationStructure(structure, self, "newAccelerationStructureWithSize:", nil);
+    }
+    return structure;
+}
+
+id D_newAccelerationStructureWithDescriptor(id self, SEL _cmd, id descriptor) {
+    Reentry reentry(self, _cmd);
+    id structure = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
+    if (reentry.outermost()) {
+        NoteAccelerationStructure(structure, self, "newAccelerationStructureWithDescriptor:",
+                                  (MTLAccelerationStructureDescriptor *)descriptor);
+    }
+    return structure;
+}
+
+// From a heap: the heap is the parent, the way a heap's buffers and textures have it, and where in
+// it the structure sits comes off the resource itself (NoteAccelerationStructure).
+
+id H_newAccelerationStructureWithSize(id self, SEL _cmd, NSUInteger size) {
+    Reentry reentry(self, _cmd);
+    id structure = ORIG(id (*)(id, SEL, NSUInteger))(self, _cmd, size);
+    if (reentry.outermost()) {
+        NoteAccelerationStructure(structure, self, "heap newAccelerationStructureWithSize:", nil);
+        UpdateObject(self, "usage", HeapUsageArgs(self));
+    }
+    return structure;
+}
+
+id H_newAccelerationStructureWithSizeOffset(id self, SEL _cmd, NSUInteger size, NSUInteger offset) {
+    Reentry reentry(self, _cmd);
+    id structure = ORIG(id (*)(id, SEL, NSUInteger, NSUInteger))(self, _cmd, size, offset);
+    if (reentry.outermost()) {
+        NoteAccelerationStructure(structure, self, "heap newAccelerationStructureWithSize:offset:", nil);
+        UpdateObject(self, "usage", HeapUsageArgs(self));
+    }
+    return structure;
+}
+
+id H_newAccelerationStructureWithDescriptor(id self, SEL _cmd, id descriptor) {
+    Reentry reentry(self, _cmd);
+    id structure = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
+    if (reentry.outermost()) {
+        NoteAccelerationStructure(structure, self, "heap newAccelerationStructureWithDescriptor:",
+                                  (MTLAccelerationStructureDescriptor *)descriptor);
+        UpdateObject(self, "usage", HeapUsageArgs(self));
+    }
+    return structure;
+}
+
+id H_newAccelerationStructureWithDescriptorOffset(id self, SEL _cmd, id descriptor, NSUInteger offset) {
+    Reentry reentry(self, _cmd);
+    id structure = ORIG(id (*)(id, SEL, id, NSUInteger))(self, _cmd, descriptor, offset);
+    if (reentry.outermost()) {
+        NoteAccelerationStructure(structure, self, "heap newAccelerationStructureWithDescriptor:offset:",
+                                  (MTLAccelerationStructureDescriptor *)descriptor);
+        UpdateObject(self, "usage", HeapUsageArgs(self));
+    }
+    return structure;
+}
+
+// --------------------------------------------------------------------------------------------
+// Function tables
+//
+// What a Metal traversal reaches its intersection functions through, and the nearest thing Metal
+// has to a shader binding table. A pipeline hands one out; the entries go in through the table's
+// own setters, which is why the capture knows them exactly (raytracing.h).
+
+id P_newIntersectionFunctionTable(id self, SEL _cmd, id descriptor) {
+    Reentry reentry(self, _cmd);
+    id table = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
+    if (reentry.outermost()) {
+        NoteFunctionTable(table, self, "MTLIntersectionFunctionTable",
+                          "newIntersectionFunctionTableWithDescriptor:",
+                          ((MTLIntersectionFunctionTableDescriptor *)descriptor).functionCount);
+    }
+    return table;
+}
+
+id P_newVisibleFunctionTable(id self, SEL _cmd, id descriptor) {
+    Reentry reentry(self, _cmd);
+    id table = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
+    if (reentry.outermost()) {
+        NoteFunctionTable(table, self, "MTLVisibleFunctionTable",
+                          "newVisibleFunctionTableWithDescriptor:",
+                          ((MTLVisibleFunctionTableDescriptor *)descriptor).functionCount);
+    }
+    return table;
+}
+
+void FT_setFunction(id self, SEL _cmd, id handle, NSUInteger index) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, handle, index);
+    if (reentry.outermost()) NoteTableFunction(self, index, handle);
+}
+
+void FT_setFunctions(id self, SEL _cmd, const id *handles, NSRange range) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, handles, range);
+    if (!reentry.outermost()) return;
+    for (NSUInteger i = 0; i < range.length; i++) {
+        NoteTableFunction(self, range.location + i, handles != nullptr ? handles[i] : nil);
+    }
+}
+
+void FT_setOpaqueTriangleFunction(id self, SEL _cmd, NSUInteger signature, NSUInteger index) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, NSUInteger, NSUInteger))(self, _cmd, signature, index);
+    if (reentry.outermost()) NoteTableOpaqueFunction(self, index, signature, "triangle");
+}
+
+void FT_setOpaqueTriangleFunctionRange(id self, SEL _cmd, NSUInteger signature, NSRange range) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, NSUInteger, NSRange))(self, _cmd, signature, range);
+    if (!reentry.outermost()) return;
+    for (NSUInteger i = 0; i < range.length; i++) {
+        NoteTableOpaqueFunction(self, range.location + i, signature, "triangle");
+    }
+}
+
+void FT_setOpaqueCurveFunction(id self, SEL _cmd, NSUInteger signature, NSUInteger index) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, NSUInteger, NSUInteger))(self, _cmd, signature, index);
+    if (reentry.outermost()) NoteTableOpaqueFunction(self, index, signature, "curve");
+}
+
+void FT_setOpaqueCurveFunctionRange(id self, SEL _cmd, NSUInteger signature, NSRange range) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, NSUInteger, NSRange))(self, _cmd, signature, range);
+    if (!reentry.outermost()) return;
+    for (NSUInteger i = 0; i < range.length; i++) {
+        NoteTableOpaqueFunction(self, range.location + i, signature, "curve");
+    }
+}
+
+void FT_setBuffer(id self, SEL _cmd, id buffer, NSUInteger offset, NSUInteger index) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, id, NSUInteger, NSUInteger))(self, _cmd, buffer, offset, index);
+    if (reentry.outermost()) NoteTableBuffer(self, index, buffer, offset);
+}
+
+void FT_setBuffers(id self, SEL _cmd, const id *buffers, const NSUInteger *offsets, NSRange range) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, const id *, const NSUInteger *, NSRange))(self, _cmd, buffers, offsets, range);
+    if (!reentry.outermost()) return;
+    for (NSUInteger i = 0; i < range.length; i++) {
+        NoteTableBuffer(self, range.location + i, buffers != nullptr ? buffers[i] : nil,
+                        offsets != nullptr ? offsets[i] : 0);
+    }
+}
+
+void FT_setVisibleFunctionTable(id self, SEL _cmd, id table, NSUInteger index) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, id, NSUInteger))(self, _cmd, table, index);
+    if (reentry.outermost()) NoteTableVisibleTable(self, index, table);
+}
+
+void FT_setVisibleFunctionTables(id self, SEL _cmd, const id *tables, NSRange range) {
+    Reentry reentry(self, _cmd);
+    ORIG(void (*)(id, SEL, const id *, NSRange))(self, _cmd, tables, range);
+    if (!reentry.outermost()) return;
+    for (NSUInteger i = 0; i < range.length; i++) {
+        NoteTableVisibleTable(self, range.location + i, tables != nullptr ? tables[i] : nil);
+    }
 }
 
 id D_newFence(id self, SEL _cmd) {
@@ -1134,6 +1318,11 @@ void HookDeviceClass(id device) {
          (IMP)D_newComputePipelineStateWithDescriptor);
     Hook(cls, @selector(newComputePipelineStateWithDescriptor:options:completionHandler:),
          (IMP)D_newComputePipelineStateWithDescriptorAsync);
+
+    Hook(cls, sel_registerName("newAccelerationStructureWithSize:"),
+         (IMP)D_newAccelerationStructureWithSize);
+    Hook(cls, sel_registerName("newAccelerationStructureWithDescriptor:"),
+         (IMP)D_newAccelerationStructureWithDescriptor);
 }
 
 void HookHeapClass(id heap) {
@@ -1145,7 +1334,53 @@ void HookHeapClass(id heap) {
     Hook(cls, @selector(newBufferWithLength:options:offset:), (IMP)H_newBufferWithLengthOffset);
     Hook(cls, @selector(newTextureWithDescriptor:), (IMP)H_newTextureWithDescriptor);
     Hook(cls, @selector(newTextureWithDescriptor:offset:), (IMP)H_newTextureWithDescriptorOffset);
+    Hook(cls, sel_registerName("newAccelerationStructureWithSize:"),
+         (IMP)H_newAccelerationStructureWithSize);
+    Hook(cls, sel_registerName("newAccelerationStructureWithSize:offset:"),
+         (IMP)H_newAccelerationStructureWithSizeOffset);
+    Hook(cls, sel_registerName("newAccelerationStructureWithDescriptor:"),
+         (IMP)H_newAccelerationStructureWithDescriptor);
+    Hook(cls, sel_registerName("newAccelerationStructureWithDescriptor:offset:"),
+         (IMP)H_newAccelerationStructureWithDescriptorOffset);
     Hook(cls, @selector(setPurgeableState:), (IMP)R_setPurgeableState);
+}
+
+void HookPipelineStateClass(id state, const char *type) {
+    if (state == nil) return;
+    // Only the two kinds that can hand out a function table; everything else Track sees would
+    // install nothing and only cost a FirstSighting lookup.
+    if (std::strcmp(type, "MTLComputePipelineState") != 0 &&
+        std::strcmp(type, "MTLRenderPipelineState") != 0) {
+        return;
+    }
+    Class cls = object_getClass(state);
+    if (!FirstSighting(cls)) return;
+    Log("hooking pipeline state class %s", class_getName(cls));
+    Hook(cls, sel_registerName("newIntersectionFunctionTableWithDescriptor:"),
+         (IMP)P_newIntersectionFunctionTable);
+    Hook(cls, sel_registerName("newVisibleFunctionTableWithDescriptor:"),
+         (IMP)P_newVisibleFunctionTable);
+}
+
+void HookFunctionTableClass(id table) {
+    if (table == nil) return;
+    Class cls = object_getClass(table);
+    if (!FirstSighting(cls)) return;
+    Log("hooking function table class %s", class_getName(cls));
+    Hook(cls, sel_registerName("setFunction:atIndex:"), (IMP)FT_setFunction);
+    Hook(cls, sel_registerName("setFunctions:withRange:"), (IMP)FT_setFunctions);
+    Hook(cls, sel_registerName("setOpaqueTriangleIntersectionFunctionWithSignature:atIndex:"),
+         (IMP)FT_setOpaqueTriangleFunction);
+    Hook(cls, sel_registerName("setOpaqueTriangleIntersectionFunctionWithSignature:withRange:"),
+         (IMP)FT_setOpaqueTriangleFunctionRange);
+    Hook(cls, sel_registerName("setOpaqueCurveIntersectionFunctionWithSignature:atIndex:"),
+         (IMP)FT_setOpaqueCurveFunction);
+    Hook(cls, sel_registerName("setOpaqueCurveIntersectionFunctionWithSignature:withRange:"),
+         (IMP)FT_setOpaqueCurveFunctionRange);
+    Hook(cls, sel_registerName("setBuffer:offset:atIndex:"), (IMP)FT_setBuffer);
+    Hook(cls, sel_registerName("setBuffers:offsets:withRange:"), (IMP)FT_setBuffers);
+    Hook(cls, sel_registerName("setVisibleFunctionTable:atBufferIndex:"), (IMP)FT_setVisibleFunctionTable);
+    Hook(cls, sel_registerName("setVisibleFunctionTables:withBufferRange:"), (IMP)FT_setVisibleFunctionTables);
 }
 
 void HookLibraryClass(id library) {

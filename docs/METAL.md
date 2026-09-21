@@ -68,6 +68,21 @@ two pieces that are missing are marked in `src/metal/src/transport.mm`.
   listed in the Inspect tab.
 - **Bottleneck counters** — Metal's counter sets measure overdraw, fragments per primitive and
   depth rejection per pass. See [Finding GPU bottlenecks](PROFILING.md).
+- **Ray tracing** — every `MTLAccelerationStructure` as an object, the builds, refits and copies an
+  acceleration structure encoder records, and what each build read: a geometry descriptor names its
+  buffers outright, so the vertices, indices, bounding boxes and instance descriptions a structure
+  was built from are read back and drawn. A top level opens in a tab of its own with its instances,
+  the tree of bottom levels and geometries under it, and where their boxes overlap
+  ([Reports](REPORTS.md)); a structure built before the capture is read back as the capture starts,
+  so a bottom level an engine built at load is still legible. An acceleration structure pass is
+  timed like any other, so the frame's build cost is in the pass list.
+
+  Metal has no shader binding table and no hit shaders — a kernel traverses the scene itself — so
+  in place of the other two backends' binding table view there is the **intersection function
+  table**: its entries by index with the function each one holds, the buffers it binds for them,
+  and the pipeline's linked functions. Because the entries are set through the API rather than
+  written into GPU memory, the capture knows them exactly, and a geometry naming an entry that is
+  not there is reported as a frame issue — something Metal itself does not check.
 - **Where the CPU went, and the Timeline** — the calls the capture library times, so a Metal frame
   can be called CPU- or GPU-bound and the threads and the passes can be drawn on one axis. Metal's
   categories are the shortest of the three backends: `commit` is the submit, `waitUntilCompleted`
@@ -108,6 +123,10 @@ following the pixel, so it needs the application to still be running.
   Vulkan and Direct3D 12 only so far. The library already times the same categories, so what is missing is the
   per-frame ring and the message that carries it.
 - Depth attachments and sampled images are not read back.
+- `mtlinsp_replay` does not replay acceleration structure builds or traces yet, so **Export to
+  C++** on a ray tracing frame leaves them out.
+- Ray queries are not in the shader debugger: a kernel that traverses a scene can be stepped, but
+  `intersector::intersect` is not followed into.
 - Only the pixel formats `src/metal/src/formats.h` maps are decoded — no ASTC, ETC or PVRTC.
 - No creation stack traces.
 - Shader editing does not apply: it is built around SPIR-V and its compilers, and Metal's shaders
