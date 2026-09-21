@@ -7,6 +7,26 @@ Linux and Android, Direct3D 12 on Windows, and Metal on macOS — and, on Window
 
 ![A captured frame: the command list on the left, and the state bound at the selected draw on the right](images/capture-draw.png)
 
+## Features
+
+Supports **Vulkan**, **Direct3D 12**, **Metal**, **Android** and **Quest**, on **Windows**, **macOS** and **Linux**.
+
+* **Object inspection**: every GPU object, with how it was created and what it uses.
+* **Frame capture**: a frame's commands, with each draw's state, buffers, textures and render targets.
+* **Saved captures**: reopen them later, anywhere, without the application.
+* **Export to C++**: a Vulkan, Direct3D 12 or Metal frame as a standalone project that runs it again, for driver bug reports.
+* **Validation**: validation layer errors, linked to the objects and commands they name.
+* **Shader editing**: change a shader and see the running application use it.
+* **Shader debugger**: step through a vertex, pixel or compute shader line by line.
+* **Profiling**: GPU time for each pass, and what bounds the frame.
+* **GPU bottlenecks**: overdraw, triangle size and wasted work, with likely causes.
+* **Pixel history**: every draw that touched a pixel, and what happened to it.
+* **Mesh view**: a draw's vertices before and after its vertex shader, in 3D and as a table.
+* **Acceleration structures**: a ray tracing scene in 3D, with its instances, their costs and where they overlap.
+* **Render graph**: the frame's passes and the resources between them.
+* **WebGPU pages**: debug the D3D12 backend of WebGPU running in Chrome, Edge, Brave or Firefox.
+* **Claude Code**: a plugin that lets Claude analyze captures and drive applications.
+
 ## Getting started
 
 | Page | What it covers |
