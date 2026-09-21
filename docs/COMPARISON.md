@@ -9,7 +9,7 @@ do, next to the three tools it is most often compared with.
 
 | Tool | Version this page describes | Who makes it | License |
 |---|---|---|---|
-| **GPU Inspector** | 0.20.0 | this project | MIT, free |
+| **GPU Inspector** | 0.21.0 | this project | MIT, free |
 | **RenderDoc** | 1.47 | Baldur Karlsson and contributors | MIT, free |
 | **PIX on Windows** | 2026 releases | Microsoft | proprietary, free |
 | **Nsight Graphics** | 2025.x / 2026.x | NVIDIA | proprietary, free |

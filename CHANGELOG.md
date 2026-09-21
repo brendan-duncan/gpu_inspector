@@ -1,4 +1,4 @@
-## Unreleased
+## v0.21.0
 
 ### Added
 - **Timing Capture** on Metal: every frame's wall time and category totals over minutes, which is how a hitch is told from a slow frame. The library already timed the same categories; what it lacked was the per-frame ring and the message.
