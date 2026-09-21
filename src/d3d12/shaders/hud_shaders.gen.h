@@ -6,7 +6,7 @@
 //     python tools/gen_hud_shaders.py
 // after editing the shader, and commit the result.
 //
-// sources sha256: 5f2c88913bc424c7276518437689f7a9e6dd845faae1ee033db5f5e22c0466d8
+// sources sha256: 4da8789ee24606c6a16150592bc47355c6f40f21d035ee46af9fb3fff03bc122
 #pragma once
 
 #include <cstdint>
