@@ -1,11 +1,6 @@
-## v0.19.0
+## v0.20.0
 
 ### Added
-- How-to guides in the documentation, starting with [inspecting Minecraft Bedrock](docs/HOWTO_MINECRAFT.md), which the inspector waits for rather than launches.
-- **Capture child processes** in the launch window puts the Direct3D 12 capture library into every process the target starts, for a game behind its own launcher (`--follow-children`).
-- Ray tracing on Direct3D 12: state objects with their exports and shader identifiers, acceleration structures with what each build read, and a trace's shader binding table resolved to the export every record runs.
-- DXR replays in `dxinsp_replay`: state objects are rebuilt, a build's addresses and its instances' bottom level references are remapped, and the binding table is rebuilt with this machine's shader identifiers.
-- `--ray-tracing` and `--rebuild-blas` in `test/d3d12_triangle`, the DXR counterpart of `test/triangle --ray-tracing`.
 - A frame rule for a shader binding table DXR will not accept: a table not on a 64-byte boundary, a stride not a multiple of 32, or a trace with no ray generation record.
 - A top level's scene draws a procedural bottom level with the bounding boxes it was built from, rather than a stand-in cube per instance.
 - The mesh view has RenderDoc's Arcball and Fly cameras, and Wireframe, Solid and Flat shading.
@@ -23,6 +18,24 @@
 - Clicking a primitive in the mesh preview selects it, and hovering names it.
 - **Zoom to Selected** and camera bookmarks (Ctrl+1-9 to keep, 1-9 to return) in the mesh and structure views.
 - `test/triangle --static-blas` builds the bottom level once, at start-up.
+
+### Fixed
+- Capturing an application that binds a ray tracing acceleration structure as a root SRV shut it down: the read-back needed a barrier on a resource that may never leave RAYTRACING_ACCELERATION_STRUCTURE, which closed its command list with E_INVALIDARG.
+- The D3D12 capture library asked a hit group for a shader stack size, which raised validation errors in the application's own log.
+- `test/path_tracer/d3d12` laid its shader tables out back to back at the record stride, so the miss and hit tables were not 64-byte aligned and the runtime dropped every trace.
+- A top level's scene draws the stand-in boxes of instances with no captured geometry beside the ones with triangles, instead of leaving them out.
+- A scene draws every geometry of a bottom level, not only its first.
+- Both replays upload a command group's buffer contents in one submission: a Quake II RTX frame's 238,000 took three minutes one at a time, which every View Mesh waited through, and now take two seconds.
+- A Vulkan build of several geometries keeps each one's primitive count: the layer recorded only the first, and the replay and the scene used it for all.
+
+## v0.19.0
+
+### Added
+- How-to guides in the documentation, starting with [inspecting Minecraft Bedrock](docs/HOWTO_MINECRAFT.md), which the inspector waits for rather than launches.
+- **Capture child processes** in the launch window puts the Direct3D 12 capture library into every process the target starts, for a game behind its own launcher (`--follow-children`).
+- Ray tracing on Direct3D 12: state objects with their exports and shader identifiers, acceleration structures with what each build read, and a trace's shader binding table resolved to the export every record runs.
+- DXR replays in `dxinsp_replay`: state objects are rebuilt, a build's addresses and its instances' bottom level references are remapped, and the binding table is rebuilt with this machine's shader identifiers.
+- `--ray-tracing` and `--rebuild-blas` in `test/d3d12_triangle`, the DXR counterpart of `test/triangle --ray-tracing`.
 - **Attach...** on the main bar lists the applications already running with a capture library in them -- name, API, process id, port -- and attaches to the one picked, in place of the bar's port box and **Connect**.
 - A capture library with no port set listens on the first free port of a small range, so several applications started by hand are all reachable at once.
 - `--list-targets` names every application a capture library is serving right now, for attaching to one without knowing its port.
@@ -48,9 +61,6 @@
 - `test/triangle --no-cull` keeps the cube's back faces, so one draw puts two fragments on a pixel.
 
 ### Fixed
-- Capturing an application that binds a ray tracing acceleration structure as a root SRV shut it down: the read-back needed a barrier on a resource that may never leave RAYTRACING_ACCELERATION_STRUCTURE, which closed its command list with E_INVALIDARG.
-- The D3D12 capture library asked a hit group for a shader stack size, which raised validation errors in the application's own log.
-- `test/path_tracer/d3d12` laid its shader tables out back to back at the record stride, so the miss and hit tables were not 64-byte aligned and the runtime dropped every trace.
 - An injection that worked is no longer reported as a library that would not load: the Direct3D 12 launcher loads the library and runs its initializer with one stub in the target, instead of reading a module list that a process held at start-up will not give up.
 - Cancel sits at the right of every dialog's buttons; the launch and attach windows had it at the left.
 - A Direct3D 12 command list that draws with the pipeline state its `Reset` named had no shaders in the Shader Flame Graph or Analyze Shaders.
@@ -59,10 +69,6 @@
 - The primitive a draw's pixel history reports is the one that won the pixel: the primitive-id pass tested against the depth the draw started from, so a draw whose own fragments hid one another named the wrong one.
 - A Direct3D 12 draw overlay opens on the draw's own render target, not on whichever image of the capture came first, which could be one the frame only sampled.
 - A Direct3D 12 mesh view draws its vertices: the records arrive after the layout they belong to, and the view only drew on the first of the two.
-- A top level's scene draws the stand-in boxes of instances with no captured geometry beside the ones with triangles, instead of leaving them out.
-- A scene draws every geometry of a bottom level, not only its first.
-- Both replays upload a command group's buffer contents in one submission: a Quake II RTX frame's 238,000 took three minutes one at a time, which every View Mesh waited through, and now take two seconds.
-- A Vulkan build of several geometries keeps each one's primitive count: the layer recorded only the first, and the replay and the scene used it for all.
 
 ## v0.18.0
 
