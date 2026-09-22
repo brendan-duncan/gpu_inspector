@@ -44,11 +44,9 @@ function flattenSecondaries(commands: CaptureCommand[]): CaptureCommand[] {
     out.push(c);
     for (const child of c.children ?? []) {
       for (const cc of child.commands) {
-        out.push({
-          index: 0, frame: c.frame, method: cc.method, object: c.object, args: cc.args, secondary: child.commandBuffer,
-          children: cc.children, descriptors: cc.descriptors, bufferData: cc.bufferData, textureData: cc.textureData,
-          imageData: cc.imageData, slot: cc.slot, stack: cc.stack,
-        });
+        // The child's own fields come along (a plugin's library may attach its own, such as a
+        // draw's state snapshot); the stream fields are the primary's.
+        out.push({ ...cc, index: 0, frame: c.frame, object: c.object, secondary: child.commandBuffer });
       }
     }
   }

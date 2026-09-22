@@ -15,7 +15,10 @@ the image viewer, buffer views, the mesh view, the render graph, frame issues, c
 the Claude Code tools all work on a plugin's captures unchanged.
 
 The OpenGL ES plugin in `src/plugins/gles` is the worked example. Everything below says how it does
-what it does, and [its README](../src/plugins/gles/README.md) covers the rest.
+what it does, and [its README](../src/plugins/gles/README.md) covers the rest. The Direct3D 11
+plugin in `src/plugins/d3d11` is the second, for an API with COM objects and a swap chain rather
+than a GL-style state machine; [its README](../src/plugins/d3d11/README.md) says where the two
+differ, and why it hands the application a proxy for the device context.
 
 ## What a plugin is
 
@@ -194,7 +197,12 @@ field of an object's description), `ObjectSetLabel`, and `FrameStats` every 100 
 
 It must answer `Ping` with `Pong`, `RequestSnapshot` with the snapshot again, and `Capture` with a
 capture. A request it does not handle can be ignored. `RequestStacktraces` is best answered with
-`Stacktraces` saying `available: false`, since a capture being saved waits for it.
+`Stacktraces` saying `available: false`, since a capture being saved waits for it. An object's
+`AddObject` may name `blobs` (shader bytecode, as `<stage>:<entry>`), which `RequestBlob` asks for
+by index and `ObjectBlob` answers; SPIR-V is reflected by the inspector, and DXBC/DXIL is read from
+a `reflection` field of the object's description, keyed by stage, in the shape the Direct3D 12
+library writes (`src/d3d12/src/shader_reflect.h`), which the Direct3D 11 plugin attaches to each
+shader object.
 
 A capture is, in order:
 

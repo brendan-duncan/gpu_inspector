@@ -3235,21 +3235,7 @@ function flattenSecondaries(commands) {
     out.push(c2);
     for (const child of c2.children ?? []) {
       for (const cc of child.commands) {
-        out.push({
-          index: 0,
-          frame: c2.frame,
-          method: cc.method,
-          object: c2.object,
-          args: cc.args,
-          secondary: child.commandBuffer,
-          children: cc.children,
-          descriptors: cc.descriptors,
-          bufferData: cc.bufferData,
-          textureData: cc.textureData,
-          imageData: cc.imageData,
-          slot: cc.slot,
-          stack: cc.stack
-        });
+        out.push({ ...cc, index: 0, frame: c2.frame, object: c2.object, secondary: child.commandBuffer });
       }
     }
   }

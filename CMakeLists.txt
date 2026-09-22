@@ -44,10 +44,13 @@ else()
         endif()
         # Plugins: APIs the app loads at run time rather than builds in (docs/PLUGINS.md). The OpenGL ES
         # one is the example the plugin SDK (src/sdk) was written against; on Windows it captures ANGLE.
+        # The Direct3D 11 one is Windows only.
         if(VKINSP_BUILD_PLUGINS)
             add_subdirectory(src/plugins/gles)
+            add_subdirectory(src/plugins/d3d11)
             if(VKINSP_BUILD_TESTS)
                 add_subdirectory(test/gles_triangle)
+                add_subdirectory(test/d3d11_triangle)
             endif()
         endif()
     endif()

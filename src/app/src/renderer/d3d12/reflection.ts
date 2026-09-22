@@ -22,9 +22,13 @@ import type { VulkanObject } from "../vulkan/vulkan_object.js";
 
 const STAGES: ShaderStage[] = ["vertex", "tess_control", "tess_eval", "geometry", "fragment", "compute", "task", "mesh"];
 
-/** Whether the object is a pipeline state the D3D12 library described, with reflection attached. */
+/**
+ * Whether the object carries reflection in this shape: a pipeline state the D3D12 library
+ * described, or a plugin's shader object (the Direct3D 11 plugin attaches the same JSON to each
+ * ID3D11*Shader, keyed by its stage).
+ */
 export function hasD3D12Reflection(pipeline: VulkanObject | null | undefined): boolean {
-  return !!pipeline && pipeline.type === "ID3D12PipelineState" && isObject(pipeline.descriptor?.reflection);
+  return !!pipeline && (pipeline.type === "ID3D12PipelineState" || pipeline.type.startsWith("ID3D11")) && isObject(pipeline.descriptor?.reflection);
 }
 
 function asType(v: ArgValue | undefined): ReflType | null {

@@ -261,6 +261,11 @@ const BUFFER_USAGES: [string, string][] = [
 ];
 const SHADER_STAGES: [string, string][] = [["Vertex", "VERTEX"], ["Fragment", "FRAGMENT"], ["Compute", "COMPUTE"]];
 
+/** A Direct3D 11 plugin shader object (ID3D11VertexShader and the rest), whose blob and reflection read as a D3D12 stage's. */
+function isD3D11Shader(object: VulkanObject | null | undefined): boolean {
+  return !!object && /^ID3D11\w+Shader$/.test(object.type);
+}
+
 export class InspectPanel {
   readonly window: SessionContext;
   readonly database: ObjectDatabase;
@@ -1180,8 +1185,9 @@ export class InspectPanel {
     }
     if (object.type === "VkShaderModule" || object.type === "VkPipeline" || object.type === "VkShaderEXT") this._buildShaderSection(object);
     // A state object's code is its DXIL libraries, which the capture library keeps as blobs on it
-    // the way a pipeline state's stages are kept on that (src/d3d12/src/raytracing.cpp).
-    if (object.type === "ID3D12PipelineState" || object.type === "ID3D12StateObject") this._buildD3D12ShaderSection(object);
+    // the way a pipeline state's stages are kept on that (src/d3d12/src/raytracing.cpp). The
+    // Direct3D 11 plugin's shader objects carry their DXBC and reflection the same way.
+    if (object.type === "ID3D12PipelineState" || object.type === "ID3D12StateObject" || isD3D11Shader(object)) this._buildD3D12ShaderSection(object);
     if (object.type === "MTLLibrary") this._buildLibrarySection(object);
     if (object.type === "MTLFunction") this._buildFunctionSection(object);
     if (object.type === "MTLRenderPipelineState" || object.type === "MTLComputePipelineState") {
@@ -1839,6 +1845,8 @@ export class InspectPanel {
    * has only the second, and that is the case the second exists for.
    */
   private _canEdit(): boolean {
+    // Editing a shader is the built-in libraries' replay feature: a plugin's shader object has no one to rebuild it.
+    if (isD3D11Shader(this._selectedObject)) return false;
     return this.window.connected || this.window.canReplayCapture;
   }
 

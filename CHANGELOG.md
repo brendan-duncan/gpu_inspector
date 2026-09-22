@@ -10,6 +10,10 @@
 - OpenGL ES on Linux through EGL or GLX, preloaded into launched applications (not yet run on Linux).
 - `test/gles_linux`, an OpenGL ES 3.2 test application for Linux that draws into a pbuffer.
 - `dxinsp_launch.exe` takes `--dll` more than once, and calls a library's `GpuInspectorInitialize` export.
+- **Direct3D 11** on Windows as a plugin (`src/plugins/d3d11`, docs/D3D11.md): the device context's calls, synthetic passes, every draw's state and read-backs, deferred contexts inlined, and pass timings.
+- `test/d3d11_triangle`, a Direct3D 11 test application with deferred, compute, MSAA and discard options.
+- `tools/gen_d3d11.py` generates the plugin's enum tables and vtable slots from the Windows SDK, as `gen_d3d12.py` does.
+- Shader reflection attached to a plugin's shader objects is read like a Direct3D 12 pipeline's, and inlined child commands keep a plugin's own fields.
 
 ### Changed
 - How an API's commands and objects read and what it can measure now come from one backend object per API (`renderer/backend.ts`).

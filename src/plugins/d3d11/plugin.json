@@ -1,0 +1,18 @@
+{
+  "id": "d3d11",
+  "name": "Direct3D 11",
+  "version": "0.1.0",
+  "sdk": 1,
+  "api": "d3d11",
+  "description": "Captures Direct3D 11 applications on Windows: the device context's calls, the passes they draw, and what each draw was given.",
+  "backend": "ui/backend.js",
+  "capture": {
+    "win32": {
+      "inject": ["bin/d3d11insp_capture.dll"],
+      "env": {
+        "D3D11INSP_PORT": "${port}",
+        "D3D11INSP_LOG": "${log}"
+      }
+    }
+  }
+}

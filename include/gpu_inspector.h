@@ -2,7 +2,7 @@
  * GPU Inspector: asking for a capture from inside the application.
  *
  * One header, no library to link. The capture library is already in the process when the
- * application was started from GPU Inspector (the Vulkan layer, or the injected Direct3D 12
+ * application was started from GPU Inspector (the Vulkan layer, or the injected Direct3D 12 or 11
  * library), and these functions find it there. When it is not — the application was started some
  * other way, or this is a build nobody is inspecting — they return 0 and do nothing, so the calls
  * can stay in the code.
@@ -42,12 +42,12 @@ typedef int (*gpu_inspector_pfn_connected)(void);
 /* An entry point of whichever capture library is in this process, or null. */
 static inline void* gpu_inspector_symbol(const char* name) {
 #if defined(_WIN32)
-    static const char* const modules[] = { "dxinsp_capture.dll", "VkLayer_inspector_capture.dll" };
-    for (int i = 0; i < 2; ++i) {
+    static const char* const modules[] = { "dxinsp_capture.dll", "VkLayer_inspector_capture.dll", "d3d11insp_capture.dll" };
+    for (int i = 0; i < 3; ++i) {
         HMODULE module = GetModuleHandleA(modules[i]);
         if (!module) continue;
-        /* Both can be loaded at once (GPU Inspector starts a Windows application with both, since
-         * it cannot know the API in advance); the one that is not in use answers "not connected". */
+        /* Several can be loaded at once (GPU Inspector starts a Windows application with all of
+         * them, since it cannot know the API in advance); the ones not in use answer "not connected". */
         gpu_inspector_pfn_connected connected = (gpu_inspector_pfn_connected)(void*)GetProcAddress(module, "GpuInspectorConnected");
         if (!connected || !connected()) continue;
         return (void*)GetProcAddress(module, name);
