@@ -86,6 +86,11 @@ package_for() {
         pacman:wayland-dev) echo wayland ;;
         zypper:wayland-dev) echo wayland-devel ;;
 
+        apt-get:gles-dev) echo "libegl-dev libgles-dev" ;;
+        dnf:gles-dev) echo "mesa-libEGL-devel mesa-libGLES-devel" ;;
+        pacman:gles-dev) echo mesa ;;
+        zypper:gles-dev) echo "Mesa-libEGL-devel Mesa-libGLESv2-devel" ;;
+
         apt-get:glslc) echo glslc ;;
         dnf:glslc) echo glslc ;;
         pacman:glslc) echo shaderc ;;
@@ -118,12 +123,13 @@ need() {
         return 0
     fi
     local pkg; pkg="$(package_for "$name")"
+    local pkgs=(); read -ra pkgs <<< "$pkg"
     if [[ "$kind" == required ]]; then
         red "  MISSING  $name — $purpose"
-        if [[ -n "$pkg" ]]; then MISSING_REQUIRED+=("$pkg"); fi
+        if [[ ${#pkgs[@]} -gt 0 ]]; then MISSING_REQUIRED+=("${pkgs[@]}"); fi
     else
         yellow "  optional $name — $purpose"
-        if [[ -n "$pkg" ]]; then MISSING_OPTIONAL+=("$pkg"); fi
+        if [[ ${#pkgs[@]} -gt 0 ]]; then MISSING_OPTIONAL+=("${pkgs[@]}"); fi
     fi
     return 0
 }
@@ -140,6 +146,7 @@ need vulkan-dev required "Vulkan loader, and headers for the test app" -- pkg-co
 need xcb-dev required "XCB surfaces, and window creation in the test app" -- pkg-config --exists xcb
 need x11-dev optional "Xlib surface arguments in captures" -- pkg-config --exists x11
 need wayland-dev optional "Wayland surface arguments in captures" -- pkg-config --exists wayland-client
+need gles-dev optional "the OpenGL ES test application (test/gles_linux)" -- pkg-config --exists egl glesv2
 need glslc required "compiles the test app's shaders" -- command -v glslc
 need vulkan-tools optional "vulkaninfo, to check the driver is working" -- command -v vulkaninfo
 need spirv-tools optional "SPIR-V disassembly in the Inspect panel" -- command -v spirv-dis

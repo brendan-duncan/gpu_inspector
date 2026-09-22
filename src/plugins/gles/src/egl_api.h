@@ -3,6 +3,7 @@
 // so the library builds with no EGL SDK around.
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 
 #if defined(_WIN32)

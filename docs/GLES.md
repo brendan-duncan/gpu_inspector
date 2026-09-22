@@ -39,7 +39,12 @@ and `test/gles_linux` (which also needs `libegl-dev` and `libgles-dev`) draws th
 pbuffer, with no window; `gles_linux --dlopen` loads EGL the way SDL does. An EGL an application
 ships in its own directory, such as Electron's ANGLE, is not the system's and is not captured.
 
-Linux support is new and has not yet been run on a Linux machine.
+Because the test application renders into a pbuffer there is nothing on screen while it runs —
+expected, not a failed launch. Its frames still end at `eglSwapBuffers`, so they are captured as
+any other application's are, and the images are in the Inspect panel.
+
+Linux support is new. `test/gles_linux` linked against EGL has been inspected and captured on an
+NVIDIA driver; the `--dlopen` and GLX paths, and other drivers, have not been run yet.
 
 ## Android
 

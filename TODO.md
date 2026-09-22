@@ -160,14 +160,15 @@ interpreter and re-created pipelines.
       `wl_output`'s mode event dispatched on a queue of our own rather than on the application's.
 - [ ] OpenGL ES plugin on Linux (`src/plugins/gles/src/platform_linux.cpp`, `hooks_glx.cpp`): written
       on the Windows machine and only syntax-checked there (the NDK's clang with glibc's dlfcn extras
-      shimmed in), never built or run. To check on a Linux machine: the plugin and `test/gles_linux`
-      build (they need `libegl1`/`libgles2`, and `libegl-dev`/`libgles-dev` for the test); launching
-      `build/bin/gles_linux` from the app captures the scene (two passes, the ETC2 texture, four
-      buffers); `gles_linux --dlopen` does too, which is the dlopen redirect working; a Vulkan
+      shimmed in). Now built and partly run on Linux: the plugin and `test/gles_linux` build (they
+      need `libegl1`/`libgles2`, and `libegl-dev`/`libgles-dev` for the test, which `tools/setup.sh`
+      checks for), and launching `build/bin/gles_linux` from the app inspects it and captures frames
+      on an NVIDIA driver. Still to check: that a capture holds the whole scene (two passes, the ETC2
+      texture, four buffers); `gles_linux --dlopen`, which is the dlopen redirect working; a Vulkan
       application and a desktop OpenGL one launched the same way are unaffected; an SDL application
-      on OpenGL ES (SDL_HINT_OPENGL_ES_DRIVER, or a Wayland session) connects. Unknown until then:
-      whether the forwarded dlopen keeps every caller's library search working (OpenAsCaller), and
-      GLX's OpenGL ES profile contexts, which nothing here makes.
+      on OpenGL ES (SDL_HINT_OPENGL_ES_DRIVER, or a Wayland session) connects; drivers other than
+      NVIDIA's. Unknown until then: whether the forwarded dlopen keeps every caller's library search
+      working (OpenAsCaller), and GLX's OpenGL ES profile contexts, which nothing here makes.
 
 ### Shaders
 - [x] Shader flame graph: fragment stages are weighted by the fragment invocations a pass's GPU
