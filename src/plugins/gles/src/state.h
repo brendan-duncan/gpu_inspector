@@ -134,6 +134,8 @@ struct Context {
     uint32_t passIndex = 0;
     /** The pass's attachments were read back already (before an invalidate threw them away). */
     bool passReadBack = false;
+    /** A pass on the surface ended since the last swap, and read it: no pass on it has begun since. */
+    bool surfacePassEnded = false;
     /** How many passes this context began since its last swap: the next pass's index. */
     uint32_t nextPassIndex = 0;
     /** Debug groups open (glPushDebugGroup), and how many were open when the pass began. */
@@ -161,6 +163,8 @@ struct Context {
     int timestamps = -1;
     /** The timestamp query written where the open pass began. */
     GLuint passBeginQuery = 0;
+    /** Whether the context has glCopyImageSubData: -1 not asked yet. */
+    int copyImage = -1;
 
     bool es3() const { return major >= 3; }
 };

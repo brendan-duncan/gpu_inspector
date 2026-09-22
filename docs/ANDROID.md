@@ -3,7 +3,7 @@
 [Docs index](README.md) › Android and Quest
 
 Vulkan applications on Android devices — phones, tablets and headsets such as the Quest — are
-inspected over adb. The same Vulkan layer runs on the device: the inspector installs it, starts
+inspected over adb, and so are OpenGL ES applications, through the [OpenGL ES plugin](GLES.md#android). The same Vulkan layer runs on the device: the inspector installs it, starts
 the application with it enabled, and talks to it through an `adb forward` port. Everything else
 works as it does on the desktop.
 
@@ -45,9 +45,11 @@ holding `lib/<abi>/` and the APK.
 1. Connect the device and accept the USB debugging prompt on it.
 2. Press **Launch...**, choose **Android device (adb)** under *Run On*.
 3. Pick the device and the package. **Refresh** looks again (`adb devices`).
-4. Leave *Activity* empty for the launcher activity, or give one as `com.example.Activity` or
+4. Set *Graphics API* to what the application draws with: **Vulkan**, or **OpenGL ES** (Android
+   10 and newer).
+5. Leave *Activity* empty for the launcher activity, or give one as `com.example.Activity` or
    `.Activity`.
-5. Press **Launch**.
+6. Press **Launch**.
 
 ![The launch dialog set to an Android device, with the device, package, activity and symbol directory fields](images/launch-android.png)
 
@@ -57,7 +59,8 @@ instead), turns on Android's GPU debug layer settings for that package, starts i
 The **Log** tab shows the layer's logcat output. Closing the session turns the debug layer
 settings off again.
 
-From the command line: `npm start -- --launch-android=<package> --device=<serial>`.
+From the command line: `npm start -- --launch-android=<package> --device=<serial>`, with
+`--api=gles` for an OpenGL ES application.
 
 ### Symbol directories
 
@@ -98,12 +101,13 @@ read back at the end of its pass. This affects the frame being captured, not the
 
 ## Test applications
 
-Two debuggable test applications can be built and launched the same way, to check the setup or to
+Debuggable test applications can be built and launched the same way, to check the setup or to
 see what the reports look like:
 
 ```
-python tools/build_android_triangle.py   # build/android/android_triangle.apk, for phones
-python tools/build_xr_triangle.py        # build/android/xr_triangle.apk + xr_triangle_slow.apk
+python tools/build_android_triangle.py        # build/android/android_triangle.apk, for phones
+python tools/build_android_gles_triangle.py   # build/android/android_gles_triangle.apk, OpenGL ES 3.2
+python tools/build_xr_triangle.py             # build/android/xr_triangle.apk + xr_triangle_slow.apk
 ```
 
 `xr_triangle.apk` renders a ring of triangles in one multiview pass. `xr_triangle_slow.apk`

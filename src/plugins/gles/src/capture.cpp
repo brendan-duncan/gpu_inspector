@@ -92,6 +92,27 @@ std::vector<PassQueries> g_passQueries;
 
 thread_local std::string t_pendingState;
 
+/**
+ * Read-backs copied on the GPU during the frame and read once it is over (ResolveCopies): reading
+ * them where they are met would make the CPU wait for the GPU in the middle of a pass, which is both
+ * slow and, with pass timings on, measured as part of the pass.
+ */
+struct PendingBuffer {
+    uint32_t id = 0;              // the BufferCapture it fills
+    std::shared_ptr<ShareGroup> share;
+    GLuint copy = 0;
+    size_t size = 0;
+};
+struct PendingTexture {
+    size_t index = 0;             // into g_textures
+    std::shared_ptr<ShareGroup> share;
+    GLuint copy = 0;
+    GLenum internalFormat = 0;
+    int width = 0, height = 0, layers = 1;
+};
+std::vector<PendingBuffer> g_pendingBuffers;
+std::vector<PendingTexture> g_pendingTextures;
+
 // Frame statistics: the swap intervals since the last report.
 std::chrono::steady_clock::time_point g_lastSwap;
 std::chrono::steady_clock::time_point g_lastReport;
@@ -134,7 +155,7 @@ bool IsOn(GLenum cap) {
 struct Bindings {
     GLint drawFb = 0, readFb = 0, readBuffer = GL_BACK;
     GLint packBuffer = 0, packAlign = 4, rowLength = 0, skipRows = 0, skipPixels = 0;
-    GLint renderbuffer = 0, copyRead = 0;
+    GLint renderbuffer = 0, copyRead = 0, copyWrite = 0;
     bool scissor = false;
     bool es3 = false;
 
@@ -147,6 +168,7 @@ struct Bindings {
             skipRows = GetInt(GL_PACK_SKIP_ROWS);
             skipPixels = GetInt(GL_PACK_SKIP_PIXELS);
             copyRead = GetInt(GL_COPY_READ_BUFFER_BINDING);
+            copyWrite = GetInt(GL_COPY_WRITE_BUFFER_BINDING);
         } else {
             drawFb = readFb = GetInt(GL_FRAMEBUFFER_BINDING);
         }
@@ -170,7 +192,10 @@ struct Bindings {
             if (rowLength) g_gl.glPixelStorei(GL_PACK_ROW_LENGTH, rowLength);
             if (skipRows) g_gl.glPixelStorei(GL_PACK_SKIP_ROWS, skipRows);
             if (skipPixels) g_gl.glPixelStorei(GL_PACK_SKIP_PIXELS, skipPixels);
-            if (g_gl.glBindBuffer) g_gl.glBindBuffer(GL_COPY_READ_BUFFER, (GLuint)copyRead);
+            if (g_gl.glBindBuffer) {
+                g_gl.glBindBuffer(GL_COPY_READ_BUFFER, (GLuint)copyRead);
+                g_gl.glBindBuffer(GL_COPY_WRITE_BUFFER, (GLuint)copyWrite);
+            }
         } else {
             g_gl.glBindFramebuffer(GL_FRAMEBUFFER, (GLuint)drawFb);
         }
@@ -281,6 +306,8 @@ bool ReadAttachment(Context* c, const Bindings& b, const Object& o, ObjType kind
 // ------------------------------------------------------------------------------------------------
 // Buffers
 
+bool HasExtension(const char* name);
+
 size_t IndexBytes(GLenum type) {
     return type == GL_UNSIGNED_INT ? 4 : type == GL_UNSIGNED_SHORT ? 2 : 1;
 }
@@ -303,6 +330,32 @@ bool ReadBufferRange(Context* c, const Object& o, int64_t offset, size_t size, s
     if (!p) { error = "the buffer could not be mapped for reading"; return false; }
     out.assign((const uint8_t*)p, (const uint8_t*)p + size);
     g_gl.glUnmapBuffer(GL_COPY_READ_BUFFER);
+    return true;
+}
+
+/**
+ * A range of a buffer object copied into a buffer of the library's own, to be read once the frame is
+ * over. False when the context cannot copy one (ES 2), and the range is read at once instead.
+ */
+bool CopyBufferRange(Context* c, const Object& o, int64_t offset, size_t& size, BufferCapture& b) {
+    if (!c->es3() || !g_gl.glCopyBufferSubData || !g_gl.glMapBufferRange) return false;
+    g_gl.glBindBuffer(GL_COPY_READ_BUFFER, o.name);
+    GLint real = 0, mapped = 0;
+    g_gl.glGetBufferParameteriv(GL_COPY_READ_BUFFER, GL_BUFFER_SIZE, &real);
+    g_gl.glGetBufferParameteriv(GL_COPY_READ_BUFFER, GL_BUFFER_MAPPED, &mapped);
+    if (mapped) { b.error = "the application has the buffer mapped"; return true; }
+    if (offset < 0 || offset >= real) { b.error = "the range is outside the buffer"; return true; }
+    size = std::min(size, (size_t)(real - offset));
+    if (!size) { b.error = "the range is empty"; return true; }
+    PendingBuffer pending;
+    pending.id = b.id;
+    pending.share = c->share;
+    pending.size = size;
+    g_gl.glGenBuffers(1, &pending.copy);
+    g_gl.glBindBuffer(GL_COPY_WRITE_BUFFER, pending.copy);
+    g_gl.glBufferData(GL_COPY_WRITE_BUFFER, (GLsizeiptr)size, nullptr, GL_STREAM_READ);
+    g_gl.glCopyBufferSubData(GL_COPY_READ_BUFFER, GL_COPY_WRITE_BUFFER, (GLintptr)offset, 0, (GLsizeiptr)size);
+    g_pendingBuffers.push_back(std::move(pending));
     return true;
 }
 
@@ -335,10 +388,10 @@ uint32_t CaptureBuffer(Context* c, GLuint name, int64_t offset, size_t size, con
     } else if (!name) {
         if (!client) b.error = "no buffer bound and no client pointer";
         else b.data.assign((const uint8_t*)client, (const uint8_t*)client + size);
-    } else {
+    } else if (!CopyBufferRange(c, *o, offset, size, b)) {
         ReadBufferRange(c, *o, offset, size, b.data, b.error);
     }
-    g_bufferBytes += b.data.size();
+    g_bufferBytes += b.error.empty() ? size : 0;
     g_buffers.push_back(std::move(b));
     if (name) g_bufferSeen[key] = g_buffers.back().id;
     return g_buffers.back().id;
@@ -608,6 +661,7 @@ void EndPass(Context* c) {
     w.EndObject();
     Append(c, "EndRenderPass", w.str(), "", true);
     c->passOpen = false;
+    if (c->passFramebuffer == 0) c->surfacePassEnded = true;
 }
 
 void BeginPassIfNeeded(Context* c) {
@@ -622,6 +676,7 @@ void BeginPassIfNeeded(Context* c) {
     c->passCleared = 0;
     c->passInvalidated.clear();
     c->passBeginCommand = g_commands.size();
+    if (c->passFramebuffer == 0) c->surfacePassEnded = false;
     Append(c, "BeginRenderPass", PassArgs(c), "", true);
     c->passBeginQuery = BeginPassTiming(c);
 }
@@ -677,6 +732,52 @@ const UniformType* UniformTypeOf(GLenum type) {
 // ------------------------------------------------------------------------------------------------
 // Textures
 
+/**
+ * Whether the context copies between images (glCopyImageSubData: OpenGL ES 3.2, or EXT_copy_image or
+ * OES_copy_image), and the entry point it does it with.
+ */
+PFN_glCopyImageSubData CopyImageProc(Context* c) {
+    if (c->copyImage < 0) {
+        c->copyImage = 0;
+        if (c->es3() && ((c->major > 3 || c->minor >= 2) || HasExtension("GL_EXT_copy_image") || HasExtension("GL_OES_copy_image"))) {
+            c->copyImage = g_gl.glCopyImageSubData || g_gl.glCopyImageSubDataEXT || g_gl.glCopyImageSubDataOES ? 1 : 0;
+        }
+    }
+    if (!c->copyImage) return nullptr;
+    return g_gl.glCopyImageSubData ? g_gl.glCopyImageSubData : g_gl.glCopyImageSubDataEXT ? (PFN_glCopyImageSubData)g_gl.glCopyImageSubDataEXT
+         : (PFN_glCopyImageSubData)g_gl.glCopyImageSubDataOES;
+}
+
+/**
+ * A texture's level 0 copied into a 2D array texture of the library's own, a layer per layer or cube
+ * face, to be read once the frame is over. False when it cannot be (no copy-image, a format that
+ * could not be read back from the copy either), and the texture is read at once instead.
+ */
+bool CopyTextureLevel(Context* c, const Object& tex, int layers, size_t index) {
+    PFN_glCopyImageSubData copy = CopyImageProc(c);
+    if (!copy || !ReadFormatOf(FormatOf(tex.internalFormat)).format || !g_gl.glTexStorage3D) return false;
+    const GLint previous = GetInt(GL_TEXTURE_BINDING_2D_ARRAY);
+    PendingTexture pending;
+    pending.index = index;
+    pending.share = c->share;
+    pending.internalFormat = tex.internalFormat;
+    pending.width = tex.width;
+    pending.height = tex.height;
+    pending.layers = layers;
+    g_gl.glGenTextures(1, &pending.copy);
+    g_gl.glBindTexture(GL_TEXTURE_2D_ARRAY, pending.copy);
+    g_gl.glTexStorage3D(GL_TEXTURE_2D_ARRAY, 1, tex.internalFormat, tex.width, tex.height, layers);
+    g_gl.glBindTexture(GL_TEXTURE_2D_ARRAY, (GLuint)previous);
+    // A cube map's faces are its layers to glCopyImageSubData, as an array's are.
+    copy(tex.name, tex.target ? tex.target : GL_TEXTURE_2D, 0, 0, 0, 0, pending.copy, GL_TEXTURE_2D_ARRAY, 0, 0, 0, 0, tex.width, tex.height, layers);
+    if (g_gl.glGetError() != GL_NO_ERROR) {
+        g_gl.glDeleteTextures(1, &pending.copy);
+        return false;
+    }
+    g_pendingTextures.push_back(std::move(pending));
+    return true;
+}
+
 /** A texture a draw samples, read back once per capture: all its layers (or cube faces) at its base level. */
 uint32_t CaptureTexture(Context* c, const Bindings& b, Object& tex) {
     if (!g_options.captureImages) return 0;
@@ -710,6 +811,11 @@ uint32_t CaptureTexture(Context* c, const Bindings& b, Object& tex) {
         t.error = "an external texture (an EGLImage from a camera or video) cannot be attached to read it back";
     } else if (tex.width <= 0 || tex.height <= 0) {
         t.error = "the texture has no storage";
+    } else if (CopyTextureLevel(c, tex, layers, g_textures.size())) {
+        // Read once the frame is over; what it will take counts against the budget now.
+        const ReadFormat rf = ReadFormatOf(f);
+        t.format = rf.vk;
+        g_imageBytes += (size_t)tex.width * (size_t)tex.height * (size_t)layers * (size_t)rf.bytesPerTexel;
     } else {
         for (int layer = 0; layer < layers && t.error.empty(); ++layer) {
             TextureCapture part;
@@ -803,6 +909,8 @@ void WriteVertexInput(Context* c, Object* prog, const DrawParams& p, gpuinsp::sd
         w.Key("indexOffset"); w.Int(offset);
         const uint32_t id = CaptureBuffer(c, (GLuint)elementBuffer, offset, bytes, elementBuffer ? nullptr : p.indices);
         w.Key("indexData"); w.Uint(id);
+        // Indices in client memory are read here and now; a buffer's are copied and read after the frame,
+        // so each attribute's range then runs to its buffer's end (up to the capture's limit).
         uint32_t lo = 0, hi = 0;
         if (id && IndexRange(g_buffers[id - 1].data, p.indexType, (size_t)p.count, lo, hi)) {
             firstVertex = (int64_t)lo + p.baseVertex;
@@ -869,8 +977,10 @@ void WriteVertexInput(Context* c, Object* prog, const DrawParams& p, gpuinsp::sd
         }
     }
     w.EndArray();
-    w.Key("firstVertex"); w.Int(firstVertex);
-    w.Key("lastVertex"); w.Int(lastVertex);
+    if (lastVertex >= 0) {
+        w.Key("firstVertex"); w.Int(firstVertex);
+        w.Key("lastVertex"); w.Int(lastVertex);
+    }
 }
 
 void WriteProgramResources(Context* c, const Bindings& b, Object* prog, gpuinsp::sdk::JsonWriter& w) {
@@ -1082,6 +1192,69 @@ std::string Snapshot(Context* c, const DrawParams* draw) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Reading the copies
+
+/**
+ * The read-backs copied during the frame, read now that it is over (the GPU has long finished most of
+ * them) and the copies deleted. A copy is an object of the context that made it, readable from any
+ * context of its share group: one made in another group is reported rather than read.
+ */
+void ResolveCopies(Context* c) {
+    if (g_pendingBuffers.empty() && g_pendingTextures.empty()) return;
+    if (!c) {
+        for (auto& p : g_pendingBuffers) g_buffers[p.id - 1].error = "no context was current when the capture finished";
+        for (auto& p : g_pendingTextures) g_textures[p.index].error = "no context was current when the capture finished";
+        g_pendingBuffers.clear();
+        g_pendingTextures.clear();
+        return;
+    }
+    GlWork work(c);
+    Bindings b(c);
+    for (const PendingBuffer& p : g_pendingBuffers) {
+        BufferCapture& out = g_buffers[p.id - 1];
+        if (p.share != c->share) {
+            out.error = "copied on a context that shares nothing with the one the capture finished on";
+            continue;
+        }
+        g_gl.glBindBuffer(GL_COPY_READ_BUFFER, p.copy);
+        if (const void* m = g_gl.glMapBufferRange(GL_COPY_READ_BUFFER, 0, (GLsizeiptr)p.size, GL_MAP_READ_BIT)) {
+            out.data.assign((const uint8_t*)m, (const uint8_t*)m + p.size);
+            g_gl.glUnmapBuffer(GL_COPY_READ_BUFFER);
+        } else {
+            out.error = "the copy could not be mapped for reading";
+        }
+        g_gl.glDeleteBuffers(1, &p.copy);
+    }
+    for (const PendingTexture& p : g_pendingTextures) {
+        TextureCapture& out = g_textures[p.index];
+        if (p.share != c->share) {
+            out.error = "copied on a context that shares nothing with the one the capture finished on";
+            continue;
+        }
+        Object copy;
+        copy.name = p.copy;
+        copy.target = GL_TEXTURE_2D_ARRAY;
+        copy.internalFormat = p.internalFormat;
+        copy.width = p.width;
+        copy.height = p.height;
+        copy.depth = p.layers;
+        for (int layer = 0; layer < p.layers && out.error.empty(); ++layer) {
+            TextureCapture part;
+            if (ReadAttachment(c, b, copy, ObjType::Texture, 0, layer, 0, p.width, p.height, true, part)) {
+                out.format = part.format;
+                out.data.insert(out.data.end(), part.data.begin(), part.data.end());
+            } else {
+                out.error = part.error;
+                out.data.clear();
+            }
+        }
+        g_gl.glDeleteTextures(1, &p.copy);
+    }
+    g_pendingBuffers.clear();
+    g_pendingTextures.clear();
+}
+
+// ------------------------------------------------------------------------------------------------
 // Sending the capture
 
 /**
@@ -1284,6 +1457,8 @@ void Reset() {
     g_bufferSeen.clear();
     g_textureSeen.clear();
     g_passQueries.clear();
+    g_pendingBuffers.clear();
+    g_pendingTextures.clear();
     g_frame = 0;
 }
 
@@ -1444,8 +1619,9 @@ void BeforeSwap(Context* c, EGLDisplay display, EGLSurface surface, const char* 
     if (!c || !Recording()) return;
     std::lock_guard lock(g_mutex);
     if (!Recording()) return;
-    // A swap with nothing drawn since the last still shows the surface as it is.
-    if (!c->passOpen || c->passFramebuffer != 0) {
+    // A swap with nothing drawn since the last still shows the surface as it is: a pass of its own
+    // reads it, unless the frame's last pass on the surface ended (with a debug group, say) and has.
+    if ((!c->passOpen || c->passFramebuffer != 0) && !c->surfacePassEnded) {
         const GLuint saved = c->drawFramebuffer;
         c->drawFramebuffer = 0;
         BeginPassIfNeeded(c);
@@ -1464,11 +1640,15 @@ void AfterSwap(Context* c) {
     std::lock_guard lock(g_mutex);
     ++g_swaps;
     FrameStats();
-    if (c) c->nextPassIndex = 0;
+    if (c) {
+        c->nextPassIndex = 0;
+        c->surfacePassEnded = false;
+    }
     if (Recording()) {
         ++g_frame;
         if (g_frame >= g_options.frameCount) {
             g_recording = false;
+            ResolveCopies(c);
             SendCapture(c);
             Reset();
         }

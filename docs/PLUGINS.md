@@ -55,6 +55,7 @@ my-plugin/
 | `capture.<platform>` | How the capture library gets into an application the inspector launches on that platform (`win32`, `linux`, `darwin`). |
 | `capture.win32.inject` | Libraries the inspector's launcher injects into the target before its first instruction. |
 | `capture.linux.preload`, `capture.darwin.preload` | Libraries preloaded into the target (`LD_PRELOAD`). |
+| `capture.android` | An OpenGL ES layer for Android (10 and newer), which the launch dialog offers as a *Graphics API* for an Android launch: `glesLayer`, the library with `${abi}` for the device's ABI; `socket`, the abstract socket it listens on, with `${port}` and `${package}`; `properties`, the system properties it reads its settings from, with the same values `env` takes. |
 | `capture.<platform>.env` | Environment variables for the target. `${port}` is the session's port, `${log}` `1` or `0` for the launch dialog's Layer log, `${recordAlways}` and `${stacktraces}` the other options, `${pluginDir}` the plugin's directory. |
 
 ### Where plugins are found
@@ -168,8 +169,22 @@ environment block, which `Config::ApplySettingsBlock` takes. The initializer ret
 library is in. It runs before the application's own code, so it installs hooks and returns: the
 connection should wait until the API is actually used. The OpenGL ES library starts its server at
 the first `eglCreateContext`, so a process that never uses OpenGL ES leaves the session's port to
-the Vulkan layer or the Direct3D 12 library. On Linux the library is preloaded instead, and on
-consoles and phones getting in is the platform's business: a layer mechanism, a tool, a build flag.
+the Vulkan layer or the Direct3D 12 library. On Linux the library is preloaded instead.
+
+On Android an OpenGL ES layer gets in: the inspector copies `capture.android.glesLayer` into the
+debuggable application's data directory with `run-as`, names it in `gpu_debug_layers_gles`, sets
+`capture.android.properties` with `setprop`, and forwards the session's port to
+`capture.android.socket`. Android's EGL loader then calls the layer's two exports to build its
+dispatch table through it:
+
+```cpp
+extern "C" void AndroidGLESLayer_Initialize(void* layerId, void* (*getNext)(void* layerId, const char* name));
+extern "C" void* AndroidGLESLayer_GetProcAddress(const char* name, void (*next)());
+```
+
+The second is asked for every EGL and GL entry point and returns the layer's own function, which
+calls `next`, or `next` itself. On consoles getting in is the platform's business: a tool, a build
+flag.
 
 ### What it must send
 

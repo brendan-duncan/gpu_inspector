@@ -47,6 +47,8 @@ const TOPOLOGY: Record<string, string> = {
   GL_PATCHES: "VK_PRIMITIVE_TOPOLOGY_PATCH_LIST",
 };
 
+const INDEX_BYTES: Record<string, number> = { GL_UNSIGNED_BYTE: 1, GL_UNSIGNED_SHORT: 2, GL_UNSIGNED_INT: 4 };
+
 const INDEX_TYPES: Record<string, string> = {
   GL_UNSIGNED_BYTE: "VK_INDEX_TYPE_UINT8_EXT",
   GL_UNSIGNED_SHORT: "VK_INDEX_TYPE_UINT16",
@@ -260,6 +262,31 @@ export function activate(host: PluginHost): Backend {
     return out;
   };
 
+  /**
+   * The range of vertices an indexed draw reads. The library knows it only for indices in client
+   * memory; a buffer's indices are read after the frame, so the range is found here in them.
+   */
+  const verticesRead = (s: ArgObject, data: DetailContext["data"]): string => {
+    if (Number(s.lastVertex) >= 0) return `${num(s.firstVertex)} to ${num(s.lastVertex)}`;
+    const bytes = data.buffers.get(num(s.indexData))?.data;
+    const size = INDEX_BYTES[str(s.indexType)];
+    const d = isObject(s.draw) ? s.draw : null;
+    if (!bytes || !size || !d) return "unknown";
+    const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const count = Math.min(num(d.count), Math.floor(bytes.byteLength / size));
+    let lo = Infinity, hi = -1;
+    for (let i = 0; i < count; ++i) {
+      const v = size === 1 ? view.getUint8(i) : size === 2 ? view.getUint16(i * 2, true) : view.getUint32(i * 4, true);
+      // The primitive restart index (all ones) ends a strip rather than naming a vertex.
+      if (v === 2 ** (size * 8) - 1) continue;
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (hi < 0) return "none";
+    const base = num(d.baseVertex);
+    return `${lo + base} to ${hi + base}`;
+  };
+
   const commandDetails = (cmd: CaptureCommand, ctx: DetailContext): DetailSection[] => {
     const a = cmd.args ?? {};
     if (cmd.method === "BeginRenderPass" || cmd.method === "EndRenderPass") {
@@ -307,7 +334,7 @@ export function activate(host: PluginHost): Backend {
             ["Type", short(s.indexType)],
             ["Offset", num(s.indexOffset)],
             ["Contents", num(s.indexData) ? { buffer: num(s.indexData) } : "not captured"],
-            ["Vertices read", Number(s.lastVertex) >= 0 ? `${num(s.firstVertex)} to ${num(s.lastVertex)}` : "unknown"],
+            ["Vertices read", verticesRead(s, ctx.data)],
           ],
         });
       }

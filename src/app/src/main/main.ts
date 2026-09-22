@@ -29,7 +29,7 @@ import { implicitLayerStatus, setImplicitLayer, setUserEnvironment, userEnvironm
 import { listTargets, targetDisplayName } from "./target_probe.js";
 import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlockedReason, resolveExecutable } from "./metal.js";
 import { WATCH_TIMED_OUT, findD3D12Tools as findD3D12ToolsIn, watchLaunch, windowsLaunch, type D3D12Tools } from "./d3d12.js";
-import { PLUGIN_SCHEME, applyPreloads, findPlugins, isInside, pluginInfo, pluginLaunches, pluginSearchDirs, type Plugin, type PluginLaunch } from "./plugins.js";
+import { PLUGIN_SCHEME, androidPlugins, applyPreloads, findPlugins, isInside, pluginAndroidLaunch, pluginInfo, pluginLaunches, pluginSearchDirs, type Plugin, type PluginLaunch } from "./plugins.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
 import { browserArgs, browserFollow, browserProfileDir, installedBrowsers, prepareProfile } from "./browsers.js";
 import {
@@ -63,7 +63,7 @@ const KILL_TIMEOUT_MS = 3000;
 let mainWin: BrowserWindow | null = null;
 
 // Command line: --launch=<exe> [--args="..."] [--port=N] [--screenshot=<png> --screenshot-delay=<ms>]
-//               --launch-android=<package> --device=<serial> [--activity=<name>]
+//               --launch-android=<package> --device=<serial> [--activity=<name>] [--api=vulkan|gles]
 //               --wait-for-app (the Vulkan implicit layer) | --wait-for-d3d12=<image> (Windows)
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
 //               [--debug-capture-without=textures,buffers,images,profile]
@@ -135,6 +135,7 @@ function normalizeLaunch(c: Partial<LaunchConfig>): LaunchConfig {
     env: c.env ?? "",
     device: c.device ?? "",
     activity: c.activity ?? "",
+    ...(c.api ? { api: c.api } : {}),
     port: Number(c.port) || DEFAULT_PORT,
     log: c.log ?? true,
     recordAlways: c.recordAlways ?? false,
@@ -278,6 +279,12 @@ electron.protocol.registerSchemesAsPrivileged([{ scheme: PLUGIN_SCHEME, privileg
 function findD3D12Tools(): D3D12Tools | null {
   if (process.platform !== "win32") return null;
   return findD3D12ToolsIn([path.resolve(__dirname, "..", "..", "..", "..")], [path.join(process.resourcesPath ?? "", "layer")]);
+}
+
+/** The plugin an Android launch of `api` is for; null for Vulkan (or no api), undefined for an api no plugin has. */
+function androidPluginFor(api: string | undefined): Plugin | null | undefined {
+  if (!api || api === "vulkan") return null;
+  return androidPlugins(loadedPlugins()).find((p) => (p.manifest.api ?? p.manifest.id) === api || p.manifest.id === api);
 }
 
 /** The Android layer libraries and APK (tools/build_android.py), from the build tree or a packaged app. */
@@ -683,12 +690,14 @@ function runTarget(s: Session, exe: string, args: string[], cwd: string, env: No
  * is made to 127.0.0.1 like for a local process. Installation and start take a while and can
  * fail (device gone, package not debuggable): that is reported through the session status.
  */
-function launchAndroid(s: Session, adb: string, layer: AndroidLayerFiles): LaunchResult {
+function launchAndroid(s: Session, adb: string, layer: AndroidLayerFiles | null, plugin: Plugin | null): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
+  const settings = { port: s.port, log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces };
   const target = new AndroidTarget({
     adb, serial: config.device, package: config.exe, activity: config.activity, port: s.port,
     log: config.log, recordAlways: config.recordAlways, stacktraces: config.stacktraces, layer,
+    plugin: plugin ? (abilist) => pluginAndroidLaunch(plugin, abilist, config.exe, settings) : null,
     onLog: (line) => s.appendLog(line),
     onExit: () => {
       if (s.android !== target) return;
@@ -702,7 +711,7 @@ function launchAndroid(s: Session, adb: string, layer: AndroidLayerFiles): Launc
   s.android = target;
   s.pid = null;
   s.killing = false;
-  s.appendLog(`launching ${config.exe} on ${config.device}`);
+  s.appendLog(`launching ${config.exe} on ${config.device}${plugin ? ` for ${plugin.manifest.name}` : ""}`);
   if (s.port !== config.port) s.appendLog(`port ${config.port} is in use; using ${s.port}`);
   s.setStatus("launched", `starting on ${config.device}`);
   target.start().then(() => {
@@ -757,7 +766,7 @@ type ValidLaunch =
   | { kind: "native"; layerDir: string | null; d3d12: D3D12Tools | null }
   /** macOS: the capture library to inject, and the binary inside the bundle to run. */
   | { kind: "metal"; library: string; exe: string }
-  | { kind: "android"; adb: string; layer: AndroidLayerFiles }
+  | { kind: "android"; adb: string; layer: AndroidLayerFiles | null; plugin: Plugin | null }
   | { kind: "implicit" }
   /** Windows: the D3D12 tools, whose launcher watches for the application to start. */
   | { kind: "waitD3D12"; d3d12: D3D12Tools };
@@ -778,11 +787,13 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
   if (config.target === "android") {
     const adb = findAdb();
     if (!adb) return { error: "adb not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB" };
+    const plugin = androidPluginFor(config.api);
+    if (plugin === undefined) return { error: `no plugin captures ${config.api} on Android: build or install it (docs/PLUGINS.md)` };
     const layer = findAndroidLayerFiles();
-    if (!layer) return { error: "Android layer not found: build it with tools/build_android.py (see docs/ARCHITECTURE.md)" };
+    if (!layer && !plugin) return { error: "Android layer not found: build it with tools/build_android.py (see docs/ARCHITECTURE.md)" };
     if (!config.device) return { error: "no Android device selected" };
     if (!config.exe) return { error: "no package name given" };
-    return { kind: "android", adb, layer };
+    return { kind: "android", adb, layer, plugin };
   }
   if (config.target === "browser") {
     if (process.platform !== "win32") return { error: "capturing a browser's GPU process is a Windows target" };
@@ -815,7 +826,7 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
 function startTarget(s: Session, v: ValidLaunch): LaunchResult {
   if (v.kind === "implicit") return waitForApplication(s);
   if (v.kind === "waitD3D12") return waitForD3D12Application(s, v.d3d12);
-  if (v.kind === "android") return launchAndroid(s, v.adb, v.layer);
+  if (v.kind === "android") return launchAndroid(s, v.adb, v.layer, v.plugin);
   if (v.kind === "metal") return spawnMetalTarget(s, v.library, v.exe);
   return spawnTarget(s, v.layerDir, v.d3d12);
 }
@@ -1301,11 +1312,12 @@ ipcMain.handle("inspector:plugins", (): PluginInfo[] => loadedPlugins().map(plug
 ipcMain.handle("inspector:androidDevices", async (): Promise<AndroidDeviceList> => {
   const adb = findAdb();
   const layer = findAndroidLayerFiles() !== null;
-  if (!adb) return { adb: null, devices: [], layer, error: "adb not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB" };
+  const apis = [{ id: "vulkan", name: "Vulkan" }, ...androidPlugins(loadedPlugins()).map((p) => ({ id: p.manifest.api ?? p.manifest.id, name: p.manifest.name }))];
+  if (!adb) return { adb: null, devices: [], layer, apis, error: "adb not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB" };
   try {
-    return { adb, devices: await listDevices(adb), layer, error: null };
+    return { adb, devices: await listDevices(adb), layer, apis, error: null };
   } catch (e) {
-    return { adb, devices: [], layer, error: e instanceof Error ? e.message : String(e) };
+    return { adb, devices: [], layer, apis, error: e instanceof Error ? e.message : String(e) };
   }
 });
 ipcMain.handle("inspector:androidPackages", async (_e, serial: string): Promise<string[]> => {
@@ -1628,6 +1640,8 @@ void app.whenReady().then(() => {
         exe: browserUrl !== null ? browser ?? "" : androidPackage ?? exe ?? "",
         device: cliOption("device") ?? "",
         activity: cliOption("activity") ?? "",
+        // --api=gles: an Android launch of a plugin's API rather than Vulkan.
+        api: cliOption("api") ?? undefined,
         // --args is the launch dialog's field; --launch-args is the spelling src/metal/README.md uses.
         args: browserUrl !== null ? browserUrl : cliOption("args") ?? cliOption("launch-args") ?? "",
         port: Number(cliOption("port")) || DEFAULT_PORT,

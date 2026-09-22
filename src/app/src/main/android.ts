@@ -21,12 +21,19 @@
 //
 // Unlike RenderDoc, no helper process runs on the device: the capture streams straight over the
 // socket, so the only device-side component is the layer itself.
+//
+// A plugin's API (plugins.ts) goes the same way with an OpenGL ES layer instead (Android 10+): its
+// library is copied into the target's data directory with `run-as`, named in `gpu_debug_layers_gles`,
+// set up through its own system properties, and the port is forwarded to its own socket. A launch is
+// for one API: HWUI, which draws every application's own UI, renders with Vulkan on Android 12 and
+// later, so the Vulkan layer would load (and listen) in any application, whichever API it draws with.
 import { execFile, execFileSync, spawn, type ChildProcess } from "node:child_process";
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { AndroidDevice } from "../shared/protocol.js";
+import type { PluginAndroidLaunch } from "./plugins.js";
 
 export const LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
 export const LAYER_LIB = "libVkLayer_inspector_capture.so";
@@ -40,7 +47,7 @@ const PID_RETRY_MS = 500;
 const POLL_MS = 2000;
 /** The first Android release with the GPU debug layer settings. */
 const MIN_SDK = 28;
-/** The first release that can load layers from another package (gpu_debug_layer_app). */
+/** The first release that can load layers from another package (gpu_debug_layer_app), and OpenGL ES layers at all. */
 const LAYER_APP_SDK = 29;
 
 // ------------------------------------------------------------------------------------------
@@ -198,7 +205,10 @@ export interface AndroidLaunchOptions {
   recordAlways: boolean;
   /** Record the call stack of every object creation (debug.vkinsp.stacktraces). */
   stacktraces: boolean;
-  layer: AndroidLayerFiles;
+  /** The Vulkan layer; null when the launch is a plugin's API. */
+  layer: AndroidLayerFiles | null;
+  /** A plugin's API instead of Vulkan: what goes onto the device for it, given the device's ABIs. */
+  plugin?: ((abilist: string[]) => PluginAndroidLaunch) | null;
   onLog: (line: string) => void;
   /** The application stopped on its own (not through stop()). */
   onExit: () => void;
@@ -211,8 +221,13 @@ export class AndroidTarget {
   private _poll: NodeJS.Timeout | null = null;
   private _polling = false;
   private _stopped = false;
+  /** The capture library's socket and log tag on the device: the Vulkan layer's, or the plugin's. */
+  private _socket: string;
+  private _tag = "vkinsp";
 
-  constructor(private readonly opts: AndroidLaunchOptions) {}
+  constructor(private readonly opts: AndroidLaunchOptions) {
+    this._socket = `vkinsp:${opts.port}:${opts.package}`;
+  }
 
   /** Installs and enables the layer, starts the application and the watches. Rejects with a readable message. */
   async start(): Promise<void> {
@@ -224,20 +239,40 @@ export class AndroidTarget {
     const abi = props[1] ?? "";
     const abilist = (props[2] ?? abi).split(",").map((s) => s.trim()).filter(Boolean);
     log(`device ${serial}: ${props[3] ?? ""}, Android API ${sdk}, ${abi}`);
-    if (sdk < MIN_SDK) throw new Error(`Android 9 (API ${MIN_SDK}) or newer is required for Vulkan layers; the device runs API ${sdk}`);
+    const plugin = this.opts.plugin ? this.opts.plugin(abilist) : null;
+    if (plugin) {
+      const name = plugin.plugin.manifest.name;
+      if (sdk < LAYER_APP_SDK) throw new Error(`Android 10 (API ${LAYER_APP_SDK}) or newer is required for ${name} layers; the device runs API ${sdk}`);
+      if (plugin.error || !plugin.library) throw new Error(plugin.error ?? `${name} has no Android library`);
+      this._socket = plugin.socket;
+      this._tag = plugin.socket.split(":")[0] || this._tag;
+      log(`layer: ${await this._copyIntoDataDir(plugin.library, plugin.layerName, plugin.abi)}`);
+      await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
+      await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
+      await shell(adbPath, serial, `settings put global gpu_debug_layers_gles ${plugin.layerName}`);
+      // Left from a Vulkan launch, a Vulkan layer setting would load that layer into HWUI, and one
+      // naming a layer the loader cannot find aborts HWUI on Android 12 and later.
+      for (const key of ["gpu_debug_layers", "gpu_debug_layer_app"]) await shell(adbPath, serial, `settings delete global ${key}`);
+      for (const [key, value] of Object.entries(plugin.properties)) await shell(adbPath, serial, `setprop ${key} ${value}`);
+    } else {
+      if (sdk < MIN_SDK) throw new Error(`Android 9 (API ${MIN_SDK}) or newer is required for Vulkan layers; the device runs API ${sdk}`);
+      if (!this.opts.layer) throw new Error("Android layer not found: build it with tools/build_android.py (see docs/ARCHITECTURE.md)");
 
-    const how = await this._installLayer(sdk, abilist);
-    log(`layer: ${how}`);
+      const how = await this._installLayer(sdk, abilist, this.opts.layer);
+      log(`layer: ${how}`);
 
-    // Enable the layer for the package (Android's GPU debug layer settings).
-    await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
-    await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
-    await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
-    // The layer's settings, read through ConfigValue() in the layer.
-    await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
-    await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
-    await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
-    await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
+      // Enable the layer for the package (Android's GPU debug layer settings).
+      await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
+      await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
+      await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
+      // A plugin's OpenGL ES layer from an earlier launch would load too.
+      if (sdk >= LAYER_APP_SDK) await shell(adbPath, serial, "settings delete global gpu_debug_layers_gles");
+      // The layer's settings, read through ConfigValue() in the layer.
+      await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
+      await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
+      await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
+      await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
+    }
 
     await shell(adbPath, serial, `am force-stop ${pkg}`);
     // A previous instance that has not finished dying still holds the layer's socket, which the
@@ -291,9 +326,9 @@ export class AndroidTarget {
     this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
   }
 
-  /** The layer's abstract socket on the device: the port and the package (see transport.cpp). */
+  /** The capture library's abstract socket on the device: the port and the package (see transport.cpp). */
   get socketName(): string {
-    return `vkinsp:${this.opts.port}:${this.opts.package}`;
+    return this._socket;
   }
 
   /**
@@ -368,8 +403,8 @@ export class AndroidTarget {
    * copy the .so into the target's data directory with run-as, skipped when the copy there
    * already matches.
    */
-  private async _installLayer(sdk: number, abilist: string[]): Promise<string> {
-    const { adb: adbPath, serial, package: pkg, layer } = this.opts;
+  private async _installLayer(sdk: number, abilist: string[], layer: AndroidLayerFiles): Promise<string> {
+    const { adb: adbPath, serial } = this.opts;
     const apkAbi = layer.apkInfo ? abilist.find((a) => layer.apkInfo!.abis.includes(a)) : undefined;
     if (sdk >= LAYER_APP_SDK && layer.apk && layer.apkInfo && apkAbi) {
       const info = layer.apkInfo;
@@ -394,11 +429,22 @@ export class AndroidTarget {
     if (!abi) {
       throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
     }
-    const lib = layer.libs[abi];
+    const how = await this._copyIntoDataDir(layer.libs[abi], LAYER_LIB, abi);
+    // A stale layer app setting would make the loader look there first.
+    await shell(adbPath, serial, "settings delete global gpu_debug_layer_app");
+    return how;
+  }
+
+  /**
+   * Copies a layer library into the target's data directory with run-as, where the loaders look when
+   * the debug layer settings are on; skipped when the copy there already matches.
+   */
+  private async _copyIntoDataDir(lib: string, name: string, abi: string): Promise<string> {
+    const { adb: adbPath, serial, package: pkg } = this.opts;
     const local = crypto.createHash("md5").update(fs.readFileSync(lib)).digest("hex");
     let remote = "";
     try {
-      remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${LAYER_LIB}`)).trim().split(/\s+/)[0] ?? "";
+      remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${name}`)).trim().split(/\s+/)[0] ?? "";
     } catch (e) {
       const message = e instanceof Error ? e.message : String(e);
       if (/not debuggable|is not debuggable|Could not set capabilities|run-as: Package/.test(message)) {
@@ -407,24 +453,23 @@ export class AndroidTarget {
       remote = "";
     }
     if (remote !== local) {
-      this.opts.onLog(`copying ${LAYER_LIB} (${abi}) into ${pkg}'s data directory`);
-      await adb(adbPath, serial, ["push", lib, `${DEVICE_TMP}/${LAYER_LIB}`], INSTALL_TIMEOUT_MS);
+      this.opts.onLog(`copying ${name} (${abi}) into ${pkg}'s data directory`);
+      await adb(adbPath, serial, ["push", lib, `${DEVICE_TMP}/${name}`], INSTALL_TIMEOUT_MS);
       try {
-        await shell(adbPath, serial, `run-as ${pkg} cp ${DEVICE_TMP}/${LAYER_LIB} . && run-as ${pkg} chmod 700 ${LAYER_LIB}`);
+        await shell(adbPath, serial, `run-as ${pkg} cp ${DEVICE_TMP}/${name} . && run-as ${pkg} chmod 700 ${name}`);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         throw new Error(`could not copy the layer into ${pkg}: ${message}. The application must be debuggable (a Unity Development Build).`);
       }
     }
-    // A stale layer app setting would make the loader look there first.
-    await shell(adbPath, serial, "settings delete global gpu_debug_layer_app");
-    return `${LAYER_LIB} (${abi}) in ${pkg}'s data directory`;
+    return `${name} (${abi}) in ${pkg}'s data directory`;
   }
 
   private _startLogcat(): void {
     const { adb: adbPath, serial } = this.opts;
-    // The layer's tag, plus native crash dumps and Java exceptions, starting from now (-T 1).
-    const proc = spawn(adbPath, adbArgs(serial, ["logcat", "-v", "tag", "-T", "1", "vkinsp:*", "DEBUG:E", "AndroidRuntime:E", "*:S"]), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    // The library's tag, plus native crash dumps and Java exceptions, starting from now (-T 1).
+    const tag = this._tag;
+    const proc = spawn(adbPath, adbArgs(serial, ["logcat", "-v", "tag", "-T", "1", `${tag}:*`, "DEBUG:E", "AndroidRuntime:E", "*:S"]), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
     this._logcat = proc;
     let rest = "";
     proc.stdout?.on("data", (d: Buffer) => {
@@ -433,7 +478,8 @@ export class AndroidTarget {
       rest = lines.pop() ?? "";
       for (const line of lines) {
         if (!line.length || line.startsWith("--------- beginning of")) continue;
-        this.opts.onLog(line.startsWith("I/vkinsp") ? `[vkinsp] ${line.replace(/^I\/vkinsp\s*:\s?/, "")}` : line);
+        const prefix = `I/${tag}`;
+        this.opts.onLog(line.startsWith(prefix) && /^\s*:/.test(line.slice(prefix.length)) ? `[${tag}] ${line.slice(prefix.length).replace(/^\s*:\s?/, "")}` : line);
       }
     });
     proc.on("exit", () => {
@@ -508,7 +554,7 @@ export class AndroidTarget {
 
 /** Turns the GPU debug layer settings off again, so the package no longer loads the layer when started from the device. */
 export async function disableLayer(adbPath: string, serial: string): Promise<void> {
-  for (const key of ["enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app"]) {
+  for (const key of ["enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app", "gpu_debug_layers_gles"]) {
     try {
       await shell(adbPath, serial, `settings delete global ${key}`);
     } catch {

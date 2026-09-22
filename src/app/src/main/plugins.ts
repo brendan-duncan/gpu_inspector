@@ -37,6 +37,22 @@ export interface PluginPlatformCapture {
   env?: Record<string, string>;
 }
 
+/**
+ * How a plugin's capture library gets into an Android application: as an OpenGL ES layer, which
+ * Android (10 and later) loads into a debuggable application from its data directory.
+ */
+export interface PluginAndroidCapture {
+  /**
+   * The OpenGL ES layer library, relative to the plugin's directory, with ${abi} for the device's ABI
+   * ("android/lib/${abi}/libglesinsp_capture.so"). Its file name is what gpu_debug_layers_gles names.
+   */
+  glesLayer: string;
+  /** The abstract socket the library listens on, which adb forwards the session's port to: ${port} and ${package} expanded. */
+  socket: string;
+  /** System properties (adb shell setprop) the library reads its settings from; values as for `env`. */
+  properties?: Record<string, string>;
+}
+
 export interface PluginManifest {
   /** Unique, lower case: "gles". */
   id: string;
@@ -51,7 +67,7 @@ export interface PluginManifest {
   /** The backend module, relative to the plugin's directory. */
   backend?: string;
   /** How the capture library goes into a launched application, per platform (process.platform). */
-  capture?: Partial<Record<"win32" | "linux" | "darwin", PluginPlatformCapture>>;
+  capture?: Partial<Record<"win32" | "linux" | "darwin", PluginPlatformCapture>> & { android?: PluginAndroidCapture };
 }
 
 export interface Plugin {
@@ -220,6 +236,43 @@ export function applyPreloads(env: NodeJS.ProcessEnv, launches: PluginLaunch[], 
   }
   if (preload.length) env[variable] = [...preload, ...(env[variable] ? [env[variable]] : [])].join(":");
   return notes;
+}
+
+/** What an Android launch of a plugin's API puts on the device: the layer library for the device's ABI, its socket and its settings. */
+export interface PluginAndroidLaunch {
+  plugin: Plugin;
+  /** The library for the first of the device's ABIs the plugin has one for; null when it has none. */
+  library: string | null;
+  abi: string;
+  /** The layer's name for gpu_debug_layers_gles: the library's file name. */
+  layerName: string;
+  socket: string;
+  properties: Record<string, string>;
+  /** Why the plugin cannot go onto the device, for the session's log; null when it can. */
+  error: string | null;
+}
+
+/** The usable plugins with an Android capture library: the APIs an Android launch can choose besides Vulkan. */
+export function androidPlugins(plugins: Plugin[]): Plugin[] {
+  return plugins.filter((p) => !p.error && p.manifest.capture?.android?.glesLayer && p.manifest.capture.android.socket);
+}
+
+/** How plugin `plugin` goes into package `pkg` on a device with ABIs `abilist` (its preferred first). */
+export function pluginAndroidLaunch(plugin: Plugin, abilist: string[], pkg: string, settings: CaptureSettings): PluginAndroidLaunch {
+  const a = plugin.manifest.capture!.android!;
+  const expandAndroid = (v: string): string => expand(v, plugin, settings).replace(/\$\{package\}/g, pkg);
+  const properties: Record<string, string> = {};
+  for (const [k, v] of Object.entries(a.properties ?? {})) properties[k] = expandAndroid(String(v));
+  const socket = expandAndroid(a.socket);
+  const layerName = path.basename(a.glesLayer);
+  for (const abi of abilist) {
+    const library = path.resolve(plugin.dir, a.glesLayer.replace(/\$\{abi\}/g, abi));
+    if (isInside(plugin.dir, library) && fs.existsSync(library)) return { plugin, library, abi, layerName, socket, properties, error: null };
+  }
+  return {
+    plugin, library: null, abi: "", layerName, socket, properties,
+    error: `${plugin.manifest.name} has no Android library for ${abilist.join(", ") || "the device"}: build it with tools/build_android.py`,
+  };
 }
 
 /** The renderer's view of a plugin, its backend addressed through the scheme main.ts serves plugin files on. */

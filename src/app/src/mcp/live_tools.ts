@@ -3,6 +3,7 @@
 // objects, images and descriptor sets, capturing frames into .gpucap files that the capture tools
 // then read, and replacing a pipeline's shader while the application runs.
 import { listPackages } from "../main/android.js";
+import { androidApis } from "./plugins.js";
 import { splitArgs } from "../main/launch_env.js";
 import { compileDxil, compileShader } from "../main/shader_tools.js";
 import { fetchBlob } from "../renderer/capture_file.js";
@@ -251,6 +252,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
           adb: adb ?? "not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB",
           devices: devices.map((d) => ({ serial: d.serial, state: d.state, model: d.model || undefined, sdk: d.sdk || undefined, abi: d.abi || undefined })),
           layer: layer ?? "not found: build it with tools/build_android.py (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR",
+          apis: androidApis(),
           packages: adb && device ? await listPackages(adb, device) : undefined,
           note: devices.some((d) => d.state === "unauthorized") ? "An unauthorized device is waiting for its USB debugging prompt to be accepted." : undefined,
         });
@@ -258,7 +260,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
     },
     {
       name: "launch_android_app",
-      description: "Launch an Android application with GPU Inspector's Vulkan layer and connect to it, for the same live tools " +
+      description: "Launch an Android application with GPU Inspector's Vulkan layer (or, with `api`, a plugin's OpenGL ES layer) and connect to it, for the same live tools " +
         "as launch_app (get_live_frame_stats, capture_frames, read_live_image, replace_shader...). The layer is installed " +
         "on the device (the layer package on Android 10+, else copied into the application's data), enabled for the " +
         "package through Android's GPU debug layer settings, and reached through an adb port forward. The application must " +
@@ -268,6 +270,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         package: { type: "string", description: "The package name (list_android_devices lists the installed ones)." },
         device: { type: "string", description: "The device's serial (default the only connected device)." },
         activity: { type: "string", description: "The activity to start (default the package's launcher activity)." },
+        api: { type: "string", description: "The API the application draws with: \"vulkan\" (default) or a plugin's, such as \"gles\" (list_android_devices lists them). One per launch." },
         stacktraces: { type: "boolean", description: "Record a stack at every object creation (default true)." },
         recordAlways: { type: "boolean", description: "Record every command buffer as it is built, for applications that reuse command buffers recorded once (default false)." },
         port: { type: "integer", minimum: 1, maximum: 65535, description: "Host port for the forward (default 47531, or the next free one)." },
@@ -275,14 +278,14 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
       }, ["package"]),
       handler: async (args) => {
         const s = await sessions.launchAndroid({
-          package: requireString(args, "package"), device: stringArg(args, "device"), activity: stringArg(args, "activity"),
+          package: requireString(args, "package"), device: stringArg(args, "device"), activity: stringArg(args, "activity"), api: stringArg(args, "api"),
           stacktraces: boolArg(args, "stacktraces", true), recordAlways: boolArg(args, "recordAlways", false), port: optionalInt(args, "port"),
         }, (numberArg(args, "waitSeconds") ?? 60) * 1000);
         const result = jsonResult({
           ...sessionStatus(s),
           problem: s.connected ? undefined : s.state === "error"
             ? `The launch failed on the device: ${s.detail}`
-            : "The layer did not connect. recentLog (and get_session_log) has logcat's layer output and crashes: an application that is not debuggable or does not use Vulkan, or a device that is asleep.",
+            : "The layer did not connect. recentLog (and get_session_log) has logcat's layer output and crashes: an application that is not debuggable or does not draw with the API launched for, or a device that is asleep.",
         });
         if (!s.connected) result.isError = true;
         return result;

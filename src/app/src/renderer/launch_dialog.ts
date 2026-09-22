@@ -106,6 +106,9 @@ export class LaunchDialog extends Dialog {
   private _packages: string[] = [];
   private _packageHint: Span;
   private _activity: TextInput;
+  private _androidApi!: Select;
+  private _androidApis: { id: string; name: string }[] = [{ id: "vulkan", name: "Vulkan" }];
+  private _pendingApi = "vulkan";
   private _symbolDirs!: TextInput;
   private _sourceRoots!: TextInput;
   private _port: TextInput;
@@ -192,6 +195,14 @@ export class LaunchDialog extends Dialog {
       new Button(row, { label: "Refresh", class: "btn", tooltip: "Look for devices again (adb devices)", callback: () => void this._loadDevices() });
     }
     this._deviceHint = new Span(this._androidRows, { text: "", class: "launch-dialog-hint" });
+    {
+      const row = new Div(this._androidRows, { class: "launch-dialog-row" });
+      new Span(row, { text: "Graphics API", class: "launch-dialog-label" });
+      this._androidApi = new Select(row, {
+        options: this._androidApis.map((a) => a.name), class: "launch-dialog-select",
+        tooltip: "The API the application draws with, whose capture library goes onto the device. One per launch: every application's own UI draws with Vulkan on Android 12 and later, so the Vulkan layer would load into an OpenGL ES application too.",
+      });
+    }
     {
       const row = new Div(this._androidRows, { class: "launch-dialog-row" });
       new Span(row, { text: "Package", class: "launch-dialog-label" });
@@ -497,6 +508,11 @@ export class LaunchDialog extends Dialog {
       else if (!list.devices.length) hints.push("No devices found. Connect a device with USB debugging enabled, or start an emulator, then press Refresh.");
       else if (!list.devices.some((d) => d.state === "device")) hints.push("No usable device: accept the USB debugging prompt on the device, then press Refresh.");
       if (!list.layer) hints.push("The Android layer is not built: run tools/build_android.py first.");
+      if (list.apis?.length) {
+        this._androidApis = list.apis;
+        setOptions(this._androidApi, list.apis.map((a) => a.name));
+        this._androidApi.index = Math.max(0, list.apis.findIndex((a) => a.id === this._pendingApi));
+      }
       this._deviceHint.text = hints.join("\n");
       // The remembered device when present, else the first usable one.
       let index = list.devices.findIndex((d) => d.serial === this._pendingDevice);
@@ -561,6 +577,7 @@ export class LaunchDialog extends Dialog {
       env: android ? "" : this._env.value,
       device: android ? (this._devices[this._device.index]?.serial ?? this._pendingDevice) : "",
       activity: android ? this._activity.value.trim() : "",
+      api: android ? (this._androidApis[this._androidApi.index]?.id ?? this._pendingApi) : undefined,
       port: Number(this._port.value) || DEFAULT_PORT,
       log: this._log.checked,
       recordAlways: this._recordAlways.checked,
@@ -589,6 +606,9 @@ export class LaunchDialog extends Dialog {
       this._package.value = c.exe ?? "";
       this._activity.value = c.activity ?? "";
       this._pendingDevice = c.device ?? "";
+      this._pendingApi = c.api ?? "vulkan";
+      const api = this._androidApis.findIndex((a) => a.id === this._pendingApi);
+      if (api >= 0) this._androidApi.index = api;
       const index = this._devices.findIndex((d) => d.serial === this._pendingDevice);
       if (index >= 0) this._device.index = index;
     } else if (this.target === "waitD3D12") {

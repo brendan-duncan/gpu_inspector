@@ -5,6 +5,8 @@
 - The plugin SDK in `src/sdk`: header-only C++ for a capture library's connection, and the backend types.
 - **OpenGL ES** on Windows, from the desktop driver through WGL (Unity's `-force-gles32`) or from ANGLE, as the first plugin (`src/plugins/gles`, docs/GLES.md).
 - `test/gles_triangle`, an OpenGL ES 3.0 test application on ANGLE.
+- OpenGL ES on Android 10+, as an OpenGL ES layer, chosen with the Android launch's new *Graphics API* (or `--api=gles`).
+- `tools/build_android_gles_triangle.py`, an OpenGL ES 3.2 test application for phones.
 - `dxinsp_launch.exe` takes `--dll` more than once, and calls a library's `GpuInspectorInitialize` export.
 
 ### Changed

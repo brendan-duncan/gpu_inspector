@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "sdk": 1,
   "api": "gles",
-  "description": "Captures OpenGL ES 2.0-3.2 applications through EGL: ANGLE on Windows.",
+  "description": "Captures OpenGL ES 2.0-3.2 applications: WGL and ANGLE on Windows, an OpenGL ES layer on Android.",
   "backend": "ui/backend.js",
   "capture": {
     "win32": {
@@ -12,6 +12,14 @@
       "env": {
         "GLESINSP_PORT": "${port}",
         "GLESINSP_LOG": "${log}"
+      }
+    },
+    "android": {
+      "glesLayer": "android/lib/${abi}/libglesinsp_capture.so",
+      "socket": "glesinsp:${port}:${package}",
+      "properties": {
+        "debug.glesinsp.port": "${port}",
+        "debug.glesinsp.log": "${log}"
       }
     }
   }

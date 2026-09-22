@@ -1,8 +1,9 @@
-# OpenGL ES (Windows)
+# OpenGL ES (Windows and Android)
 
 [Docs index](README.md) › OpenGL ES
 
-On Windows the inspector also captures OpenGL ES applications, whichever way they get OpenGL ES:
+The inspector captures OpenGL ES applications on Android devices (Android 10 and newer) and on
+Windows. On Windows it catches them whichever way they get OpenGL ES:
 
 - **From the GPU's own driver**, as an OpenGL ES context made through WGL. This is what a Unity
   player started with `-force-gles32` or `-force-gles31` does.
@@ -25,6 +26,25 @@ An application whose ANGLE runs on Vulkan rather than Direct3D 11 is caught by t
 first, since ANGLE makes its Vulkan device before the application makes a context: what you see
 is then ANGLE's Vulkan calls. Start it with ANGLE's Direct3D 11 backend to see its OpenGL ES.
 
+## Android
+
+Launch the application as described in [Android](ANDROID.md#launching), with **Graphics API** set
+to **OpenGL ES**. The capture library is an OpenGL ES layer, which Android loads into a
+**debuggable** application (a Unity Development Build) from Android 10 on. The inspector copies it
+into the application's data directory, names it in Android's GPU debug layer settings
+(`gpu_debug_layers_gles`), starts the application and connects through an `adb forward` port. The
+**Log** tab shows the library's logcat output (tag `glesinsp`), and closing the session turns the
+settings off again.
+
+A launch captures one API. Every application's own interface is drawn by Android with Vulkan on
+Android 12 and newer, so the Vulkan layer would load into an OpenGL ES application too and answer
+first. On the command line, `--launch-android=<package> --api=gles`. The Claude Code plugin's
+`launch_android_app` takes `api: "gles"`.
+
+The library is built with the Vulkan layer by `python tools/build_android.py`, which writes it to
+`build/plugins/gles/android/lib/<abi>/`. `python tools/build_android_gles_triangle.py` builds a
+debuggable OpenGL ES 3.2 test application, `build/android/android_gles_triangle.apk`.
+
 ## What a capture shows
 
 OpenGL ES has no command buffers and no render passes, so a capture is the calls the application
@@ -46,9 +66,15 @@ context's state rather than anything bound on a command:
 
 With **Profile passes** each pass is timed on the GPU (`EXT_disjoint_timer_query`), which gives
 Frame Stats its Frame Bound verdict and pass list. ANGLE on Direct3D 11 measures how long each pass
-took but not when it started, so its passes are placed end to end. A capture reads textures back in
-the middle of passes and waits for each, so a pass that samples many textures for the first time in
-the frame is timed longer than it runs; the times are for comparing passes, not for a frame budget.
+took but not when it started, so its passes are placed end to end. On a tile-based GPU (Mali,
+Adreno) the pass that draws to the window includes the wait for the window's next buffer, and the
+GPU copies below run inside the passes they are made in, so the timings compare passes rather
+than add up to a frame.
+
+The textures and buffers a draw uses are copied on the GPU where the draw is met and read once the
+frame is over, so a capture does not stall the frame it records. That needs OpenGL ES 3.2 or
+`EXT_copy_image` for textures, and OpenGL ES 3.0 for buffers; without them each is read where it is
+met, and a pass that reads many is timed longer than it runs.
 
 **View Mesh** opens the draw's vertices, and the **Render Graph** shows the passes and what they
 read from each other. It knows which attachments a pass cleared before drawing and which it
@@ -61,6 +87,7 @@ OpenGL ES's terms. Capture files save and reopen as for any API, and the
 - Depth and stencil targets are not read back, since OpenGL ES reads color only.
 - No replay: overdraw, draw overlays, pixel history, per-draw measurements and Export to C++.
 - No shader debugger, shader analysis or shader editing.
-- Windows only. Android is next: the capture library is shaped for a GLES layer.
+- On Android, a device from Android 10 on and a debuggable application: no layer package as the
+  Vulkan layer has, so a rooted device is not enough on its own.
 
 `src/plugins/gles/README.md` has how the library does what it does.

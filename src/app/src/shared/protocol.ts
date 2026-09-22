@@ -1040,6 +1040,11 @@ export interface LaunchConfig {
   device: string;
   /** Android: the activity to start; empty for the package's launcher activity. */
   activity: string;
+  /**
+   * Android: the API whose capture library goes onto the device, "vulkan" (the default) or a plugin's
+   * `api` (AndroidDeviceList.apis). One per launch: see android.ts.
+   */
+  api?: string;
   port: number;
   log: boolean;
   recordAlways: boolean;
@@ -1153,6 +1158,8 @@ export interface AndroidDeviceList {
   devices: AndroidDevice[];
   /** Whether the Android layer (tools/build_android.py) is available to the app. */
   layer: boolean;
+  /** The APIs an Android launch can capture: Vulkan, then the plugins with an Android library. */
+  apis: { id: string; name: string }[];
   error: string | null;
 }
 

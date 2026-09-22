@@ -7,7 +7,8 @@
 // messages. A capture is requested, streamed into a CaptureData and saved as a .gpucap file, which
 // the capture tools then read like any other.
 import { applyPreloads } from "../main/plugins.js";
-import { launchPlugins } from "./plugins.js";
+import { androidPluginFor, launchPlugins } from "./plugins.js";
+import { pluginAndroidLaunch } from "../main/plugins.js";
 import { backendForObjectType } from "../renderer/backend.js";
 import { spawn, type ChildProcess } from "node:child_process";
 import fs from "node:fs";
@@ -159,6 +160,8 @@ export interface AndroidLaunchOptions {
   device?: string;
   /** The activity to start; the package's launcher activity when absent. */
   activity?: string;
+  /** The API whose capture library goes onto the device: "vulkan" (the default) or a plugin's. */
+  api?: string;
   port?: number;
   stacktraces?: boolean;
   recordAlways?: boolean;
@@ -699,8 +702,10 @@ export class SessionManager {
   async launchAndroid(o: AndroidLaunchOptions, waitMs: number): Promise<LiveSession> {
     const adb = findAdb();
     if (!adb) throw new Error("adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB.");
+    const plugin = androidPluginFor(o.api);
+    if (plugin === undefined) throw new Error(`No plugin captures ${o.api} on Android: list_android_devices lists the APIs there are.`);
     const layer = androidLayer();
-    if (!layer) {
+    if (!layer && !plugin) {
       throw new Error("The Android layer was not found: build it with tools/build_android.py in the GPU Inspector checkout (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR.");
     }
     const devices = await listDevices(adb);
@@ -726,6 +731,7 @@ export class SessionManager {
     const target = new AndroidTarget({
       adb, serial, package: o.package, activity: o.activity ?? "", port, log: true,
       recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true, layer,
+      plugin: plugin ? (abilist) => pluginAndroidLaunch(plugin, abilist, o.package, { port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true }) : null,
       onLog: (line) => session.appendLog(line),
       onExit: () => session.remoteEnded("exited", "the application exited on the device"),
     });

@@ -51,4 +51,8 @@ else()
             endif()
         endif()
     endif()
+    # On Android the OpenGL ES plugin's library is an OpenGL ES layer (tools/build_android.py).
+    if(ANDROID AND VKINSP_BUILD_PLUGINS)
+        add_subdirectory(src/plugins/gles)
+    endif()
 endif()

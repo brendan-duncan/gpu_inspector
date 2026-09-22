@@ -17,7 +17,7 @@ const out = join(dir, "entry.mjs");
 buildSync({
   stdin: {
     contents: `
-      export { findPlugins, pluginLaunches, pluginInfo, isInside, applyPreloads } from "../main/plugins.ts";
+      export { findPlugins, pluginLaunches, pluginInfo, isInside, applyPreloads, androidPlugins, pluginAndroidLaunch } from "../main/plugins.ts";
       export { backendFor, backendForObjectType, registerBackend, shortTypeName, apiDisplayName, isKnownApi, EMPTY_SETS } from "./backend.ts";
       export { activatePlugin } from "./plugin_host.ts";
       export { setsFor, labelNameOf } from "./command_sets.ts";
@@ -93,6 +93,35 @@ test("a launch gets each plugin's libraries and its settings with the session's 
   const skipped = { LD_PRELOAD: "/usr/lib/theirs.so" };
   assert.match(m.applyPreloads(skipped, [linux], "LD_PRELOAD")[0], /not found/);
   assert.deepEqual(skipped, { LD_PRELOAD: "/usr/lib/theirs.so" }, "an unbuilt plugin changes nothing");
+});
+
+test("an Android launch gets the plugin's layer for the device's first ABI it has, its socket and its properties", () => {
+  const root = join(dir, "android");
+  const p = writePlugin(root, "gles", {
+    id: "gles", name: "OpenGL ES", version: "1", sdk: 1,
+    capture: {
+      android: {
+        glesLayer: "android/lib/${abi}/libcapture.so",
+        socket: "glesinsp:${port}:${package}",
+        properties: { "debug.glesinsp.port": "${port}", "debug.glesinsp.log": "${log}" },
+      },
+    },
+  }, { "android/lib/arm64-v8a/libcapture.so": "" });
+  writePlugin(root, "desktop", { id: "desktop", name: "Desktop", version: "1", sdk: 1, capture: { win32: { inject: ["x.dll"] } } });
+  const plugins = m.findPlugins([root]);
+  assert.deepEqual(m.androidPlugins(plugins).map((x) => x.manifest.id), ["gles"], "only a plugin with an Android layer is offered");
+  const gles = plugins.find((x) => x.manifest.id === "gles");
+  const settings = { port: 47600, log: false, recordAlways: false, stacktraces: false };
+  const launch = m.pluginAndroidLaunch(gles, ["x86_64", "arm64-v8a"], "com.example.game", settings);
+  assert.equal(launch.error, null);
+  assert.equal(launch.library, join(p, "android", "lib", "arm64-v8a", "libcapture.so"));
+  assert.equal(launch.abi, "arm64-v8a");
+  assert.equal(launch.layerName, "libcapture.so");
+  assert.equal(launch.socket, "glesinsp:47600:com.example.game");
+  assert.deepEqual(launch.properties, { "debug.glesinsp.port": "47600", "debug.glesinsp.log": "0" });
+  const none = m.pluginAndroidLaunch(gles, ["armeabi-v7a"], "com.example.game", settings);
+  assert.equal(none.library, null);
+  assert.match(none.error, /no Android library for armeabi-v7a/);
 });
 
 test("a preloaded library goes in front of what the environment already preloads, with its settings", () => {

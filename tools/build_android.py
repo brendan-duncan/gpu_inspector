@@ -11,6 +11,7 @@ Outputs (what the inspector app and src/app/tools/stage_layer.mjs look for):
     build/android/lib/<abi>/libVkLayer_inspector_capture.so
     build/android/gpu_inspector_layer.apk         # the layer packaged as an installable app
     build/android/gpu_inspector_layer.apk.json    # package name, version, ABIs
+    build/plugins/<id>/android/lib/<abi>/*.so     # the plugins' Android libraries (the OpenGL ES layer)
 
 The APK carries no code: it exists so Android 10+ can load the layer into any debuggable app
 through the `gpu_debug_layer_app` setting, the way RenderDoc ships its layer in its own APK.
@@ -139,7 +140,7 @@ def build_layer(abi, ndk, cmake, ninja, build_type):
          "-DANDROID_STL=c++_static",
          f"-DCMAKE_BUILD_TYPE={build_type}",
          "-DVKINSP_BUILD_TESTS=OFF"])
-    run([cmake, "--build", build_dir])
+    run([cmake, "--build", build_dir, "-j", str(max(1, min(os.cpu_count() or 4, 8)))])
     built = os.path.join(build_dir, "bin", LAYER_LIB)
     if not os.path.isfile(built):
         die(f"{built} was not produced")
@@ -147,6 +148,14 @@ def build_layer(abi, ndk, cmake, ninja, build_type):
     os.makedirs(lib_dir, exist_ok=True)
     shutil.copyfile(built, os.path.join(lib_dir, LAYER_LIB))
     print(f"layer: {os.path.join(lib_dir, LAYER_LIB)}")
+    # Plugins with an Android library (src/plugins/*): beside the plugin's desktop build in
+    # build/plugins/<id>, at the android/lib/<abi> its plugin.json names.
+    for lib in glob.glob(os.path.join(build_dir, "plugins", "*", "bin", "*.so")):
+        plugin_id = os.path.basename(os.path.dirname(os.path.dirname(lib)))
+        dest = os.path.join(ROOT, "build", "plugins", plugin_id, "android", "lib", abi)
+        os.makedirs(dest, exist_ok=True)
+        shutil.copyfile(lib, os.path.join(dest, os.path.basename(lib)))
+        print(f"plugin {plugin_id}: {os.path.join(dest, os.path.basename(lib))}")
 
 
 def build_apk(abis, sdk):

@@ -3,16 +3,19 @@
 Captures OpenGL ES 2.0 to 3.2 applications. On Windows OpenGL ES comes two ways, and both are
 captured: from the GPU's own driver, as an OpenGL ES profile context made through WGL (Unity's
 `-force-gles32`), and from ANGLE, the `libEGL.dll` and `libGLESv2.dll` an Electron or Chromium
-application ships. It is the example the plugin SDK (docs/PLUGINS.md) was written
+application ships. On Android (10 and later) it is an OpenGL ES layer, which the system's EGL loads
+into a debuggable application. It is the example the plugin SDK (docs/PLUGINS.md) was written
 against, and it is built and shipped with the app like any other plugin would be.
 
 ```
-plugin.json            the manifest: the backend module, and the library the launcher injects on Windows
-CMakeLists.txt         glesinsp_capture, into build/plugins/gles/bin
+plugin.json            the manifest: the backend module, the library the launcher injects on Windows, the Android layer
+CMakeLists.txt         glesinsp_capture, into build/plugins/gles/bin (tools/build_android.py copies
+                       the Android build to build/plugins/gles/android/lib/<abi>)
 gen/                   the entry points and enum tables, generated from gl.xml (tools/gen_gles.py)
 src/
   platform_win32.cpp   GpuInspectorInitialize; the libraries OpenGL ES comes from hooked as they load
   hooks_wgl.cpp        WGL: OpenGL ES profile contexts, wglMakeCurrent, SwapBuffers, wglGetProcAddress
+  platform_android.cpp Android: the OpenGL ES layer's entry points, AndroidGLESLayer_*
   hooks_egl.cpp        EGL: contexts, surfaces, eglMakeCurrent, eglSwapBuffers, eglGetProcAddress
   hooks_gl.cpp         objects made, described and deleted; what begins, ends and reads a pass
   capture.cpp          the capture: recording, passes, read-backs, the state at each draw
@@ -33,7 +36,9 @@ call code written by hand, which tracks objects and bindings and marks passes. O
 patch exports in place (MinHook) the moment a library loads, so every caller reaches them: ANGLE's
 `libGLESv2.dll`, and `opengl32.dll`'s OpenGL 1.1 exports once an OpenGL ES profile context exists
 (a desktop OpenGL context is never taken on). `eglGetProcAddress` and `wglGetProcAddress` hand out
-the hooks for everything else.
+the hooks for everything else. On Android nothing is patched: the EGL loader asks the layer's
+`AndroidGLESLayer_GetProcAddress` what to call for each entry point, with the next one in the chain,
+and the library answers with its hook and keeps `next` as the real entry point.
 
 **Objects.** Every buffer, texture, renderbuffer, shader, program, sampler, framebuffer, vertex array,
 query, sync, context and surface is announced with its description as it changes: a texture's target,
@@ -52,13 +57,19 @@ which results never reach memory.
 **State.** Every draw and dispatch carries `state`, asked of the driver just before the call ran:
 the program, each attribute with its buffer, format and read-back, the index buffer, each sampler
 uniform's texture with a read-back, each uniform block's buffer range with a read-back, the default
-block's uniform values, and the rasterizer, depth, stencil and blend state. Buffers are read back
-by mapping them in ES 3, from the library's copy of what the application uploaded in ES 2, and from
-client memory for client-side arrays. Each read-back is made once per contents.
+block's uniform values, and the rasterizer, depth, stencil and blend state. In ES 3 a buffer range
+is copied (`glCopyBufferSubData`) into a buffer of the library's own and mapped once the frame is
+over; in ES 2 it comes from the library's copy of what the application uploaded, and client-side
+arrays from client memory. Each read-back is made once per contents. Since a buffer's indices are
+read after the frame, an indexed draw's attributes are read from their offset to the end of their
+buffers, and the inspector finds the vertices the draw reads in the indices.
 
 **Read-backs.** Color targets and textures are read with `glReadPixels` through a framebuffer of the
 library's own: 8-bit formats as RGBA8, float formats as RGBA32F, integer formats as 32-bit integers.
-Multisampled renderbuffers are resolved first, and cube maps are read face by face. A compressed
+Multisampled renderbuffers are resolved first, and cube maps are read face by face. A texture a draw
+samples is copied (`glCopyImageSubData`, ES 3.2 or `EXT`/`OES_copy_image`) into a 2D array texture of
+the library's own and read once the frame is over, so the frame is not stalled mid-pass; without
+copy-image, or when the copy fails, it is read where it is met. A compressed
 texture is sent as the application uploaded its level 0, which the inspector decodes (BC, ETC2, EAC
 and ASTC). Rows are sent top first, so a render target reads the way it appeared on screen.
 
@@ -66,7 +77,7 @@ and ASTC). Rows are sent top first, so a render target reads the way it appeared
 at each end where the counter has bits, else an elapsed-time query around it, which is all ANGLE on
 Direct3D 11 offers; the passes are then placed end to end. The entry points are looked up by
 whichever name the driver has them (NVIDIA's ES context has only the core and desktop names). A pass
-in which textures are read back is timed with the read-back's wait in it. A pass is left untimed while the
+is left untimed while the
 application has an elapsed-time query of its own running, and none are sent when the GPU reports it
 was disjoint.
 
@@ -78,9 +89,7 @@ than lost.
 
 - **Depth and stencil** targets are not read back: OpenGL ES's `glReadPixels` reads color only.
   A depth read-back needs a draw of its own, sampling the depth into a color target.
-- **Android** (a GLES layer, `AndroidGLESLayer_Initialize`) and **Linux** (`LD_PRELOAD`) are what
-  the code is shaped for, and the SDK's server already listens on an abstract socket on Android.
-  Only Windows is written and tested.
+- **Linux** (`LD_PRELOAD`) is what the code is shaped for, but not written. Windows and Android are.
 - **Live image read-back** in the Inspect tab (`RequestImage`) and creation stack traces.
 - **Shader storage buffers, images and atomic counters** bound at a dispatch are not in its state.
 
