@@ -1,3 +1,8 @@
+## v0.22.1
+
+### Fixed
+- The Linux `.deb` did not start after installing or updating to v0.22.0 on Ubuntu 24 and later. Naming the capture layer's `postinst` as electron-builder's `afterInstall` replaced its own install script rather than adding to it, so the package no longer loaded the bundled AppArmor profile, set the mode of `chrome-sandbox` or linked `/usr/bin/gpu-inspector`; without the profile the kernel denied Chromium's sandbox its user namespace and the app exited before its first window. Both scripts now do that work themselves.
+
 ## v0.22.0
 
 ### Added
