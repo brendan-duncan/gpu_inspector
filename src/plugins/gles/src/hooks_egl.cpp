@@ -11,6 +11,10 @@
 
 namespace glesinsp {
 
+#if defined(__linux__) && !defined(__ANDROID__)
+void ResolveEglProcs();   // platform_linux.cpp
+#endif
+
 EglDispatch g_egl{};
 
 namespace {
@@ -54,9 +58,15 @@ void NewSurface(EGLDisplay display, EGLSurface surface, const char* cmd, const c
 EGLContext EGLAPIENTRY Hook_eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share, const EGLint* attribs) {
     EGLContext result = g_egl.eglCreateContext(display, config, share, attribs);
     if (!result) return result;
+    // A desktop OpenGL context (eglBindAPI(EGL_OPENGL_API), which Linux applications use) is not
+    // this library's to capture: it is left alone, and so are its calls.
+    if (g_egl.eglQueryAPI && g_egl.eglQueryAPI() != EGL_OPENGL_ES_API) return result;
     // The inspector's connection comes up with the first context: a process that never makes one
     // (a Vulkan or D3D application the library went into beside the others) leaves the port alone.
     StartServer();
+#if defined(__linux__) && !defined(__ANDROID__)
+    ResolveEglProcs();
+#endif
     auto c = std::make_unique<Context>();
     c->handle = result;
     c->display = display;
@@ -220,6 +230,7 @@ const EglImport kEglImports[] = {
     {"eglGetCurrentContext", (void**)&g_egl.eglGetCurrentContext},
     {"eglGetCurrentSurface", (void**)&g_egl.eglGetCurrentSurface},
     {"eglGetCurrentDisplay", (void**)&g_egl.eglGetCurrentDisplay},
+    {"eglQueryAPI", (void**)&g_egl.eglQueryAPI},
 };
 const size_t kEglImportCount = sizeof(kEglImports) / sizeof(kEglImports[0]);
 
@@ -242,6 +253,29 @@ Drawable EglDrawable(Context* c) {
     d.srgb = colorspace == EGL_GL_COLORSPACE_SRGB;
     return d;
 }
+
+#if defined(__linux__) && !defined(__ANDROID__)
+}  // namespace glesinsp
+
+// Linux: the hooks exported under EGL's own names, for an application linked against libEGL (the
+// library is preloaded), or one that gets them from the handle dlopen("libEGL.so.1") returned, which
+// is this library's (platform_linux.cpp).
+#define GLESINSP_EXPORT extern "C" __attribute__((visibility("default")))
+GLESINSP_EXPORT EGLFuncPtr eglGetProcAddress(const char* name) { return glesinsp::Hook_eglGetProcAddress(name); }
+GLESINSP_EXPORT EGLContext eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext s, const EGLint* a) { return glesinsp::Hook_eglCreateContext(d, c, s, a); }
+GLESINSP_EXPORT EGLBoolean eglDestroyContext(EGLDisplay d, EGLContext c) { return glesinsp::Hook_eglDestroyContext(d, c); }
+GLESINSP_EXPORT EGLBoolean eglMakeCurrent(EGLDisplay d, EGLSurface dr, EGLSurface r, EGLContext c) { return glesinsp::Hook_eglMakeCurrent(d, dr, r, c); }
+GLESINSP_EXPORT EGLBoolean eglSwapBuffers(EGLDisplay d, EGLSurface s) { return glesinsp::Hook_eglSwapBuffers(d, s); }
+GLESINSP_EXPORT EGLBoolean eglSwapBuffersWithDamageKHR(EGLDisplay d, EGLSurface s, const EGLint* r, EGLint n) { return glesinsp::Hook_eglSwapBuffersWithDamageKHR(d, s, r, n); }
+GLESINSP_EXPORT EGLBoolean eglSwapBuffersWithDamageEXT(EGLDisplay d, EGLSurface s, const EGLint* r, EGLint n) { return glesinsp::Hook_eglSwapBuffersWithDamageEXT(d, s, r, n); }
+GLESINSP_EXPORT EGLSurface eglCreateWindowSurface(EGLDisplay d, EGLConfig c, EGLNativeWindowType w, const EGLint* a) { return glesinsp::Hook_eglCreateWindowSurface(d, c, w, a); }
+GLESINSP_EXPORT EGLSurface eglCreatePlatformWindowSurface(EGLDisplay d, EGLConfig c, void* w, const EGLAttrib* a) { return glesinsp::Hook_eglCreatePlatformWindowSurface(d, c, w, a); }
+GLESINSP_EXPORT EGLSurface eglCreatePlatformWindowSurfaceEXT(EGLDisplay d, EGLConfig c, void* w, const EGLint* a) { return glesinsp::Hook_eglCreatePlatformWindowSurfaceEXT(d, c, w, a); }
+GLESINSP_EXPORT EGLSurface eglCreatePbufferSurface(EGLDisplay d, EGLConfig c, const EGLint* a) { return glesinsp::Hook_eglCreatePbufferSurface(d, c, a); }
+GLESINSP_EXPORT EGLBoolean eglDestroySurface(EGLDisplay d, EGLSurface s) { return glesinsp::Hook_eglDestroySurface(d, s); }
+
+namespace glesinsp {
+#endif
 
 void* HookFor(const char* name) {
     static const std::unordered_map<std::string, void*> hooks = [] {

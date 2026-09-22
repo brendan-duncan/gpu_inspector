@@ -498,6 +498,19 @@ def write_hooks(out, cmds, recorded, hooked, groups, enum_groups):
     w("};")
     w("")
     w("}  // namespace glesinsp")
+    w("")
+    # Linux: the library is preloaded, and an application linked against libGLESv2 (or libGL) calls
+    # whichever library exports a name first, so every hook is exported under the command's own name
+    # (src/plugins/gles/src/platform_linux.cpp).
+    w("#if defined(__linux__) && !defined(__ANDROID__)")
+    w('extern "C" {')
+    w("")
+    for c in hooked:
+        ret = "" if c.void else "return "
+        w(f'__attribute__((visibility("default"))) {c.ret} {c.name}({c.sig()}) {{ {ret}glesinsp::Hook_{c.name}({c.args()}); }}')
+    w("")
+    w('}  // extern "C"')
+    w("#endif")
     open(os.path.join(out, "gles_hooks.gen.cpp"), "w", newline="\n").write("\n".join(lines) + "\n")
 
 

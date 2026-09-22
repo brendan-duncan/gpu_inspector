@@ -47,7 +47,7 @@ Pick the one that matches the application you want to inspect.
 | [Metal](METAL.md) | Metal applications on macOS |
 | [Android and Quest](ANDROID.md) | Vulkan applications on Android phones and headsets, over adb |
 | [Web pages and WebGPU](BROWSER.md) | A WebGPU page in Chrome, Edge, Brave or Firefox, captured through the browser's GPU process |
-| [OpenGL ES](GLES.md) | OpenGL ES applications on Android and Windows (the desktop driver's ES contexts, and ANGLE), through the OpenGL ES plugin |
+| [OpenGL ES](GLES.md) | OpenGL ES applications on Windows (the desktop driver's ES contexts, and ANGLE), Linux and Android, through the OpenGL ES plugin |
 
 ## How-to guides
 

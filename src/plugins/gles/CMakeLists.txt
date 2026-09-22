@@ -30,6 +30,19 @@ if(Python3_FOUND)
         VERBATIM)
 endif()
 
+# Linux: the library stands in for the system's libEGL and libGLESv2 (platform_linux.cpp), so it links
+# them, and a dlsym() from its handle finds in them what it does not hook. Without them there is no
+# OpenGL ES to capture, and the plugin is left out.
+if(UNIX AND NOT APPLE AND NOT ANDROID)
+    find_library(GLESINSP_LIBEGL NAMES libEGL.so.1 EGL)
+    find_library(GLESINSP_LIBGLESV2 NAMES libGLESv2.so.2 GLESv2)
+    if(NOT GLESINSP_LIBEGL OR NOT GLESINSP_LIBGLESV2)
+        message(STATUS "OpenGL ES plugin: libEGL.so.1 or libGLESv2.so.2 not found (install libegl1 and libgles2), not built")
+        return()
+    endif()
+    find_package(Threads REQUIRED)
+endif()
+
 if(WIN32 AND NOT TARGET minhook)
     set(MINHOOK_DIR "${GLESINSP_ROOT}/third_party/minhook")
     add_library(minhook STATIC
@@ -65,6 +78,16 @@ elseif(ANDROID)
     target_link_libraries(glesinsp_capture PRIVATE log)
     # 16 KB pages: Android 15+ devices may use them, and a library aligned for 4 KB does not load there.
     target_link_options(glesinsp_capture PRIVATE "-Wl,--no-undefined" "-Wl,-z,max-page-size=16384")
+elseif(UNIX AND NOT APPLE)
+    # Preloaded (LD_PRELOAD): platform_linux.cpp, and GLX's OpenGL ES contexts (hooks_glx.cpp). Only the
+    # entry points it stands in for are exported; --no-as-needed keeps the libraries it links, which it
+    # calls only through dlsym, as its dependencies.
+    target_sources(glesinsp_capture PRIVATE src/platform_linux.cpp src/hooks_glx.cpp)
+    set_target_properties(glesinsp_capture PROPERTIES CXX_VISIBILITY_PRESET hidden VISIBILITY_INLINES_HIDDEN ON)
+    target_link_libraries(glesinsp_capture PRIVATE "-Wl,--no-as-needed" "${GLESINSP_LIBEGL}" "${GLESINSP_LIBGLESV2}" "-Wl,--as-needed"
+                          ${CMAKE_DL_LIBS} Threads::Threads)
+    target_link_options(glesinsp_capture PRIVATE "-Wl,--no-undefined")
+    target_compile_options(glesinsp_capture PRIVATE -Wall -Wno-unused-parameter)
 endif()
 target_include_directories(glesinsp_capture PRIVATE "${GLESINSP_ROOT}/src/sdk/include")
 if(MSVC)

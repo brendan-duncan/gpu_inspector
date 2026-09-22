@@ -1,9 +1,9 @@
-# OpenGL ES (Windows and Android)
+# OpenGL ES (Windows, Linux and Android)
 
 [Docs index](README.md) › OpenGL ES
 
-The inspector captures OpenGL ES applications on Android devices (Android 10 and newer) and on
-Windows. On Windows it catches them whichever way they get OpenGL ES:
+The inspector captures OpenGL ES applications on Windows, on Linux and on Android devices (Android
+10 and newer). On Windows it catches them whichever way they get OpenGL ES:
 
 - **From the GPU's own driver**, as an OpenGL ES context made through WGL. This is what a Unity
   player started with `-force-gles32` or `-force-gles31` does.
@@ -25,6 +25,21 @@ the same way for an application started by something else.
 An application whose ANGLE runs on Vulkan rather than Direct3D 11 is caught by the Vulkan layer
 first, since ANGLE makes its Vulkan device before the application makes a context: what you see
 is then ANGLE's Vulkan calls. Start it with ANGLE's Direct3D 11 backend to see its OpenGL ES.
+
+## Linux
+
+Launch the application as for a Vulkan one. The capture library is preloaded into it
+(`LD_PRELOAD`), and connects when the application makes its first OpenGL ES context: through EGL
+(`libEGL.so.1` and `libGLESv2.so.2`, libglvnd's or Mesa's), or as an OpenGL ES profile context of
+GLX's. It catches an application linked against those libraries, and one that loads them itself
+with `dlopen`, as SDL and GLFW do. A desktop OpenGL context is left alone, through EGL or GLX.
+
+The library is built with the rest on Linux when `libEGL.so.1` and `libGLESv2.so.2` are installed,
+and `test/gles_linux` (which also needs `libegl-dev` and `libgles-dev`) draws the test scene into a
+pbuffer, with no window; `gles_linux --dlopen` loads EGL the way SDL does. An EGL an application
+ships in its own directory, such as Electron's ANGLE, is not the system's and is not captured.
+
+Linux support is new and has not yet been run on a Linux machine.
 
 ## Android
 

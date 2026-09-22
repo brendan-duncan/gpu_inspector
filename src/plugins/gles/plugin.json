@@ -4,11 +4,18 @@
   "version": "0.1.0",
   "sdk": 1,
   "api": "gles",
-  "description": "Captures OpenGL ES 2.0-3.2 applications: WGL and ANGLE on Windows, an OpenGL ES layer on Android.",
+  "description": "Captures OpenGL ES 2.0-3.2 applications: WGL and ANGLE on Windows, EGL and GLX on Linux, an OpenGL ES layer on Android.",
   "backend": "ui/backend.js",
   "capture": {
     "win32": {
       "inject": ["bin/glesinsp_capture.dll"],
+      "env": {
+        "GLESINSP_PORT": "${port}",
+        "GLESINSP_LOG": "${log}"
+      }
+    },
+    "linux": {
+      "preload": ["bin/libglesinsp_capture.so"],
       "env": {
         "GLESINSP_PORT": "${port}",
         "GLESINSP_LOG": "${log}"

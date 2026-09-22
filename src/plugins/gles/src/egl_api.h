@@ -42,6 +42,8 @@ typedef void (*EGLFuncPtr)(void);
 #define EGL_GL_COLORSPACE_SRGB 0x3089
 #define EGL_CONTEXT_CLIENT_VERSION 0x3098
 #define EGL_CONTEXT_MINOR_VERSION 0x30FB
+#define EGL_CONTEXT_CLIENT_TYPE 0x3097
+#define EGL_OPENGL_ES_API 0x30A0
 #define EGL_CONFIG_ID 0x3028
 #define EGL_RENDER_BUFFER 0x3086
 #define EGL_BACK_BUFFER 0x3084
@@ -64,6 +66,7 @@ typedef EGLBoolean (EGLAPIENTRY* PFN_eglGetConfigAttrib)(EGLDisplay, EGLConfig, 
 typedef EGLContext (EGLAPIENTRY* PFN_eglGetCurrentContext)(void);
 typedef EGLSurface (EGLAPIENTRY* PFN_eglGetCurrentSurface)(EGLint);
 typedef EGLDisplay (EGLAPIENTRY* PFN_eglGetCurrentDisplay)(void);
+typedef EGLenum (EGLAPIENTRY* PFN_eglQueryAPI)(void);
 
 namespace glesinsp {
 
@@ -86,6 +89,7 @@ struct EglDispatch {
     PFN_eglGetCurrentContext eglGetCurrentContext;
     PFN_eglGetCurrentSurface eglGetCurrentSurface;
     PFN_eglGetCurrentDisplay eglGetCurrentDisplay;
+    PFN_eglQueryAPI eglQueryAPI;
 };
 
 extern EglDispatch g_egl;

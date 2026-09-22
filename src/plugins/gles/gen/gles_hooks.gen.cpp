@@ -9061,3 +9061,457 @@ const HookEntry kHooks[kHookCount] = {
 };
 
 }  // namespace glesinsp
+
+#if defined(__linux__) && !defined(__ANDROID__)
+extern "C" {
+
+__attribute__((visibility("default"))) void glActiveTexture(GLenum texture) { glesinsp::Hook_glActiveTexture(texture); }
+__attribute__((visibility("default"))) void glAttachShader(GLuint program, GLuint shader) { glesinsp::Hook_glAttachShader(program, shader); }
+__attribute__((visibility("default"))) void glBindAttribLocation(GLuint program, GLuint index, const GLchar *name) { glesinsp::Hook_glBindAttribLocation(program, index, name); }
+__attribute__((visibility("default"))) void glBindBuffer(GLenum target, GLuint buffer) { glesinsp::Hook_glBindBuffer(target, buffer); }
+__attribute__((visibility("default"))) void glBindFramebuffer(GLenum target, GLuint framebuffer) { glesinsp::Hook_glBindFramebuffer(target, framebuffer); }
+__attribute__((visibility("default"))) void glBindRenderbuffer(GLenum target, GLuint renderbuffer) { glesinsp::Hook_glBindRenderbuffer(target, renderbuffer); }
+__attribute__((visibility("default"))) void glBindTexture(GLenum target, GLuint texture) { glesinsp::Hook_glBindTexture(target, texture); }
+__attribute__((visibility("default"))) void glBlendColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) { glesinsp::Hook_glBlendColor(red, green, blue, alpha); }
+__attribute__((visibility("default"))) void glBlendEquation(GLenum mode) { glesinsp::Hook_glBlendEquation(mode); }
+__attribute__((visibility("default"))) void glBlendEquationSeparate(GLenum modeRGB, GLenum modeAlpha) { glesinsp::Hook_glBlendEquationSeparate(modeRGB, modeAlpha); }
+__attribute__((visibility("default"))) void glBlendFunc(GLenum sfactor, GLenum dfactor) { glesinsp::Hook_glBlendFunc(sfactor, dfactor); }
+__attribute__((visibility("default"))) void glBlendFuncSeparate(GLenum sfactorRGB, GLenum dfactorRGB, GLenum sfactorAlpha, GLenum dfactorAlpha) { glesinsp::Hook_glBlendFuncSeparate(sfactorRGB, dfactorRGB, sfactorAlpha, dfactorAlpha); }
+__attribute__((visibility("default"))) void glBufferData(GLenum target, GLsizeiptr size, const void *data, GLenum usage) { glesinsp::Hook_glBufferData(target, size, data, usage); }
+__attribute__((visibility("default"))) void glBufferSubData(GLenum target, GLintptr offset, GLsizeiptr size, const void *data) { glesinsp::Hook_glBufferSubData(target, offset, size, data); }
+__attribute__((visibility("default"))) void glClear(GLbitfield mask) { glesinsp::Hook_glClear(mask); }
+__attribute__((visibility("default"))) void glClearColor(GLfloat red, GLfloat green, GLfloat blue, GLfloat alpha) { glesinsp::Hook_glClearColor(red, green, blue, alpha); }
+__attribute__((visibility("default"))) void glClearDepthf(GLfloat d) { glesinsp::Hook_glClearDepthf(d); }
+__attribute__((visibility("default"))) void glClearStencil(GLint s) { glesinsp::Hook_glClearStencil(s); }
+__attribute__((visibility("default"))) void glColorMask(GLboolean red, GLboolean green, GLboolean blue, GLboolean alpha) { glesinsp::Hook_glColorMask(red, green, blue, alpha); }
+__attribute__((visibility("default"))) void glCompileShader(GLuint shader) { glesinsp::Hook_glCompileShader(shader); }
+__attribute__((visibility("default"))) void glCompressedTexImage2D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLint border, GLsizei imageSize, const void *data) { glesinsp::Hook_glCompressedTexImage2D(target, level, internalformat, width, height, border, imageSize, data); }
+__attribute__((visibility("default"))) void glCompressedTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLsizei imageSize, const void *data) { glesinsp::Hook_glCompressedTexSubImage2D(target, level, xoffset, yoffset, width, height, format, imageSize, data); }
+__attribute__((visibility("default"))) void glCopyTexImage2D(GLenum target, GLint level, GLenum internalformat, GLint x, GLint y, GLsizei width, GLsizei height, GLint border) { glesinsp::Hook_glCopyTexImage2D(target, level, internalformat, x, y, width, height, border); }
+__attribute__((visibility("default"))) void glCopyTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint x, GLint y, GLsizei width, GLsizei height) { glesinsp::Hook_glCopyTexSubImage2D(target, level, xoffset, yoffset, x, y, width, height); }
+__attribute__((visibility("default"))) GLuint glCreateProgram(void) { return glesinsp::Hook_glCreateProgram(); }
+__attribute__((visibility("default"))) GLuint glCreateShader(GLenum type) { return glesinsp::Hook_glCreateShader(type); }
+__attribute__((visibility("default"))) void glCullFace(GLenum mode) { glesinsp::Hook_glCullFace(mode); }
+__attribute__((visibility("default"))) void glDeleteBuffers(GLsizei n, const GLuint *buffers) { glesinsp::Hook_glDeleteBuffers(n, buffers); }
+__attribute__((visibility("default"))) void glDeleteFramebuffers(GLsizei n, const GLuint *framebuffers) { glesinsp::Hook_glDeleteFramebuffers(n, framebuffers); }
+__attribute__((visibility("default"))) void glDeleteProgram(GLuint program) { glesinsp::Hook_glDeleteProgram(program); }
+__attribute__((visibility("default"))) void glDeleteRenderbuffers(GLsizei n, const GLuint *renderbuffers) { glesinsp::Hook_glDeleteRenderbuffers(n, renderbuffers); }
+__attribute__((visibility("default"))) void glDeleteShader(GLuint shader) { glesinsp::Hook_glDeleteShader(shader); }
+__attribute__((visibility("default"))) void glDeleteTextures(GLsizei n, const GLuint *textures) { glesinsp::Hook_glDeleteTextures(n, textures); }
+__attribute__((visibility("default"))) void glDepthFunc(GLenum func) { glesinsp::Hook_glDepthFunc(func); }
+__attribute__((visibility("default"))) void glDepthMask(GLboolean flag) { glesinsp::Hook_glDepthMask(flag); }
+__attribute__((visibility("default"))) void glDepthRangef(GLfloat n, GLfloat f) { glesinsp::Hook_glDepthRangef(n, f); }
+__attribute__((visibility("default"))) void glDetachShader(GLuint program, GLuint shader) { glesinsp::Hook_glDetachShader(program, shader); }
+__attribute__((visibility("default"))) void glDisable(GLenum cap) { glesinsp::Hook_glDisable(cap); }
+__attribute__((visibility("default"))) void glDisableVertexAttribArray(GLuint index) { glesinsp::Hook_glDisableVertexAttribArray(index); }
+__attribute__((visibility("default"))) void glDrawArrays(GLenum mode, GLint first, GLsizei count) { glesinsp::Hook_glDrawArrays(mode, first, count); }
+__attribute__((visibility("default"))) void glDrawElements(GLenum mode, GLsizei count, GLenum type, const void *indices) { glesinsp::Hook_glDrawElements(mode, count, type, indices); }
+__attribute__((visibility("default"))) void glEnable(GLenum cap) { glesinsp::Hook_glEnable(cap); }
+__attribute__((visibility("default"))) void glEnableVertexAttribArray(GLuint index) { glesinsp::Hook_glEnableVertexAttribArray(index); }
+__attribute__((visibility("default"))) void glFinish(void) { glesinsp::Hook_glFinish(); }
+__attribute__((visibility("default"))) void glFlush(void) { glesinsp::Hook_glFlush(); }
+__attribute__((visibility("default"))) void glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) { glesinsp::Hook_glFramebufferRenderbuffer(target, attachment, renderbuffertarget, renderbuffer); }
+__attribute__((visibility("default"))) void glFramebufferTexture2D(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level) { glesinsp::Hook_glFramebufferTexture2D(target, attachment, textarget, texture, level); }
+__attribute__((visibility("default"))) void glFrontFace(GLenum mode) { glesinsp::Hook_glFrontFace(mode); }
+__attribute__((visibility("default"))) void glGenBuffers(GLsizei n, GLuint *buffers) { glesinsp::Hook_glGenBuffers(n, buffers); }
+__attribute__((visibility("default"))) void glGenerateMipmap(GLenum target) { glesinsp::Hook_glGenerateMipmap(target); }
+__attribute__((visibility("default"))) void glGenFramebuffers(GLsizei n, GLuint *framebuffers) { glesinsp::Hook_glGenFramebuffers(n, framebuffers); }
+__attribute__((visibility("default"))) void glGenRenderbuffers(GLsizei n, GLuint *renderbuffers) { glesinsp::Hook_glGenRenderbuffers(n, renderbuffers); }
+__attribute__((visibility("default"))) void glGenTextures(GLsizei n, GLuint *textures) { glesinsp::Hook_glGenTextures(n, textures); }
+__attribute__((visibility("default"))) GLenum glGetError(void) { return glesinsp::Hook_glGetError(); }
+__attribute__((visibility("default"))) void glHint(GLenum target, GLenum mode) { glesinsp::Hook_glHint(target, mode); }
+__attribute__((visibility("default"))) void glLineWidth(GLfloat width) { glesinsp::Hook_glLineWidth(width); }
+__attribute__((visibility("default"))) void glLinkProgram(GLuint program) { glesinsp::Hook_glLinkProgram(program); }
+__attribute__((visibility("default"))) void glPixelStorei(GLenum pname, GLint param) { glesinsp::Hook_glPixelStorei(pname, param); }
+__attribute__((visibility("default"))) void glPolygonOffset(GLfloat factor, GLfloat units) { glesinsp::Hook_glPolygonOffset(factor, units); }
+__attribute__((visibility("default"))) void glReadPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, void *pixels) { glesinsp::Hook_glReadPixels(x, y, width, height, format, type, pixels); }
+__attribute__((visibility("default"))) void glReleaseShaderCompiler(void) { glesinsp::Hook_glReleaseShaderCompiler(); }
+__attribute__((visibility("default"))) void glRenderbufferStorage(GLenum target, GLenum internalformat, GLsizei width, GLsizei height) { glesinsp::Hook_glRenderbufferStorage(target, internalformat, width, height); }
+__attribute__((visibility("default"))) void glSampleCoverage(GLfloat value, GLboolean invert) { glesinsp::Hook_glSampleCoverage(value, invert); }
+__attribute__((visibility("default"))) void glScissor(GLint x, GLint y, GLsizei width, GLsizei height) { glesinsp::Hook_glScissor(x, y, width, height); }
+__attribute__((visibility("default"))) void glShaderBinary(GLsizei count, const GLuint *shaders, GLenum binaryFormat, const void *binary, GLsizei length) { glesinsp::Hook_glShaderBinary(count, shaders, binaryFormat, binary, length); }
+__attribute__((visibility("default"))) void glShaderSource(GLuint shader, GLsizei count, const GLchar *const*string, const GLint *length) { glesinsp::Hook_glShaderSource(shader, count, string, length); }
+__attribute__((visibility("default"))) void glStencilFunc(GLenum func, GLint ref, GLuint mask) { glesinsp::Hook_glStencilFunc(func, ref, mask); }
+__attribute__((visibility("default"))) void glStencilFuncSeparate(GLenum face, GLenum func, GLint ref, GLuint mask) { glesinsp::Hook_glStencilFuncSeparate(face, func, ref, mask); }
+__attribute__((visibility("default"))) void glStencilMask(GLuint mask) { glesinsp::Hook_glStencilMask(mask); }
+__attribute__((visibility("default"))) void glStencilMaskSeparate(GLenum face, GLuint mask) { glesinsp::Hook_glStencilMaskSeparate(face, mask); }
+__attribute__((visibility("default"))) void glStencilOp(GLenum fail, GLenum zfail, GLenum zpass) { glesinsp::Hook_glStencilOp(fail, zfail, zpass); }
+__attribute__((visibility("default"))) void glStencilOpSeparate(GLenum face, GLenum sfail, GLenum dpfail, GLenum dppass) { glesinsp::Hook_glStencilOpSeparate(face, sfail, dpfail, dppass); }
+__attribute__((visibility("default"))) void glTexImage2D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLint border, GLenum format, GLenum type, const void *pixels) { glesinsp::Hook_glTexImage2D(target, level, internalformat, width, height, border, format, type, pixels); }
+__attribute__((visibility("default"))) void glTexParameterf(GLenum target, GLenum pname, GLfloat param) { glesinsp::Hook_glTexParameterf(target, pname, param); }
+__attribute__((visibility("default"))) void glTexParameterfv(GLenum target, GLenum pname, const GLfloat *params) { glesinsp::Hook_glTexParameterfv(target, pname, params); }
+__attribute__((visibility("default"))) void glTexParameteri(GLenum target, GLenum pname, GLint param) { glesinsp::Hook_glTexParameteri(target, pname, param); }
+__attribute__((visibility("default"))) void glTexParameteriv(GLenum target, GLenum pname, const GLint *params) { glesinsp::Hook_glTexParameteriv(target, pname, params); }
+__attribute__((visibility("default"))) void glTexSubImage2D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLsizei width, GLsizei height, GLenum format, GLenum type, const void *pixels) { glesinsp::Hook_glTexSubImage2D(target, level, xoffset, yoffset, width, height, format, type, pixels); }
+__attribute__((visibility("default"))) void glUniform1f(GLint location, GLfloat v0) { glesinsp::Hook_glUniform1f(location, v0); }
+__attribute__((visibility("default"))) void glUniform1fv(GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glUniform1fv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform1i(GLint location, GLint v0) { glesinsp::Hook_glUniform1i(location, v0); }
+__attribute__((visibility("default"))) void glUniform1iv(GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glUniform1iv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform2f(GLint location, GLfloat v0, GLfloat v1) { glesinsp::Hook_glUniform2f(location, v0, v1); }
+__attribute__((visibility("default"))) void glUniform2fv(GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glUniform2fv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform2i(GLint location, GLint v0, GLint v1) { glesinsp::Hook_glUniform2i(location, v0, v1); }
+__attribute__((visibility("default"))) void glUniform2iv(GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glUniform2iv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform3f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2) { glesinsp::Hook_glUniform3f(location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glUniform3fv(GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glUniform3fv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform3i(GLint location, GLint v0, GLint v1, GLint v2) { glesinsp::Hook_glUniform3i(location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glUniform3iv(GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glUniform3iv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform4f(GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) { glesinsp::Hook_glUniform4f(location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glUniform4fv(GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glUniform4fv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform4i(GLint location, GLint v0, GLint v1, GLint v2, GLint v3) { glesinsp::Hook_glUniform4i(location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glUniform4iv(GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glUniform4iv(location, count, value); }
+__attribute__((visibility("default"))) void glUniformMatrix2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix2fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUniformMatrix3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix3fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUniformMatrix4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix4fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUseProgram(GLuint program) { glesinsp::Hook_glUseProgram(program); }
+__attribute__((visibility("default"))) void glValidateProgram(GLuint program) { glesinsp::Hook_glValidateProgram(program); }
+__attribute__((visibility("default"))) void glVertexAttrib1f(GLuint index, GLfloat x) { glesinsp::Hook_glVertexAttrib1f(index, x); }
+__attribute__((visibility("default"))) void glVertexAttrib1fv(GLuint index, const GLfloat *v) { glesinsp::Hook_glVertexAttrib1fv(index, v); }
+__attribute__((visibility("default"))) void glVertexAttrib2f(GLuint index, GLfloat x, GLfloat y) { glesinsp::Hook_glVertexAttrib2f(index, x, y); }
+__attribute__((visibility("default"))) void glVertexAttrib2fv(GLuint index, const GLfloat *v) { glesinsp::Hook_glVertexAttrib2fv(index, v); }
+__attribute__((visibility("default"))) void glVertexAttrib3f(GLuint index, GLfloat x, GLfloat y, GLfloat z) { glesinsp::Hook_glVertexAttrib3f(index, x, y, z); }
+__attribute__((visibility("default"))) void glVertexAttrib3fv(GLuint index, const GLfloat *v) { glesinsp::Hook_glVertexAttrib3fv(index, v); }
+__attribute__((visibility("default"))) void glVertexAttrib4f(GLuint index, GLfloat x, GLfloat y, GLfloat z, GLfloat w) { glesinsp::Hook_glVertexAttrib4f(index, x, y, z, w); }
+__attribute__((visibility("default"))) void glVertexAttrib4fv(GLuint index, const GLfloat *v) { glesinsp::Hook_glVertexAttrib4fv(index, v); }
+__attribute__((visibility("default"))) void glVertexAttribPointer(GLuint index, GLint size, GLenum type, GLboolean normalized, GLsizei stride, const void *pointer) { glesinsp::Hook_glVertexAttribPointer(index, size, type, normalized, stride, pointer); }
+__attribute__((visibility("default"))) void glViewport(GLint x, GLint y, GLsizei width, GLsizei height) { glesinsp::Hook_glViewport(x, y, width, height); }
+__attribute__((visibility("default"))) void glReadBuffer(GLenum src) { glesinsp::Hook_glReadBuffer(src); }
+__attribute__((visibility("default"))) void glDrawRangeElements(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices) { glesinsp::Hook_glDrawRangeElements(mode, start, end, count, type, indices); }
+__attribute__((visibility("default"))) void glTexImage3D(GLenum target, GLint level, GLint internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels) { glesinsp::Hook_glTexImage3D(target, level, internalformat, width, height, depth, border, format, type, pixels); }
+__attribute__((visibility("default"))) void glTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void *pixels) { glesinsp::Hook_glTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels); }
+__attribute__((visibility("default"))) void glCopyTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height) { glesinsp::Hook_glCopyTexSubImage3D(target, level, xoffset, yoffset, zoffset, x, y, width, height); }
+__attribute__((visibility("default"))) void glCompressedTexImage3D(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, const void *data) { glesinsp::Hook_glCompressedTexImage3D(target, level, internalformat, width, height, depth, border, imageSize, data); }
+__attribute__((visibility("default"))) void glCompressedTexSubImage3D(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, const void *data) { glesinsp::Hook_glCompressedTexSubImage3D(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize, data); }
+__attribute__((visibility("default"))) void glGenQueries(GLsizei n, GLuint *ids) { glesinsp::Hook_glGenQueries(n, ids); }
+__attribute__((visibility("default"))) void glDeleteQueries(GLsizei n, const GLuint *ids) { glesinsp::Hook_glDeleteQueries(n, ids); }
+__attribute__((visibility("default"))) void glBeginQuery(GLenum target, GLuint id) { glesinsp::Hook_glBeginQuery(target, id); }
+__attribute__((visibility("default"))) void glEndQuery(GLenum target) { glesinsp::Hook_glEndQuery(target); }
+__attribute__((visibility("default"))) GLboolean glUnmapBuffer(GLenum target) { return glesinsp::Hook_glUnmapBuffer(target); }
+__attribute__((visibility("default"))) void glDrawBuffers(GLsizei n, const GLenum *bufs) { glesinsp::Hook_glDrawBuffers(n, bufs); }
+__attribute__((visibility("default"))) void glUniformMatrix2x3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix2x3fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUniformMatrix3x2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix3x2fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUniformMatrix2x4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix2x4fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUniformMatrix4x2fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix4x2fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUniformMatrix3x4fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix3x4fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUniformMatrix4x3fv(GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glUniformMatrix4x3fv(location, count, transpose, value); }
+__attribute__((visibility("default"))) void glBlitFramebuffer(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) { glesinsp::Hook_glBlitFramebuffer(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter); }
+__attribute__((visibility("default"))) void glRenderbufferStorageMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height) { glesinsp::Hook_glRenderbufferStorageMultisample(target, samples, internalformat, width, height); }
+__attribute__((visibility("default"))) void glFramebufferTextureLayer(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint layer) { glesinsp::Hook_glFramebufferTextureLayer(target, attachment, texture, level, layer); }
+__attribute__((visibility("default"))) void * glMapBufferRange(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) { return glesinsp::Hook_glMapBufferRange(target, offset, length, access); }
+__attribute__((visibility("default"))) void glFlushMappedBufferRange(GLenum target, GLintptr offset, GLsizeiptr length) { glesinsp::Hook_glFlushMappedBufferRange(target, offset, length); }
+__attribute__((visibility("default"))) void glBindVertexArray(GLuint array) { glesinsp::Hook_glBindVertexArray(array); }
+__attribute__((visibility("default"))) void glDeleteVertexArrays(GLsizei n, const GLuint *arrays) { glesinsp::Hook_glDeleteVertexArrays(n, arrays); }
+__attribute__((visibility("default"))) void glGenVertexArrays(GLsizei n, GLuint *arrays) { glesinsp::Hook_glGenVertexArrays(n, arrays); }
+__attribute__((visibility("default"))) void glBeginTransformFeedback(GLenum primitiveMode) { glesinsp::Hook_glBeginTransformFeedback(primitiveMode); }
+__attribute__((visibility("default"))) void glEndTransformFeedback(void) { glesinsp::Hook_glEndTransformFeedback(); }
+__attribute__((visibility("default"))) void glBindBufferRange(GLenum target, GLuint index, GLuint buffer, GLintptr offset, GLsizeiptr size) { glesinsp::Hook_glBindBufferRange(target, index, buffer, offset, size); }
+__attribute__((visibility("default"))) void glBindBufferBase(GLenum target, GLuint index, GLuint buffer) { glesinsp::Hook_glBindBufferBase(target, index, buffer); }
+__attribute__((visibility("default"))) void glTransformFeedbackVaryings(GLuint program, GLsizei count, const GLchar *const*varyings, GLenum bufferMode) { glesinsp::Hook_glTransformFeedbackVaryings(program, count, varyings, bufferMode); }
+__attribute__((visibility("default"))) void glVertexAttribIPointer(GLuint index, GLint size, GLenum type, GLsizei stride, const void *pointer) { glesinsp::Hook_glVertexAttribIPointer(index, size, type, stride, pointer); }
+__attribute__((visibility("default"))) void glVertexAttribI4i(GLuint index, GLint x, GLint y, GLint z, GLint w) { glesinsp::Hook_glVertexAttribI4i(index, x, y, z, w); }
+__attribute__((visibility("default"))) void glVertexAttribI4ui(GLuint index, GLuint x, GLuint y, GLuint z, GLuint w) { glesinsp::Hook_glVertexAttribI4ui(index, x, y, z, w); }
+__attribute__((visibility("default"))) void glVertexAttribI4iv(GLuint index, const GLint *v) { glesinsp::Hook_glVertexAttribI4iv(index, v); }
+__attribute__((visibility("default"))) void glVertexAttribI4uiv(GLuint index, const GLuint *v) { glesinsp::Hook_glVertexAttribI4uiv(index, v); }
+__attribute__((visibility("default"))) void glUniform1ui(GLint location, GLuint v0) { glesinsp::Hook_glUniform1ui(location, v0); }
+__attribute__((visibility("default"))) void glUniform2ui(GLint location, GLuint v0, GLuint v1) { glesinsp::Hook_glUniform2ui(location, v0, v1); }
+__attribute__((visibility("default"))) void glUniform3ui(GLint location, GLuint v0, GLuint v1, GLuint v2) { glesinsp::Hook_glUniform3ui(location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glUniform4ui(GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3) { glesinsp::Hook_glUniform4ui(location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glUniform1uiv(GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glUniform1uiv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform2uiv(GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glUniform2uiv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform3uiv(GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glUniform3uiv(location, count, value); }
+__attribute__((visibility("default"))) void glUniform4uiv(GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glUniform4uiv(location, count, value); }
+__attribute__((visibility("default"))) void glClearBufferiv(GLenum buffer, GLint drawbuffer, const GLint *value) { glesinsp::Hook_glClearBufferiv(buffer, drawbuffer, value); }
+__attribute__((visibility("default"))) void glClearBufferuiv(GLenum buffer, GLint drawbuffer, const GLuint *value) { glesinsp::Hook_glClearBufferuiv(buffer, drawbuffer, value); }
+__attribute__((visibility("default"))) void glClearBufferfv(GLenum buffer, GLint drawbuffer, const GLfloat *value) { glesinsp::Hook_glClearBufferfv(buffer, drawbuffer, value); }
+__attribute__((visibility("default"))) void glClearBufferfi(GLenum buffer, GLint drawbuffer, GLfloat depth, GLint stencil) { glesinsp::Hook_glClearBufferfi(buffer, drawbuffer, depth, stencil); }
+__attribute__((visibility("default"))) void glCopyBufferSubData(GLenum readTarget, GLenum writeTarget, GLintptr readOffset, GLintptr writeOffset, GLsizeiptr size) { glesinsp::Hook_glCopyBufferSubData(readTarget, writeTarget, readOffset, writeOffset, size); }
+__attribute__((visibility("default"))) void glUniformBlockBinding(GLuint program, GLuint uniformBlockIndex, GLuint uniformBlockBinding) { glesinsp::Hook_glUniformBlockBinding(program, uniformBlockIndex, uniformBlockBinding); }
+__attribute__((visibility("default"))) void glDrawArraysInstanced(GLenum mode, GLint first, GLsizei count, GLsizei instancecount) { glesinsp::Hook_glDrawArraysInstanced(mode, first, count, instancecount); }
+__attribute__((visibility("default"))) void glDrawElementsInstanced(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount) { glesinsp::Hook_glDrawElementsInstanced(mode, count, type, indices, instancecount); }
+__attribute__((visibility("default"))) GLsync glFenceSync(GLenum condition, GLbitfield flags) { return glesinsp::Hook_glFenceSync(condition, flags); }
+__attribute__((visibility("default"))) void glDeleteSync(GLsync sync) { glesinsp::Hook_glDeleteSync(sync); }
+__attribute__((visibility("default"))) GLenum glClientWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) { return glesinsp::Hook_glClientWaitSync(sync, flags, timeout); }
+__attribute__((visibility("default"))) void glWaitSync(GLsync sync, GLbitfield flags, GLuint64 timeout) { glesinsp::Hook_glWaitSync(sync, flags, timeout); }
+__attribute__((visibility("default"))) void glGenSamplers(GLsizei count, GLuint *samplers) { glesinsp::Hook_glGenSamplers(count, samplers); }
+__attribute__((visibility("default"))) void glDeleteSamplers(GLsizei count, const GLuint *samplers) { glesinsp::Hook_glDeleteSamplers(count, samplers); }
+__attribute__((visibility("default"))) void glBindSampler(GLuint unit, GLuint sampler) { glesinsp::Hook_glBindSampler(unit, sampler); }
+__attribute__((visibility("default"))) void glSamplerParameteri(GLuint sampler, GLenum pname, GLint param) { glesinsp::Hook_glSamplerParameteri(sampler, pname, param); }
+__attribute__((visibility("default"))) void glSamplerParameteriv(GLuint sampler, GLenum pname, const GLint *param) { glesinsp::Hook_glSamplerParameteriv(sampler, pname, param); }
+__attribute__((visibility("default"))) void glSamplerParameterf(GLuint sampler, GLenum pname, GLfloat param) { glesinsp::Hook_glSamplerParameterf(sampler, pname, param); }
+__attribute__((visibility("default"))) void glSamplerParameterfv(GLuint sampler, GLenum pname, const GLfloat *param) { glesinsp::Hook_glSamplerParameterfv(sampler, pname, param); }
+__attribute__((visibility("default"))) void glVertexAttribDivisor(GLuint index, GLuint divisor) { glesinsp::Hook_glVertexAttribDivisor(index, divisor); }
+__attribute__((visibility("default"))) void glBindTransformFeedback(GLenum target, GLuint id) { glesinsp::Hook_glBindTransformFeedback(target, id); }
+__attribute__((visibility("default"))) void glDeleteTransformFeedbacks(GLsizei n, const GLuint *ids) { glesinsp::Hook_glDeleteTransformFeedbacks(n, ids); }
+__attribute__((visibility("default"))) void glGenTransformFeedbacks(GLsizei n, GLuint *ids) { glesinsp::Hook_glGenTransformFeedbacks(n, ids); }
+__attribute__((visibility("default"))) void glPauseTransformFeedback(void) { glesinsp::Hook_glPauseTransformFeedback(); }
+__attribute__((visibility("default"))) void glResumeTransformFeedback(void) { glesinsp::Hook_glResumeTransformFeedback(); }
+__attribute__((visibility("default"))) void glProgramBinary(GLuint program, GLenum binaryFormat, const void *binary, GLsizei length) { glesinsp::Hook_glProgramBinary(program, binaryFormat, binary, length); }
+__attribute__((visibility("default"))) void glProgramParameteri(GLuint program, GLenum pname, GLint value) { glesinsp::Hook_glProgramParameteri(program, pname, value); }
+__attribute__((visibility("default"))) void glInvalidateFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments) { glesinsp::Hook_glInvalidateFramebuffer(target, numAttachments, attachments); }
+__attribute__((visibility("default"))) void glInvalidateSubFramebuffer(GLenum target, GLsizei numAttachments, const GLenum *attachments, GLint x, GLint y, GLsizei width, GLsizei height) { glesinsp::Hook_glInvalidateSubFramebuffer(target, numAttachments, attachments, x, y, width, height); }
+__attribute__((visibility("default"))) void glTexStorage2D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height) { glesinsp::Hook_glTexStorage2D(target, levels, internalformat, width, height); }
+__attribute__((visibility("default"))) void glTexStorage3D(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth) { glesinsp::Hook_glTexStorage3D(target, levels, internalformat, width, height, depth); }
+__attribute__((visibility("default"))) void glDispatchCompute(GLuint num_groups_x, GLuint num_groups_y, GLuint num_groups_z) { glesinsp::Hook_glDispatchCompute(num_groups_x, num_groups_y, num_groups_z); }
+__attribute__((visibility("default"))) void glDispatchComputeIndirect(GLintptr indirect) { glesinsp::Hook_glDispatchComputeIndirect(indirect); }
+__attribute__((visibility("default"))) void glDrawArraysIndirect(GLenum mode, const void *indirect) { glesinsp::Hook_glDrawArraysIndirect(mode, indirect); }
+__attribute__((visibility("default"))) void glDrawElementsIndirect(GLenum mode, GLenum type, const void *indirect) { glesinsp::Hook_glDrawElementsIndirect(mode, type, indirect); }
+__attribute__((visibility("default"))) void glFramebufferParameteri(GLenum target, GLenum pname, GLint param) { glesinsp::Hook_glFramebufferParameteri(target, pname, param); }
+__attribute__((visibility("default"))) void glUseProgramStages(GLuint pipeline, GLbitfield stages, GLuint program) { glesinsp::Hook_glUseProgramStages(pipeline, stages, program); }
+__attribute__((visibility("default"))) void glActiveShaderProgram(GLuint pipeline, GLuint program) { glesinsp::Hook_glActiveShaderProgram(pipeline, program); }
+__attribute__((visibility("default"))) GLuint glCreateShaderProgramv(GLenum type, GLsizei count, const GLchar *const*strings) { return glesinsp::Hook_glCreateShaderProgramv(type, count, strings); }
+__attribute__((visibility("default"))) void glBindProgramPipeline(GLuint pipeline) { glesinsp::Hook_glBindProgramPipeline(pipeline); }
+__attribute__((visibility("default"))) void glDeleteProgramPipelines(GLsizei n, const GLuint *pipelines) { glesinsp::Hook_glDeleteProgramPipelines(n, pipelines); }
+__attribute__((visibility("default"))) void glGenProgramPipelines(GLsizei n, GLuint *pipelines) { glesinsp::Hook_glGenProgramPipelines(n, pipelines); }
+__attribute__((visibility("default"))) void glProgramUniform1i(GLuint program, GLint location, GLint v0) { glesinsp::Hook_glProgramUniform1i(program, location, v0); }
+__attribute__((visibility("default"))) void glProgramUniform2i(GLuint program, GLint location, GLint v0, GLint v1) { glesinsp::Hook_glProgramUniform2i(program, location, v0, v1); }
+__attribute__((visibility("default"))) void glProgramUniform3i(GLuint program, GLint location, GLint v0, GLint v1, GLint v2) { glesinsp::Hook_glProgramUniform3i(program, location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glProgramUniform4i(GLuint program, GLint location, GLint v0, GLint v1, GLint v2, GLint v3) { glesinsp::Hook_glProgramUniform4i(program, location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glProgramUniform1ui(GLuint program, GLint location, GLuint v0) { glesinsp::Hook_glProgramUniform1ui(program, location, v0); }
+__attribute__((visibility("default"))) void glProgramUniform2ui(GLuint program, GLint location, GLuint v0, GLuint v1) { glesinsp::Hook_glProgramUniform2ui(program, location, v0, v1); }
+__attribute__((visibility("default"))) void glProgramUniform3ui(GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2) { glesinsp::Hook_glProgramUniform3ui(program, location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glProgramUniform4ui(GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3) { glesinsp::Hook_glProgramUniform4ui(program, location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glProgramUniform1f(GLuint program, GLint location, GLfloat v0) { glesinsp::Hook_glProgramUniform1f(program, location, v0); }
+__attribute__((visibility("default"))) void glProgramUniform2f(GLuint program, GLint location, GLfloat v0, GLfloat v1) { glesinsp::Hook_glProgramUniform2f(program, location, v0, v1); }
+__attribute__((visibility("default"))) void glProgramUniform3f(GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2) { glesinsp::Hook_glProgramUniform3f(program, location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glProgramUniform4f(GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) { glesinsp::Hook_glProgramUniform4f(program, location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glProgramUniform1iv(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform1iv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform2iv(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform2iv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform3iv(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform3iv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform4iv(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform4iv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform1uiv(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform1uiv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform2uiv(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform2uiv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform3uiv(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform3uiv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform4uiv(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform4uiv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform1fv(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform1fv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform2fv(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform2fv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform3fv(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform3fv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform4fv(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform4fv(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix2fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix2fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix3fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix3fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix4fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix4fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix2x3fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix2x3fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix3x2fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix3x2fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix2x4fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix2x4fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix4x2fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix4x2fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix3x4fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix3x4fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix4x3fv(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix4x3fv(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glValidateProgramPipeline(GLuint pipeline) { glesinsp::Hook_glValidateProgramPipeline(pipeline); }
+__attribute__((visibility("default"))) void glBindImageTexture(GLuint unit, GLuint texture, GLint level, GLboolean layered, GLint layer, GLenum access, GLenum format) { glesinsp::Hook_glBindImageTexture(unit, texture, level, layered, layer, access, format); }
+__attribute__((visibility("default"))) void glMemoryBarrier(GLbitfield barriers) { glesinsp::Hook_glMemoryBarrier(barriers); }
+__attribute__((visibility("default"))) void glMemoryBarrierByRegion(GLbitfield barriers) { glesinsp::Hook_glMemoryBarrierByRegion(barriers); }
+__attribute__((visibility("default"))) void glTexStorage2DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLboolean fixedsamplelocations) { glesinsp::Hook_glTexStorage2DMultisample(target, samples, internalformat, width, height, fixedsamplelocations); }
+__attribute__((visibility("default"))) void glSampleMaski(GLuint maskNumber, GLbitfield mask) { glesinsp::Hook_glSampleMaski(maskNumber, mask); }
+__attribute__((visibility("default"))) void glBindVertexBuffer(GLuint bindingindex, GLuint buffer, GLintptr offset, GLsizei stride) { glesinsp::Hook_glBindVertexBuffer(bindingindex, buffer, offset, stride); }
+__attribute__((visibility("default"))) void glVertexAttribFormat(GLuint attribindex, GLint size, GLenum type, GLboolean normalized, GLuint relativeoffset) { glesinsp::Hook_glVertexAttribFormat(attribindex, size, type, normalized, relativeoffset); }
+__attribute__((visibility("default"))) void glVertexAttribIFormat(GLuint attribindex, GLint size, GLenum type, GLuint relativeoffset) { glesinsp::Hook_glVertexAttribIFormat(attribindex, size, type, relativeoffset); }
+__attribute__((visibility("default"))) void glVertexAttribBinding(GLuint attribindex, GLuint bindingindex) { glesinsp::Hook_glVertexAttribBinding(attribindex, bindingindex); }
+__attribute__((visibility("default"))) void glVertexBindingDivisor(GLuint bindingindex, GLuint divisor) { glesinsp::Hook_glVertexBindingDivisor(bindingindex, divisor); }
+__attribute__((visibility("default"))) void glBlendBarrier(void) { glesinsp::Hook_glBlendBarrier(); }
+__attribute__((visibility("default"))) void glCopyImageSubData(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) { glesinsp::Hook_glCopyImageSubData(srcName, srcTarget, srcLevel, srcX, srcY, srcZ, dstName, dstTarget, dstLevel, dstX, dstY, dstZ, srcWidth, srcHeight, srcDepth); }
+__attribute__((visibility("default"))) void glDebugMessageControl(GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled) { glesinsp::Hook_glDebugMessageControl(source, type, severity, count, ids, enabled); }
+__attribute__((visibility("default"))) void glDebugMessageInsert(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf) { glesinsp::Hook_glDebugMessageInsert(source, type, id, severity, length, buf); }
+__attribute__((visibility("default"))) void glDebugMessageCallback(GLDEBUGPROC callback, const void *userParam) { glesinsp::Hook_glDebugMessageCallback(callback, userParam); }
+__attribute__((visibility("default"))) void glPushDebugGroup(GLenum source, GLuint id, GLsizei length, const GLchar *message) { glesinsp::Hook_glPushDebugGroup(source, id, length, message); }
+__attribute__((visibility("default"))) void glPopDebugGroup(void) { glesinsp::Hook_glPopDebugGroup(); }
+__attribute__((visibility("default"))) void glObjectLabel(GLenum identifier, GLuint name, GLsizei length, const GLchar *label) { glesinsp::Hook_glObjectLabel(identifier, name, length, label); }
+__attribute__((visibility("default"))) void glObjectPtrLabel(const void *ptr, GLsizei length, const GLchar *label) { glesinsp::Hook_glObjectPtrLabel(ptr, length, label); }
+__attribute__((visibility("default"))) void glEnablei(GLenum target, GLuint index) { glesinsp::Hook_glEnablei(target, index); }
+__attribute__((visibility("default"))) void glDisablei(GLenum target, GLuint index) { glesinsp::Hook_glDisablei(target, index); }
+__attribute__((visibility("default"))) void glBlendEquationi(GLuint buf, GLenum mode) { glesinsp::Hook_glBlendEquationi(buf, mode); }
+__attribute__((visibility("default"))) void glBlendEquationSeparatei(GLuint buf, GLenum modeRGB, GLenum modeAlpha) { glesinsp::Hook_glBlendEquationSeparatei(buf, modeRGB, modeAlpha); }
+__attribute__((visibility("default"))) void glBlendFunci(GLuint buf, GLenum src, GLenum dst) { glesinsp::Hook_glBlendFunci(buf, src, dst); }
+__attribute__((visibility("default"))) void glBlendFuncSeparatei(GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) { glesinsp::Hook_glBlendFuncSeparatei(buf, srcRGB, dstRGB, srcAlpha, dstAlpha); }
+__attribute__((visibility("default"))) void glColorMaski(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a) { glesinsp::Hook_glColorMaski(index, r, g, b, a); }
+__attribute__((visibility("default"))) void glDrawElementsBaseVertex(GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex) { glesinsp::Hook_glDrawElementsBaseVertex(mode, count, type, indices, basevertex); }
+__attribute__((visibility("default"))) void glDrawRangeElementsBaseVertex(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex) { glesinsp::Hook_glDrawRangeElementsBaseVertex(mode, start, end, count, type, indices, basevertex); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedBaseVertex(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex) { glesinsp::Hook_glDrawElementsInstancedBaseVertex(mode, count, type, indices, instancecount, basevertex); }
+__attribute__((visibility("default"))) void glFramebufferTexture(GLenum target, GLenum attachment, GLuint texture, GLint level) { glesinsp::Hook_glFramebufferTexture(target, attachment, texture, level); }
+__attribute__((visibility("default"))) void glPrimitiveBoundingBox(GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW) { glesinsp::Hook_glPrimitiveBoundingBox(minX, minY, minZ, minW, maxX, maxY, maxZ, maxW); }
+__attribute__((visibility("default"))) void glReadnPixels(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, void *data) { glesinsp::Hook_glReadnPixels(x, y, width, height, format, type, bufSize, data); }
+__attribute__((visibility("default"))) void glMinSampleShading(GLfloat value) { glesinsp::Hook_glMinSampleShading(value); }
+__attribute__((visibility("default"))) void glPatchParameteri(GLenum pname, GLint value) { glesinsp::Hook_glPatchParameteri(pname, value); }
+__attribute__((visibility("default"))) void glTexParameterIiv(GLenum target, GLenum pname, const GLint *params) { glesinsp::Hook_glTexParameterIiv(target, pname, params); }
+__attribute__((visibility("default"))) void glTexParameterIuiv(GLenum target, GLenum pname, const GLuint *params) { glesinsp::Hook_glTexParameterIuiv(target, pname, params); }
+__attribute__((visibility("default"))) void glSamplerParameterIiv(GLuint sampler, GLenum pname, const GLint *param) { glesinsp::Hook_glSamplerParameterIiv(sampler, pname, param); }
+__attribute__((visibility("default"))) void glSamplerParameterIuiv(GLuint sampler, GLenum pname, const GLuint *param) { glesinsp::Hook_glSamplerParameterIuiv(sampler, pname, param); }
+__attribute__((visibility("default"))) void glTexBuffer(GLenum target, GLenum internalformat, GLuint buffer) { glesinsp::Hook_glTexBuffer(target, internalformat, buffer); }
+__attribute__((visibility("default"))) void glTexBufferRange(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) { glesinsp::Hook_glTexBufferRange(target, internalformat, buffer, offset, size); }
+__attribute__((visibility("default"))) void glTexStorage3DMultisample(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedsamplelocations) { glesinsp::Hook_glTexStorage3DMultisample(target, samples, internalformat, width, height, depth, fixedsamplelocations); }
+__attribute__((visibility("default"))) void glDebugMessageControlKHR(GLenum source, GLenum type, GLenum severity, GLsizei count, const GLuint *ids, GLboolean enabled) { glesinsp::Hook_glDebugMessageControlKHR(source, type, severity, count, ids, enabled); }
+__attribute__((visibility("default"))) void glDebugMessageInsertKHR(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei length, const GLchar *buf) { glesinsp::Hook_glDebugMessageInsertKHR(source, type, id, severity, length, buf); }
+__attribute__((visibility("default"))) void glDebugMessageCallbackKHR(GLDEBUGPROCKHR callback, const void *userParam) { glesinsp::Hook_glDebugMessageCallbackKHR(callback, userParam); }
+__attribute__((visibility("default"))) void glPushDebugGroupKHR(GLenum source, GLuint id, GLsizei length, const GLchar *message) { glesinsp::Hook_glPushDebugGroupKHR(source, id, length, message); }
+__attribute__((visibility("default"))) void glPopDebugGroupKHR(void) { glesinsp::Hook_glPopDebugGroupKHR(); }
+__attribute__((visibility("default"))) void glObjectLabelKHR(GLenum identifier, GLuint name, GLsizei length, const GLchar *label) { glesinsp::Hook_glObjectLabelKHR(identifier, name, length, label); }
+__attribute__((visibility("default"))) void glObjectPtrLabelKHR(const void *ptr, GLsizei length, const GLchar *label) { glesinsp::Hook_glObjectPtrLabelKHR(ptr, length, label); }
+__attribute__((visibility("default"))) void glInsertEventMarkerEXT(GLsizei length, const GLchar *marker) { glesinsp::Hook_glInsertEventMarkerEXT(length, marker); }
+__attribute__((visibility("default"))) void glPushGroupMarkerEXT(GLsizei length, const GLchar *marker) { glesinsp::Hook_glPushGroupMarkerEXT(length, marker); }
+__attribute__((visibility("default"))) void glPopGroupMarkerEXT(void) { glesinsp::Hook_glPopGroupMarkerEXT(); }
+__attribute__((visibility("default"))) void glLabelObjectEXT(GLenum type, GLuint object, GLsizei length, const GLchar *label) { glesinsp::Hook_glLabelObjectEXT(type, object, length, label); }
+__attribute__((visibility("default"))) void glBlendBarrierKHR(void) { glesinsp::Hook_glBlendBarrierKHR(); }
+__attribute__((visibility("default"))) void glBindVertexArrayOES(GLuint array) { glesinsp::Hook_glBindVertexArrayOES(array); }
+__attribute__((visibility("default"))) void glDeleteVertexArraysOES(GLsizei n, const GLuint *arrays) { glesinsp::Hook_glDeleteVertexArraysOES(n, arrays); }
+__attribute__((visibility("default"))) void glGenVertexArraysOES(GLsizei n, GLuint *arrays) { glesinsp::Hook_glGenVertexArraysOES(n, arrays); }
+__attribute__((visibility("default"))) void * glMapBufferOES(GLenum target, GLenum access) { return glesinsp::Hook_glMapBufferOES(target, access); }
+__attribute__((visibility("default"))) GLboolean glUnmapBufferOES(GLenum target) { return glesinsp::Hook_glUnmapBufferOES(target); }
+__attribute__((visibility("default"))) void * glMapBufferRangeEXT(GLenum target, GLintptr offset, GLsizeiptr length, GLbitfield access) { return glesinsp::Hook_glMapBufferRangeEXT(target, offset, length, access); }
+__attribute__((visibility("default"))) void glFlushMappedBufferRangeEXT(GLenum target, GLintptr offset, GLsizeiptr length) { glesinsp::Hook_glFlushMappedBufferRangeEXT(target, offset, length); }
+__attribute__((visibility("default"))) void glBufferStorageEXT(GLenum target, GLsizeiptr size, const void *data, GLbitfield flags) { glesinsp::Hook_glBufferStorageEXT(target, size, data, flags); }
+__attribute__((visibility("default"))) void glDiscardFramebufferEXT(GLenum target, GLsizei numAttachments, const GLenum *attachments) { glesinsp::Hook_glDiscardFramebufferEXT(target, numAttachments, attachments); }
+__attribute__((visibility("default"))) void glTexStorage1DEXT(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width) { glesinsp::Hook_glTexStorage1DEXT(target, levels, internalformat, width); }
+__attribute__((visibility("default"))) void glTexStorage2DEXT(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height) { glesinsp::Hook_glTexStorage2DEXT(target, levels, internalformat, width, height); }
+__attribute__((visibility("default"))) void glTexStorage3DEXT(GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth) { glesinsp::Hook_glTexStorage3DEXT(target, levels, internalformat, width, height, depth); }
+__attribute__((visibility("default"))) void glTextureStorage1DEXT(GLuint texture, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width) { glesinsp::Hook_glTextureStorage1DEXT(texture, target, levels, internalformat, width); }
+__attribute__((visibility("default"))) void glTextureStorage2DEXT(GLuint texture, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height) { glesinsp::Hook_glTextureStorage2DEXT(texture, target, levels, internalformat, width, height); }
+__attribute__((visibility("default"))) void glTextureStorage3DEXT(GLuint texture, GLenum target, GLsizei levels, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth) { glesinsp::Hook_glTextureStorage3DEXT(texture, target, levels, internalformat, width, height, depth); }
+__attribute__((visibility("default"))) void glTexImage3DOES(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLenum format, GLenum type, const void *pixels) { glesinsp::Hook_glTexImage3DOES(target, level, internalformat, width, height, depth, border, format, type, pixels); }
+__attribute__((visibility("default"))) void glTexSubImage3DOES(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLenum type, const void *pixels) { glesinsp::Hook_glTexSubImage3DOES(target, level, xoffset, yoffset, zoffset, width, height, depth, format, type, pixels); }
+__attribute__((visibility("default"))) void glCopyTexSubImage3DOES(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLint x, GLint y, GLsizei width, GLsizei height) { glesinsp::Hook_glCopyTexSubImage3DOES(target, level, xoffset, yoffset, zoffset, x, y, width, height); }
+__attribute__((visibility("default"))) void glCompressedTexImage3DOES(GLenum target, GLint level, GLenum internalformat, GLsizei width, GLsizei height, GLsizei depth, GLint border, GLsizei imageSize, const void *data) { glesinsp::Hook_glCompressedTexImage3DOES(target, level, internalformat, width, height, depth, border, imageSize, data); }
+__attribute__((visibility("default"))) void glCompressedTexSubImage3DOES(GLenum target, GLint level, GLint xoffset, GLint yoffset, GLint zoffset, GLsizei width, GLsizei height, GLsizei depth, GLenum format, GLsizei imageSize, const void *data) { glesinsp::Hook_glCompressedTexSubImage3DOES(target, level, xoffset, yoffset, zoffset, width, height, depth, format, imageSize, data); }
+__attribute__((visibility("default"))) void glFramebufferTexture3DOES(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLint zoffset) { glesinsp::Hook_glFramebufferTexture3DOES(target, attachment, textarget, texture, level, zoffset); }
+__attribute__((visibility("default"))) void glProgramBinaryOES(GLuint program, GLenum binaryFormat, const void *binary, GLint length) { glesinsp::Hook_glProgramBinaryOES(program, binaryFormat, binary, length); }
+__attribute__((visibility("default"))) void glGenQueriesEXT(GLsizei n, GLuint *ids) { glesinsp::Hook_glGenQueriesEXT(n, ids); }
+__attribute__((visibility("default"))) void glDeleteQueriesEXT(GLsizei n, const GLuint *ids) { glesinsp::Hook_glDeleteQueriesEXT(n, ids); }
+__attribute__((visibility("default"))) void glBeginQueryEXT(GLenum target, GLuint id) { glesinsp::Hook_glBeginQueryEXT(target, id); }
+__attribute__((visibility("default"))) void glEndQueryEXT(GLenum target) { glesinsp::Hook_glEndQueryEXT(target); }
+__attribute__((visibility("default"))) void glQueryCounterEXT(GLuint id, GLenum target) { glesinsp::Hook_glQueryCounterEXT(id, target); }
+__attribute__((visibility("default"))) void glRenderbufferStorageMultisampleEXT(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height) { glesinsp::Hook_glRenderbufferStorageMultisampleEXT(target, samples, internalformat, width, height); }
+__attribute__((visibility("default"))) void glFramebufferTexture2DMultisampleEXT(GLenum target, GLenum attachment, GLenum textarget, GLuint texture, GLint level, GLsizei samples) { glesinsp::Hook_glFramebufferTexture2DMultisampleEXT(target, attachment, textarget, texture, level, samples); }
+__attribute__((visibility("default"))) void glBlitFramebufferANGLE(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) { glesinsp::Hook_glBlitFramebufferANGLE(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter); }
+__attribute__((visibility("default"))) void glRenderbufferStorageMultisampleANGLE(GLenum target, GLsizei samples, GLenum internalformat, GLsizei width, GLsizei height) { glesinsp::Hook_glRenderbufferStorageMultisampleANGLE(target, samples, internalformat, width, height); }
+__attribute__((visibility("default"))) void glBlitFramebufferNV(GLint srcX0, GLint srcY0, GLint srcX1, GLint srcY1, GLint dstX0, GLint dstY0, GLint dstX1, GLint dstY1, GLbitfield mask, GLenum filter) { glesinsp::Hook_glBlitFramebufferNV(srcX0, srcY0, srcX1, srcY1, dstX0, dstY0, dstX1, dstY1, mask, filter); }
+__attribute__((visibility("default"))) void glDrawArraysInstancedANGLE(GLenum mode, GLint first, GLsizei count, GLsizei primcount) { glesinsp::Hook_glDrawArraysInstancedANGLE(mode, first, count, primcount); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedANGLE(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei primcount) { glesinsp::Hook_glDrawElementsInstancedANGLE(mode, count, type, indices, primcount); }
+__attribute__((visibility("default"))) void glVertexAttribDivisorANGLE(GLuint index, GLuint divisor) { glesinsp::Hook_glVertexAttribDivisorANGLE(index, divisor); }
+__attribute__((visibility("default"))) void glDrawArraysInstancedEXT(GLenum mode, GLint start, GLsizei count, GLsizei primcount) { glesinsp::Hook_glDrawArraysInstancedEXT(mode, start, count, primcount); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedEXT(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei primcount) { glesinsp::Hook_glDrawElementsInstancedEXT(mode, count, type, indices, primcount); }
+__attribute__((visibility("default"))) void glVertexAttribDivisorEXT(GLuint index, GLuint divisor) { glesinsp::Hook_glVertexAttribDivisorEXT(index, divisor); }
+__attribute__((visibility("default"))) void glDrawArraysInstancedNV(GLenum mode, GLint first, GLsizei count, GLsizei primcount) { glesinsp::Hook_glDrawArraysInstancedNV(mode, first, count, primcount); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedNV(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei primcount) { glesinsp::Hook_glDrawElementsInstancedNV(mode, count, type, indices, primcount); }
+__attribute__((visibility("default"))) void glDrawArraysInstancedBaseInstanceEXT(GLenum mode, GLint first, GLsizei count, GLsizei instancecount, GLuint baseinstance) { glesinsp::Hook_glDrawArraysInstancedBaseInstanceEXT(mode, first, count, instancecount, baseinstance); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedBaseInstanceEXT(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLuint baseinstance) { glesinsp::Hook_glDrawElementsInstancedBaseInstanceEXT(mode, count, type, indices, instancecount, baseinstance); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedBaseVertexBaseInstanceEXT(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex, GLuint baseinstance) { glesinsp::Hook_glDrawElementsInstancedBaseVertexBaseInstanceEXT(mode, count, type, indices, instancecount, basevertex, baseinstance); }
+__attribute__((visibility("default"))) void glDrawElementsBaseVertexEXT(GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex) { glesinsp::Hook_glDrawElementsBaseVertexEXT(mode, count, type, indices, basevertex); }
+__attribute__((visibility("default"))) void glDrawRangeElementsBaseVertexEXT(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex) { glesinsp::Hook_glDrawRangeElementsBaseVertexEXT(mode, start, end, count, type, indices, basevertex); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedBaseVertexEXT(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex) { glesinsp::Hook_glDrawElementsInstancedBaseVertexEXT(mode, count, type, indices, instancecount, basevertex); }
+__attribute__((visibility("default"))) void glMultiDrawElementsBaseVertexEXT(GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei drawcount, const GLint *basevertex) { glesinsp::Hook_glMultiDrawElementsBaseVertexEXT(mode, count, type, indices, drawcount, basevertex); }
+__attribute__((visibility("default"))) void glDrawElementsBaseVertexOES(GLenum mode, GLsizei count, GLenum type, const void *indices, GLint basevertex) { glesinsp::Hook_glDrawElementsBaseVertexOES(mode, count, type, indices, basevertex); }
+__attribute__((visibility("default"))) void glDrawRangeElementsBaseVertexOES(GLenum mode, GLuint start, GLuint end, GLsizei count, GLenum type, const void *indices, GLint basevertex) { glesinsp::Hook_glDrawRangeElementsBaseVertexOES(mode, start, end, count, type, indices, basevertex); }
+__attribute__((visibility("default"))) void glDrawElementsInstancedBaseVertexOES(GLenum mode, GLsizei count, GLenum type, const void *indices, GLsizei instancecount, GLint basevertex) { glesinsp::Hook_glDrawElementsInstancedBaseVertexOES(mode, count, type, indices, instancecount, basevertex); }
+__attribute__((visibility("default"))) void glMultiDrawArraysEXT(GLenum mode, const GLint *first, const GLsizei *count, GLsizei primcount) { glesinsp::Hook_glMultiDrawArraysEXT(mode, first, count, primcount); }
+__attribute__((visibility("default"))) void glMultiDrawElementsEXT(GLenum mode, const GLsizei *count, GLenum type, const void *const*indices, GLsizei primcount) { glesinsp::Hook_glMultiDrawElementsEXT(mode, count, type, indices, primcount); }
+__attribute__((visibility("default"))) void glMultiDrawArraysIndirectEXT(GLenum mode, const void *indirect, GLsizei drawcount, GLsizei stride) { glesinsp::Hook_glMultiDrawArraysIndirectEXT(mode, indirect, drawcount, stride); }
+__attribute__((visibility("default"))) void glMultiDrawElementsIndirectEXT(GLenum mode, GLenum type, const void *indirect, GLsizei drawcount, GLsizei stride) { glesinsp::Hook_glMultiDrawElementsIndirectEXT(mode, type, indirect, drawcount, stride); }
+__attribute__((visibility("default"))) void glEGLImageTargetTexture2DOES(GLenum target, GLeglImageOES image) { glesinsp::Hook_glEGLImageTargetTexture2DOES(target, image); }
+__attribute__((visibility("default"))) void glEGLImageTargetRenderbufferStorageOES(GLenum target, GLeglImageOES image) { glesinsp::Hook_glEGLImageTargetRenderbufferStorageOES(target, image); }
+__attribute__((visibility("default"))) void glEGLImageTargetTexStorageEXT(GLenum target, GLeglImageOES image, const GLint* attrib_list) { glesinsp::Hook_glEGLImageTargetTexStorageEXT(target, image, attrib_list); }
+__attribute__((visibility("default"))) void glEGLImageTargetTextureStorageEXT(GLuint texture, GLeglImageOES image, const GLint* attrib_list) { glesinsp::Hook_glEGLImageTargetTextureStorageEXT(texture, image, attrib_list); }
+__attribute__((visibility("default"))) void glCopyImageSubDataEXT(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) { glesinsp::Hook_glCopyImageSubDataEXT(srcName, srcTarget, srcLevel, srcX, srcY, srcZ, dstName, dstTarget, dstLevel, dstX, dstY, dstZ, srcWidth, srcHeight, srcDepth); }
+__attribute__((visibility("default"))) void glCopyImageSubDataOES(GLuint srcName, GLenum srcTarget, GLint srcLevel, GLint srcX, GLint srcY, GLint srcZ, GLuint dstName, GLenum dstTarget, GLint dstLevel, GLint dstX, GLint dstY, GLint dstZ, GLsizei srcWidth, GLsizei srcHeight, GLsizei srcDepth) { glesinsp::Hook_glCopyImageSubDataOES(srcName, srcTarget, srcLevel, srcX, srcY, srcZ, dstName, dstTarget, dstLevel, dstX, dstY, dstZ, srcWidth, srcHeight, srcDepth); }
+__attribute__((visibility("default"))) void glDrawBuffersEXT(GLsizei n, const GLenum *bufs) { glesinsp::Hook_glDrawBuffersEXT(n, bufs); }
+__attribute__((visibility("default"))) void glEnableiEXT(GLenum target, GLuint index) { glesinsp::Hook_glEnableiEXT(target, index); }
+__attribute__((visibility("default"))) void glDisableiEXT(GLenum target, GLuint index) { glesinsp::Hook_glDisableiEXT(target, index); }
+__attribute__((visibility("default"))) void glBlendEquationiEXT(GLuint buf, GLenum mode) { glesinsp::Hook_glBlendEquationiEXT(buf, mode); }
+__attribute__((visibility("default"))) void glBlendEquationSeparateiEXT(GLuint buf, GLenum modeRGB, GLenum modeAlpha) { glesinsp::Hook_glBlendEquationSeparateiEXT(buf, modeRGB, modeAlpha); }
+__attribute__((visibility("default"))) void glBlendFunciEXT(GLuint buf, GLenum src, GLenum dst) { glesinsp::Hook_glBlendFunciEXT(buf, src, dst); }
+__attribute__((visibility("default"))) void glBlendFuncSeparateiEXT(GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) { glesinsp::Hook_glBlendFuncSeparateiEXT(buf, srcRGB, dstRGB, srcAlpha, dstAlpha); }
+__attribute__((visibility("default"))) void glColorMaskiEXT(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a) { glesinsp::Hook_glColorMaskiEXT(index, r, g, b, a); }
+__attribute__((visibility("default"))) void glEnableiOES(GLenum target, GLuint index) { glesinsp::Hook_glEnableiOES(target, index); }
+__attribute__((visibility("default"))) void glDisableiOES(GLenum target, GLuint index) { glesinsp::Hook_glDisableiOES(target, index); }
+__attribute__((visibility("default"))) void glBlendEquationiOES(GLuint buf, GLenum mode) { glesinsp::Hook_glBlendEquationiOES(buf, mode); }
+__attribute__((visibility("default"))) void glBlendEquationSeparateiOES(GLuint buf, GLenum modeRGB, GLenum modeAlpha) { glesinsp::Hook_glBlendEquationSeparateiOES(buf, modeRGB, modeAlpha); }
+__attribute__((visibility("default"))) void glBlendFunciOES(GLuint buf, GLenum src, GLenum dst) { glesinsp::Hook_glBlendFunciOES(buf, src, dst); }
+__attribute__((visibility("default"))) void glBlendFuncSeparateiOES(GLuint buf, GLenum srcRGB, GLenum dstRGB, GLenum srcAlpha, GLenum dstAlpha) { glesinsp::Hook_glBlendFuncSeparateiOES(buf, srcRGB, dstRGB, srcAlpha, dstAlpha); }
+__attribute__((visibility("default"))) void glColorMaskiOES(GLuint index, GLboolean r, GLboolean g, GLboolean b, GLboolean a) { glesinsp::Hook_glColorMaskiOES(index, r, g, b, a); }
+__attribute__((visibility("default"))) void glBindFragDataLocationIndexedEXT(GLuint program, GLuint colorNumber, GLuint index, const GLchar *name) { glesinsp::Hook_glBindFragDataLocationIndexedEXT(program, colorNumber, index, name); }
+__attribute__((visibility("default"))) void glBindFragDataLocationEXT(GLuint program, GLuint color, const GLchar *name) { glesinsp::Hook_glBindFragDataLocationEXT(program, color, name); }
+__attribute__((visibility("default"))) void glMinSampleShadingOES(GLfloat value) { glesinsp::Hook_glMinSampleShadingOES(value); }
+__attribute__((visibility("default"))) void glActiveShaderProgramEXT(GLuint pipeline, GLuint program) { glesinsp::Hook_glActiveShaderProgramEXT(pipeline, program); }
+__attribute__((visibility("default"))) void glBindProgramPipelineEXT(GLuint pipeline) { glesinsp::Hook_glBindProgramPipelineEXT(pipeline); }
+__attribute__((visibility("default"))) GLuint glCreateShaderProgramvEXT(GLenum type, GLsizei count, const GLchar *const*strings) { return glesinsp::Hook_glCreateShaderProgramvEXT(type, count, strings); }
+__attribute__((visibility("default"))) void glDeleteProgramPipelinesEXT(GLsizei n, const GLuint *pipelines) { glesinsp::Hook_glDeleteProgramPipelinesEXT(n, pipelines); }
+__attribute__((visibility("default"))) void glGenProgramPipelinesEXT(GLsizei n, GLuint *pipelines) { glesinsp::Hook_glGenProgramPipelinesEXT(n, pipelines); }
+__attribute__((visibility("default"))) void glProgramParameteriEXT(GLuint program, GLenum pname, GLint value) { glesinsp::Hook_glProgramParameteriEXT(program, pname, value); }
+__attribute__((visibility("default"))) void glProgramUniform1fEXT(GLuint program, GLint location, GLfloat v0) { glesinsp::Hook_glProgramUniform1fEXT(program, location, v0); }
+__attribute__((visibility("default"))) void glProgramUniform1fvEXT(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform1fvEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform1iEXT(GLuint program, GLint location, GLint v0) { glesinsp::Hook_glProgramUniform1iEXT(program, location, v0); }
+__attribute__((visibility("default"))) void glProgramUniform1ivEXT(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform1ivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform2fEXT(GLuint program, GLint location, GLfloat v0, GLfloat v1) { glesinsp::Hook_glProgramUniform2fEXT(program, location, v0, v1); }
+__attribute__((visibility("default"))) void glProgramUniform2fvEXT(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform2fvEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform2iEXT(GLuint program, GLint location, GLint v0, GLint v1) { glesinsp::Hook_glProgramUniform2iEXT(program, location, v0, v1); }
+__attribute__((visibility("default"))) void glProgramUniform2ivEXT(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform2ivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform3fEXT(GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2) { glesinsp::Hook_glProgramUniform3fEXT(program, location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glProgramUniform3fvEXT(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform3fvEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform3iEXT(GLuint program, GLint location, GLint v0, GLint v1, GLint v2) { glesinsp::Hook_glProgramUniform3iEXT(program, location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glProgramUniform3ivEXT(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform3ivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform4fEXT(GLuint program, GLint location, GLfloat v0, GLfloat v1, GLfloat v2, GLfloat v3) { glesinsp::Hook_glProgramUniform4fEXT(program, location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glProgramUniform4fvEXT(GLuint program, GLint location, GLsizei count, const GLfloat *value) { glesinsp::Hook_glProgramUniform4fvEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform4iEXT(GLuint program, GLint location, GLint v0, GLint v1, GLint v2, GLint v3) { glesinsp::Hook_glProgramUniform4iEXT(program, location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glProgramUniform4ivEXT(GLuint program, GLint location, GLsizei count, const GLint *value) { glesinsp::Hook_glProgramUniform4ivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix2fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix2fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix3fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix3fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix4fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix4fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glUseProgramStagesEXT(GLuint pipeline, GLbitfield stages, GLuint program) { glesinsp::Hook_glUseProgramStagesEXT(pipeline, stages, program); }
+__attribute__((visibility("default"))) void glValidateProgramPipelineEXT(GLuint pipeline) { glesinsp::Hook_glValidateProgramPipelineEXT(pipeline); }
+__attribute__((visibility("default"))) void glProgramUniform1uiEXT(GLuint program, GLint location, GLuint v0) { glesinsp::Hook_glProgramUniform1uiEXT(program, location, v0); }
+__attribute__((visibility("default"))) void glProgramUniform2uiEXT(GLuint program, GLint location, GLuint v0, GLuint v1) { glesinsp::Hook_glProgramUniform2uiEXT(program, location, v0, v1); }
+__attribute__((visibility("default"))) void glProgramUniform3uiEXT(GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2) { glesinsp::Hook_glProgramUniform3uiEXT(program, location, v0, v1, v2); }
+__attribute__((visibility("default"))) void glProgramUniform4uiEXT(GLuint program, GLint location, GLuint v0, GLuint v1, GLuint v2, GLuint v3) { glesinsp::Hook_glProgramUniform4uiEXT(program, location, v0, v1, v2, v3); }
+__attribute__((visibility("default"))) void glProgramUniform1uivEXT(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform1uivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform2uivEXT(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform2uivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform3uivEXT(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform3uivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniform4uivEXT(GLuint program, GLint location, GLsizei count, const GLuint *value) { glesinsp::Hook_glProgramUniform4uivEXT(program, location, count, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix2x3fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix2x3fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix3x2fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix3x2fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix2x4fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix2x4fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix4x2fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix4x2fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix3x4fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix3x4fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glProgramUniformMatrix4x3fvEXT(GLuint program, GLint location, GLsizei count, GLboolean transpose, const GLfloat *value) { glesinsp::Hook_glProgramUniformMatrix4x3fvEXT(program, location, count, transpose, value); }
+__attribute__((visibility("default"))) void glFramebufferTextureEXT(GLenum target, GLenum attachment, GLuint texture, GLint level) { glesinsp::Hook_glFramebufferTextureEXT(target, attachment, texture, level); }
+__attribute__((visibility("default"))) void glPatchParameteriEXT(GLenum pname, GLint value) { glesinsp::Hook_glPatchParameteriEXT(pname, value); }
+__attribute__((visibility("default"))) void glPrimitiveBoundingBoxEXT(GLfloat minX, GLfloat minY, GLfloat minZ, GLfloat minW, GLfloat maxX, GLfloat maxY, GLfloat maxZ, GLfloat maxW) { glesinsp::Hook_glPrimitiveBoundingBoxEXT(minX, minY, minZ, minW, maxX, maxY, maxZ, maxW); }
+__attribute__((visibility("default"))) void glTexParameterIivEXT(GLenum target, GLenum pname, const GLint *params) { glesinsp::Hook_glTexParameterIivEXT(target, pname, params); }
+__attribute__((visibility("default"))) void glTexParameterIuivEXT(GLenum target, GLenum pname, const GLuint *params) { glesinsp::Hook_glTexParameterIuivEXT(target, pname, params); }
+__attribute__((visibility("default"))) void glSamplerParameterIivEXT(GLuint sampler, GLenum pname, const GLint *param) { glesinsp::Hook_glSamplerParameterIivEXT(sampler, pname, param); }
+__attribute__((visibility("default"))) void glSamplerParameterIuivEXT(GLuint sampler, GLenum pname, const GLuint *param) { glesinsp::Hook_glSamplerParameterIuivEXT(sampler, pname, param); }
+__attribute__((visibility("default"))) void glTexBufferEXT(GLenum target, GLenum internalformat, GLuint buffer) { glesinsp::Hook_glTexBufferEXT(target, internalformat, buffer); }
+__attribute__((visibility("default"))) void glTexBufferRangeEXT(GLenum target, GLenum internalformat, GLuint buffer, GLintptr offset, GLsizeiptr size) { glesinsp::Hook_glTexBufferRangeEXT(target, internalformat, buffer, offset, size); }
+__attribute__((visibility("default"))) void glReadnPixelsEXT(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, void *data) { glesinsp::Hook_glReadnPixelsEXT(x, y, width, height, format, type, bufSize, data); }
+__attribute__((visibility("default"))) void glReadnPixelsKHR(GLint x, GLint y, GLsizei width, GLsizei height, GLenum format, GLenum type, GLsizei bufSize, void *data) { glesinsp::Hook_glReadnPixelsKHR(x, y, width, height, format, type, bufSize, data); }
+__attribute__((visibility("default"))) void glFramebufferFetchBarrierEXT(void) { glesinsp::Hook_glFramebufferFetchBarrierEXT(); }
+__attribute__((visibility("default"))) void glStartTilingQCOM(GLuint x, GLuint y, GLuint width, GLuint height, GLbitfield preserveMask) { glesinsp::Hook_glStartTilingQCOM(x, y, width, height, preserveMask); }
+__attribute__((visibility("default"))) void glEndTilingQCOM(GLbitfield preserveMask) { glesinsp::Hook_glEndTilingQCOM(preserveMask); }
+__attribute__((visibility("default"))) void glClipControlEXT(GLenum origin, GLenum depth) { glesinsp::Hook_glClipControlEXT(origin, depth); }
+__attribute__((visibility("default"))) void glFramebufferTextureMultiviewOVR(GLenum target, GLenum attachment, GLuint texture, GLint level, GLint baseViewIndex, GLsizei numViews) { glesinsp::Hook_glFramebufferTextureMultiviewOVR(target, attachment, texture, level, baseViewIndex, numViews); }
+__attribute__((visibility("default"))) void glNamedFramebufferTextureMultiviewOVR(GLuint framebuffer, GLenum attachment, GLuint texture, GLint level, GLint baseViewIndex, GLsizei numViews) { glesinsp::Hook_glNamedFramebufferTextureMultiviewOVR(framebuffer, attachment, texture, level, baseViewIndex, numViews); }
+__attribute__((visibility("default"))) void glFramebufferTextureMultisampleMultiviewOVR(GLenum target, GLenum attachment, GLuint texture, GLint level, GLsizei samples, GLint baseViewIndex, GLsizei numViews) { glesinsp::Hook_glFramebufferTextureMultisampleMultiviewOVR(target, attachment, texture, level, samples, baseViewIndex, numViews); }
+__attribute__((visibility("default"))) void glPolygonOffsetClampEXT(GLfloat factor, GLfloat units, GLfloat clamp) { glesinsp::Hook_glPolygonOffsetClampEXT(factor, units, clamp); }
+__attribute__((visibility("default"))) void glViewportArrayvOES(GLuint first, GLsizei count, const GLfloat *v) { glesinsp::Hook_glViewportArrayvOES(first, count, v); }
+__attribute__((visibility("default"))) void glViewportIndexedfOES(GLuint index, GLfloat x, GLfloat y, GLfloat w, GLfloat h) { glesinsp::Hook_glViewportIndexedfOES(index, x, y, w, h); }
+__attribute__((visibility("default"))) void glViewportIndexedfvOES(GLuint index, const GLfloat *v) { glesinsp::Hook_glViewportIndexedfvOES(index, v); }
+__attribute__((visibility("default"))) void glScissorArrayvOES(GLuint first, GLsizei count, const GLint *v) { glesinsp::Hook_glScissorArrayvOES(first, count, v); }
+__attribute__((visibility("default"))) void glScissorIndexedOES(GLuint index, GLint left, GLint bottom, GLsizei width, GLsizei height) { glesinsp::Hook_glScissorIndexedOES(index, left, bottom, width, height); }
+__attribute__((visibility("default"))) void glScissorIndexedvOES(GLuint index, const GLint *v) { glesinsp::Hook_glScissorIndexedvOES(index, v); }
+__attribute__((visibility("default"))) void glDepthRangeArrayfvOES(GLuint first, GLsizei count, const GLfloat *v) { glesinsp::Hook_glDepthRangeArrayfvOES(first, count, v); }
+__attribute__((visibility("default"))) void glDepthRangeIndexedfOES(GLuint index, GLfloat n, GLfloat f) { glesinsp::Hook_glDepthRangeIndexedfOES(index, n, f); }
+__attribute__((visibility("default"))) void glDeleteMemoryObjectsEXT(GLsizei n, const GLuint *memoryObjects) { glesinsp::Hook_glDeleteMemoryObjectsEXT(n, memoryObjects); }
+__attribute__((visibility("default"))) void glCreateMemoryObjectsEXT(GLsizei n, GLuint *memoryObjects) { glesinsp::Hook_glCreateMemoryObjectsEXT(n, memoryObjects); }
+__attribute__((visibility("default"))) void glMemoryObjectParameterivEXT(GLuint memoryObject, GLenum pname, const GLint *params) { glesinsp::Hook_glMemoryObjectParameterivEXT(memoryObject, pname, params); }
+__attribute__((visibility("default"))) void glTexStorageMem2DEXT(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTexStorageMem2DEXT(target, levels, internalFormat, width, height, memory, offset); }
+__attribute__((visibility("default"))) void glTexStorageMem2DMultisampleEXT(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTexStorageMem2DMultisampleEXT(target, samples, internalFormat, width, height, fixedSampleLocations, memory, offset); }
+__attribute__((visibility("default"))) void glTexStorageMem3DEXT(GLenum target, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTexStorageMem3DEXT(target, levels, internalFormat, width, height, depth, memory, offset); }
+__attribute__((visibility("default"))) void glTexStorageMem3DMultisampleEXT(GLenum target, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTexStorageMem3DMultisampleEXT(target, samples, internalFormat, width, height, depth, fixedSampleLocations, memory, offset); }
+__attribute__((visibility("default"))) void glBufferStorageMemEXT(GLenum target, GLsizeiptr size, GLuint memory, GLuint64 offset) { glesinsp::Hook_glBufferStorageMemEXT(target, size, memory, offset); }
+__attribute__((visibility("default"))) void glTextureStorageMem2DEXT(GLuint texture, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTextureStorageMem2DEXT(texture, levels, internalFormat, width, height, memory, offset); }
+__attribute__((visibility("default"))) void glTextureStorageMem2DMultisampleEXT(GLuint texture, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTextureStorageMem2DMultisampleEXT(texture, samples, internalFormat, width, height, fixedSampleLocations, memory, offset); }
+__attribute__((visibility("default"))) void glTextureStorageMem3DEXT(GLuint texture, GLsizei levels, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTextureStorageMem3DEXT(texture, levels, internalFormat, width, height, depth, memory, offset); }
+__attribute__((visibility("default"))) void glTextureStorageMem3DMultisampleEXT(GLuint texture, GLsizei samples, GLenum internalFormat, GLsizei width, GLsizei height, GLsizei depth, GLboolean fixedSampleLocations, GLuint memory, GLuint64 offset) { glesinsp::Hook_glTextureStorageMem3DMultisampleEXT(texture, samples, internalFormat, width, height, depth, fixedSampleLocations, memory, offset); }
+__attribute__((visibility("default"))) void glNamedBufferStorageMemEXT(GLuint buffer, GLsizeiptr size, GLuint memory, GLuint64 offset) { glesinsp::Hook_glNamedBufferStorageMemEXT(buffer, size, memory, offset); }
+__attribute__((visibility("default"))) void glGenSemaphoresEXT(GLsizei n, GLuint *semaphores) { glesinsp::Hook_glGenSemaphoresEXT(n, semaphores); }
+__attribute__((visibility("default"))) void glDeleteSemaphoresEXT(GLsizei n, const GLuint *semaphores) { glesinsp::Hook_glDeleteSemaphoresEXT(n, semaphores); }
+__attribute__((visibility("default"))) void glSemaphoreParameterui64vEXT(GLuint semaphore, GLenum pname, const GLuint64 *params) { glesinsp::Hook_glSemaphoreParameterui64vEXT(semaphore, pname, params); }
+__attribute__((visibility("default"))) void glWaitSemaphoreEXT(GLuint semaphore, GLuint numBufferBarriers, const GLuint *buffers, GLuint numTextureBarriers, const GLuint *textures, const GLenum *srcLayouts) { glesinsp::Hook_glWaitSemaphoreEXT(semaphore, numBufferBarriers, buffers, numTextureBarriers, textures, srcLayouts); }
+__attribute__((visibility("default"))) void glSignalSemaphoreEXT(GLuint semaphore, GLuint numBufferBarriers, const GLuint *buffers, GLuint numTextureBarriers, const GLuint *textures, const GLenum *dstLayouts) { glesinsp::Hook_glSignalSemaphoreEXT(semaphore, numBufferBarriers, buffers, numTextureBarriers, textures, dstLayouts); }
+
+}  // extern "C"
+#endif

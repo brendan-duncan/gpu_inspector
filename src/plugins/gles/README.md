@@ -16,6 +16,8 @@ src/
   platform_win32.cpp   GpuInspectorInitialize; the libraries OpenGL ES comes from hooked as they load
   hooks_wgl.cpp        WGL: OpenGL ES profile contexts, wglMakeCurrent, SwapBuffers, wglGetProcAddress
   platform_android.cpp Android: the OpenGL ES layer's entry points, AndroidGLESLayer_*
+  platform_linux.cpp   Linux: preloaded; dlopen of the system's libEGL and libGLESv2 answered with its own handle
+  hooks_glx.cpp        GLX: OpenGL ES profile contexts, glXMakeCurrent, glXSwapBuffers, glXGetProcAddress
   hooks_egl.cpp        EGL: contexts, surfaces, eglMakeCurrent, eglSwapBuffers, eglGetProcAddress
   hooks_gl.cpp         objects made, described and deleted; what begins, ends and reads a pass
   capture.cpp          the capture: recording, passes, read-backs, the state at each draw
@@ -38,7 +40,11 @@ patch exports in place (MinHook) the moment a library loads, so every caller rea
 (a desktop OpenGL context is never taken on). `eglGetProcAddress` and `wglGetProcAddress` hand out
 the hooks for everything else. On Android nothing is patched: the EGL loader asks the layer's
 `AndroidGLESLayer_GetProcAddress` what to call for each entry point, with the next one in the chain,
-and the library answers with its hook and keeps `next` as the real entry point.
+and the library answers with its hook and keeps `next` as the real entry point. On Linux the
+library is preloaded and exports every hook under the entry point's own name (the generator writes
+those exports), so an application linked against libEGL or libGLESv2 calls it; `dlopen` is hooked, so
+one that loads the system's libraries itself gets this library's handle, whose `dlsym` finds the
+hooks here and every other name in the libraries it links, which are those same ones.
 
 **Objects.** Every buffer, texture, renderbuffer, shader, program, sampler, framebuffer, vertex array,
 query, sync, context and surface is announced with its description as it changes: a texture's target,
@@ -89,7 +95,7 @@ than lost.
 
 - **Depth and stencil** targets are not read back: OpenGL ES's `glReadPixels` reads color only.
   A depth read-back needs a draw of its own, sampling the depth into a color target.
-- **Linux** (`LD_PRELOAD`) is what the code is shaped for, but not written. Windows and Android are.
+- **Linux** is written but has not been run on a Linux machine yet (TODO.md has what to check).
 - **Live image read-back** in the Inspect tab (`RequestImage`) and creation stack traces.
 - **Shader storage buffers, images and atomic counters** bound at a dispatch are not in its state.
 

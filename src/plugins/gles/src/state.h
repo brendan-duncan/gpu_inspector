@@ -123,6 +123,11 @@ struct Context {
      * `handle` is its HGLRC, and `drawSurface` the HDC it was last made current on.
      */
     bool wgl = false;
+    /**
+     * Made through GLX (Linux: an OpenGL ES profile context of the desktop driver): `handle` is its
+     * GLXContext, `display` its X Display, and `drawSurface` the GLXDrawable it was last made current on.
+     */
+    bool glx = false;
     EGLSurface drawSurface = nullptr;
     /** GL_DRAW_FRAMEBUFFER (GL_FRAMEBUFFER in ES 2) and GL_READ_FRAMEBUFFER, as the application bound them. */
     GLuint drawFramebuffer = 0;
@@ -193,10 +198,12 @@ struct Drawable {
 Drawable CurrentDrawable(Context* c);
 Drawable EglDrawable(Context* c);
 Drawable WglDrawable(Context* c);
+Drawable GlxDrawable(Context* c);
 /** An entry point by name from the context's own window system (eglGetProcAddress, wglGetProcAddress); null when it has none. */
 void* LookupProc(Context* c, const char* name);
 void* EglLookupProc(const char* name);
 void* WglLookupProc(const char* name);
+void* GlxLookupProc(const char* name);
 /** The surface object registered for an EGLSurface or an HDC; 0 when there is none. */
 uint64_t SurfaceId(void* surface);
 /** The context this thread has current, as far as the library knows, without taking one on. */

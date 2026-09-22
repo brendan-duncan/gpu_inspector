@@ -135,6 +135,8 @@ Drawable CurrentDrawable(Context* c) {
     if (!c) return {};
 #if defined(_WIN32)
     if (c->wgl) return WglDrawable(c);
+#elif defined(__linux__) && !defined(__ANDROID__)
+    if (c->glx) return GlxDrawable(c);
 #endif
     return EglDrawable(c);
 }
@@ -143,6 +145,8 @@ void* LookupProc(Context* c, const char* name) {
     if (!c) return nullptr;
 #if defined(_WIN32)
     if (c->wgl) return WglLookupProc(name);
+#elif defined(__linux__) && !defined(__ANDROID__)
+    if (c->glx) return GlxLookupProc(name);
 #endif
     return EglLookupProc(name);
 }
@@ -173,10 +177,20 @@ Context* Current() {
     if (!g_egl.eglGetCurrentContext) return nullptr;
     EGLContext handle = g_egl.eglGetCurrentContext();
     if (!handle) return nullptr;
+    // A desktop OpenGL context of EGL's (eglBindAPI(EGL_OPENGL_API), as on Linux) is not taken on:
+    // asked once per context, and remembered per thread so its calls stay cheap.
+    static thread_local EGLContext t_foreign = nullptr;
+    if (handle == t_foreign) return nullptr;
     LibraryState& s = State();
     std::lock_guard lock(s.mutex);
     auto it = s.contexts.find(handle);
     if (it == s.contexts.end()) {
+        EGLint type = 0;
+        EGLDisplay display = g_egl.eglGetCurrentDisplay ? g_egl.eglGetCurrentDisplay() : nullptr;
+        if (g_egl.eglQueryContext && g_egl.eglQueryContext(display, handle, EGL_CONTEXT_CLIENT_TYPE, &type) && type != EGL_OPENGL_ES_API) {
+            t_foreign = handle;
+            return nullptr;
+        }
         auto c = std::make_unique<Context>();
         c->handle = handle;
         c->display = g_egl.eglGetCurrentDisplay ? g_egl.eglGetCurrentDisplay() : nullptr;

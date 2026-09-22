@@ -1631,7 +1631,7 @@ void BeforeSwap(Context* c, EGLDisplay display, EGLSurface surface, const char* 
     gpuinsp::sdk::JsonWriter w;
     w.BeginObject();
     if (display) { w.Key("dpy"); w.Pointer(display); }
-    w.Key(c->wgl ? "hdc" : "surface"); w.Ref(SurfaceId(surface), "GLSurface");
+    w.Key(c->wgl ? "hdc" : c->glx ? "drawable" : "surface"); w.Ref(SurfaceId(surface), "GLSurface");
     w.EndObject();
     Append(c, method, w.str(), "", false);
 }

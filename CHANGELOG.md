@@ -7,6 +7,8 @@
 - `test/gles_triangle`, an OpenGL ES 3.0 test application on ANGLE.
 - OpenGL ES on Android 10+, as an OpenGL ES layer, chosen with the Android launch's new *Graphics API* (or `--api=gles`).
 - `tools/build_android_gles_triangle.py`, an OpenGL ES 3.2 test application for phones.
+- OpenGL ES on Linux through EGL or GLX, preloaded into launched applications (not yet run on Linux).
+- `test/gles_linux`, an OpenGL ES 3.2 test application for Linux that draws into a pbuffer.
 - `dxinsp_launch.exe` takes `--dll` more than once, and calls a library's `GpuInspectorInitialize` export.
 
 ### Changed
