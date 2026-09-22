@@ -31,7 +31,10 @@ list fills as the application creates objects, a shader edited in the app is use
 the application draws, and a capture saved from it is a self-contained file that opens on any
 machine without the application or a compatible GPU. It leans on analysis over browsing — the frame
 rules, the render graph, the bottleneck report, the shader flame graph — and it is the only one of
-the four an AI agent can drive, through its [Claude Code plugin](MCP.md).
+the four an AI agent can drive, through its [Claude Code plugin](MCP.md). It is also the only one
+whose list of APIs is open: a graphics API is added as a [plugin](PLUGINS.md), which is how
+Direct3D 11 and OpenGL ES arrived and how a console or NDA platform can be added without touching
+the inspector.
 
 **RenderDoc** is the broadest and the most mature frame debugger: more APIs than anything else
 here, no vendor lock, a Python API for everything its UI can do, and a decade and more of every
@@ -55,18 +58,23 @@ is the best there is. The price is that it is NVIDIA-only.
 |---|---|---|---|---|
 | Vulkan | ● [Windows, Linux, Android](VULKAN.md) | ● | ○ | ● |
 | Direct3D 12 | ● [Windows](D3D12.md) | ● | ● | ● |
-| Direct3D 11 | ○ | ● | ○ | ● |
-| OpenGL / OpenGL ES | ○ | ● | ○ | ◐ OpenGL 4.2–4.6 |
+| Direct3D 11 | ◐ [Windows, as a plugin](D3D11.md): capture and inspect, no replay | ● | ○ | ● |
+| OpenGL / OpenGL ES | ◐ [OpenGL ES on Windows, Linux and Android, as a plugin](GLES.md): capture and inspect, no replay; no desktop OpenGL | ● | ○ | ◐ OpenGL 4.2–4.6 |
 | Metal | ● [macOS](METAL.md) | ◐ in development, not in releases | ○ | ○ |
 | WebGPU in a browser | ◐ [as the D3D12 under it](BROWSER.md) | ○ | ○ | ○ |
 | Ray tracing (DXR, VK\_KHR\_ray\_tracing, Metal) | ● [structures, instances, shader binding tables](INSPECT.md#acceleration-structures) and replay on all three | ● | ● | ● best in class |
 | Host OS | ● Windows, macOS, Linux | ● Windows, Linux | ◐ Windows | ◐ Windows, Linux |
-| Android / Quest | ● [Vulkan, over adb](ANDROID.md) | ● Vulkan and GLES | ○ | ○ |
+| Android / Quest | ● [Vulkan, and OpenGL ES on Android 10+, over adb](ANDROID.md) | ● Vulkan and GLES | ○ | ○ |
 | Consoles | ○ | ◐ Switch, with a devkit | ● Xbox (PIX for Xbox) | ○ |
+| Adding an API yourself | ● [plugin SDK: a capture library and a backend module](PLUGINS.md), for a console or NDA platform | ○ | ○ | ○ |
 | GPU vendors | ● any | ● any | ● any, with vendor plugins for counters | ○ NVIDIA only |
 
-The shape of this table is most of the decision. Anything that is not Vulkan, D3D12 or Metal is
-not a GPU Inspector question; anything on a Mac is not a RenderDoc, PIX or Nsight question.
+The shape of this table is most of the decision. Anything on a Mac is not a RenderDoc, PIX or
+Nsight question. On GPU Inspector's side there are two tiers: Vulkan, Direct3D 12 and Metal are
+built in and everything below applies to them, while Direct3D 11 and OpenGL ES are
+[plugins](PLUGINS.md) — captured, inspected, timed per pass and read by the same UI, but with no
+replay and no shader debugger, so sections 3 and 4 hold for them and section 5 is the mesh view
+and nothing else. Desktop OpenGL is not captured at all.
 
 ---
 
@@ -81,8 +89,8 @@ not a GPU Inspector question; anything on a Mac is not a RenderDoc, PIX or Nsigh
 | Leaked objects at device destruction | ● [with creation stacks](INSPECT.md#leaks) | ○ | ◐ memory captures | ○ |
 | Creation call stacks | ● | ● | ● | ● |
 | Device properties, limits, heaps, extensions | ● | ● | ● | ● |
-| Frame time graph and in-application HUD | ● [HUD and live pause](INSPECT.md#the-in-app-hud) | ◐ overlay with frame time | ○ | ◐ HUD |
-| Freeze the application on a frame and step frames | ● [live pause](INSPECT.md#live-pause) | ○ | ○ | ○ |
+| Frame time graph and in-application HUD | ● [HUD and live pause](INSPECT.md#the-in-app-hud): Vulkan, D3D12, Metal | ◐ overlay with frame time | ○ | ◐ HUD |
+| Freeze the application on a frame and step frames | ● [live pause](INSPECT.md#live-pause): Vulkan, D3D12, Metal | ○ | ○ | ○ |
 
 This column is where GPU Inspector differs most in kind rather than in degree. The other three are
 frame debuggers: you capture, and then you study the capture. Inspect is a window onto the process
@@ -135,7 +143,7 @@ while it runs.
 
 | | GPU Inspector | RenderDoc | PIX | Nsight Graphics |
 |---|---|---|---|---|
-| GPU time per pass | ● [Profile passes](CAPTURE.md#taking-a-capture) | ◐ event timings | ● replay-based timing data | ● |
+| GPU time per pass | ● [Profile passes](CAPTURE.md#taking-a-capture), every backend including the plugins | ◐ event timings | ● replay-based timing data | ● |
 | GPU time per draw | ● [Measure draws: Vulkan and D3D12 by replay, D3D12 also while capturing](REPORTS.md#shader-flame-graph) | ◐ | ● | ● |
 | Pipeline statistics (invocations, primitives, fragments) | ● Vulkan, Metal | ● | ● | ● |
 | Hardware counters (throughput, cache, occupancy, stall reasons) | ◐ [Vulkan and D3D12 by replay: NvPerf, or `VK_KHR_performance_query` on Vulkan](REPORTS.md#gpu-bottlenecks) | ◐ counter viewer, vendor APIs | ◐ via IHV plugins, occupancy on NVIDIA | ● GPU Trace, the deepest here |
@@ -201,7 +209,10 @@ API.
 
 ## 9. Where GPU Inspector is not the right tool
 
-- **You are on OpenGL or Direct3D 11.** Use RenderDoc.
+- **You are on desktop OpenGL.** Use RenderDoc. OpenGL ES is captured; OpenGL is not.
+- **You are on Direct3D 11 or OpenGL ES and need more than a capture to read.** The plugins record
+  the frame, its state and its images, and time its passes, but a pixel history, an overdraw
+  heatmap, a draw overlay or a shader debugger on those APIs is RenderDoc.
 - **You need the last 10% on NVIDIA hardware** — warp stalls, unit throughput, the shader
   profiler, ray tracing in depth. Use Nsight Graphics.
 - **You need a kernel's view of a D3D12 title** — context switches, the other processes, the GPU's
@@ -222,6 +233,8 @@ And where it is:
 - **Changing a shader and watching the running application**, rather than the capture.
 - **Knowing what to change**: the render graph, the frame rules, the bottleneck report and the
   flame graph are opinions about your frame, which the other three deliberately do not offer.
+- **An API none of the other three will ever support** — a console, an NDA platform, an engine's
+  own abstraction — added as a [plugin](PLUGINS.md) and read by the same UI.
 
 ---
 
