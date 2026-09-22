@@ -122,6 +122,15 @@ elseif(UNIX AND NOT APPLE)
         message(WARNING "No windowing system headers found; install libxcb1-dev, libx11-dev and "
                         "libwayland-dev for complete surface serialization")
     endif()
+    # RandR, for the monitor's refresh rate when no driver extension reports it (refresh_rate.cpp).
+    # Headers only, again: the library itself is dlopened, so a machine without it at run time just
+    # falls back to the frame-interval estimate.
+    check_include_file_cxx("X11/extensions/Xrandr.h" HAVE_XRANDR_H)
+    if(HAVE_XRANDR_H AND HAVE_XLIB_H)
+        target_compile_definitions(${LAYER_LIB} PRIVATE VKINSP_HAVE_XRANDR)
+    else()
+        message(STATUS "Xrandr headers not found (libxrandr-dev): the monitor refresh rate will not be read on X11")
+    endif()
     target_compile_options(${LAYER_LIB} PRIVATE -Wall -Wno-unused-parameter)
     target_link_options(${LAYER_LIB} PRIVATE -Wl,--no-undefined)
     find_package(Threads REQUIRED)

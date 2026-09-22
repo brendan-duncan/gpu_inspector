@@ -19,7 +19,7 @@ the Metal capture library instead of the Vulkan layer, and needs less.
 
 ```sh
 sudo apt install build-essential cmake ninja-build git python3 nodejs npm \
-                 libvulkan-dev libxcb1-dev libx11-dev libwayland-dev \
+                 libvulkan-dev libxcb1-dev libx11-dev libwayland-dev libxrandr-dev \
                  libegl-dev libgles-dev libsdl2-dev \
                  glslc spirv-tools spirv-cross vulkan-tools
 ```
@@ -29,6 +29,7 @@ sudo apt install build-essential cmake ninja-build git python3 nodejs npm \
 | `build-essential`, `cmake`, `ninja-build`, `git`, `python3` | building the Vulkan layer |
 | `nodejs`, `npm` | building and running the Electron UI |
 | `libxcb1-dev`, `libx11-dev`, `libwayland-dev` | serializing each windowing system's surface arguments; the layer builds without them but skips the ones that are missing |
+| `libxrandr-dev` | reading the monitor's refresh rate on X11, for a driver that reports none itself ([Profiling](PROFILING.md)); without it such a capture falls back to the frame-interval estimate |
 | `libvulkan-dev`, `glslc` | the bundled test application |
 | `libegl-dev`, `libgles-dev` | optional: the OpenGL ES test application (`test/gles_linux`); the [OpenGL ES capture library](GLES.md) itself builds without them |
 | `libsdl2-dev` | optional: a window for that test application, and its EGL-through-`dlopen` path; without it the application is offscreen-only |
@@ -36,9 +37,9 @@ sudo apt install build-essential cmake ninja-build git python3 nodejs npm \
 | `vulkan-tools` | optional: `vulkaninfo`, for checking the driver |
 
 The equivalents elsewhere are `gcc-c++ cmake ninja-build python3 nodejs vulkan-loader-devel
-libxcb-devel libX11-devel wayland-devel mesa-libEGL-devel mesa-libGLES-devel SDL2-devel glslc
-spirv-tools spirv-cross` (Fedora) and `base-devel cmake ninja python nodejs npm vulkan-headers
-libxcb libx11 wayland mesa sdl2 shaderc spirv-tools spirv-cross` (Arch).
+libxcb-devel libX11-devel wayland-devel libXrandr-devel mesa-libEGL-devel mesa-libGLES-devel
+SDL2-devel glslc spirv-tools spirv-cross` (Fedora) and `base-devel cmake ninja python nodejs npm
+vulkan-headers libxcb libx11 wayland libxrandr mesa sdl2 shaderc spirv-tools spirv-cross` (Arch).
 
 `tools/setup.sh --check` reports what is missing and prints the install command for your package
 manager. The [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home#linux) is *not* required — it

@@ -44,10 +44,12 @@ export function getHostPlatform(): string {
   return hostPlatform;
 }
 function hostTargets(): Target[] {
-  // A browser is captured through its GPU process, which the D3D12 launcher's follow mode reaches;
-  // that is Windows only, as is waiting for a D3D12 application.
-  return TARGETS.filter(([, t]) => (t === "implicit" ? hostPlatform !== "darwin"
-    : t === "waitD3D12" || t === "browser" ? hostPlatform === "win32" : true));
+  // A browser is captured through its GPU process: on Windows the D3D12 launcher's follow mode
+  // reaches it, on Linux it inherits the layer's environment. Neither has a counterpart on macOS,
+  // which has no capture layer for what a browser renders with. Waiting for a Direct3D 12
+  // application is Windows alone.
+  return TARGETS.filter(([, t]) => (t === "implicit" || t === "browser" ? hostPlatform !== "darwin"
+    : t === "waitD3D12" ? hostPlatform === "win32" : true));
 }
 
 export function launchDisplayName(c: LaunchConfig): string {

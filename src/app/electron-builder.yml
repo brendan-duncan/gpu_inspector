@@ -66,6 +66,10 @@ nsis:
 linux:
   target:
     - deb
+    # AppImage beside it: one file that runs on any distribution, which is what a Fedora or Arch
+    # user has instead of a package, and the only Linux format electron-updater can install an
+    # update into by itself (a .deb it can only tell you about).
+    - AppImage
   icon: assets/icon.png
   executableName: gpu-inspector
   # The .desktop file is gpu-inspector.desktop with StartupWMClass=gpu-inspector, matching the
@@ -79,6 +83,11 @@ linux:
 
 deb:
   artifactName: gpu-inspector_${version}_amd64.${ext}
+  # Registers the capture layer for the machine as installer.nsh does on Windows, and removes it
+  # again on uninstall. Registered is not enabled: the manifest's enable_environment means the
+  # loader passes the layer over in every process without VKINSP_ENABLE=1 set.
+  afterInstall: installer/deb-postinst.sh
+  afterRemove: installer/deb-postrm.sh
   # electron-builder's defaults for an Electron app, plus the Vulkan loader.
   depends:
     - libgtk-3-0
@@ -91,6 +100,9 @@ deb:
     - libuuid1
     - libsecret-1-0
     - libvulkan1
+
+appImage:
+  artifactName: GPU-Inspector-${version}-x86_64.${ext}
 
 # macOS is the UI only: there is no Apple capture layer, so a mac build inspects Android targets
 # and opens .gpucap files (see the macOS section of README.md).

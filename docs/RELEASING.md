@@ -2,9 +2,9 @@
 
 [Docs index](README.md) › Releasing
 
-GPU Inspector ships as a Windows installer (NSIS), a Debian package, and a macOS disk image,
-built by `.github/workflows/release.yml` whenever a version tag is pushed. Installed builds
-update themselves from the GitHub releases of this repository.
+GPU Inspector ships as a Windows installer (NSIS), a Debian package and an AppImage, and a macOS
+disk image, built by `.github/workflows/release.yml` whenever a version tag is pushed. Installed
+builds update themselves from the GitHub releases of this repository.
 
 ## Cutting a release
 
@@ -50,7 +50,7 @@ Release assets:
 | Platform | File |
 |---|---|
 | Windows | `GPU-Inspector-Setup-<version>.exe` (+ `.blockmap`, `latest.yml`) |
-| Linux | `gpu-inspector_<version>_amd64.deb` (+ `latest-linux.yml`) |
+| Linux | `gpu-inspector_<version>_amd64.deb` and `GPU-Inspector-<version>-x86_64.AppImage` (+ `latest-linux.yml`) |
 | macOS | `GPU-Inspector-<version>-{arm64,x64}.dmg` and `.zip` (+ `.blockmap`, `latest-mac.yml`) |
 
 The Windows installer is not code-signed, so SmartScreen warns on first run; the updater still
@@ -127,7 +127,15 @@ Neither is a size trick to redo by hand after a build: both happen in the packag
 The `.deb` installs to `/opt/GPU Inspector` with a `gpu-inspector` launcher in `/usr/bin` and a
 `gpu-inspector.desktop` entry whose `StartupWMClass` matches the `desktopName` in
 `src/app/package.json`, so GNOME associates the running window with its icon. It depends on
-`libvulkan1` in addition to Electron's usual libraries.
+`libvulkan1` in addition to Electron's usual libraries. Its `postinst` registers the capture
+layer in `/usr/share/vulkan/implicit_layer.d` and its `postrm` removes it again
+(`src/app/installer/deb-postinst.sh`), which is what the NSIS installer does in the registry on
+Windows: registered, but inert in every process without `VKINSP_ENABLE=1`.
+
+The AppImage is the same tree in one executable file, for the distributions the `.deb` does not
+fit. It registers nothing — an AppImage installs nothing — so an implicit-layer session there is
+registered from inside the app (**Launch**, then **Register**), which writes the manifest under
+`~/.local/share/vulkan/implicit_layer.d` for that user.
 
 ## Self-update
 
@@ -138,10 +146,10 @@ An available update is only downloaded when the user clicks **Download**; a down
 installed when the app closes, or right away with **Restart and Install** (which stops the
 inspected applications first, like quitting does).
 
-On Windows the NSIS installer runs silently over the existing installation. On Linux the
-updater downloads the new `.deb` and installs it with `dpkg` through `pkexec`, which asks for
-the user's password. On macOS it downloads the `.zip` for the running architecture and swaps
-the app bundle in place.
+On Windows the NSIS installer runs silently over the existing installation. On Linux a `.deb`
+install downloads the new `.deb` and installs it with `dpkg` through `pkexec`, which asks for the
+user's password; an AppImage replaces its own file and restarts, with nothing to ask for. On
+macOS it downloads the `.zip` for the running architecture and swaps the app bundle in place.
 
 `npm start` never checks for updates (`app.isPackaged` is false); the version label says so.
 
@@ -152,7 +160,7 @@ cmake --build build --config Release     # the layer
 cd src/app
 npm run pack                             # unpacked app in src/app/release/<platform>-unpacked
 npm run dist:win                         # src/app/release/GPU-Inspector-Setup-<version>.exe
-npm run dist:linux                       # src/app/release/gpu-inspector_<version>_amd64.deb
+npm run dist:linux                       # src/app/release/gpu-inspector_<version>_amd64.deb, .AppImage
 npm run dist:mac                         # src/app/release/GPU-Inspector-<version>-{arm64,x64}.dmg
 ```
 

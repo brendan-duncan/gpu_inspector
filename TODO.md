@@ -149,15 +149,24 @@ interpreter and re-created pipelines.
       host symbolizer already produced for Android/Linux. Checked with the triangle's PDB moved out
       of its build directory: 0 frames with lines without the symbol directory, 6 with it, and the
       CRT's `invoke_main` shown inlined into `__scrt_common_main_seh`.
-- [ ] Refresh rate on Linux without a driver timing extension: the monitor mode through
-      RandR / Wayland outputs (Windows reads the monitor mode today; Linux and Android without
-      `VK_GOOGLE_display_timing` fall back to the frame-interval estimate). Not written yet because
-      it cannot be built or run on the Windows machine this was developed on (no Linux toolchain,
-      no WSL). The shape of it: `vkCreateXlibSurfaceKHR` and friends are hooked already but keep the
-      display and window only as serialized JSON, so a typed field per surface comes first; then the
-      X11 path is `XRRGetScreenResourcesCurrent` and the mode of the window's CRTC (dotClock over
-      hTotal*vTotal) behind `HAVE_XLIB_H`, xcb-randr behind `HAVE_XCB_H`, and Wayland needs
-      `wl_output`'s mode event dispatched on a queue of our own rather than on the application's.
+- [x] Refresh rate on X11 without a driver timing extension: `MonitorRefreshMs` in
+      `refresh_rate.cpp` reads the mode of the CRTC the process's largest window is on
+      (`XRRGetScreenResourcesCurrent`, dotClock over hTotal*vTotal), falling back to the first
+      active CRTC when the swapchain is made before the window is mapped. No typed surface field
+      was needed after all: the window is found the way the Windows path finds its own, by asking
+      the server for the process's windows (`_NET_CLIENT_LIST` filtered by `_NET_WM_PID`) on a
+      connection of the layer's own. Both libraries are dlopened, so the layer still links against
+      no windowing library; the headers are a build-time option (`VKINSP_HAVE_XRANDR`,
+      libxrandr-dev, which `tools/setup.sh` and the release workflow now install). Checked against
+      `xrandr` with the two driver sources forced off: 74.98 Hz, source `monitor`, matching the
+      `3840x1600 74.98*` the monitor is actually running.
+- [ ] Refresh rate on Wayland-native applications, which the above does not cover (XWayland does).
+      The rate is in a `wl_output` mode event, and reaching it needs either the application's
+      `wl_display` — which only its surface holds, so this is where the typed surface field comes
+      in — or a second connection of our own with `wl_display_connect`, a registry and a
+      `wl_output` listener on a queue of our own. The second is the smaller change and matches
+      what the X11 path does; the open question is which output to believe on a multi-monitor
+      desktop, since without the surface there is nothing saying which one the window is on.
 - [ ] OpenGL ES plugin on Linux (`src/plugins/gles/src/platform_linux.cpp`, `hooks_glx.cpp`): written
       on the Windows machine and only syntax-checked there (the NDK's clang with glibc's dlfcn
       extras shimmed in). Now built and partly run on Linux: the plugin and `test/gles_linux` build
@@ -527,9 +536,14 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Implicit layer: **Set for my account** for the environment variables (the account's
       environment on Windows, `~/.config/environment.d` on Linux), and the Windows installer
       registers the layer and the uninstaller removes it (`src/app/installer/installer.nsh`).
-- [ ] Implicit layer, the rest: the .deb could register the layer in
-      `/usr/share/vulkan/implicit_layer.d` (a postinst script); the installer script is built but
-      has not been run on a machine.
+- [x] Implicit layer, the rest: the .deb registers the layer in
+      `/usr/share/vulkan/implicit_layer.d` and removes it again
+      (`src/app/installer/deb-postinst.sh`, `deb-postrm.sh`, wired up as electron-builder's
+      `afterInstall`/`afterRemove`). The shipped manifest names its library relatively, so the
+      postinst rewrites `library_path` to the installed absolute path. Checked by extracting the
+      built .deb, running the scripts against that root, and pointing `XDG_DATA_DIRS` at it:
+      `vkinsp_triangle` loads the layer with `VKINSP_ENABLE=1` and not without it, which is the
+      Windows behaviour. The Windows installer script has now been run on a machine too.
 - [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
       reached through `adb forward` today, see ARCHITECTURE.md).
 - [ ] Android: verify `test/android_triangle` (the phone NativeActivity, built by

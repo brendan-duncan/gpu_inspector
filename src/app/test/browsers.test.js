@@ -26,6 +26,7 @@ const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const CANARY = "C:\\Users\\me\\AppData\\Local\\Google\\Chrome SxS\\Application\\chrome.exe";
 const FIREFOX = "C:\\Program Files\\Mozilla Firefox\\firefox.exe";
 const NIGHTLY = "C:\\Program Files\\Firefox Nightly\\firefox.exe";
+const LINUX_CHROME = "/usr/bin/google-chrome";
 
 /** An installation: <root>/<relative>, with `versions` as the versioned directories beside it. */
 function install(root, relative, versions = []) {
@@ -74,7 +75,7 @@ test("the installed browsers are found under the Windows roots, with their versi
 });
 
 test("a Chromium browser's command line turns the GPU sandbox off and keeps its own profile", () => {
-  const args = browserArgs(CHROME, "https://example.com/page", "C:\\profiles\\Chrome");
+  const args = browserArgs(CHROME, "https://example.com/page", "C:\\profiles\\Chrome", "win32");
   // Without this the capture library in the GPU process cannot open its port and nothing connects.
   assert.ok(args.includes("--disable-gpu-sandbox"));
   assert.ok(args.includes("--disable-gpu-watchdog"));
@@ -82,7 +83,34 @@ test("a Chromium browser's command line turns the GPU sandbox off and keeps its 
   assert.ok(args.includes("--user-data-dir=C:\\profiles\\Chrome"));
   // The page is last, as a browser expects, and an empty one leaves the browser to open its own.
   assert.equal(args[args.length - 1], "https://example.com/page");
-  assert.ok(!browserArgs(CHROME, "  ", "C:\\profiles\\Chrome").some((a) => !a.startsWith("--")));
+  assert.ok(!browserArgs(CHROME, "  ", "C:\\profiles\\Chrome", "win32").some((a) => !a.startsWith("--")));
+  // Windows needs no adapter switch: its default WebGPU adapter is the D3D12 one already captured.
+  assert.ok(!args.some((a) => a.startsWith("--use-webgpu-adapter")));
+});
+
+test("on Linux a Chromium browser is pointed at the real GPU, not SwiftShader", () => {
+  // Left alone, Chrome on Linux answers requestAdapter with SwiftShader, which renders WebGPU on
+  // the CPU and makes no Vulkan device through the loader — so there is nothing for the layer to
+  // capture and the session never connects.
+  const args = browserArgs(LINUX_CHROME, "https://example.com/page", "/home/me/profiles/Chrome", "linux");
+  assert.ok(args.includes("--use-webgpu-adapter=vulkan"));
+  assert.ok(args.includes("--disable-gpu-sandbox"));
+  assert.ok(args.includes("--user-data-dir=/home/me/profiles/Chrome"));
+  assert.equal(args[args.length - 1], "https://example.com/page");
+});
+
+test("a Linux browser is recognized by its extensionless name, and profiles by that name", () => {
+  assert.equal(browserFamily(LINUX_CHROME), "chromium");
+  assert.equal(browserFamily("/usr/bin/firefox"), "firefox");
+  assert.equal(browserFamily("/usr/bin/firefox-esr"), "firefox");
+  // The install is one file per channel rather than a directory per channel, so the executable's
+  // own name is what keeps two channels' profiles apart.
+  const chrome = browserProfileDir("/home/me/data", LINUX_CHROME);
+  const beta = browserProfileDir("/home/me/data", "/usr/bin/google-chrome-beta");
+  assert.notEqual(chrome, beta);
+  assert.ok(chrome.endsWith("google-chrome"));
+  // A Windows path is still taken apart the Windows way, whatever platform this runs on.
+  assert.ok(browserProfileDir("C:\\data", NIGHTLY).endsWith("Firefox_Nightly"));
 });
 
 test("Firefox is launched into its own profile, away from the one the user has open", () => {

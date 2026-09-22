@@ -34,7 +34,7 @@ targets that make sense on this machine are listed.
 | Target | What it does | Available on | Button |
 |---|---|---|---|
 | **This computer** | Starts an application here with the capture library enabled for that process alone. Vulkan or Direct3D 12 on Windows, Vulkan on Linux, Metal on macOS | all | **Launch** |
-| **A web page in a browser (WebGPU)** | Starts a browser on a page, capturing the Direct3D 12 its GPU process does underneath WebGPU | Windows | **Launch** |
+| **A web page in a browser (WebGPU)** | Starts a browser on a page, capturing what its GPU process does underneath WebGPU: Direct3D 12 on Windows, Vulkan on Linux | Windows, Linux | **Launch** |
 | **Android device (adb)** | Starts a package on a connected device or headset | all | **Launch** |
 | **An application started elsewhere (implicit layer)** | Starts nothing: registers the Vulkan layer for your account and waits for an application you start yourself | Windows, Linux | **Wait** |
 | **An application started elsewhere (Direct3D 12)** | Starts nothing: watches for a process by name and injects the Direct3D 12 library as it starts | Windows | **Wait** |

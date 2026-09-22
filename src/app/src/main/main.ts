@@ -562,15 +562,20 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   } : null;
   const base: NodeJS.ProcessEnv = { ...process.env, ...parseEnvLines(config.env ?? "") };
   // A browser target is this launch with its command line composed rather than typed: the page's
-  // WebGPU work is in the GPU process the browser starts, which `follow` puts the library into
-  // (main/browsers.ts). Everything below — the environment, the ports, the session — is the same.
+  // WebGPU work is in the GPU process the browser starts. On Windows `follow` puts the library
+  // into that child; on Linux nothing has to, because the layer is enabled by environment
+  // variables and the child inherits them (main/browsers.ts). Everything below — the environment,
+  // the ports, the session — is the same.
   const browser = config.target === "browser";
   const profileDir = browser ? browserProfileDir(app.getPath("userData"), config.exe) : "";
   // Firefox takes the settings a capture needs as preferences rather than switches, so the profile
   // this launch uses is written before the browser reads it (browsers.ts).
   if (browser) prepareProfile(config.exe, profileDir);
   const args = browser ? browserArgs(config.exe, config.args ?? "", profileDir) : splitArgs(config.args ?? "");
-  const follow = browser ? browserFollow(config.exe) : config.follow?.trim() ? splitArgs(config.follow) : undefined;
+  // Following is the Windows launcher's way into the GPU process; on Linux the environment
+  // already reaches it, so a browser there is launched like any other target.
+  const follow = browser && process.platform === "win32" ? browserFollow(config.exe)
+    : !browser && config.follow?.trim() ? splitArgs(config.follow) : undefined;
   const cwd = config.cwd && fs.existsSync(config.cwd) ? config.cwd : path.dirname(config.exe);
   if (browser) s.appendLog(`${path.basename(config.exe)} ${args.join(" ")}`);
   if (process.platform === "win32") {
@@ -796,7 +801,7 @@ function validateLaunch(config: LaunchConfig): ValidLaunch | { error: string } {
     return { kind: "android", adb, layer, plugin };
   }
   if (config.target === "browser") {
-    if (process.platform !== "win32") return { error: "capturing a browser's GPU process is a Windows target" };
+    if (process.platform === "darwin") return { error: "capturing a browser's GPU process needs a capture layer for what it renders with, and there is none for Metal" };
     if (!config.exe) return { error: "no browser chosen" };
     if (!config.args.trim()) return { error: "no page to open: give the URL of a page that uses WebGPU" };
   }

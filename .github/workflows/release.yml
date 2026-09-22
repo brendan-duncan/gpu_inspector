@@ -94,7 +94,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update
-          sudo apt-get install -y ninja-build libxcb1-dev libx11-dev libwayland-dev
+          sudo apt-get install -y ninja-build libxcb1-dev libx11-dev libwayland-dev libxrandr-dev
 
       # The capture library: tests are off so the build needs neither the Vulkan SDK nor glslc.
       # On Apple this is the Metal library instead of the Vulkan layer (the root CMakeLists
@@ -207,6 +207,7 @@ jobs:
           path: |
             src/app/release/*.exe
             src/app/release/*.deb
+            src/app/release/*.AppImage
             src/app/release/*.dmg
             src/app/release/*.zip
             src/app/release/*.yml
@@ -238,6 +239,7 @@ jobs:
 
           - **Windows**: [GPU-Inspector-Setup-${VERSION}.exe](${BASE}/GPU-Inspector-Setup-${VERSION}.exe)
           - **Linux (Debian/Ubuntu)**: [gpu-inspector_${VERSION}_amd64.deb](${BASE}/gpu-inspector_${VERSION}_amd64.deb)
+          - **Linux (any distribution)**: [GPU-Inspector-${VERSION}-x86_64.AppImage](${BASE}/GPU-Inspector-${VERSION}-x86_64.AppImage)
           - **macOS (Apple Silicon)**: [GPU-Inspector-${VERSION}-arm64.dmg](${BASE}/GPU-Inspector-${VERSION}-arm64.dmg)
           - **macOS (Intel)**: [GPU-Inspector-${VERSION}-x64.dmg](${BASE}/GPU-Inspector-${VERSION}-x64.dmg)
 

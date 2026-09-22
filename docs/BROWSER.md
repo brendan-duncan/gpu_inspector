@@ -17,9 +17,18 @@ question than the page-level one — *which WebGPU call did this, and with what 
 DevTools. The two go together: WebGPU Inspector to find the call, this to see what the driver was
 actually given.
 
-**Windows only.** Following a browser into its GPU process is the D3D12 launcher's doing, and the
-launch dialog hides the target on macOS and Linux (where a browser's WebGPU is Metal or Vulkan and
-there is no supported path to it yet).
+**Windows and Linux.** The two get into the GPU process differently. On Windows the D3D12
+launcher follows the browser into it and what a capture holds is the Direct3D 12 underneath
+WebGPU. On Linux nothing has to follow anything: the Vulkan layer is enabled by environment
+variables and the GPU process inherits them from the browser it is started by, so what a capture
+holds is the Vulkan underneath WebGPU — Dawn's backend in a Chromium browser, wgpu's in Firefox.
+
+On Linux the launch also passes `--use-webgpu-adapter=vulkan`. Without it Chrome answers
+`requestAdapter()` with SwiftShader, its software renderer, which draws WebGPU on the CPU and
+creates no Vulkan device through the loader: the page renders, and there is nothing to capture.
+
+The launch dialog hides the target on macOS, which has no capture layer for what a browser
+renders with.
 
 ## Launching a page
 

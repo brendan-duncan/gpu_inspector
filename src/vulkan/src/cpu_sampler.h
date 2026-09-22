@@ -36,7 +36,7 @@
 // thread is running again. Breaking that rule does not crash: it deadlocks the application, some
 // of the time, which is worse.
 //
-// Two implementations, one behavior. Windows gets the thread list from a Toolhelp snapshot,
+// Three implementations, one behavior. Windows gets the thread list from a Toolhelp snapshot,
 // suspends with SuspendThread, reads registers with GetThreadContext and unwinds with the
 // function tables. macOS does the same three things through Mach — `task_threads`,
 // `thread_suspend`, `thread_get_state` — and unwinds by walking frame pointers, which is reliable
@@ -46,9 +46,25 @@
 // CPU time in microseconds and, better, its `run_state` — a thread found waiting, that has used no
 // time since the sample before, is in the wait it was already found in and is not stopped again.
 //
-// Linux has neither and is left at the stub: sampling there means `tgkill` with a signal handler
-// per thread, or perf events with a privilege that a library loaded into somebody else's process
-// has no business asking for.
+// Linux has no way to stop another thread and read its registers at all: ptrace is for debuggers
+// and cannot be used on your own process from inside it, and perf events want a privilege that a
+// library loaded into somebody else's process has no business asking for. What is left is to ask
+// the thread to sample itself — `tgkill` with a real-time signal, whose handler copies its own
+// registers and the part of its stack its callers are in, and posts a semaphore the sampling
+// thread is waiting on. The thread list is /proc/self/task, and "did it run" is the nanosecond
+// `sum_exec_runtime` in each thread's `schedstat` (or, on a kernel built without CONFIG_SCHEDSTATS,
+// the coarser `stat` plus whether it is on a core right now).
+//
+// That last part matters more on Linux than anywhere else, because a signal is not free of
+// consequence to the thread that gets it: a blocking call it interrupts may return EINTR, and
+// `SA_RESTART` does not cover all of them (`poll` and `select` with a timeout are never
+// restarted). Only threads that have used CPU since the last sample are signalled, so the ones
+// sitting in exactly those calls are left alone — a thread that blocks immediately after running
+// can still catch one, which is measurable: a stress test of eight threads looping over
+// poll/read saw 27 EINTRs in six seconds, against none with sampling off. Applications handle
+// EINTR on these calls as a matter of course, but an application that does not, and that must
+// not be disturbed at all, should run a timing capture with stack sampling turned off.
+// VKINSP_SAMPLE_SIGNAL overrides which signal is used.
 #pragma once
 
 #include <atomic>
@@ -74,6 +90,18 @@
 #include <chrono>
 #include <mach/mach.h>
 #include <pthread.h>
+#elif defined(__linux__) && !defined(__ANDROID__) && (defined(__x86_64__) || defined(__aarch64__))
+#define GPUINSP_CPU_SAMPLER 1
+#define GPUINSP_SAMPLER_LINUX 1
+#include <cerrno>
+#include <chrono>
+#include <csignal>
+#include <dirent.h>
+#include <fcntl.h>
+#include <semaphore.h>
+#include <sys/syscall.h>
+#include <ucontext.h>
+#include <unistd.h>
 #else
 #define GPUINSP_CPU_SAMPLER 0
 #endif
@@ -84,8 +112,33 @@
 #ifndef GPUINSP_SAMPLER_MACH
 #define GPUINSP_SAMPLER_MACH 0
 #endif
+#ifndef GPUINSP_SAMPLER_LINUX
+#define GPUINSP_SAMPLER_LINUX 0
+#endif
 
 namespace gpuinsp {
+
+#if GPUINSP_SAMPLER_LINUX
+/**
+ * Where the signal handler and the sampling thread meet. One thread is sampled at a time, as on
+ * the other two platforms, so one slot is enough. The handler fills it and posts; the sampler
+ * waits, with a timeout, and reads it.
+ *
+ * `generation` is what makes a late signal harmless. A handler that arrives after the sampler
+ * gave up would otherwise write into the slot while the next thread is being sampled: it checks
+ * the generation it was sent for, and a stale one returns without touching anything.
+ */
+struct CpuSamplerSlot {
+    std::atomic<uint32_t> target{0};       // the thread expected to answer; 0 when none is
+    std::atomic<uint32_t> generation{0};
+    uint64_t stackTop = 0;                 // in: how far up the handler may copy
+    uint8_t* copy = nullptr;               // in: where it copies to
+    uint64_t pc = 0, sp = 0, fp = 0;       // out
+    size_t copied = 0;                     // out
+    sem_t sem{};
+};
+inline CpuSamplerSlot _slot;
+#endif
 
 class CpuSampler {
 public:
@@ -110,7 +163,7 @@ public:
         return instance;
     }
 
-    /** Whether this build can sample at all (Windows x64, or macOS on arm64 or x86-64). */
+    /** Whether this build can sample at all (Windows x64, macOS on arm64 or x86-64, Linux on either). */
     static bool Available() { return GPUINSP_CPU_SAMPLER != 0; }
 
     /** The calling thread is the library's own and is left out: its stack is never the application's answer. */
@@ -118,7 +171,7 @@ public:
 #if GPUINSP_SAMPLER_WINDOWS
         std::lock_guard<std::mutex> lock(_mutex);
         _excluded.insert(GetCurrentThreadId());
-#elif GPUINSP_SAMPLER_MACH
+#elif GPUINSP_SAMPLER_MACH || GPUINSP_SAMPLER_LINUX
         const uint32_t id = SelfId();
         std::lock_guard<std::mutex> lock(_mutex);
         _excluded.insert(id);
@@ -129,6 +182,9 @@ public:
     bool Start(uint32_t hz) {
 #if GPUINSP_CPU_SAMPLER
         Stop();
+#if GPUINSP_SAMPLER_LINUX
+        if (!InstallHandler()) return false;
+#endif
         std::lock_guard<std::mutex> lock(_mutex);
         _periodMs = 1000.0 / (double)(hz < 10 ? 10 : hz > 2000 ? 2000 : hz);
         _threads.clear();
@@ -204,6 +260,14 @@ private:
         uint64_t stackLimit = 0;
         /** Its own CPU time in microseconds at the last sample, for whether it has run since. */
         uint64_t micros = 0;
+#elif GPUINSP_SAMPLER_LINUX
+        /** /proc/self/task/<id>/schedstat and /stat, held open: one pread a sample rather than an open. */
+        int schedstat = -1;
+        int stat = -1;
+        /** Where its stack ends, learned from the stack pointer of its first sample. */
+        uint64_t stackTop = 0;
+        /** Its own CPU time in nanoseconds at the last sample, for whether it has run since. */
+        uint64_t nanos = 0;
 #endif
 #if GPUINSP_CPU_SAMPLER
         /** The stack it was last found under, which still holds while it uses no CPU time. */
@@ -238,6 +302,10 @@ private:
      * it a fraction of one.
      */
     static constexpr uint64_t kRunningMicros = 20;
+    /** The same threshold again, in the nanoseconds Linux's schedstat counts. */
+    static constexpr uint64_t kRunningNanos = 20000;
+    /** How long a signalled thread is given to answer before the sample is given up on. */
+    static constexpr long kSignalWaitNanos = 50 * 1000 * 1000;
     /** How much of a stack is copied, from its top: deeper frames than this holds are left out. */
     static constexpr size_t kMaxCopy = 48 * 1024;
 
@@ -660,6 +728,314 @@ private:
             if (t.port != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), t.port);
             t.port = MACH_PORT_NULL;
         }
+    }
+
+#elif GPUINSP_SAMPLER_LINUX
+
+    /** This thread's kernel id, which is what tgkill addresses and what /proc/self/task is keyed by. */
+    static uint32_t SelfId() { return (uint32_t)syscall(SYS_gettid); }
+
+    static inline int _signal = 0;
+
+    /**
+     * Runs on the sampled thread, interrupting whatever it was doing. Async-signal-safe and
+     * nothing more: it reads its own registers out of the ucontext, copies the part of its stack
+     * that its callers are in, and posts. The walk happens on the sampling thread afterwards.
+     *
+     * This is the Linux counterpart of the rule in the header comment. There the danger was
+     * touching a lock a *suspended* thread holds; here the thread is running its own handler, so
+     * the danger is the same lock the other way round — an allocation or an unwinder in here would
+     * want a lock the interrupted code may be inside. Hence: registers, one memcpy, sem_post.
+     *
+     * Copying upward from the interrupted stack pointer is safe while the handler runs: that is
+     * the callers' part of the stack, which nothing is changing. The handler's own frames are
+     * below it.
+     */
+    static void OnSignal(int, siginfo_t*, void* ucontext) {
+        CpuSamplerSlot& s = _slot;
+        const uint32_t generation = s.generation.load(std::memory_order_acquire);
+        if (s.target.load(std::memory_order_acquire) != (uint32_t)syscall(SYS_gettid)) return;
+        const ucontext_t* uc = static_cast<const ucontext_t*>(ucontext);
+#if defined(__x86_64__)
+        s.pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
+        s.sp = (uint64_t)uc->uc_mcontext.gregs[REG_RSP];
+        s.fp = (uint64_t)uc->uc_mcontext.gregs[REG_RBP];
+#else
+        s.pc = (uint64_t)uc->uc_mcontext.pc;
+        s.sp = (uint64_t)uc->uc_mcontext.sp;
+        s.fp = (uint64_t)uc->uc_mcontext.regs[29];
+#endif
+        size_t copied = 0;
+        // The first sample of a thread has no stack top yet, so it copies nothing and the sample
+        // is its program counter alone; the sampler learns the top from this sp and the next one
+        // is a full stack.
+        if (s.stackTop > s.sp && s.copy) {
+            const uint64_t room = s.stackTop - s.sp;
+            copied = (size_t)(room < kMaxCopy ? room : kMaxCopy);
+            std::memcpy(s.copy, (const void*)s.sp, copied);
+        }
+        s.copied = copied;
+        // Last, and only if this is still the request that was sent: everything above is written
+        // before the sampler is told it may read.
+        if (s.generation.load(std::memory_order_acquire) == generation) sem_post(&s.sem);
+    }
+
+    /** Installs the handler on first use. The signal is a real-time one, which applications use far less than SIGPROF. */
+    bool InstallHandler() {
+        if (_signal) return true;
+        int chosen = 0;
+        if (const char* name = std::getenv("VKINSP_SAMPLE_SIGNAL")) chosen = atoi(name);
+        // SIGRTMIN..SIGRTMIN+2 are glibc's (thread cancellation, setxid), so this starts past them.
+        if (chosen <= 0 || chosen >= NSIG) chosen = SIGRTMIN + 4 <= SIGRTMAX ? SIGRTMIN + 4 : SIGPROF;
+        if (sem_init(&_slot.sem, 0, 0) != 0) return false;
+        struct sigaction action {};
+        action.sa_sigaction = &CpuSampler::OnSignal;
+        action.sa_flags = SA_SIGINFO | SA_RESTART;
+        sigfillset(&action.sa_mask);
+        if (sigaction(chosen, &action, nullptr) != 0) {
+            sem_destroy(&_slot.sem);
+            return false;
+        }
+        _signal = chosen;
+        return true;
+    }
+
+    /** Reads a small /proc file that is already open. Returns the bytes read, 0 on failure. */
+    static size_t ReadAt(int fd, char* buffer, size_t size) {
+        if (fd < 0) return 0;
+        const ssize_t n = pread(fd, buffer, size - 1, 0);
+        if (n <= 0) return 0;
+        buffer[n] = 0;
+        return (size_t)n;
+    }
+
+    /**
+     * A thread's own CPU time in nanoseconds. `schedstat` reports it directly and to the
+     * nanosecond, which is what makes "has it run since the last sample" answerable at a 4 ms
+     * period; without it (a kernel built without CONFIG_SCHEDSTATS) `stat` gives the same sum in
+     * clock ticks, which is 10 ms of granularity, so that path also asks whether the thread is
+     * on a core right now.
+     */
+    static uint64_t CpuNanos(ThreadInfo& t, bool* onCore) {
+        char buffer[512];
+        if (onCore) *onCore = false;
+        if (ReadAt(t.schedstat, buffer, sizeof(buffer))) {
+            return strtoull(buffer, nullptr, 10);
+        }
+        const size_t n = ReadAt(t.stat, buffer, sizeof(buffer));
+        if (!n) return t.nanos;
+        // The comm field is parenthesized and may hold spaces, so the fields are counted from the
+        // last ')' rather than from the start.
+        const char* p = strrchr(buffer, ')');
+        if (!p) return t.nanos;
+        ++p;
+        while (*p == ' ') ++p;
+        if (onCore) *onCore = *p == 'R';
+        // From the state, utime is the 11th field and stime the 12th.
+        for (int field = 0; field < 11 && *p; ++field) {
+            while (*p && *p != ' ') ++p;
+            while (*p == ' ') ++p;
+        }
+        char* end = nullptr;
+        const unsigned long long utime = strtoull(p, &end, 10);
+        const unsigned long long stime = end ? strtoull(end, nullptr, 10) : 0;
+        const long hz = sysconf(_SC_CLK_TCK) > 0 ? sysconf(_SC_CLK_TCK) : 100;
+        return (uint64_t)((utime + stime) * (1000000000ull / (unsigned long long)hz));
+    }
+
+    /**
+     * The end of the mapping `address` falls in: a thread's stack top, looked up once per thread
+     * from the stack pointer its first sample reported. Mach gets this from pthread and Windows
+     * from the TEB; Linux keeps a thread's stack in an ordinary anonymous mapping, and /proc is
+     * what knows where it ends.
+     */
+    static uint64_t MappingEnd(uint64_t address) {
+        FILE* maps = fopen("/proc/self/maps", "re");
+        if (!maps) return 0;
+        char line[512];
+        uint64_t end = 0;
+        while (fgets(line, sizeof(line), maps)) {
+            char* dash = nullptr;
+            const uint64_t low = strtoull(line, &dash, 16);
+            if (!dash || *dash != '-') continue;
+            const uint64_t high = strtoull(dash + 1, nullptr, 16);
+            if (address >= low && address < high) {
+                end = high;
+                break;
+            }
+        }
+        fclose(maps);
+        return end;
+    }
+
+    /**
+     * The process's threads, from /proc/self/task: new ones added with the /proc files they are
+     * measured through held open, exited ones marked and their descriptors closed.
+     *
+     * Without the lock, as the other two are and for the same reason: the application's own thread
+     * takes that lock to collect a batch from inside its frame, and a frame that waits on a
+     * profiler is a hitch the profiler made.
+     */
+    void RefreshThreads(uint32_t self) {
+        DIR* dir = opendir("/proc/self/task");
+        if (!dir) return;
+        std::unordered_set<uint32_t> alive;
+        std::vector<ThreadInfo> found;
+        while (const dirent* entry = readdir(dir)) {
+            if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+            const uint32_t id = (uint32_t)strtoul(entry->d_name, nullptr, 10);
+            if (!id) continue;
+            alive.insert(id);
+            bool skip = id == self || _threadIndex.count(id) != 0 || _threads.size() + found.size() >= kMaxThreads;
+            if (!skip) {
+                std::lock_guard<std::mutex> lock(_mutex);
+                skip = _excluded.count(id) != 0;
+            }
+            if (skip) continue;
+            ThreadInfo t;
+            t.id = id;
+            char path[128];
+            snprintf(path, sizeof(path), "/proc/self/task/%u/schedstat", id);
+            t.schedstat = open(path, O_RDONLY | O_CLOEXEC);
+            snprintf(path, sizeof(path), "/proc/self/task/%u/stat", id);
+            t.stat = open(path, O_RDONLY | O_CLOEXEC);
+            snprintf(path, sizeof(path), "/proc/self/task/%u/comm", id);
+            if (const int fd = open(path, O_RDONLY | O_CLOEXEC); fd >= 0) {
+                char name[64];
+                if (const size_t n = ReadAt(fd, name, sizeof(name))) {
+                    size_t len = n;
+                    while (len && (name[len - 1] == '\n' || name[len - 1] == ' ')) --len;
+                    t.name.assign(name, len);
+                }
+                close(fd);
+            }
+            t.nanos = CpuNanos(t, nullptr);
+            found.push_back(std::move(t));
+        }
+        closedir(dir);
+
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (ThreadInfo& t : found) {
+            _threadIndex[t.id] = (uint32_t)_threads.size();
+            _threads.push_back(std::move(t));
+        }
+        for (ThreadInfo& t : _threads) {
+            if (t.gone || alive.count(t.id)) continue;
+            MarkGone(t);
+        }
+    }
+
+    static void MarkGone(ThreadInfo& t) {
+        t.gone = true;
+        if (t.schedstat >= 0) close(t.schedstat);
+        if (t.stat >= 0) close(t.stat);
+        t.schedstat = t.stat = -1;
+    }
+
+    /**
+     * Walks a copy of a stack up its frame pointers, the same walk and the same bounds check as
+     * the Mach half: `copy` holds the `copied` bytes that were at `original`, and an address
+     * outside that range ends the walk rather than faulting.
+     *
+     * Unlike arm64, x86-64 has no ABI requirement for a frame pointer, and a build with
+     * -fomit-frame-pointer (which is -O2's default) gives a walk nothing to follow. Such a sample
+     * is its program counter alone — still the function the thread was in, which is most of the
+     * question, but not who called it. Applications built with -fno-omit-frame-pointer, and the
+     * system libraries a waiting thread sits in on distributions that build with it, unwind fully.
+     */
+    static size_t Unwind(uint64_t pc, uint64_t fp, const uint8_t* copy, size_t copied, uint64_t original,
+                         uint64_t* out, size_t capacity) {
+        size_t count = 0;
+        if (capacity) out[count++] = pc;
+        const uint64_t low = original, high = original + copied;
+        auto read = [&](uint64_t at, uint64_t& value) -> bool {
+            if (at < low || at + sizeof(uint64_t) > high) return false;
+            std::memcpy(&value, copy + (at - low), sizeof(uint64_t));
+            return true;
+        };
+        while (count < capacity) {
+            uint64_t caller = 0, ret = 0;
+            if (!read(fp, caller) || !read(fp + 8, ret)) break;
+            if (!ret) break;
+            out[count++] = ret;
+            if (caller <= fp) break;
+            fp = caller;
+        }
+        return count;
+    }
+
+    void Run() {
+        const uint32_t self = SelfId();
+        const pid_t pid = getpid();
+        std::vector<uint8_t> copy(kMaxCopy + 4096, 0);
+        uint64_t frames[kMaxFrames];
+        uint32_t tick = 0;
+        std::vector<ThreadInfo*> targets;
+        targets.reserve(kMaxThreads);
+        auto next = std::chrono::steady_clock::now();
+
+        while (_running.load(std::memory_order_relaxed)) {
+            const double periodMs = _periodMs;   // set before this thread started
+            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0) RefreshThreads(self);
+            // Only this thread adds to the list or marks a thread gone, so it reads it as it is.
+            targets.clear();
+            for (ThreadInfo& t : _threads) if (!t.gone) targets.push_back(&t);
+            const uint32_t frame = _frame.load(std::memory_order_relaxed);
+            for (ThreadInfo* t : targets) {
+                bool onCore = false;
+                const uint64_t nanos = CpuNanos(*t, &onCore);
+                const bool ran = nanos - t->nanos > kRunningNanos || onCore;
+                t->nanos = nanos;
+                // Still where it was: the wait it was last found in, which needs no interrupting
+                // to know. This is also what keeps the signal off threads that are blocked in a
+                // syscall, where delivering one would cost them an EINTR they may not expect.
+                if (!ran && t->lastStack) {
+                    Count(frame, *t, t->lastStack, false);
+                    continue;
+                }
+
+                // A signal from a request that timed out may still be in flight; it is told to
+                // stand down by the generation, and any post it managed is drained here.
+                _slot.generation.fetch_add(1, std::memory_order_acq_rel);
+                while (sem_trywait(&_slot.sem) == 0) {}
+                _slot.stackTop = t->stackTop;
+                _slot.copy = copy.data();
+                _slot.target.store(t->id, std::memory_order_release);
+
+                bool answered = false;
+                if (syscall(SYS_tgkill, pid, (int)t->id, _signal) == 0) {
+                    timespec deadline{};
+                    clock_gettime(CLOCK_REALTIME, &deadline);
+                    deadline.tv_nsec += kSignalWaitNanos;
+                    deadline.tv_sec += deadline.tv_nsec / 1000000000;
+                    deadline.tv_nsec %= 1000000000;
+                    while (sem_timedwait(&_slot.sem, &deadline) != 0) {
+                        if (errno != EINTR) break;
+                    }
+                    answered = errno != ETIMEDOUT;
+                } else if (errno == ESRCH) {
+                    MarkGone(*t);
+                }
+                _slot.target.store(0, std::memory_order_release);
+                if (!answered) continue;
+
+                // The first sample of a thread arrives with no stack copied, because until it
+                // reported a stack pointer there was nothing to say how far up its stack ran.
+                if (!t->stackTop) t->stackTop = MappingEnd(_slot.sp);
+                const size_t depth = Unwind(_slot.pc, _slot.fp, copy.data(), _slot.copied, _slot.sp, frames, kMaxFrames);
+                if (!depth) continue;
+                t->lastStack = Record(frame, *t, frames, depth, ran);
+                // Being interrupted cost it time of its own, which is not work it did.
+                t->nanos = CpuNanos(*t, nullptr);
+            }
+            next += std::chrono::microseconds((long long)(periodMs * 1000.0));
+            const auto now = std::chrono::steady_clock::now();
+            // Fell behind (many threads, or a stall): no catching up in a burst.
+            if (next <= now) next = now;
+            else std::this_thread::sleep_until(next);
+        }
+        std::lock_guard<std::mutex> lock(_mutex);
+        for (ThreadInfo& t : _threads) if (!t.gone) MarkGone(t);
     }
 
 #endif  // the platform halves

@@ -2,10 +2,18 @@
 // Direct3D 12 capture library in the process that renders it.
 //
 // A browser does not render in the process the user starts. Its WebGPU work — and its compositing —
-// is in a GPU process the browser spawns itself, so the launch is an ordinary one with the
-// launcher's follow mode on top, which puts the library into that child as it appears
+// is in a GPU process the browser spawns itself, so on Windows the launch is an ordinary one with
+// the launcher's follow mode on top, which puts the library into that child as it appears
 // (src/d3d12/launcher/main.cpp, follow mode). What a capture then holds is the D3D12 underneath
 // WebGPU, which is a lower question than the page-level WebGPU Inspector answers.
+//
+// Linux needs no injection at all: the Vulkan layer is enabled by environment variables, and a
+// child process inherits its parent's environment, so the GPU process comes up with the layer in
+// it already. What a capture holds there is the Vulkan underneath WebGPU — Dawn's backend on
+// Linux, and wgpu's. The catch is which adapter the browser picks: left alone, Chrome on Linux
+// answers requestAdapter with SwiftShader, its software renderer, which makes no Vulkan device
+// through the loader and so cannot be captured. `--use-webgpu-adapter=vulkan` is what makes it
+// use the real GPU, and is in the Linux arguments below for that reason.
 //
 // Two families, which agree on nothing: Chromium runs WebGPU through Dawn and names its child
 // processes with --type=gpu-process, and takes its settings as switches; Firefox runs it through
@@ -13,6 +21,7 @@
 // (" gpu"), and has no switch for the GPU sandbox at all — it is a preference, so it goes into the
 // profile this launch makes. Firefox also starts its browser from a first process that exits
 // straight away, which is why following tracks the target's whole tree.
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -50,6 +59,38 @@ const KNOWN: { name: string; relative: string; family: BrowserFamily }[] = [
   { name: "Firefox Nightly", relative: "Firefox Nightly\\firefox.exe", family: "firefox" },
 ];
 
+/**
+ * Where the browsers are on Linux. Absolute paths rather than a PATH search: a distribution's
+ * wrapper script in /usr/bin is what the user starts, and following it to the real binary would
+ * lose the wrapper's own setup. The snap paths are listed because a snap Chromium or Firefox is
+ * what Ubuntu installs by default.
+ */
+const KNOWN_LINUX: { name: string; paths: string[]; family: BrowserFamily }[] = [
+  { name: "Google Chrome", paths: ["/usr/bin/google-chrome", "/usr/bin/google-chrome-stable", "/opt/google/chrome/google-chrome"], family: "chromium" },
+  { name: "Google Chrome Beta", paths: ["/usr/bin/google-chrome-beta", "/opt/google/chrome-beta/google-chrome-beta"], family: "chromium" },
+  { name: "Google Chrome Dev", paths: ["/usr/bin/google-chrome-unstable", "/opt/google/chrome-unstable/google-chrome-unstable"], family: "chromium" },
+  { name: "Chromium", paths: ["/usr/bin/chromium", "/usr/bin/chromium-browser", "/snap/bin/chromium"], family: "chromium" },
+  { name: "Microsoft Edge", paths: ["/usr/bin/microsoft-edge", "/usr/bin/microsoft-edge-stable"], family: "chromium" },
+  { name: "Brave", paths: ["/usr/bin/brave-browser", "/usr/bin/brave"], family: "chromium" },
+  { name: "Firefox", paths: ["/usr/bin/firefox", "/snap/bin/firefox", "/opt/firefox/firefox"], family: "firefox" },
+  { name: "Firefox ESR", paths: ["/usr/bin/firefox-esr"], family: "firefox" },
+  { name: "Firefox Nightly", paths: ["/usr/bin/firefox-nightly", "/opt/firefox-nightly/firefox"], family: "firefox" },
+];
+
+/**
+ * The version on Linux, which unlike Windows is not in the installed layout: there is no
+ * versioned directory beside the executable and no application.ini, so the browser is asked.
+ * Bounded and failure-tolerant — an unreadable version only costs the label beside the name.
+ */
+function linuxVersion(exe: string): string {
+  try {
+    const out = execFileSync(exe, ["--version"], { encoding: "utf8", timeout: 4000, stdio: ["ignore", "pipe", "ignore"] });
+    return /(\d+(?:\.\d+)+)/.exec(out)?.[1] ?? "";
+  } catch {
+    return "";
+  }
+}
+
 function roots(): string[] {
   const dirs = [process.env["ProgramFiles"], process.env["ProgramFiles(x86)"], process.env["LOCALAPPDATA"]];
   return dirs.filter((d): d is string => !!d);
@@ -57,9 +98,13 @@ function roots(): string[] {
 
 /** Which of the two a browser belongs to, by its executable, for one chosen by path as well. */
 export function browserFamily(exe: string): BrowserFamily {
-  // A browser's path is a Windows path whatever this runs on (the unit tests run on every platform),
-  // and only path.win32 takes one apart there.
-  return path.win32.basename(exe).toLowerCase() === "firefox.exe" ? "firefox" : "chromium";
+  // A browser's path may be a Windows path whatever this runs on (the unit tests run on every
+  // platform), and only path.win32 takes one apart there; it takes a POSIX path apart too, since
+  // it treats a forward slash as a separator as well.
+  const base = path.win32.basename(exe).toLowerCase();
+  // firefox.exe on Windows; on Linux the executable has no extension and the channel is in its
+  // name (firefox-esr, firefox-nightly), all of them wgpu rather than Dawn.
+  return base === "firefox.exe" || base === "firefox" || base.startsWith("firefox-") ? "firefox" : "chromium";
 }
 
 /**
@@ -90,11 +135,18 @@ function versionOf(exe: string, family: BrowserFamily): string {
 }
 
 /**
- * The browsers found on this machine, in the order above. Windows only: follow mode is the D3D12
- * launcher's, and a browser on the other platforms is captured through the Vulkan implicit layer
- * or not at all.
+ * The browsers found on this machine, in the order above. Windows and Linux; macOS has no capture
+ * layer for a browser's Metal to go into.
  */
 export function installedBrowsers(): BrowserInstall[] {
+  if (process.platform === "linux") {
+    const found: BrowserInstall[] = [];
+    for (const { name, paths, family } of KNOWN_LINUX) {
+      const exe = paths.find((f) => fs.existsSync(f));
+      if (exe) found.push({ name, path: exe, version: linuxVersion(exe), family });
+    }
+    return found;
+  }
   if (process.platform !== "win32") return [];
   const found: BrowserInstall[] = [];
   const seen = new Set<string>();
@@ -127,7 +179,7 @@ export function browserFollow(exe: string): string[] {
  * session and its extensions, and a browser already running does not hand the page to that instance
  * and exit, leaving nothing to capture (`-no-remote` is what tells Firefox not to).
  */
-export function browserArgs(exe: string, url: string, profileDir: string): string[] {
+export function browserArgs(exe: string, url: string, profileDir: string, platform: NodeJS.Platform = process.platform): string[] {
   const page = url.trim() ? [url.trim()] : [];
   if (browserFamily(exe) === "firefox") {
     return ["-no-remote", "-profile", profileDir, ...page];
@@ -137,6 +189,10 @@ export function browserArgs(exe: string, url: string, profileDir: string): strin
     "--disable-gpu-watchdog",
     "--no-first-run",
     "--no-default-browser-check",
+    // Linux: without this Chrome answers requestAdapter with SwiftShader, which renders WebGPU on
+    // the CPU and makes no Vulkan device for the layer to capture. Windows needs no counterpart —
+    // its default WebGPU adapter is the D3D12 one the library is already in.
+    ...(platform === "linux" ? ["--use-webgpu-adapter=vulkan", "--enable-features=Vulkan", "--enable-unsafe-webgpu"] : []),
     `--user-data-dir=${profileDir}`,
     ...page,
   ];
@@ -163,9 +219,18 @@ export function prepareProfile(exe: string, profileDir: string): void {
 
 /** A profile directory of its own per browser, under `parent` (the app's user data directory). */
 export function browserProfileDir(parent: string, exe: string): string {
-  // "Chrome SxS" out of ...\Google\Chrome SxS\Application\chrome.exe, "Firefox Nightly" out of
-  // ...\Firefox Nightly\firefox.exe: the directory that names the install either way.
-  const up = browserFamily(exe) === "firefox" ? path.win32.dirname(exe) : path.win32.dirname(path.win32.dirname(exe));
-  const name = path.win32.basename(up) || "browser";
+  // Which naming applies is the path's own shape, not the platform this runs on: the unit tests
+  // take a Windows path apart on Linux, and a launch configuration saved on one machine can be
+  // opened on another.
+  const windows = exe.includes("\\") || /^[A-Za-z]:/.test(exe);
+  const name = windows
+    // "Chrome SxS" out of ...\Google\Chrome SxS\Application\chrome.exe, "Firefox Nightly" out of
+    // ...\Firefox Nightly\firefox.exe: the directory that names the install either way.
+    ? path.win32.basename(browserFamily(exe) === "firefox"
+        ? path.win32.dirname(exe)
+        : path.win32.dirname(path.win32.dirname(exe))) || "browser"
+    // A Linux install is not a directory per channel — every browser is a file in /usr/bin — so
+    // the executable's own name is what tells a google-chrome from a google-chrome-beta.
+    : path.posix.basename(exe) || "browser";
   return path.join(parent, "browser-profiles", name.replace(/[^\w.-]+/g, "_"));
 }

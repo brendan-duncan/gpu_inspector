@@ -427,10 +427,10 @@ export class CapturePanel {
       callback: () => this.toggleTiming() });
     c.push(this._timingButton);
     // Call stacks sampled with it (src/vulkan/src/cpu_sampler.h), where the capture library can:
-    // Windows through the thread contexts and macOS through Mach. On by default, since the hitch
-    // nothing timed explains is the common one; off for a run whose frame times must not be touched
-    // at all (a sample stops a thread for microseconds).
-    if (getHostPlatform() === "win32" || getHostPlatform() === "darwin") {
+    // Windows through the thread contexts, macOS through Mach, Linux through a signal per sample.
+    // On by default, since the hitch nothing timed explains is the common one; off for a run whose
+    // frame times must not be touched at all (a sample stops a thread for microseconds).
+    if (getHostPlatform() === "win32" || getHostPlatform() === "darwin" || getHostPlatform() === "linux") {
       this._sampleCheck = new Checkbox(row, { label: "Sample stacks", checked: true,
         tooltip: "Timing Capture: also sample every thread's call stack 250 times a second, and whether it was running or blocked there. The report then says what each thread was doing in the worst hitch, or in the stretch you drag out. Each sample stops a thread for a few microseconds." });
       c.push(this._sampleCheck);

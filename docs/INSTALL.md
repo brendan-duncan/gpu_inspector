@@ -9,13 +9,16 @@ Installers for every release are on the
 |---|---|---|
 | Windows | `GPU-Inspector-Setup-<version>.exe` | Run it |
 | Debian / Ubuntu | `gpu-inspector_<version>_amd64.deb` | `sudo apt install ./gpu-inspector_<version>_amd64.deb` |
+| Any other Linux | `GPU-Inspector-<version>-x86_64.AppImage` | `chmod +x` it and run it |
 | macOS (Apple Silicon) | `GPU-Inspector-<version>-arm64.dmg` | Open it and drag the app to Applications |
 | macOS (Intel) | `GPU-Inspector-<version>-x64.dmg` | Open it and drag the app to Applications |
 
 The installer contains the capture libraries — the Vulkan layer on Windows and Linux, the
 Direct3D 12 library and its launcher on Windows, the Metal capture library on macOS — so nothing
-else has to be built or registered. macOS builds are signed and notarized, so they open without a
-Gatekeeper warning.
+else has to be built or registered. The `.deb` also registers the layer for the machine, so an
+application started outside the inspector can be caught; the AppImage installs nothing, so there
+the app registers it for your account when you press **Register** (see [Launch](LAUNCH.md)).
+macOS builds are signed and notarized, so they open without a Gatekeeper warning.
 
 ## Optional tools
 

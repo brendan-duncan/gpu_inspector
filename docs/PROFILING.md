@@ -176,7 +176,7 @@ every hitch with what caused it.
   that always takes 8 ms is not blamed for the frame that took 120. When nothing accounts for it,
   the report says so: the time went to the application's own work between the calls the layer times,
   and that is itself the finding.
-- **Threads**, with **Sample stacks** on (Windows and macOS): where that finding used to stop, the report
+- **Threads**, with **Sample stacks** on (Windows, macOS and Linux): where that finding used to stop, the report
   goes on. Every thread's call stack is sampled 250 times a second, with whether it was running or
   blocked there, and filed under the frame it fell in. Under the figures is what each thread did in
   the worst hitch — or in the stretch you dragged out — busiest first: how long it ran and in what,
@@ -192,10 +192,18 @@ every hitch with what caused it.
 
   Windows samples through the thread contexts and the unwind tables; macOS through Mach
   (`task_threads`, `thread_suspend`, `thread_get_state`), walking frame pointers, which the arm64
-  ABI guarantees are there. Linux has neither: sampling there would mean a signal per thread or a
-  privilege a library loaded into somebody else's process should not be asking for.
+  ABI guarantees are there. Linux can stop no thread but its own, so it asks each thread to sample
+  itself: a real-time signal whose handler copies its own registers and stack, with the thread
+  list from `/proc/self/task` and "did it run" from each thread's nanosecond `schedstat`. Two
+  things follow from that. A signal can make a blocking call return `EINTR` — only threads that
+  have used CPU since the last sample are signalled, so the ones sitting in such a call are left
+  alone, but a thread that blocks just after running can still catch one; turn stack sampling off
+  for a run that must not be disturbed at all. And the walk follows frame pointers, so an x86-64
+  application built with `-fomit-frame-pointer` (the `-O2` default) gives its innermost function
+  and no callers — build with `-fno-omit-frame-pointer` for full stacks.
 
-All three APIs. Frame times and their categories anywhere; sampled stacks on Windows and macOS.
+All three APIs. Frame times and their categories anywhere; sampled stacks on Windows, macOS and
+Linux.
 
 ### What is allocating
 

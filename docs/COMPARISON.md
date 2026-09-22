@@ -146,7 +146,7 @@ while it runs.
 | CPU timeline: where the frame's CPU time went | ◐ [the calls the library times; no other threads](REPORTS.md#frame-stats) | ○ | ● timing captures, ETW and callstacks | ● (Nsight Systems) |
 | Is the frame CPU-bound, GPU-bound or display-bound | ● [Frame Bound card](REPORTS.md#frame-stats) | ○ | ● | ● |
 | Recording every frame's time to find a hitch | ◐ [Timing Capture: Vulkan, D3D12](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) | ○ | ● | ● |
-| What each thread was doing in the hitch | ◐ [call stacks sampled in the process, running or blocked: Windows and macOS](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) | ○ | ● ETW: context switches, every process | ● (Nsight Systems) |
+| What each thread was doing in the hitch | ◐ [call stacks sampled in the process, running or blocked: Windows, macOS and Linux](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) | ○ | ● ETW: context switches, every process | ● (Nsight Systems) |
 | Memory allocation analysis | ◐ [Memory Capture, every allocation and free: Vulkan, D3D12](PROFILING.md#what-is-allocating); no residency per resource | ◐ | ● memory captures | ● |
 | Render graph: passes, the resources between them, the critical path | ● [Render Graph](REPORTS.md#render-graph) | ○ | ○ | ○ |
 | Frame-level rules flagging waste, each linked to its command | ● [Frame Issues](REPORTS.md#frame-stats) | ○ | ● Warnings | ◐ |
