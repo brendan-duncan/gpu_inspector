@@ -35,16 +35,34 @@ GLX's. It catches an application linked against those libraries, and one that lo
 with `dlopen`, as SDL and GLFW do. A desktop OpenGL context is left alone, through EGL or GLX.
 
 The library is built with the rest on Linux when `libEGL.so.1` and `libGLESv2.so.2` are installed,
-and `test/gles_linux` (which also needs `libegl-dev` and `libgles-dev`) draws the test scene into a
-pbuffer, with no window; `gles_linux --dlopen` loads EGL the way SDL does. An EGL an application
-ships in its own directory, such as Electron's ANGLE, is not the system's and is not captured.
+and `test/gles_linux` (which also needs `libegl-dev` and `libgles-dev`) draws the test scene in one
+of the ways an application can reach EGL. An EGL an application ships in its own directory, such as
+Electron's ANGLE, is not the system's and is not captured.
 
-Because the test application renders into a pbuffer there is nothing on screen while it runs —
-expected, not a failed launch. Its frames still end at `eglSwapBuffers`, so they are captured as
-any other application's are, and the images are in the Inspect panel.
+| | |
+|---|---|
+| `gles_linux` | a window, through SDL, which loads the driver itself the way an engine does — the default, and offscreen instead if there is no display |
+| `gles_linux --window` | the same, but fails rather than falling back |
+| `gles_linux --window-egl` | a window, forcing SDL onto EGL where it would take GLX |
+| `gles_linux --pbuffer` | offscreen, EGL linked, as an application built against libEGL is |
+| `gles_linux --dlopen` | offscreen, EGL `dlopen`ed and `dlsym`ed by hand |
+| `gles_linux --frames=N` | stop after N frames |
 
-Linux support is new. `test/gles_linux` linked against EGL has been inspected and captured on an
-NVIDIA driver; the `--dlopen` and GLX paths, and other drivers, have not been run yet.
+The windowed modes need `libsdl2-dev` at build time; without it only the offscreen modes are built
+and `--window` says so. The offscreen modes put **nothing on screen** — expected, not a failed
+launch. Their frames still end at `eglSwapBuffers`, so they are captured as any other
+application's are, and the images are in the Inspect panel.
+
+Which of the two SDL takes matters, because they are different code in the plugin. Left alone SDL
+uses GLX on X11 and EGL on Wayland, so an X11 desktop exercises `hooks_glx.cpp` and an OpenGL ES
+profile context; `--window-egl` asks for EGL either way and covers `eglCreateWindowSurface`
+instead. NVIDIA's X11 EGL rejects SDL's window surface (`Could not create GLES window surface`),
+which is the driver, not the plugin — a raw `eglCreateWindowSurface` on the same display works —
+so on NVIDIA/X11 use a Wayland session to reach the EGL path.
+
+Linux support is new. On an NVIDIA driver under X11, the offscreen modes (EGL linked and through
+`dlopen`) have been inspected and captured, and the windowed mode runs; the GLX capture path,
+Wayland, `--window-egl`, and other drivers have not been checked yet.
 
 ## Android
 

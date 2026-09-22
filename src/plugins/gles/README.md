@@ -95,9 +95,10 @@ than lost.
 
 - **Depth and stencil** targets are not read back: OpenGL ES's `glReadPixels` reads color only.
   A depth read-back needs a draw of its own, sampling the depth into a color target.
-- **Linux** is only partly exercised: `test/gles_linux` linked against EGL has been inspected and
-  captured on an NVIDIA driver, but the `--dlopen` and GLX paths, and other drivers, have not been
-  run yet (TODO.md has what to check).
+- **Linux** is only partly exercised: `test/gles_linux` offscreen, with EGL linked and through
+  `dlopen`, has been inspected and captured on an NVIDIA driver, and its windowed (SDL) mode runs
+  there, but capturing that run, the GLX path, Wayland and other drivers have not been checked yet
+  (TODO.md has what to check).
 - **Live image read-back** in the Inspect tab (`RequestImage`) and creation stack traces.
 - **Shader storage buffers, images and atomic counters** bound at a dispatch are not in its state.
 

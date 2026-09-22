@@ -91,6 +91,11 @@ package_for() {
         pacman:gles-dev) echo mesa ;;
         zypper:gles-dev) echo "Mesa-libEGL-devel Mesa-libGLESv2-devel" ;;
 
+        apt-get:sdl2-dev) echo libsdl2-dev ;;
+        dnf:sdl2-dev) echo SDL2-devel ;;
+        pacman:sdl2-dev) echo sdl2 ;;
+        zypper:sdl2-dev) echo libSDL2-devel ;;
+
         apt-get:glslc) echo glslc ;;
         dnf:glslc) echo glslc ;;
         pacman:glslc) echo shaderc ;;
@@ -147,6 +152,7 @@ need xcb-dev required "XCB surfaces, and window creation in the test app" -- pkg
 need x11-dev optional "Xlib surface arguments in captures" -- pkg-config --exists x11
 need wayland-dev optional "Wayland surface arguments in captures" -- pkg-config --exists wayland-client
 need gles-dev optional "the OpenGL ES test application (test/gles_linux)" -- pkg-config --exists egl glesv2
+need sdl2-dev optional "a window for that test application, rather than offscreen only" -- pkg-config --exists sdl2
 need glslc required "compiles the test app's shaders" -- command -v glslc
 need vulkan-tools optional "vulkaninfo, to check the driver is working" -- command -v vulkaninfo
 need spirv-tools optional "SPIR-V disassembly in the Inspect panel" -- command -v spirv-dis
