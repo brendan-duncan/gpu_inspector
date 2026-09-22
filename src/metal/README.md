@@ -959,7 +959,10 @@ said. `docs/REPLAY.md` has the rest, including what is not replayed.
 
 The enum name tables both directions need are generated from the Metal SDK headers by
 `tools/gen_metal_enums.py` into `gen/`, and committed: `formats.mm`'s switches only go from value
-to name, and a decoder needs the other direction.
+to name, and a decoder needs the other direction. Regenerating them is a deliberate step
+(`cmake --build <dir> --target mtlinsp_metal_enums`) rather than part of the build, and belongs on
+the newest SDK: a table is only as complete as the SDK it was read from, so regenerating on an
+older one drops the enums that SDK has never heard of and breaks the sources naming them.
 
 `src/mtl_raytracing.mm` is the one descriptor that does *not* go through `mtl_reflect.h`: Metal has
 four geometry kinds and a motion variant of each, and the descriptor classes share no base with the

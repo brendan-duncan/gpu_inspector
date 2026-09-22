@@ -94,15 +94,18 @@ set(MTLINSP_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../..")
 set(MTL_GEN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/gen")
 
 # The generated enum tables come from the Metal SDK headers (tools/gen_metal_enums.py) and are
-# committed, so a build needs neither Python nor a particular SDK to compile them; they are
-# regenerated when the generator changes.
+# committed, so a build needs neither Python nor a particular SDK to compile them.
+#
+# Regenerating is a deliberate step (`cmake --build . --target mtlinsp_metal_enums`, or running the
+# generator by hand) rather than part of the build: the tables are only as complete as the SDK they
+# are read from, so a build on a machine with an older SDK would otherwise silently rewrite the
+# committed ones without the enums that SDK has never heard of — MTLMatrixLayout is macOS 15 — and
+# then fail to compile the replay sources that name them. Regenerate on the newest SDK and commit
+# the result.
 find_package(Python3 COMPONENTS Interpreter)
-set(MTL_ENUMS "${MTL_GEN_DIR}/metal_enums.gen.h" "${MTL_GEN_DIR}/metal_enums.gen.cpp")
 if(Python3_Interpreter_FOUND)
-    add_custom_command(
-        OUTPUT ${MTL_ENUMS}
+    add_custom_target(mtlinsp_metal_enums
         COMMAND ${Python3_EXECUTABLE} "${MTLINSP_ROOT}/tools/gen_metal_enums.py" --out "${MTL_GEN_DIR}"
-        DEPENDS "${MTLINSP_ROOT}/tools/gen_metal_enums.py"
         COMMENT "Generating Metal enum tables from the Metal SDK"
         VERBATIM)
 endif()
