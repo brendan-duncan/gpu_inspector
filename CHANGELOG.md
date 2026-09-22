@@ -1,4 +1,4 @@
-## Unreleased
+## v0.22.0
 
 ### Added
 - **Plugins**: a graphics API can be added as a plugin, with a backend module and a capture library (docs/PLUGINS.md).
