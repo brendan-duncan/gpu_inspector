@@ -272,11 +272,18 @@ and the line under the list counts the pixels it covered, passed and had rejecte
   whichever way it is wound, some face points at the camera — so red is the answer to "the draw
   ran, the geometry is there, and nothing appeared".
 - **Wireframe** — the draw's triangles as lines.
+- **Viewport / Scissor** — the draw's viewport and scissor rectangles, with everything the scissor
+  cuts away darkened, and the line under the list saying how much of the target that is. This one is
+  read from the draw's own state rather than measured, so it works on a saved capture of any API,
+  and it is the answer to "the draw ran, the geometry is there, the culling kept it, and still
+  nothing appeared": a scissor left over from a smaller window, or a viewport that covers none of
+  the target. A viewport set with a negative height (Vulkan's flipped-Y convention) says so, since
+  that is the usual reason a frame comes out mirrored.
 
 ![The Backface Cull overlay: the part of the draw that survived culling in green, the larger part its own culling removed in red](images/backface-overlay.png)
 
-How it is measured depends on the API, and as with overdraw a fragment the draw's own shader
-discards still shows as covered:
+How the *measured* overlays are measured depends on the API (Viewport / Scissor is not measured at
+all), and as with overdraw a fragment the draw's own shader discards still shows as covered:
 
 - **Vulkan** — the capture is replayed on this machine's GPU with the draw drawn on its own (see
   [Capture replay](REPLAY.md#draw-call-overlays)).

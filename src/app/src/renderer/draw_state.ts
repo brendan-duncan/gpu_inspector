@@ -98,6 +98,75 @@ export interface VertexLayout {
 }
 
 /** The bytes a push constants command carries. */
+/** A viewport or a scissor rectangle in the render target's pixels, whatever API set it. */
+export interface DrawRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  /**
+   * The viewport was set with a negative height (Vulkan's flipped-Y convention, VK_KHR_maintenance1):
+   * `y`/`height` are the rectangle it covers, and this says the clip space it maps from is upside
+   * down -- which is worth saying, since it is the usual reason a frame renders mirrored.
+   */
+  flippedY?: boolean;
+}
+
+/**
+ * The viewports a draw's state holds, in target pixels. Four spellings reach this from the four
+ * APIs and they differ in more than names: a `VkViewport` may have a negative height, a
+ * `D3D12_VIEWPORT` names its corner `TopLeftX`, and an `MTLViewport` uses `originX` and doubles.
+ */
+export function drawViewports(state: DrawState): DrawRect[] {
+  return rectsOf(state.viewports, (v) => {
+    if (v.Width !== undefined) return rect(num(v.TopLeftX), num(v.TopLeftY), num(v.Width), num(v.Height));   // D3D12_VIEWPORT
+    if (v.originX !== undefined) return rect(num(v.originX), num(v.originY), num(v.width), num(v.height));   // MTLViewport
+    if (v.width === undefined) return null;
+    return rect(num(v.x), num(v.y), num(v.width), num(v.height));                                            // VkViewport, and the GLES backend's
+  });
+}
+
+/** The scissor rectangles, in target pixels: a `VkRect2D`, a `D3D12_RECT`, or an `MTLScissorRect`. */
+export function drawScissors(state: DrawState): DrawRect[] {
+  return rectsOf(state.scissors, (s) => {
+    if (s.right !== undefined) return rect(num(s.left), num(s.top), num(s.right) - num(s.left), num(s.bottom) - num(s.top));   // D3D12_RECT
+    if (isObject(s.offset) && isObject(s.extent)) {
+      return rect(num(s.offset.x), num(s.offset.y), num(s.extent.width), num(s.extent.height));                                // VkRect2D
+    }
+    if (s.width === undefined) return null;
+    return rect(num(s.x), num(s.y), num(s.width), num(s.height));                                                              // MTLScissorRect
+  });
+}
+
+/** A rectangle with a positive size, keeping which way a flipped viewport maps from clip space. */
+function rect(x: number, y: number, width: number, height: number): DrawRect | null {
+  if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(width) || !Number.isFinite(height)) return null;
+  const flippedY = height < 0;
+  if (height < 0) {
+    y += height;
+    height = -height;
+  }
+  if (width < 0) {
+    x += width;
+    width = -width;
+  }
+  if (width <= 0 || height <= 0) return null;
+  return flippedY ? { x, y, width, height, flippedY } : { x, y, width, height };
+}
+
+function rectsOf(value: ArgValue | null, read: (o: ArgObject) => DrawRect | null): DrawRect[] {
+  // One rectangle or an array of them: a command that sets a single viewport records the struct
+  // itself (Metal's setViewport:), the rest record the array they were given.
+  const items = Array.isArray(value) ? value : isObject(value) ? [value] : [];
+  const out: DrawRect[] = [];
+  for (const item of items) {
+    if (!isObject(item)) continue;
+    const r = read(item);
+    if (r) out.push(r);
+  }
+  return out;
+}
+
 export function pushConstantBytes(a: ArgObject | null): Uint8Array | null {
   const v = a && isObject(a.pValues) ? a.pValues : null;
   if (!v || typeof v.base64 !== "string") return null;

@@ -52,7 +52,7 @@ import {
   isMeasured, measuresWhileCapturing, overdrawAverages, overdrawHistogramText, overdrawRgba, overdrawSummary,
   parseOverdrawFile, type OverdrawPassKey,
 } from "./overdraw.js";
-import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions } from "./capture_texture_view.js";
+import { CaptureTextureView, type CaptureTarget, type CaptureTextureOptions, type TextureOverlayKind } from "./capture_texture_view.js";
 import { parseDrawOverlayFile, type DrawOverlay, type DrawOverlayKind } from "./draw_overlay.js";
 import { drawState, findPass } from "./draw_state.js";
 import { parseMeshFile, type MeshOutput } from "./mesh_output.js";
@@ -2547,8 +2547,8 @@ export class CaptureView implements CaptureHost {
       // depends on everything else the frame recorded, while "the second draw that could be
       // overlaid" is stable across a sample gaining a pass.
       const [, kind = "highlight", at] = name.split(":");
-      const kinds: DrawOverlayKind[] = ["highlight", "depth", "stencil", "backface", "wireframe"];
-      const overlay = kinds.includes(kind as DrawOverlayKind) ? (kind as DrawOverlayKind) : "highlight";
+      const kinds: TextureOverlayKind[] = ["highlight", "depth", "stencil", "backface", "wireframe", "viewport"];
+      const overlay = kinds.includes(kind as TextureOverlayKind) ? (kind as TextureOverlayKind) : "highlight";
       const drawn = this.data.commands.filter((c) => this.data.sets.DRAW.has(c.method) && this.targetOfDraw(c));
       const draw = at === "last" ? drawn[drawn.length - 1]
         : at?.startsWith("#") ? drawn[Number(at.slice(1))]
@@ -2618,7 +2618,7 @@ export class CaptureView implements CaptureHost {
   }
 
   /** Opens the render target tab with a draw overlay on a draw (Highlight Draw in a draw's render targets). */
-  openDrawOverlay(cmd: CaptureCommand, overlay: DrawOverlayKind, target?: CaptureTarget): void {
+  openDrawOverlay(cmd: CaptureCommand, overlay: TextureOverlayKind, target?: CaptureTarget): void {
     const t = target ?? this.targetOfDraw(cmd);
     if (!t) {
       this._setStatus("the draw's pass has no render target read back, so there is nothing to draw the overlay over");

@@ -165,6 +165,10 @@ struct App
     };
     std::vector<ChurnBuffer> churnRecent, churnKept;
     bool badScissor = false;
+    // --half-scissor: the scissor keeps the left half of the target, so the cube is cut down the
+    // middle. It is what the Viewport / Scissor overlay is for: a draw that runs and rasterizes and
+    // still has no pixels where they are expected.
+    bool halfScissor = false;
     bool leak = false;
     // --hazard: every frame the vertex buffer is written with vkCmdUpdateBuffer in a command
     // buffer submitted on its own, with no semaphore or barrier before the main submission's
@@ -2466,7 +2470,7 @@ struct App
         VkViewport viewport{0, 0, (float)width, (float)height, 0, 1};
         // --bad-scissor: a negative offset is a validation error (VUID-vkCmdSetScissor-x-00595),
         // used to exercise the inspector's validation message reporting.
-        VkRect2D scissor{{badScissor ? -1 : 0, 0}, {width, height}};
+        VkRect2D scissor{{badScissor ? -1 : 0, 0}, {halfScissor ? width / 2 : width, height}};
         RecordCubeDraw(cb, viewport, scissor, t);
         if (suspend)
         {
@@ -2910,6 +2914,8 @@ int RunApp(int argc, char** argv)
             app.height = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--bad-scissor"))
             app.badScissor = true;
+        else if (!strcmp(argv[i], "--half-scissor"))
+            app.halfScissor = true;
         else if (!strcmp(argv[i], "--leak"))
             app.leak = true;
         else if (!strcmp(argv[i], "--hazard"))

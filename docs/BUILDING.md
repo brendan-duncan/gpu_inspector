@@ -180,6 +180,7 @@ differently or misbehave on purpose.
 | `--compile-hitch` | Compiles a library and a pipeline inside every frame, so the CPU timeline has a stall to attribute |
 | `--hitch-every <n>` | Stalls 100 ms inside every nth frame, in its own code, for **Capture on hitch** |
 | `--occluded` | Draws the triangles twice, the second set behind the first with a depth test, so overdraw has fragments to reject |
+| `--half-scissor` | A scissor that keeps the left half of the target, for the **Viewport / Scissor** overlay |
 
 `dxinsp_triangle`:
 

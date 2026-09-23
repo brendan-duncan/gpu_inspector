@@ -22,6 +22,11 @@ import {
 } from "./draw_overlay.js";
 import { ImageView, type ImageOverlay } from "./image_view.js";
 import {
+  VIEWPORT_OVERLAY_LEGEND, viewportOverlayLines, viewportOverlayOf, viewportOverlayRgba, viewportOverlaySummary,
+  type ViewportOverlay,
+} from "./viewport_overlay.js";
+import { drawState } from "./draw_state.js";
+import {
   OVERDRAW_LEGEND, isMeasured, measuresOverlayWhileCapturing, measuresWhileCapturing, overdrawCount,
   overdrawHistogramText, overdrawRgba, overdrawSummary, type OverdrawPassKey,
 } from "./overdraw.js";
@@ -38,7 +43,7 @@ export interface CaptureTarget {
 }
 
 /** What is drawn over the image. */
-export type TextureOverlayKind = "none" | "overdraw" | DrawOverlayKind;
+export type TextureOverlayKind = "none" | "overdraw" | "viewport" | DrawOverlayKind;
 
 /** What the view needs of the capture tab it belongs to. */
 export interface CaptureTextureHost {
@@ -97,6 +102,9 @@ const COUNT_LABELS = ["Fragments passing depth and stencil", "Every rasterized f
 const OVERLAYS: { kind: TextureOverlayKind; label: string; vulkanOnly: boolean }[] = [
   { kind: "none", label: "No Overlay", vulkanOnly: false },
   { kind: "overdraw", label: "Overdraw", vulkanOnly: false },
+  // The one overlay that needs no replay and no measurement: the rectangles are in the draw's own
+  // state, so it works on a saved capture of any API (viewport_overlay.ts).
+  { kind: "viewport", label: "Viewport / Scissor", vulkanOnly: false },
   // Vulkan replays the capture for these; D3D12 measures them while capturing the next frame
   // (measuresOverlayWhileCapturing). Metal has neither, so they stay off there.
   { kind: "highlight", label: "Highlight Draw", vulkanOnly: true },
@@ -109,6 +117,7 @@ const OVERLAYS: { kind: TextureOverlayKind; label: string; vulkanOnly: boolean }
 const OVERLAY_TOOLTIPS: Record<TextureOverlayKind, string> = {
   none: "",
   overdraw: "The pass's overdraw: how many fragments landed on each pixel, with the counts in the tooltip",
+  viewport: "The draw's viewport and scissor rectangles, with everything the scissor cuts away darkened",
   highlight: "The draw's pixels in a flat color, the rest darkened",
   depth: "The draw's pixels by whether its fragments passed the depth and stencil tests (green) or were rejected (red)",
   stencil: "The draw's pixels by whether its fragments passed the stencil test alone (green) or were rejected by it (red)",
@@ -223,6 +232,11 @@ export class CaptureTextureView {
         depthTested: d.depthTested, stencilTested: d.stencilTested, backFaceTested: d.backFaceTested,
         wireframe: d.wireframe, mask: !!d.mask, note: d.note ?? null,
       } : null,
+      // Viewport / Scissor: the rectangles the draw's own state carries, and what they cut away.
+      viewportOverlay: (() => {
+        const v = this._viewportOverlay();
+        return v ? { viewports: v.viewports, scissors: v.scissors, keptPixels: v.keptPixels, cutPixels: v.cutPixels } : null;
+      })(),
       picked: this._picked ? { x: this._picked.x, y: this._picked.y } : null,
       history: this._history?.debugState() ?? null,
     };
@@ -242,7 +256,17 @@ export class CaptureTextureView {
   /** The draw overlay being shown, if the overlay is one. */
   private _drawOverlayKind(): DrawOverlayKind | null {
     const k = this._overlayKind;
-    return k === "none" || k === "overdraw" ? null : k;
+    return k === "none" || k === "overdraw" || k === "viewport" ? null : k;
+  }
+
+  /** The chosen draw's viewport and scissor rectangles, for the overlay that needs nothing measured. */
+  private _viewportOverlay(): ViewportOverlay | null {
+    if (this._overlayKind !== "viewport" || this._draw === null) return null;
+    const cmd = this.host.data.commands[this._draw];
+    if (!cmd) return null;
+    const info = this._target.texture.info;
+    const state = drawState(this.host.data, this.host.session.database, cmd);
+    return viewportOverlayOf(state, info.width, info.height);
   }
 
   /** The pass's measurement the overdraw overlay draws, if the capture has it. */
@@ -379,7 +403,7 @@ export class CaptureTextureView {
 
   private _setOverlay(kind: TextureOverlayKind): void {
     this._overlayKind = kind;
-    if (this._drawOverlayKind()) this._pickDraw();
+    if (this._drawOverlayKind() || kind === "viewport") this._pickDraw();
     this._renderOverlayRow();
     this._image?.refreshOverlay();
     if (kind === "overdraw") void this._ensureMeasured();
@@ -390,6 +414,10 @@ export class CaptureTextureView {
   private _overlay(): ImageOverlay {
     return {
       rgba: (width, height) => {
+        if (this._overlayKind === "viewport") {
+          const v = this._viewportOverlay();
+          return v ? viewportOverlayRgba(v, width, height) : null;
+        }
         const kind = this._drawOverlayKind();
         if (kind) {
           const d = this._drawOverlay();
@@ -410,6 +438,10 @@ export class CaptureTextureView {
       },
       opacity: () => this._opacity / 100,
       lines: (x, y) => {
+        if (this._overlayKind === "viewport") {
+          const v = this._viewportOverlay();
+          return v ? viewportOverlayLines(v, x, y) : [];
+        }
         if (this._drawOverlayKind()) {
           const d = this._drawOverlay();
           return d ? drawOverlayLines(d, x, y) : [];
@@ -440,6 +472,7 @@ export class CaptureTextureView {
     row.tooltip = OVERLAY_TOOLTIPS[this._overlayKind];
     const kind = this._drawOverlayKind();
     if (kind) this._renderDrawRow(row, kind);
+    else if (this._overlayKind === "viewport") this._renderViewportRow(row);
     else this._renderOverdrawRow(row);
   }
 
@@ -523,27 +556,7 @@ export class CaptureTextureView {
       new Div(row, { text: "The pass has no draws.", class: "text-muted" });
       return;
     }
-    const at = Math.max(0, draws.findIndex((c) => c.index === this._draw));
-    const choose = (i: number): void => {
-      const c = draws[Math.min(draws.length - 1, Math.max(0, i))];
-      if (c.index === this._draw) return;
-      this._draw = c.index;
-      this._drawError = "";
-      this._renderOverlayRow();
-      this._image?.refreshOverlay();
-      void this._ensureDrawOverlay();
-    };
-    // Stepping through the pass's draws, when it has more than one.
-    if (draws.length > 1) new Button(row, { label: "‹", class: "btn btn-sm", tooltip: "The pass's previous draw", disabled: at === 0, callback: () => choose(at - 1) });
-    const select = new Select(row, {
-      options: draws.map((c) => `#${c.index} ${c.method.replace(/^vkCmd/, "")}`),
-      index: at,
-      onChange: (_v: string, index: number) => choose(index),
-    });
-    select.tooltip = `Draw ${at + 1} of the pass's ${draws.length}`;
-    if (draws.length > 1) new Button(row, { label: "›", class: "btn btn-sm", tooltip: "The pass's next draw", disabled: at === draws.length - 1, callback: () => choose(at + 1) });
-    new Button(row, { label: "Go to Draw", class: "btn btn-sm", tooltip: "Select the draw in the capture's tab",
-      callback: () => { if (this._draw !== null) this.host.selectCommand(this._draw); } });
+    this._drawPicker(row, draws);
     this._opacityInput(row);
 
     const note = (text: string): Span => new Span(row, { text, class: "text-muted" });
@@ -569,6 +582,51 @@ export class CaptureTextureView {
     }
     if (kind === "depth" && !d.depthTested) note("(no depth or stencil to test against)");
     this._legend(row, DRAW_OVERLAY_LEGEND[kind]);
+  }
+
+  /** The pass's draws to choose between, shared by every overlay that is about one draw. */
+  private _drawPicker(row: Div, draws: CaptureCommand[]): void {
+    const at = Math.max(0, draws.findIndex((c) => c.index === this._draw));
+    const choose = (i: number): void => {
+      const c = draws[Math.min(draws.length - 1, Math.max(0, i))];
+      if (c.index === this._draw) return;
+      this._draw = c.index;
+      this._drawError = "";
+      this._renderOverlayRow();
+      this._image?.refreshOverlay();
+      void this._ensureDrawOverlay();
+    };
+    // Stepping through the pass's draws, when it has more than one.
+    if (draws.length > 1) new Button(row, { label: "‹", class: "btn btn-sm", tooltip: "The pass's previous draw", disabled: at === 0, callback: () => choose(at - 1) });
+    const select = new Select(row, {
+      options: draws.map((c) => `#${c.index} ${c.method.replace(/^vkCmd/, "")}`),
+      index: at,
+      onChange: (_v: string, index: number) => choose(index),
+    });
+    select.tooltip = `Draw ${at + 1} of the pass's ${draws.length}`;
+    if (draws.length > 1) new Button(row, { label: "›", class: "btn btn-sm", tooltip: "The pass's next draw", disabled: at === draws.length - 1, callback: () => choose(at + 1) });
+    new Button(row, { label: "Go to Draw", class: "btn btn-sm", tooltip: "Select the draw in the capture's tab",
+      callback: () => { if (this._draw !== null) this.host.selectCommand(this._draw); } });
+  }
+
+  /** The draw picker, the rectangles and what the scissor cuts: nothing here is measured or replayed. */
+  private _renderViewportRow(row: Div): void {
+    const draws = this.host.drawsOfPass(this._target.key);
+    if (!draws.length) {
+      new Div(row, { text: "The pass has no draws.", class: "text-muted" });
+      return;
+    }
+    this._drawPicker(row, draws);
+    this._opacityInput(row);
+    const v = this._viewportOverlay();
+    const info = this._target.texture.info;
+    if (!v || (!v.viewports.length && !v.scissors.length)) {
+      new Span(row, { text: "The draw's state carries no viewport or scissor.", class: "text-muted" });
+      return;
+    }
+    const summary = new Span(row, { text: viewportOverlaySummary(v, info.width, info.height), class: "text-muted" });
+    summary.tooltip = "From the draw's own state, not from a replay: the viewport and scissor in effect when it ran.";
+    this._legend(row, VIEWPORT_OVERLAY_LEGEND);
   }
 
   /** Vulkan: measures the capture's overdraw when the overlay is switched on without it. */

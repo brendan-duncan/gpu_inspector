@@ -498,12 +498,29 @@ application with injected state. Route (a) is the general one and is the prerequ
       *rejected* rather than as passed, which is the opposite of what Vulkan and D3D12 say about the
       same pass, and the overlay's own `depthTested` was missing from the render target tab's debug
       state, so no test could see it.
-- [ ] Draw overlays, the rest of the rest: triangle size and quad overdraw (RenderDoc's other two
-      that need real work: a geometry shader passing the primitive's screen area, and quad-granular
-      atomics), the fragments a shader discards (the same SPIR-V edit "overdraw of fragments a
-      shader discards" needs: keep the discard, replace the output with a constant), and
-      viewport/scissor, which needs no replay at all — the rects are in the draw's own state, so it
-      is a drawing job in the render target tab.
+- [x] **Viewport / Scissor** (`renderer/viewport_overlay.ts`), the one of these that needs no replay:
+      the rectangles come from the draw's own state, so it draws on a capture of any API and on a
+      saved one. The four spellings are read in one place (`drawViewports` / `drawScissors` in
+      `renderer/draw_state.ts`: `VkViewport`, `D3D12_VIEWPORT`, `MTLViewport`, and the GLES
+      backend's), which the command details view now reads too, so what it prints and what the
+      overlay paints cannot drift apart -- and a Metal draw's viewport prints properly for the first
+      time. A negative height (Vulkan's flipped Y) keeps the rectangle it covers and says it is
+      flipped. `test/triangle --half-scissor`, the `overlay-viewport` UI case and
+      `src/app/test/viewport_overlay.test.js` cover it.
+- [ ] Draw overlays, the rest of the rest: the three that need real work in the replay.
+  - **The fragments a shader discards.** The overlays draw the pass again with a constant fragment
+    shader, which does not discard, so alpha-tested geometry covers its whole quad. Two routes, both
+    in `OverdrawPipeline` (`src/replay/src/overdraw.cpp`): keep the application's own fragment shader
+    and count with a **stencil increment** instead of a color write (no shader edit, but the overlay
+    render pass then needs a colour attachment per output the shader declares, and the stencil read
+    back), or edit the SPIR-V to keep the discard and replace the outputs with one constant (the
+    edit "overdraw of fragments a shader discards" needs as well). A shader with side effects
+    (storage writes) is re-run either way, which is what to decide first. `test/triangle` has no
+    discarding shader yet.
+  - **Triangle size**: a geometry shader passing the primitive's screen area through to the
+    fragment stage, which means generating one (and the `geometryShader` feature), and a value per
+    pixel rather than a mask bit.
+  - **Quad overdraw**: quad-granular atomics into a storage image, from a patched fragment shader.
       Not on this list any more: **NaN/INF** and **clipping**, which the image viewer's
       [Highlight](docs/REPORTS.md#what-the-picture-cannot-show) already marks on any render target,
       and marks by default.

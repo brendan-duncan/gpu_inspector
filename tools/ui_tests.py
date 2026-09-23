@@ -274,6 +274,20 @@ def triangle_stencil(textures):
     return check
 
 
+def triangle_viewport_overlay(state, log):
+    # The Viewport / Scissor overlay (renderer/viewport_overlay.ts) on a draw whose scissor keeps
+    # half the target (--half-scissor). It is the one draw overlay that replays nothing: the
+    # rectangles come from the draw's own state, so this case runs wherever a capture opens.
+    tab = (capture(state).get("textureTab") or {})
+    v = tab.get("viewportOverlay") or {}
+    kept, cut = v.get("keptPixels"), v.get("cutPixels")
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(tab.get("overlay") == "viewport", f"the tab shows the {tab.get('overlay')!r} overlay") + \
+        expect(v.get("viewports") == [{"x": 0, "y": 0, "width": 640, "height": 480}], f"viewports {v.get('viewports')}") + \
+        expect(v.get("scissors") == [{"x": 0, "y": 0, "width": 320, "height": 480}], f"scissors {v.get('scissors')}") + \
+        expect(kept == cut == 640 * 480 // 2, f"the scissor keeps {kept} pixels and cuts {cut} (expected half of 640x480 each)")
+
+
 def triangle_suspend(state, log):
     c = capture(state)
     s = session(state)
@@ -1567,6 +1581,8 @@ def triangle_cases(triangle):
         Case("prerecord", launch + ["--args=--prerecord", "--record-always", "--validation", "--debug-capture"], triangle_prerecord, delay_ms=16000),
         Case("msaa", launch + ["--args=--msaa", "--debug-capture"], triangle_msaa),
         Case("suspend", launch + ["--args=--suspend", "--validation", "--debug-capture"], triangle_suspend, delay_ms=16000),
+        Case("overlay-viewport", launch + ["--args=--half-scissor", "--debug-capture", "--debug-view=overlay:viewport:last"],
+             triangle_viewport_overlay, delay_ms=18000),
         Case("stencil", launch + ["--args=--stencil", "--validation", "--debug-capture"], triangle_stencil(4), delay_ms=16000),
         Case("stencil-msaa", launch + ["--args=--stencil --msaa", "--validation", "--debug-capture"], triangle_stencil(5), delay_ms=16000),
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),

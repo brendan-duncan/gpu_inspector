@@ -13,6 +13,8 @@
 - An MCP session takes the captures an application asks for through `include/gpu_inspector.h`, saves them under the application's label and lists them (`get_session_status` `appCaptures`, `list_captures`).
 - Direct3D 12 residency on the memory series and in memory captures: evictions, page-ins and changes of the driver's budget are marked and counted, with the bytes each named.
 - `test/d3d12_triangle --evict` evicts a buffer and pages it back in on a cycle, for the residency marks.
+- **Viewport / Scissor**, a draw overlay that needs no replay: the rectangles in the draw's own state drawn over its render target, with what the scissor cuts away darkened. It works on a capture of any API, and on a saved one.
+- `test/triangle --half-scissor` keeps the left half of the target, for that overlay.
 - A Vulkan dynamic-rendering pass suspended and resumed across command buffers is timed across its parts, instead of being left out of the frame's GPU time.
 - A Direct3D 12 render pass suspended across command lists is timed: every pass's queries are resolved from a list of the capture's own at the finish, instead of beside the query in the application's list where a suspended pass forbids it. A Unity frame goes from a fifth of its passes measured to all of them.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.

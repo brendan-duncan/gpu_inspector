@@ -39,7 +39,7 @@ import { renderEmbeddedSource } from "./shader_source_view.js";
 import { renderAnalysisSection, renderCostSection } from "./shader_analysis_view.js";
 import { analyzeSpirvCached } from "./vulkan/spirv_analysis.js";
 import { fetchBlob } from "./capture_file.js";
-import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type PushConstantUpdate } from "./draw_state.js";
+import { bindingState, drawScissors, drawState, drawViewports, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type PushConstantUpdate } from "./draw_state.js";
 import type { CaptureData, CapturedBuffer, CapturedTexture } from "./capture_data.js";
 import { ImageView } from "./image_view.js";
 import {
@@ -137,6 +137,15 @@ function slotRanges(slots: BoundStageBuffer[]): string {
     parts.push(`${stage} ${runs.join(", ")}`);
   }
   return parts.join("; ");
+}
+
+/** A viewport's depth range, whichever API spelled it: "0..1", or "" when it carries none. */
+function depthRange(viewports: ArgValue | null): string {
+  const v = Array.isArray(viewports) ? viewports[0] : viewports;
+  if (!isObject(v)) return "";
+  const min = v.MinDepth ?? v.minDepth ?? v.znear;
+  const max = v.MaxDepth ?? v.maxDepth ?? v.zfar;
+  return min === undefined || max === undefined ? "" : `${num(min)}..${num(max)}`;
 }
 
 export class CommandInfoView {
@@ -471,25 +480,16 @@ export class CommandInfoView {
       if (dyn && dyn.length) new Span(line("Dynamic"), { text: dyn.map((s) => fmt(s)).join(", "), class: "text-muted" });
     }
 
-    if (Array.isArray(state.viewports) && isObject(state.viewports[0])) {
-      const v = state.viewports[0];
-      // A VkViewport, or a D3D12_VIEWPORT (TopLeftX, TopLeftY, Width, Height, MinDepth, MaxDepth).
-      const d3d = v.Width !== undefined;
-      new Span(line("Viewport"), { text: d3d
-        ? `${num(v.TopLeftX)},${num(v.TopLeftY)} ${num(v.Width)}x${num(v.Height)} depth ${num(v.MinDepth)}..${num(v.MaxDepth)}`
-        : `${num(v.x)},${num(v.y)} ${num(v.width)}x${num(v.height)} depth ${num(v.minDepth)}..${num(v.maxDepth)}` });
+    // The same reading of the four APIs' spellings the Viewport / Scissor overlay draws from
+    // (draw_state.ts), so what this says and what that paints cannot drift apart.
+    const viewport = drawViewports(state)[0];
+    if (viewport) {
+      const depth = depthRange(state.viewports);
+      new Span(line("Viewport"), { text: `${num(viewport.x)},${num(viewport.y)} ${num(viewport.width)}x${num(viewport.height)}`
+        + (viewport.flippedY ? " flipped Y" : "") + (depth ? ` depth ${depth}` : "") });
     }
-    if (Array.isArray(state.scissors) && isObject(state.scissors[0])) {
-      const s = state.scissors[0];
-      if (s.right !== undefined) {
-        // A D3D12_RECT.
-        new Span(line("Scissor"), { text: `${num(s.left)},${num(s.top)} ${num(s.right) - num(s.left)}x${num(s.bottom) - num(s.top)}` });
-      } else {
-        const o = isObject(s.offset) ? s.offset : {};
-        const e = isObject(s.extent) ? s.extent : {};
-        new Span(line("Scissor"), { text: `${num(o.x)},${num(o.y)} ${num(e.width)}x${num(e.height)}` });
-      }
-    }
+    const scissor = drawScissors(state)[0];
+    if (scissor) new Span(line("Scissor"), { text: `${num(scissor.x)},${num(scissor.y)} ${num(scissor.width)}x${num(scissor.height)}` });
   }
 
   /**
