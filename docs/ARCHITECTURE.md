@@ -274,10 +274,13 @@ much slower than on the desktop.
    are not allowed inside one); secondary command buffers hand their pending copies to the primary
    that executes them. A dynamic rendering pass suspended at the end of one command buffer and
    resumed in another (`VK_RENDERING_SUSPENDING_BIT` / `RESUMING_BIT`) may have nothing recorded
-   between its parts, so the suspended part gets no copies, timestamps, queries or attachment
-   read-back at all: its pending copies go to the device's capture record and the part that resumes
-   the pass records them after it ends, with its own and the attachment read-back; such a pass is
-   neither timed nor counted. The binding command references each capture by id (`data` in the
+   between its parts, so the suspended part gets no copies and no attachment read-back: its pending
+   copies go to the device's capture record and the part that resumes the pass records them after it
+   ends, with its own and the attachment read-back. It *is* timed, once across all of its parts,
+   which is what a suspended instance is: the begin timestamp goes before the first part's begin
+   command and the end after the last part's end command, both outside the instance, with the query
+   pair reserved and reset in the first part's command buffer. Counters it cannot have, since a
+   query must be ended in the command buffer that began it. The binding command references each capture by id (`data` in the
    snapshot, `bufferData` for vertex/index/indirect bindings).
    The contents the frame starts from are read back too, since a replay needs them and the read-backs
    above only see what the frame shows on its way. The transfer commands get pre-call hooks: the

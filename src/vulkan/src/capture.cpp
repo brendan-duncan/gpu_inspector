@@ -414,7 +414,8 @@ void CaptureManager::Finish(DeviceData* dev)
     if (uint32_t n = _postSubmitReadbacks.exchange(0, std::memory_order_relaxed))
         Log("capture: %u attachments of command buffers recorded before the capture were read back after their submission", n);
     if (uint32_t n = _suspendedPasses.exchange(0, std::memory_order_relaxed))
-        Log("capture: %u render pass(es) suspended and resumed across command buffers: neither timed nor counted, and read back where they resumed", n);
+        Log("capture: %u render pass(es) suspended and resumed across command buffers: timed across their parts, "
+            "uncounted, and read back where they resumed", n);
 
     // Everything recorded in the frame has been submitted; wait for it so staging data is valid,
     // on every device that took part.
@@ -774,10 +775,24 @@ void CaptureManager::OnBeforePass(DeviceData* dev, CommandRecorder* rec, const P
     if (shape.resuming)
         return;
     OnEndComputePass(dev, rec);
-    // A pass suspended here can have nothing recorded after it either, so it would have no end
-    // timestamp, and its queries could not be ended: untimed and uncounted, like its resumption.
+    // A pass that will be suspended is timed across all of its parts: the begin timestamp goes here,
+    // before the first part's begin command, and the part that finally ends the pass writes the end
+    // after its end command (OnEndPass) -- both outside the rendering instance, which is where
+    // recording is allowed. What it cannot have is counters: a vkCmdBeginQuery must be ended in the
+    // command buffer that began it, and the pass ends in another one.
     if (shape.suspending)
+    {
+        rec->pendingQuery = BeginTimestamp(dev, rec);
+        if (rec->pendingQuery != UINT32_MAX)
+        {
+            if (DeviceCapture* dc = FindCapture(dev->device))
+            {
+                std::lock_guard lock(dc->suspendedMutex);
+                dc->suspendedQuery = rec->pendingQuery;
+            }
+        }
         return;
+    }
     rec->pendingQuery = BeginTimestamp(dev, rec);
     // Only alongside a timed pass: an uncounted pass would spend a query for nothing, and the
     // report shows the counters against the pass's duration. A multiview pass writes one result
@@ -908,10 +923,11 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec)
     if (p.suspending)
     {
         // Suspended, to be resumed later in the submission: nothing may be recorded between the
-        // two parts, in this command buffer or the next, so this end gets no read-back, no
-        // timestamp (OnBeforePass took none) and no flush of the copies queued inside it. Those
-        // wait for the part that resumes the pass, whose end records them (below). The pass's
-        // attachments are read back there too, once the whole pass has run.
+        // two parts, in this command buffer or the next, so this end gets no read-back and no flush
+        // of the copies queued inside it. Those wait for the part that resumes the pass, whose end
+        // records them (below). The pass's attachments are read back there too, once the whole pass
+        // has run. Its begin timestamp is already written and waits with them
+        // (DeviceCapture::suspendedQuery): the part that ends the pass writes the end.
         p.active = false;
         _suspendedPasses.fetch_add(1, std::memory_order_relaxed);
         if (suspended)
@@ -929,8 +945,16 @@ void CaptureManager::OnEndPass(DeviceData* dev, CommandRecorder* rec)
     if (suspended)
     {
         // The part that ends a suspended pass: the copies of every part before it are recorded
-        // here, after it, with this part's own.
+        // here, after it, with this part's own, and the pass's timestamp pair -- reserved and begun
+        // by its first part -- is ended here, which is the first place after the pass where
+        // recording is allowed again. The timing is reported against this part, where the pass's
+        // attachments are read back too.
         std::lock_guard lock(suspended->suspendedMutex);
+        if (p.resuming && p.query == UINT32_MAX)
+        {
+            p.query = suspended->suspendedQuery;
+            suspended->suspendedQuery = UINT32_MAX;
+        }
         auto& copies = rec->pendingCopies();
         copies.insert(copies.begin(), suspended->suspendedCopies.begin(), suspended->suspendedCopies.end());
         suspended->suspendedCopies.clear();

@@ -13,6 +13,7 @@
 - An MCP session takes the captures an application asks for through `include/gpu_inspector.h`, saves them under the application's label and lists them (`get_session_status` `appCaptures`, `list_captures`).
 - Direct3D 12 residency on the memory series and in memory captures: evictions, page-ins and changes of the driver's budget are marked and counted, with the bytes each named.
 - `test/d3d12_triangle --evict` evicts a buffer and pages it back in on a cycle, for the residency marks.
+- A Vulkan dynamic-rendering pass suspended and resumed across command buffers is timed across its parts, instead of being left out of the frame's GPU time.
 - A Direct3D 12 render pass suspended across command lists is timed: every pass's queries are resolved from a list of the capture's own at the finish, instead of beside the query in the application's list where a suspended pass forbids it. A Unity frame goes from a fifth of its passes measured to all of them.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
 - Direct3D 12 passes are timed in the frame of recording before the capture as well, so an engine that builds a frame's command lists during the frame before it (Unity does) has that frame measured rather than reported without timings.

@@ -278,15 +278,17 @@ def triangle_suspend(state, log):
     c = capture(state)
     s = session(state)
     # The cube's pass is suspended at the end of the frame's command buffer and resumed in a second
-    # one. Nothing may be recorded between the two parts, so the layer reads the attachments back
-    # and records the bound buffers' copies (both parts', 7 ranges) after the resumed part only, and
-    # times neither part; the compute pass before it still is. The Khronos layer has no check for
-    # the rule, so a clean validation log is necessary but not sufficient: the counts are the test.
+    # one. Nothing may be recorded between the two parts, so the layer reads the attachments back and
+    # records the bound buffers' copies (both parts', 7 ranges) after the resumed part only. The pass
+    # is timed, though -- once, across its parts, which is what a suspended instance is: its begin
+    # timestamp goes before the first part and its end after the last, both outside the instance. So
+    # the frame's timings are the compute pass and the suspended pass. The Khronos layer has no check
+    # for the rule, so a clean validation log is necessary but not sufficient: the counts are the test.
     return check_connected(state, log) + check_capture_basic(state, log, textures=2, timings=False) + \
         expect((c.get("passes") or 0) >= 2, f"{c.get('passes')} passes (expected the suspended and the resumed part)") + \
         expect((c.get("textures") or 0) == 3, f"{c.get('textures')} textures (expected the resumed part's 2 attachments and the sampled texture)") + \
         expect((c.get("buffers") or 0) >= 7, f"{c.get('buffers')} buffer ranges (the suspended part's must be recorded by the resumed part)") + \
-        expect((c.get("passTimings") or 0) == 1, f"{c.get('passTimings')} pass timings (expected the compute pass only)") + \
+        expect((c.get("passTimings") or 0) == 2, f"{c.get('passTimings')} pass timings (expected the compute pass and the suspended pass)") + \
         expect("suspended and resumed" in log, "the layer did not report the suspended pass") + \
         expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} validation errors")
 

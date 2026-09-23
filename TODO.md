@@ -98,8 +98,17 @@ interpreter and re-created pipelines.
       with the same resolve mode so a device without `independentResolve` can still do it. Untested:
       no test application has a multisampled stencil attachment.
 - [x] Dynamic rendering passes suspended and resumed across command buffers: the layer records
-      nothing between the parts (the resumed part reads back for both; neither is timed). The
-      replay's own per-pass instrumentation (overdraw, pixel history: `PrepareOverdraw` /
+      nothing between the parts (the resumed part reads back for both). They are **timed**, across
+      their parts rather than per part, which is what a suspended instance is: one pass. The begin
+      timestamp goes before the first part's `vkCmdBeginRendering` and the end after the last part's
+      `vkCmdEndRendering`, both outside the instance where recording is allowed, and the pair is
+      reserved and reset in the first part's command buffer -- submission order puts that before the
+      part that writes the end (`DeviceCapture::suspendedQuery`, the query counterpart of the
+      copies the same chain already carried). Counters are still not taken: a `vkCmdBeginQuery` has
+      to be ended in the command buffer that began it, and the pass ends in another one.
+      `test/triangle --suspend` reads 2 of 2 passes timed where it read 1 before, with the
+      validation layer silent; the `suspend` UI case covers it.
+      The replay's own per-pass instrumentation (overdraw, pixel history: `PrepareOverdraw` /
       `PrepareHistory` before each `vkCmdBeginRendering`) still treats each part as a pass, so those
       analyses of a split-pass capture inject commands between the parts; a plain replay is fine.
 - [x] Read back the stencil aspect of a depth-stencil image: a render target's stencil is a texture

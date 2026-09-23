@@ -35,6 +35,7 @@ The user documentation is in [docs](docs/README.md):
 | [Inspect](docs/INSPECT.md) · [Capture](docs/CAPTURE.md) · [Reports](docs/REPORTS.md) | using the inspector |
 | [Finding GPU bottlenecks](docs/PROFILING.md) | working out what limits a frame |
 | [Claude Code plugin](docs/MCP.md) | asking Claude about a capture |
+| [Comparison](COMPARISON.md) | GPU Inspector's features next to RenderDoc, PIX and Nsight Graphics |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) · [Building from source](docs/BUILDING.md) | when something does not work, and building it yourself |
 
 ---

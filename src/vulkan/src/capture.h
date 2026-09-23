@@ -347,6 +347,16 @@ private:
         std::mutex suspendedMutex;
         std::vector<PendingBufferCopy> suspendedCopies;
         std::vector<PendingImageCopy> suspendedImages;
+        /**
+         * The timestamp pair the first part of a suspended pass reserved, ended by the part that
+         * finally ends the pass. A suspended render pass instance is one pass split across command
+         * buffers, so it is timed once, across all of its parts: its begin timestamp goes before
+         * the first part's vkCmdBeginRendering and its end after the last part's vkCmdEndRendering,
+         * both outside the instance, where recording is allowed (nothing may be recorded between
+         * the parts). The query pair is reset in the first part's command buffer, which submission
+         * order puts before the part that writes the end.
+         */
+        uint32_t suspendedQuery = UINT32_MAX;
         std::atomic<bool> earlierStructuresRead{false};
     };
     void CreateQueryPools(DeviceCapture& dc);
