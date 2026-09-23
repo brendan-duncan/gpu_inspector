@@ -941,9 +941,8 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       needs a clock read in every timed call, and the layer's cost when idle is one relaxed atomic
       read. Vulkan only so far.
 - [ ] Timing captures, the rest:
-  - **D3D12 and Metal**: both have the same CPU categories already
-    (`src/d3d12/src/cpu_timeline.h`, `src/metal/src/cpu_timeline.h`), so this is the same ring and
-    the same message on each; the UI and the analysis are backend-agnostic already.
+  - [x] **D3D12 and Metal**: both have the ring and the message now (v0.21.0 for Metal; the D3D12
+    library answers `TimingCapture` in `src/d3d12/src/ui_messages.cpp`).
   - **The GPU half**: a pass's GPU time every frame, not only while capturing. Unlike the CPU side
     this is not free — it needs timestamp queries around every pass in every frame — so it wants to
     be its own option rather than part of the same switch.
@@ -955,9 +954,15 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
     whole run with the rest veiled, and keeps its median and threshold, so the picture does not
     move as a range is dragged across it. `--debug-drag=x,y;x,y[;...]` was added to drive a drag
     from the command line, since a click cannot stand in for one.
-  - **Capture on hitch**: a frame over budget takes a full capture of the next one, which is the
-    thing that would make a hitch reproducible rather than only visible. The hitch threshold to
-    trigger on is the one this already computes.
+  - [x] **Capture on hitch** (`renderer/capture_panel.ts`, `_captureOnHitch`): a checkbox on the
+    capture bar; while a timing capture runs with it ticked, the first frame over the report's
+    own threshold (`hitchThresholdMs` over the run's median so far, after 30 frames of warm-up)
+    takes a frame capture with the bar's options, named *hitch N ms at frame F*, and unticks the
+    box. UI-side only, so it works on every backend that streams `TimingFrames`. The samples'
+    `--hitch-every N` stalls one frame in N; `capture-on-hitch` and `d3d12-capture-on-hitch` in
+    `tools/ui_tests.py` (`--debug-capture-on-hitch`). What it captures is the frame *after* the
+    hitch, which the docs say plainly; capturing the hitch itself would need the layer to record
+    every frame in case (`VKINSP_RECORD_ALWAYS` is the half of that which exists).
 - [x] Pipeline and shader creation on the CPU timeline, on all three backends, as a category of its
       own with its own verdict (`renderer/cpu_timeline.ts`, "Creating pipelines"). Metal's
       completion-handler forms are left untimed on purpose: they do not block.

@@ -22,7 +22,7 @@ import { encodeReplaceRequest, parseReplayedTargets, replayedTargetsSummary, typ
 import { renderShaderReplay } from "./shader_replay_view.js";
 import { emptyMemoryCapture } from "./memory_capture.js";
 import { memoryHeaps } from "./memory_heaps.js";
-import type { FrameRange } from "./frame_timing.js";
+import { hitchThresholdMs, type FrameRange } from "./frame_timing.js";
 import { CaptureData, isRenderTarget, parsePassKey, passKey, type CapturedOverdraw, type CapturedTexture } from "./capture_data.js";
 import { capturedIds, fetchBlob, serializeCapture } from "./capture_file.js";
 import { resolveSymbols } from "./stacktrace_view.js";
@@ -217,6 +217,13 @@ export class CapturePanel {
   private _timingPanel!: Div;
   private _timingRunning = false;
   private _sampleCheck: Checkbox | null = null;
+  /**
+   * Capture on hitch: while a timing capture runs with the box ticked, the first frame over the
+   * run's hitch threshold takes a frame capture of the next one. `_hitchSeenFrame` is the last
+   * frame number examined, so a batch is looked at once and a ring trim cannot re-examine one.
+   */
+  private _hitchCheck!: Checkbox;
+  private _hitchSeenFrame = -1;
   /** Addresses the timing report has asked the library to name, so each is asked for once. */
   private _timingSymbolsAsked = new Set<string>();
   private _memoryButton: Button | null = null;
@@ -435,6 +442,13 @@ export class CapturePanel {
         tooltip: "Timing Capture: also sample every thread's call stack 250 times a second, and whether it was running or blocked there. The report then says what each thread was doing in the worst hitch, or in the stretch you drag out. Each sample stops a thread for a few microseconds." });
       c.push(this._sampleCheck);
     }
+    // A hitch made reproducible rather than only visible: the timing report says a frame stalled
+    // and why, and this takes a frame capture the moment one does, with the bar's options, of the
+    // frame after it (the hitch has passed by the time it is measured). One capture per tick, so a
+    // stutter that keeps going does not open a tab for every frame of it.
+    this._hitchCheck = new Checkbox(row, { label: "Capture on hitch", checked: false,
+      tooltip: "Timing Capture: the first frame over the run's hitch threshold (twice the median and at least 4 ms over it) takes a frame capture of the next frame, with the options above, in a tab named after the hitch. Once per tick; tick it again to arm it again." });
+    c.push(this._hitchCheck);
     // The same shape of question about memory: not what is held now (Inspect's memory view) but
     // what was allocated and freed over a stretch of the run. The Metal library does not record
     // one, so a Mac is not offered it.
@@ -447,7 +461,10 @@ export class CapturePanel {
     this._statusLabel = new Span(row, { text: "", class: "launch-status" });
     this._timingPanel = new Div(this.parent, { class: "timing-panel" });
     this._timingPanel.element.hidden = true;
-    this.window.database.onTimingFrames.addListener(() => this._refreshTiming());
+    this.window.database.onTimingFrames.addListener(() => {
+      this._captureOnHitch();
+      this._refreshTiming();
+    });
     this._memoryPanel = new Div(this.parent, { class: "timing-panel" });
     this._memoryPanel.element.hidden = true;
     this.window.database.onMemoryEvents.addListener(() => this._refreshMemoryCapture());
@@ -988,6 +1005,47 @@ export class CapturePanel {
     if (this._sampleCheck) this._sampleCheck.checked = on;
   }
 
+  /** Testing aid (--debug-capture-on-hitch): arms the capture on hitch before a timing capture. */
+  setCaptureOnHitch(on: boolean): void {
+    this._hitchCheck.checked = on;
+  }
+
+  /** Frames a timing run has to hold before its median means anything: half a second at 60 Hz. */
+  private static readonly HITCH_WARMUP_FRAMES = 30;
+
+  /**
+   * Capture on hitch, run on every batch of timing frames: the first new frame over the run's
+   * hitch threshold takes a frame capture, named after the hitch, and unticks the box. The
+   * threshold is the report's own (hitchThresholdMs over the run's median so far), so what
+   * triggers here is exactly what the report would list.
+   */
+  private _captureOnHitch(): void {
+    const frames = this.window.database.timing.frames;
+    if (!frames.length) return;
+    const last = frames[frames.length - 1].frame;
+    if (!this._timingRunning || !this._hitchCheck.checked || this._liveStreaming) {
+      this._hitchSeenFrame = last;
+      return;
+    }
+    if (frames.length < CapturePanel.HITCH_WARMUP_FRAMES) {
+      this._hitchSeenFrame = last;
+      return;
+    }
+    const sorted = frames.map((f) => f.durationMs).sort((a, b) => a - b);
+    const medianMs = sorted[Math.round(0.5 * (sorted.length - 1))];
+    const threshold = hitchThresholdMs(medianMs);
+    const hitch = frames.find((f) => f.frame > this._hitchSeenFrame && f.durationMs > threshold);
+    this._hitchSeenFrame = last;
+    if (!hitch) return;
+    const view = this.capture();
+    if (!view) return;
+    const times = medianMs > 0 ? `${(hitch.durationMs / medianMs).toFixed(1)}x the median` : "";
+    view.data.requestLabel = `hitch ${hitch.durationMs.toFixed(1)} ms at frame ${hitch.frame}`;
+    view.onLabelChanged.emit();
+    this._hitchCheck.checked = false;
+    this._statusLabel.text = `capturing the frame after the hitch at frame ${hitch.frame} (${hitch.durationMs.toFixed(1)} ms, ${times}); tick Capture on hitch again to arm it again`;
+  }
+
   /** Starts or stops a timing capture (the button, and --debug-timing). */
   toggleTiming(): void {
     if (!this.window.connected) {
@@ -1003,6 +1061,7 @@ export class CapturePanel {
       // will number again from somewhere else.
       this._timingRange = null;
       this._timingPanel.element.hidden = false;
+      this._hitchSeenFrame = -1;
     }
     this._timingButton.text = timingButtonLabel(this._timingRunning);
     this._statusLabel.text = this._timingRunning ? "recording frame times..." : "";

@@ -14,6 +14,9 @@
 //                                 present through [drawable present] from a scheduled handler,
 //                                 the way Unity's macOS player does, instead of through
 //                                 [MTLCommandBuffer presentDrawable:]
+//   mtlinsp_triangle --hitch-every N
+//                                 stall 100 ms inside every Nth frame, in the application's own
+//                                 code, so a timing capture has a hitch for Capture on hitch
 //   mtlinsp_triangle --compile-hitch
 //                                 compile a library and a pipeline inside every frame, so the CPU
 //                                 timeline has a stall in it to attribute
@@ -54,6 +57,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <unistd.h>   // usleep, for --hitch-every
 
 #include "gpu_inspector.h"   // --capture-at: the application asking for the capture itself
 
@@ -238,6 +242,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL presentDirect;
 /** --compile-hitch: build a library and a pipeline inside every frame. */
 @property(nonatomic) BOOL compileHitch;
+/** --hitch-every N: stall 100 ms inside every Nth frame, in the application's own code. */
+@property(nonatomic) NSUInteger hitchEvery;
 /** --ray-tracing: build a triangle scene and trace it in a compute pass. */
 @property(nonatomic, readonly) BOOL rayTracing;
 /** --static-blas: build the bottom level once at start-up rather than every frame. */
@@ -704,6 +710,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
 - (void)renderFrame {
     [self runCompileHitch];
+    // --hitch-every: the application's own work stalling the frame, one frame in N.
+    if (self.hitchEvery > 0 && _frameCount > 0 && _frameCount % self.hitchEvery == 0) usleep(100000);
     id<CAMetalDrawable> drawable = [_layer nextDrawable];
     if (!drawable) return;
 
@@ -855,6 +863,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL captureAsked;
 @property(nonatomic) BOOL presentDirect;
 @property(nonatomic) BOOL compileHitch;
+@property(nonatomic) NSUInteger hitchEvery;   // --hitch-every N: stall 100 ms inside every Nth frame
 @property(nonatomic) BOOL occluded;
 @property(nonatomic) BOOL rayTracing;
 @property(nonatomic) BOOL staticBlas;
@@ -902,6 +911,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                                       insideOut:self.insideOut];
     _renderer.presentDirect = self.presentDirect;
     _renderer.compileHitch = self.compileHitch;
+    _renderer.hitchEvery = self.hitchEvery;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                              repeats:YES
                                                block:^(NSTimer *t) {
@@ -932,6 +942,7 @@ int main(int argc, const char *argv[]) {
     NSUInteger captureAt = 0;
     BOOL presentDirect = NO;
     BOOL compileHitch = NO;
+    NSUInteger hitchEvery = 0;
     BOOL occluded = NO;
     BOOL rayTracing = NO;
     BOOL staticBlas = NO;
@@ -942,6 +953,7 @@ int main(int argc, const char *argv[]) {
         else if (strcmp(argv[i], "--capture-at") == 0 && i + 1 < argc) captureAt = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
         else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
+        else if (strcmp(argv[i], "--hitch-every") == 0 && i + 1 < argc) hitchEvery = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--occluded") == 0) occluded = YES;
         else if (strcmp(argv[i], "--stencil") == 0) stencil = YES;
         else if (strcmp(argv[i], "--inside-out") == 0) insideOut = YES;
@@ -958,6 +970,7 @@ int main(int argc, const char *argv[]) {
         delegate.captureAt = captureAt;
         delegate.presentDirect = presentDirect;
         delegate.compileHitch = compileHitch;
+        delegate.hitchEvery = hitchEvery;
         delegate.occluded = occluded;
         delegate.stencilPass = stencil;
         delegate.insideOut = insideOut;

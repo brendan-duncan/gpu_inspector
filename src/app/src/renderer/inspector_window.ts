@@ -567,6 +567,8 @@ export class InspectorWindow extends Window {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
       panel.showCaptureTab();
       if (stacks === false) panel.capturePanel.setSampleStacks(false);
+      // --debug-capture-on-hitch: the run's first hitch takes a frame capture (the samples' --hitch-every).
+      if (this._debug?.captureOnHitch) panel.capturePanel.setCaptureOnHitch(true);
       panel.capturePanel.toggleTiming();
       setTimeout(() => panel.capturePanel.toggleTiming(), Math.max(500, ms));
     }, 1500);

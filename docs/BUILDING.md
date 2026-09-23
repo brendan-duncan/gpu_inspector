@@ -152,6 +152,7 @@ differently or misbehave on purpose.
 | `--ray-tracing` | Builds both acceleration structures every frame and traces into a storage image |
 | `--descriptor-buffer` | Binds its set through `VK_EXT_descriptor_buffer` instead of a descriptor set |
 | `--compile-hitch` | Builds a pipeline inside every frame, so the CPU timeline has a compile in it |
+| `--hitch-every <n>` | Stalls 100 ms inside every nth frame, in its own code, for **Capture on hitch** |
 | `--oob` | Writes past its storage buffer from the shader: found only by **GPU validation** |
 | `--hazard` | Writes the vertex buffer with no barrier, for synchronization validation |
 | `--leak` | Never destroys what it creates, for the leak report |
@@ -176,6 +177,7 @@ differently or misbehave on purpose.
 |---|---|
 | `--present-direct` | Presents through `[drawable present]` from a scheduled handler, the way Unity's macOS player does |
 | `--compile-hitch` | Compiles a library and a pipeline inside every frame, so the CPU timeline has a stall to attribute |
+| `--hitch-every <n>` | Stalls 100 ms inside every nth frame, in its own code, for **Capture on hitch** |
 | `--occluded` | Draws the triangles twice, the second set behind the first with a depth test, so overdraw has fragments to reject |
 
 `dxinsp_triangle`:
@@ -183,6 +185,7 @@ differently or misbehave on purpose.
 | Mode | What it does |
 |---|---|
 | `--stall <ms>` | Sleeps each frame so vsynced presents miss refreshes, for the dropped-frame count |
+| `--hitch-every <n>` | Stalls 100 ms inside every nth frame, for **Capture on hitch** |
 | `--compute`, `--bundle`, `--indirect` | A dispatch, a bundle, and an indirect draw |
 | `--render-pass` | Uses `ID3D12GraphicsCommandList4` render passes |
 | `--debug-layer` | Turns the D3D12 debug layer on from the application |

@@ -167,6 +167,14 @@ every hitch with what caused it.
   about on its own: a hitch is measured against the median of the range, so selecting only a rough
   stretch makes its slow frames the norm and reports them as slow rather than as hitches, which is
   the honest answer — nothing in there is an outlier.
+- **Capture on hitch**, ticked before the run, makes the next hitch reproducible rather than only
+  visible: the first frame over the threshold takes a frame capture of the frame after it, with
+  the capture bar's options, in a tab named after the hitch (*hitch 48.2 ms at frame 1234*). The
+  hitch itself has passed by the time it is measured, so what the capture holds is the frame that
+  followed — for a stall that lasts (a load, a compile, a stream-in) that is the frame in the
+  middle of it, and for a one-frame spike the timing report's cause is the better clue. It takes
+  one capture and unticks itself, so a stutter that keeps going does not open a tab for every
+  frame of it; tick it again to arm it again.
 - **The median against the 95th and 99th** is what a player feels. A median of 16 ms with a 99th of
   60 ms is a game that is smooth and then, twice a minute, is not.
 - **A hitch** is a frame over twice the median *and* at least 4 ms over it. The multiple alone would

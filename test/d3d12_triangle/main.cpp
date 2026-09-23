@@ -160,6 +160,8 @@ struct App {
     // --stall <ms>: sleep this long before each frame, so a vsynced present misses refreshes
     // and the swap chain's statistics have dropped frames to report.
     uint32_t stallMs = 0;
+    // --hitch-every N: stall 100 ms inside every Nth frame, in the application's own code, for Capture on hitch.
+    uint32_t hitchEvery = 0;
     // --msaa: the cubes render into a 4x multisampled target and depth buffer, resolved into the
     // back buffer with ResolveSubresource (the capture resolves the targets it reads back).
     bool msaa = false;
@@ -1361,6 +1363,7 @@ struct App {
             if (quit) break;
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
             if (stallMs) Sleep(stallMs);
+            if (hitchEvery && frameCount > 0 && frameCount % hitchEvery == 0) Sleep(100);
             // Asked again each frame until somebody is there to hear it: the inspector connects a
             // few frames after the device is made.
             if (captureAt && frameCount >= captureAt && !captureAsked) {
@@ -1404,6 +1407,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--stall") && i + 1 < argc) app.stallMs = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc) app.hitchEvery = (uint32_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc) app.captureAt = (uint64_t)atoi(argv[++i]);
         else if (!strcmp(argv[i], "--msaa")) app.msaa = true;
         else if (!strcmp(argv[i], "--bundle")) app.bundle = true;

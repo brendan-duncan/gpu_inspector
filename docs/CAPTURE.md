@@ -23,6 +23,7 @@ The bar above it controls what is recorded:
 | **Stack traces** | Record the call stack of every command in the frame. Costs CPU time in the application while capturing |
 | **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated |
 | **Timing Capture** | Not a frame capture: records *every* frame's time and where its CPU went, for as long as you leave it running, and reports the hitches with what caused each. See [a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame). Vulkan and Direct3D 12 |
+| **Capture on hitch** | With Timing Capture: the first frame over the run's hitch threshold takes a frame capture of the next frame, with the options above, in a tab named after the hitch. Once per tick. See [Capture on hitch](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) |
 | **Sample stacks** | Windows, with Timing Capture: every thread's call stack sampled 250 times a second, and whether it was running or blocked there, so the report says what each thread was doing in a hitch. Each sample stops a running thread for a few microseconds |
 | **Memory Capture** | Not a frame capture either: records every allocation and free for as long as it runs, and reports what made here is still held, what was made and freed again within a few frames, and which frames allocated most. See [what is allocating](PROFILING.md#what-is-allocating). Vulkan and Direct3D 12 |
 

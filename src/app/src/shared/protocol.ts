@@ -1234,6 +1234,8 @@ export interface AppConfig {
     memoryMs?: number | null;
     /** --debug-timing-no-stacks: a timing capture with the stack sampler off, for comparing the two. */
     timingStacks?: boolean | null;
+    /** --debug-capture-on-hitch: arm Capture on hitch before the timing capture starts. */
+    captureOnHitch?: boolean;
     /** --debug-expand=<text>: open the selected command's section whose title contains that text. */
     expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */

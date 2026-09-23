@@ -164,6 +164,7 @@ struct App {
     bool pushTemplate = false;
     bool descriptorBuffer = false;
     bool compileHitch = false;
+    int hitchEvery = 0;       // --hitch-every N: stall 100 ms inside every Nth frame, for Capture on hitch
     bool outOfBounds = false;
     VkPipeline hitchPipeline{};
     // --pipeline-library: the cube pipeline is linked from two graphics pipeline libraries (vertex
@@ -2387,6 +2388,9 @@ struct App {
     bool DrawFrame(float t) {
         if (resized && !RecreateSwapchain()) return false;
         CompileHitch();
+        // --hitch-every: the application's own work stalling the frame, which no call the layer
+        // times accounts for. One frame in N, so a timing run has a hitch to trigger on.
+        if (hitchEvery > 0 && frameCount > 0 && (int)(frameCount % hitchEvery) == 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
         VkFence fence = inFlight[frameSlot];
         CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
         uint32_t imageIndex = 0;
@@ -2624,6 +2628,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
         else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;
         else if (!strcmp(argv[i], "--compile-hitch")) app.compileHitch = true;
+        else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc) app.hitchEvery = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--oob")) app.outOfBounds = true;
         else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;

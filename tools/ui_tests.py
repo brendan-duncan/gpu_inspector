@@ -1356,6 +1356,21 @@ def memory_capture(state, log):
         expect("still held" in (m.get("verdict") or "") and "pool" in (m.get("verdict") or ""), f"the verdict is {m.get('verdict')!r}")
 
 
+def capture_on_hitch(state, log):
+    # Capture on hitch (--debug-capture-on-hitch with --debug-timing): the sample stalls one frame
+    # in ninety (--hitch-every 90), and the timing run's first hitch has to take a frame capture
+    # named after it. Nothing else on the command line takes one.
+    s = session(state)
+    c = capture(state)
+    caps = s.get("captures") or []
+    return check_connected(state, log) + \
+        expect((s.get("timingFrames") or 0) > 60, f"{s.get('timingFrames')} frames recorded by the timing capture") + \
+        expect(len(caps) == 1, f"{len(caps)} capture tabs: the hitch should take exactly one") + \
+        check_capture_basic(state, log, timings=False) + \
+        expect(str(c.get("requestLabel") or "").startswith("hitch ") and " ms at frame " in str(c.get("requestLabel") or ""),
+               f"the tab is not named after the hitch: {c.get('requestLabel')!r}")
+
+
 def app_capture(state, log):
     # The application asked for the capture itself (include/gpu_inspector.h, the sample's
     # --capture-at): nothing on the command line takes one, so a capture tab can only be the
@@ -1457,6 +1472,8 @@ def triangle_cases(triangle):
              companion=start_triangle, before=lambda: implicit_layer(True), after=lambda: implicit_layer(False)),
         Case("plain", launch + ["--debug-capture"], triangle_plain),
         Case("timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
+        Case("capture-on-hitch", launch + ["--args=--hitch-every 90", "--debug-timing=5000", "--debug-capture-on-hitch"],
+             capture_on_hitch, delay_ms=15000),
         Case("memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
         Case("app-capture", launch + ["--args=--capture-at 200", f"--debug-save={saved_app}"], app_capture, delay_ms=14000),
         Case("app-capture-open", [f"--debug-open={saved_app}"], app_capture_open, delay_ms=9000),
@@ -1868,6 +1885,8 @@ def d3d12_cases(triangle):
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
         Case("d3d12-timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
+        Case("d3d12-capture-on-hitch", launch + ["--args=--hitch-every 90", "--debug-timing=5000", "--debug-capture-on-hitch"],
+             capture_on_hitch, delay_ms=15000),
         Case("d3d12-memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
         Case("d3d12-app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
         Case("d3d12-shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),
