@@ -1,4 +1,4 @@
-## Unreleased
+## v0.23.0
 
 ### Added
 - An application asks for a capture with a name for it: `gpu_inspector_capture_named(frames, label)` in `include/gpu_inspector.h`, and the label names the tab, the saved file and its manifest.
@@ -13,6 +13,7 @@
 - An MCP session takes the captures an application asks for through `include/gpu_inspector.h`, saves them under the application's label and lists them (`get_session_status` `appCaptures`, `list_captures`).
 - Direct3D 12 residency on the memory series and in memory captures: evictions, page-ins and changes of the driver's budget are marked and counted, with the bytes each named.
 - `test/d3d12_triangle --evict` evicts a buffer and pages it back in on a cycle, for the residency marks.
+- How-to guides for [a Unity player](docs/HOWTO_UNITY.md), [a Quest application](docs/HOWTO_QUEST.md) and [a WebGPU page](docs/HOWTO_BROWSER.md), beside the Minecraft one.
 - **Viewport / Scissor**, a draw overlay that needs no replay: the rectangles in the draw's own state drawn over its render target, with what the scissor cuts away darkened. It works on a capture of any API, and on a saved one.
 - `test/triangle --half-scissor` keeps the left half of the target, for that overlay.
 - A Vulkan dynamic-rendering pass suspended and resumed across command buffers is timed across its parts, instead of being left out of the frame's GPU time.
@@ -25,6 +26,7 @@
 - A capture hotkey in the application's own window: with the HUD on, F11 takes the capture the Capture button would, on Vulkan, Direct3D 12 and Metal; `VKINSP_HOTKEY` (`DXINSP_HOTKEY`, `MTLINSP_HOTKEY`) rebinds or disables it.
 
 ### Changed
+- A timing or memory capture's report opens in a tab of its own beside the frame captures, instead of a band above them that pushed the capture tabs off the window.
 - The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ## v0.22.1

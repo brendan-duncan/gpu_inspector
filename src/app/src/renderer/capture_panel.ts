@@ -222,6 +222,8 @@ export class CapturePanel {
   private _statusLabel!: Span;
   private _timingButton!: Button;
   private _timingPanel!: Div;
+  /** The tab the timing report is in, while it has one: null before the first run and once closed. */
+  private _timingHandle: TabHandle | null = null;
   private _timingRunning = false;
   private _sampleCheck: Checkbox | null = null;
   /**
@@ -235,6 +237,8 @@ export class CapturePanel {
   private _timingSymbolsAsked = new Set<string>();
   private _memoryButton: Button | null = null;
   private _memoryPanel!: Div;
+  /** The tab the memory report is in, as _timingHandle is for the timing report. */
+  private _memoryHandle: TabHandle | null = null;
   private _memoryRunning = false;
   /**
    * The stretch of the timing run the report's figures are of, dragged out on its graph. Held by
@@ -466,14 +470,16 @@ export class CapturePanel {
       c.push(this._memoryButton);
     }
     this._statusLabel = new Span(row, { text: "", class: "launch-status" });
-    this._timingPanel = new Div(this.parent, { class: "timing-panel" });
-    this._timingPanel.element.hidden = true;
+    // Both reports live in tabs of the capture TabWidget below, not in bands above it: they are
+    // as long as a report gets (every hitch of a run, every allocation still held), and a band
+    // that long pushed the capture tabs off the bottom of the window. Built detached here and
+    // added to the widget when a run starts, so a session that never records one has no tab.
+    this._timingPanel = new Div(null, { class: "timing-panel" });
     this.window.database.onTimingFrames.addListener(() => {
       this._captureOnHitch();
       this._refreshTiming();
     });
-    this._memoryPanel = new Div(this.parent, { class: "timing-panel" });
-    this._memoryPanel.element.hidden = true;
+    this._memoryPanel = new Div(null, { class: "timing-panel" });
     this.window.database.onMemoryEvents.addListener(() => this._refreshMemoryCapture());
 
     this._tabs = new TabWidget(this.parent, { class: "capture-tabs tabs-fill", displayCloseButton: true });
@@ -1058,24 +1064,36 @@ export class CapturePanel {
 
   /** Starts or stops a timing capture (the button, and --debug-timing). */
   toggleTiming(): void {
+    if (this._timingRunning) {
+      this._stopTiming();
+      return;
+    }
     if (!this.window.connected) {
       this._statusLabel.text = "not connected";
       return;
     }
-    this._timingRunning = !this._timingRunning;
-    if (this._timingRunning) {
-      this.window.database.timing.frames.length = 0;
-      this.window.database.timingSamples = emptyTimingSamples();
-      this._timingSymbolsAsked.clear();
-      // Two runs are two questions, and a range dragged out of the last one names frames this one
-      // will number again from somewhere else.
-      this._timingRange = null;
-      this._timingPanel.element.hidden = false;
-      this._hitchSeenFrame = -1;
-    }
-    this._timingButton.text = timingButtonLabel(this._timingRunning);
-    this._statusLabel.text = this._timingRunning ? "recording frame times..." : "";
-    void this.window.send({ action: "TimingCapture", start: this._timingRunning, ...(this._timingRunning && this._sampleCheck?.checked ? { sampleHz: 250 } : {}) });
+    this._timingRunning = true;
+    this.window.database.timing.frames.length = 0;
+    this.window.database.timingSamples = emptyTimingSamples();
+    this._timingSymbolsAsked.clear();
+    // Two runs are two questions, and a range dragged out of the last one names frames this one
+    // will number again from somewhere else.
+    this._timingRange = null;
+    this._showReportTab("timing");
+    this._hitchSeenFrame = -1;
+    this._timingButton.text = timingButtonLabel(true);
+    this._statusLabel.text = "recording frame times...";
+    void this.window.send({ action: "TimingCapture", start: true, ...(this._sampleCheck?.checked ? { sampleHz: 250 } : {}) });
+    this._refreshTiming();
+  }
+
+  /** Stops a running timing capture: the button's other half, and closing the report's tab. */
+  private _stopTiming(): void {
+    if (!this._timingRunning) return;
+    this._timingRunning = false;
+    this._timingButton.text = timingButtonLabel(false);
+    this._statusLabel.text = "";
+    void this.window.send({ action: "TimingCapture", start: false });
     this._refreshTiming();
   }
 
@@ -1084,23 +1102,52 @@ export class CapturePanel {
    * last one recorded, as a timing capture does.
    */
   toggleMemoryCapture(): void {
+    if (this._memoryRunning) {
+      this._stopMemoryCapture();
+      return;
+    }
     if (!this.window.connected) {
       this._statusLabel.text = "not connected";
       return;
     }
-    this._memoryRunning = !this._memoryRunning;
-    if (this._memoryRunning) {
-      this.window.database.memoryCapture = emptyMemoryCapture();
-      this._memoryPanel.element.hidden = false;
-    }
-    if (this._memoryButton) this._memoryButton.text = memoryButtonLabel(this._memoryRunning);
-    this._statusLabel.text = this._memoryRunning ? "recording allocations..." : "";
-    void this.window.send({ action: "MemoryCapture", start: this._memoryRunning });
+    this._memoryRunning = true;
+    this.window.database.memoryCapture = emptyMemoryCapture();
+    this._showReportTab("memory");
+    if (this._memoryButton) this._memoryButton.text = memoryButtonLabel(true);
+    this._statusLabel.text = "recording allocations...";
+    void this.window.send({ action: "MemoryCapture", start: true });
     this._refreshMemoryCapture();
   }
 
+  /** Stops a running memory capture, as _stopTiming does for a timing one. */
+  private _stopMemoryCapture(): void {
+    if (!this._memoryRunning) return;
+    this._memoryRunning = false;
+    if (this._memoryButton) this._memoryButton.text = memoryButtonLabel(false);
+    this._statusLabel.text = "";
+    void this.window.send({ action: "MemoryCapture", start: false });
+    this._refreshMemoryCapture();
+  }
+
+  /**
+   * Shows one of the two whole-run reports in a tab of the capture widget, adding the tab the
+   * first time a run needs it. They sit among the capture tabs because they answer a question
+   * about the run rather than about a frame, and both kinds of answer are read the same way.
+   */
+  private _showReportTab(kind: "timing" | "memory"): void {
+    const timing = kind === "timing";
+    let handle = timing ? this._timingHandle : this._memoryHandle;
+    if (!handle) {
+      handle = this._tabs.addTab(timing ? "Timing Capture" : "Memory Capture", timing ? this._timingPanel : this._memoryPanel);
+      if (timing) this._timingHandle = handle;
+      else this._memoryHandle = handle;
+      this._updatePlaceholder();
+    }
+    this._tabs.setHandleActive(handle);
+  }
+
   private _refreshMemoryCapture(): void {
-    if (this._memoryPanel.element.hidden) return;
+    if (!this._memoryHandle) return;
     const db = this.window.database;
     const heaps = memoryHeaps(db);
     renderMemoryCaptureReport(this._memoryPanel, db.memoryCapture, this._memoryRunning, {
@@ -1111,7 +1158,7 @@ export class CapturePanel {
   }
 
   private _refreshTiming(): void {
-    if (this._timingPanel.element.hidden) return;
+    if (!this._timingHandle) return;
     const db = this.window.database;
     // The stacks the report is about to show, named: asked of the library once each, and the
     // report drawn again when the names arrive.
@@ -1194,6 +1241,21 @@ export class CapturePanel {
   }
 
   private _tabClosed(panel: Widget): void {
+    // The two whole-run reports. Closing one stops the run it is showing: the report is the run's
+    // only output, so a run left recording into a tab that is gone would cost the application
+    // time for nothing.
+    if (panel === this._timingPanel || panel === this._memoryPanel) {
+      if (panel === this._timingPanel) {
+        this._timingHandle = null;
+        this._stopTiming();
+      } else {
+        this._memoryHandle = null;
+        this._stopMemoryCapture();
+      }
+      this._updatePlaceholder();
+      this._updateStatus();
+      return;
+    }
     for (const [view, tabs] of this._subTabs) {
       for (const [kind, t] of tabs) {
         if (t.tab.root !== panel) continue;
@@ -1220,7 +1282,7 @@ export class CapturePanel {
   }
 
   private _updatePlaceholder(): void {
-    const empty = this._views.length === 0;
+    const empty = this._tabs.numTabs === 0;
     this._placeholder.style.display = empty ? "" : "none";
     this._tabs.style.display = empty ? "none" : "";
   }
