@@ -65,7 +65,9 @@ namespace gpuhud
 // three lock/system keys are in because PrintScreen is what RenderDoc trained everyone to press.
 enum class HotkeyKey : int
 {
-    None = 0,
+    // "Unbound", not "None": X11 headers define None, and vulkan_xlib.h pulls them in on Linux --
+    // the same clash refresh_rate.h has to spell around.
+    Unbound = 0,
     F1 = 1,   // .. F12 = 12, so F(n) is simply (int)HotkeyKey::F1 + n - 1
     F12 = 12,
     PrintScreen = 20,
@@ -76,14 +78,14 @@ enum class HotkeyKey : int
 
 struct HotkeyBinding
 {
-    HotkeyKey key = HotkeyKey::None;
+    HotkeyKey key = HotkeyKey::Unbound;
     char ch = 0;
     bool ctrl = false;
     bool shift = false;
     bool alt = false;
     char name[32] = {};   // canonical and uppercase ("CTRL+F11"): what the HUD prints
 
-    bool bound() const { return key != HotkeyKey::None; }
+    bool bound() const { return key != HotkeyKey::Unbound; }
 };
 
 /**
