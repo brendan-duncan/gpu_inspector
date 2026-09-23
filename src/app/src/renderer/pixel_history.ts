@@ -175,7 +175,7 @@ const MEASURED_ALL = 32;
 
 export type DrawOutcome =
   | "scissored" | "unmeasured" | "missed" | "culled" | "discarded"
-  | "depth" | "stencil" | "depth-stencil" | "tests" | "wrote" | "covers";
+  | "depth" | "stencil" | "depth-stencil" | "tests" | "wrote" | "covers" | "none";
 
 /**
  * What a draw's fragments at the pixel met, from its sample counts: each count adds one step
@@ -193,7 +193,14 @@ export function drawOutcome(e: PixelEvent): DrawOutcome {
   if (depthFailed && stencilFailed) return "depth-stencil";
   if (depthFailed) return "depth";
   if (stencilFailed) return "stencil";
-  if (measured(MEASURED_ALL)) return e.passed ? "wrote" : "tests";
+  if (measured(MEASURED_ALL)) {
+    if (e.passed) return "wrote";
+    // Only the last count: a Metal indirect command buffer's command, whose pipeline is the
+    // command's own and cannot be copied into the variants that isolate culling, shading and each
+    // test (src/metal/src/pixel_history.mm). Nothing says whether it missed the pixel or was
+    // rejected, so the row must not claim the tests rejected it.
+    return e.testsMeasured === MEASURED_ALL ? "none" : "tests";
+  }
   return "covers";
 }
 
@@ -209,6 +216,7 @@ export const OUTCOME_TEXT: Record<DrawOutcome, string> = {
   tests: "failed the depth and stencil tests together",
   wrote: "wrote the pixel",
   covers: "covers the pixel",
+  none: "wrote nothing at the pixel",
 };
 
 /** The event kinds a history can hold; anything else a newer replay writes is read as a draw. */
@@ -230,7 +238,10 @@ export function eventSummary(e: PixelEvent): string {
   const outcome = drawOutcome(e);
   const samples = outcome === "wrote" ? ` (${e.passed} sample${e.passed === 1 ? "" : "s"} passed)` : "";
   const primitive = outcome === "wrote" && e.primitive >= 0 ? `, primitive ${e.primitive}` : "";
-  return `${e.method}: ${OUTCOME_TEXT[outcome]}${samples}${primitive}`;
+  // Only a draw that is one of several under one command carries a detail: an indirect command
+  // buffer's, which the Metal library follows one command at a time.
+  const which = e.detail ? ` ${e.detail}` : "";
+  return `${e.method}${which}: ${OUTCOME_TEXT[outcome]}${samples}${primitive}`;
 }
 
 /** The sample counts behind a draw's outcome, for a tooltip. */

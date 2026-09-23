@@ -47,6 +47,7 @@ picked up from the list in **Attach...** on the main bar:
 | `DYLD_INSERT_LIBRARIES` | the path to `libmtlinsp_capture.dylib` |
 | `MTLINSP_PORT` | optional: the port to listen on, when one in particular is wanted |
 | `MTLINSP_LOG` | optional: `1` logs the intercepted calls to the session's **Log** tab |
+| `MTLINSP_LOG_FILE` | optional: a path the log lines are appended to as well, for an application whose stderr goes somewhere nobody can read (a Unity player) |
 
 `MTLINSP_PORT` is optional because the library steps to a free port when another inspected
 application has the default one, so several started by hand are all reachable without anybody
@@ -201,7 +202,18 @@ What follows from that:
   overlay.
 
 [Pixel history](REPORTS.md#pixel-history) and [draw overlays](REPORTS.md#draw-call-overlays) both
-work this way. Direct3D 12 does the same thing for the same reason
+work this way. What a Metal pixel history covers, beyond a pass's ordinary draws:
+
+| Also reported | How |
+|---|---|
+| A **multisampled** pass | The copies it draws into take the pass's sample count, and the two the pixel is read from resolve into single-sample copies first — nothing can be blitted out of a multisampled texture |
+| A **layered** pass | The copies are arrays of the pass's `renderTargetArrayLength`, so a draw that picks a layer with `render_target_array_index` lands in the same one, and the pixel is read from the layer the request named |
+| An **indirect command buffer**'s draws | Its commands are executed one at a time under a visibility result. Each carries its own pipeline, which the library never saw created and so cannot copy, so the event says whether the command wrote the pixel but not where its fragments stopped. The form whose range comes from a buffer is not followed |
+| The pass's **multisample resolve** into the texture | One "resolve" event, read out of the resolve target once the pass has stored |
+| A **blit** that writes the texture | One event per command, read back on the application's own blit encoder right behind the write |
+| A **compute** encoder with the texture bound | One event per *encoder*, not per dispatch: a compute encoder cannot be interrupted to read a texture, so the pixel is read once the application closes it. As in a Vulkan replay, what the shader wrote is not knowable from outside it — the event says the texture was bound to be written and carries the value after |
+
+Direct3D 12 does the same thing for the same reason
 ([Measuring draws, overlays and meshes](D3D12.md#measuring-draws-overlays-and-meshes)); the mesh
 view is the exception, since the Shading Language interpreter can compute a draw's vertex outputs
 without running anything on the GPU.

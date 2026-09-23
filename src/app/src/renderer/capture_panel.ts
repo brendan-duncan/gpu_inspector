@@ -887,15 +887,14 @@ export class CapturePanel {
    * Testing aid (--debug-view=pixel-history on Metal or D3D12): ask for the second capture the
    * history needs. On those backends the library follows the pixel while it captures, so the first
    * capture only names one — the history comes from capturing the next frame, which is what the
-   * "Capture Next Frame" button in the render target tab does. The pixel is the center of the
-   * first color target, the same one `showView("pixel-history")` opened the tab on.
+   * "Capture Next Frame" button in the render target tab does. The pixel is debugHistoryPixel()'s,
+   * the same one `showView("pixel-history")` opened the tab on.
    */
   debugCaptureHistory(): void {
     const view = this.activeView;
     if (!view || !measuresWhileCapturing(view.data.api) || view.data.pixelHistory) return;
-    const t = view.data.textures.find((x) => isRenderTarget(x.info) && x.info.aspect === "color" && !x.info.error);
-    if (!t) return;
-    this._captureWithPixelHistory({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
+    const pixel = debugHistoryPixel(view);
+    if (pixel) this._captureWithPixelHistory(pixel);
   }
 
   /**
@@ -2635,8 +2634,8 @@ export class CaptureView implements CaptureHost {
       } else this._setStatus(`this capture has no ${which} render target`);
     }
     else if (name === "pixel-history") {
-      // Testing aid (--debug-view=pixel-history): the pixel a Metal capture followed, else the
-      // center of the first color render target.
+      // Testing aid (--debug-view=pixel-history): the pixel a Metal capture followed, else
+      // debugHistoryPixel()'s.
       if (this.data.pixelHistory) {
         try {
           const h = parsePixelHistory(this.data.pixelHistory);
@@ -2646,8 +2645,8 @@ export class CaptureView implements CaptureHost {
           // shown as the center of a render target instead
         }
       }
-      const t = this.data.textures.find((x) => isRenderTarget(x.info) && x.info.aspect === "color" && !x.info.error);
-      if (t) this.openTextureForPixel({ image: t.info.id, x: t.info.width >> 1, y: t.info.height >> 1, mip: t.info.mip, layer: 0 });
+      const pixel = debugHistoryPixel(this);
+      if (pixel) this.openTextureForPixel(pixel);
     }
   }
 
@@ -3097,10 +3096,16 @@ export class CaptureView implements CaptureHost {
       return;
     }
     const text = new TextDecoder().decode(bytes);
-    // The last `return float4(...)` of the library, which is the fragment function's in every
-    // sample here. A library whose fragment function returns some other way is reported rather
-    // than edited into something that will not compile.
-    const edited = text.replace(/return\s+float4\s*\([^;]*\)\s*;(?![\s\S]*return\s+float4)/,
+    // The first `return float4(...)` after the entry point's own name, which is the color it
+    // returns. Not "the last one in the library": a library with a second fragment function after
+    // this one would have that one edited instead, which compiles, applies cleanly and changes
+    // nothing — exactly how mtlinsp_triangle's --layered mode broke this case. A fragment function
+    // that returns some other way is reported rather than edited into something that will not
+    // compile.
+    const body = text.indexOf(stage.functionName);
+    const head = body < 0 ? "" : text.slice(0, body);
+    const tail = body < 0 ? text : text.slice(body);
+    const edited = head + tail.replace(/return\s+float4\s*\([^;]*\)\s*;/,
                                 // `bad` (--debug-view=shader-edit:bad) does not compile, on purpose:
                                 // the compiler's own diagnostics are what the editor shows, and a
                                 // path that swallowed them would look exactly like a clean apply.
@@ -3673,4 +3678,38 @@ export class CaptureView implements CaptureHost {
 /** " 4x MSAA" for multisampled captures (the pixels shown are the resolve of the samples). */
 export function msaaNote(info: CaptureTextureInfo): string {
   return info.samples && info.samples > 1 ? ` ${info.samples}x MSAA` : "";
+}
+
+/**
+ * Testing aid (--debug-view=pixel-history): the pixel to follow when the capture did not follow
+ * one — the center of the color target of the pass with the most draws.
+ *
+ * The pass with the most draws rather than the capture's first color render target, because a
+ * real frame opens each of its command buffers with a clear-only pass: the first render target of
+ * a Unity frame is one of those, and following a pixel of it can only ever report pass starts,
+ * which is all the unity-pixel-history case was checking until the library's log
+ * (MTLINSP_LOG_FILE) said those passes had no draws to follow.
+ *
+ * Both callers have to agree on it: `showView` opens the tab on this pixel, and
+ * `debugCaptureHistory` asks the library to follow it while the next frame is captured.
+ */
+export function debugHistoryPixel(view: CaptureView): PixelRequest | null {
+  const perPass = new Map<string, { info: CaptureTextureInfo; draws: number }>();
+  for (const cmd of view.data.commands) {
+    if (!view.data.sets.DRAW.has(cmd.method)) continue;
+    const target = view.targetOfDraw(cmd);
+    const info = target?.texture.info;
+    if (!info || info.aspect !== "color" || info.error) continue;
+    const key = `${target.key.frame}:${target.key.commandBuffer}:${target.key.passIndex}`;
+    const entry = perPass.get(key);
+    if (entry) entry.draws++;
+    else perPass.set(key, { info, draws: 1 });
+  }
+  let best: { info: CaptureTextureInfo; draws: number } | null = null;
+  for (const entry of perPass.values()) {
+    if (!best || entry.draws > best.draws) best = entry;
+  }
+  const info = best?.info
+    ?? view.data.textures.find((x) => isRenderTarget(x.info) && x.info.aspect === "color" && !x.info.error)?.info;
+  return info ? { image: info.id, x: info.width >> 1, y: info.height >> 1, mip: info.mip, layer: 0 } : null;
 }

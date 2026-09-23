@@ -24,6 +24,10 @@
 - **Validate**, a report that replays a Vulkan capture under the Khronos validation layer, whether or not the application was launched with it, with every message tied to the captured command it fired on; `get_validation` does the same with `replay: true`.
 - `vkinsp_replay --validate-data <file>` writes the validation layer's messages with the command and phase each fired in.
 - A capture hotkey in the application's own window: with the HUD on, F11 takes the capture the Capture button would, on Vulkan, Direct3D 12 and Metal; `VKINSP_HOTKEY` (`DXINSP_HOTKEY`, `MTLINSP_HOTKEY`) rebinds or disables it.
+- A Metal pixel history follows **layered** passes (the copies it draws into are arrays of the pass's `renderTargetArrayLength`, so a draw picking a layer lands in the same one) and an **indirect command buffer**'s draws (its commands run one at a time under a visibility result, which says whether each wrote the pixel).
+- A Metal pixel history reports the writes to the texture that are not draws: a pass's multisample **resolve** into it, each **blit** that writes it, and a **compute** encoder that had it bound.
+- `mtlinsp_triangle --layered`, `--indirect` and `--texture-writes` exercise those.
+- `MTLINSP_LOG_FILE=<path>` appends the Metal library's log to a file, for an application whose stderr goes where nobody can read it (a Unity player); `--debug-log` sets it, as it already did for the Vulkan layer and the Direct3D 12 library.
 
 ### Changed
 - A timing or memory capture's report opens in a tab of its own beside the frame captures, instead of a band above them that pushed the capture tabs off the window.

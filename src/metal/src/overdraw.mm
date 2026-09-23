@@ -337,7 +337,7 @@ void MeasurePass(OverdrawPass& pass)
 // Shared with pixel_history.mm (pass_record.h)
 
 id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height,
-    uint32_t sampleCount)
+    uint32_t sampleCount, uint32_t layers)
 {
     MTLTextureDescriptor* d = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:format
                                                                                  width:width
@@ -345,11 +345,17 @@ id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uin
                                                                              mipmapped:NO];
     d.usage = MTLTextureUsageRenderTarget;
     d.storageMode = MTLStorageModePrivate;
-    if (sampleCount > 1)
+    if (layers > 1)
+    {
+        d.textureType = sampleCount > 1 ? MTLTextureType2DMultisampleArray : MTLTextureType2DArray;
+        d.arrayLength = layers;
+    }
+    else if (sampleCount > 1)
     {
         d.textureType = MTLTextureType2DMultisample;
-        d.sampleCount = sampleCount;
     }
+    if (sampleCount > 1)
+        d.sampleCount = sampleCount;
     return [device newTextureWithDescriptor:d];
 }
 
@@ -641,12 +647,15 @@ std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPas
         overdraw = g_overdraw;
     }
     const int historyAttachment = MatchPixelHistoryAttachment(descriptor);
+    // A pass that resolves into the followed texture writes it at its store, not in a draw: the
+    // history reads the pixel out of the resolve target once the pass has ended.
+    const int historyResolve = historyAttachment < 0 ? MatchPixelHistoryResolve(descriptor) : -1;
     // An overlay's pass is not known by its attachments but by its index, which the pass does not
     // have yet (BeginOverdrawPass assigns it). So every pass is prepared while an overlay is
     // wanted, and all but the one asked for are dropped at its end — the same trade the pixel
     // history makes.
     const bool overlay = DrawOverlayWanted();
-    if (!overdraw && !overlay && historyAttachment < 0)
+    if (!overdraw && !overlay && historyAttachment < 0 && historyResolve < 0)
         return nullptr;   // nothing the capture measures renders here
 
     auto pass = std::make_shared<OverdrawPass>();
@@ -711,6 +720,8 @@ std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPas
     pass->combined = depth.texture != nil && depth.texture == stencil.texture;
     if (historyAttachment >= 0)
         PreparePixelHistory(*pass, commandBuffer, descriptor, historyAttachment);
+    else if (historyResolve >= 0)
+        PreparePixelHistoryResolve(*pass, descriptor, historyResolve);
     // An overlay's tested runs start from the same copies overdraw's do.
     if ((!overdraw && !overlay) || pass->multisampled)
         return pass;
@@ -823,6 +834,8 @@ void EndOverdrawPass(id encoder)
         MeasureDrawOverlay(*pass);
     if (pass->history)
         FollowPixel(*pass);
+    if (pass->historyResolve != nil)
+        FollowPixelResolve(*pass);
     // The recorded calls let go of what they held here, outside the lock.
 }
 

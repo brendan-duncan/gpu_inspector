@@ -49,6 +49,23 @@
 //                                 is in it can only come from the read-back the capture library
 //                                 takes when the capture begins (src/metal/src/raytracing.h,
 //                                 ReadBackEarlierStructures)
+//   mtlinsp_triangle --layered    draw the triangle twice into a two-layer array target, one draw
+//                                 per layer, through a vertex shader that writes
+//                                 [[render_target_array_index]]. A layered pass: the copies a
+//                                 measurement draws into have to be arrays of the same length, or
+//                                 the draws land in the wrong layer (src/metal/src/pixel_history.mm)
+//   mtlinsp_triangle --indirect   draw the triangle through an MTLIndirectCommandBuffer of two
+//                                 commands executed with executeCommandsInBuffer:withRange:
+//                                 instead of drawing it directly. Each command carries its own
+//                                 pipeline, which the library never saw created: the measurements
+//                                 that need a pipeline copy skip them, and the pixel history runs
+//                                 them one at a time instead (src/metal/src/pixel_history.mm)
+//   mtlinsp_triangle --texture-writes
+//                                 write the resolve target from outside a render pass as well as
+//                                 from one: a compute kernel paints a band across it, a blit
+//                                 stamps a block into the middle of it, and a pass of its own
+//                                 draws over it twice. The writes a pixel history reports as
+//                                 "resolve", "compute" and "copy" rather than as draws
 //
 // Built unsigned by CMake, so DYLD_INSERT_LIBRARIES reaches it. See src/metal/README.md.
 #import <Cocoa/Cocoa.h>
@@ -145,6 +162,43 @@ kernel void wave_main(device float *values [[buffer(0)]],
                       uint i [[thread_position_in_grid]]) {
     values[i] = sin(u.angle + float(i) * 0.05);
 }
+
+// --layered: the triangle into one layer of an array target, chosen per draw. A vertex shader that
+// writes [[render_target_array_index]] is what makes a pass layered; the pipeline it belongs to has
+// to declare its primitive topology, and the pass has to say how many layers it renders to.
+struct LayerOut {
+    float4 position [[position]];
+    float3 color;
+    uint layer [[render_target_array_index]];
+};
+
+vertex LayerOut layered_vertex(VertexIn in [[stage_in]],
+                               constant Uniforms &u [[buffer(1)]],
+                               constant uint &layer [[buffer(2)]]) {
+    float c = cos(u.angle);
+    float s = sin(u.angle);
+    float2 p = float2(in.position.x * c - in.position.y * s,
+                      in.position.x * s + in.position.y * c) * u.scale;
+    LayerOut out;
+    out.position = float4(p, 0.0, 1.0);
+    // Both layers get a triangle over the middle of the image, in different colors: a pixel
+    // history of layer 0 must end up green, because the red one went somewhere else.
+    out.color = layer == 0 ? float3(0.2, 0.9, 0.3) : float3(0.9, 0.2, 0.2);
+    out.layer = layer;
+    return out;
+}
+
+fragment float4 layered_fragment(LayerOut in [[stage_in]]) {
+    return float4(in.color, 1.0);
+}
+
+// --texture-writes: a band across the resolve target, written from a compute pass rather than by
+// a draw. The grid is the band, so the row it starts at comes in as a constant.
+kernel void paint_main(texture2d<float, access::write> target [[texture(0)]],
+                       constant uint &row [[buffer(0)]],
+                       uint2 gid [[thread_position_in_grid]]) {
+    target.write(float4(0.9, 0.2, 0.6, 1.0), uint2(gid.x, gid.y + row));
+}
 )MSL";
 
 // --compile-hitch compiles this, with the frame number substituted in, once per frame. The source
@@ -239,6 +293,15 @@ constexpr NSUInteger kTraceSize = 64;
 // something to report as well as the "In heaps" row.
 constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
+/** --texture-writes: the side of the block the blit stamps into the middle of the resolve target. */
+constexpr NSUInteger kStampSize = 64;
+/** --texture-writes: the height of the band the compute kernel paints across it. */
+constexpr NSUInteger kBandHeight = 16;
+/** --indirect: how many draw commands the indirect command buffer holds. */
+constexpr NSUInteger kIndirectCommands = 2;
+/** --layered: how many layers the array target has, one draw each. */
+constexpr NSUInteger kLayers = 2;
+
 }  // namespace
 
 // ------------------------------------------------------------------------------------------
@@ -249,7 +312,10 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 - (instancetype)initWithLayer:(CAMetalLayer*)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
                    rayTracing:(BOOL)rayTracing
                    staticBlas:(BOOL)staticBlas
-                    insideOut:(BOOL)insideOut;
+                    insideOut:(BOOL)insideOut
+                textureWrites:(BOOL)textureWrites
+                     indirect:(BOOL)indirect
+                      layered:(BOOL)layered;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
 /** --occluded: the triangle drawn twice, the second behind the first, with a depth test. */
@@ -270,6 +336,22 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic, readonly) BOOL rayTracing;
 /** --static-blas: build the bottom level once at start-up rather than every frame. */
 @property(nonatomic, readonly) BOOL staticBlas;
+/**
+ * --texture-writes: the resolve target written from outside a render pass as well as by the
+ * triangle pass — a compute kernel paints a band across it, a blit stamps a block into the middle
+ * of it, and a pass of its own draws over it twice. The three ways a pixel history has to account
+ * for besides a draw: the pass's multisample resolve, a dispatch, and a copy
+ * (src/metal/src/pixel_history.mm).
+ */
+@property(nonatomic, readonly) BOOL textureWrites;
+/**
+ * --indirect: the triangle drawn through an indirect command buffer's commands rather than by
+ * calls on the encoder. It decides `supportIndirectCommandBuffers` on the pipeline, which is
+ * fixed when the pipeline is built, so it is an initializer argument.
+ */
+@property(nonatomic, readonly) BOOL indirect;
+/** --layered: a pass into a two-layer array target, one draw per layer. */
+@property(nonatomic, readonly) BOOL layered;
 @end
 
 @implementation Renderer
@@ -281,6 +363,15 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     id<MTLRenderPipelineState> _blit;
     id<MTLComputePipelineState> _wave;
     id<MTLSamplerState> _sampler;
+    // --texture-writes: the kernel that paints a band into the resolve target, and the small
+    // texture a blit stamps into the middle of it.
+    id<MTLComputePipelineState> _paint;
+    id<MTLTexture> _stamp;
+    // --indirect: two draw commands encoded once, executed every frame.
+    id<MTLIndirectCommandBuffer> _icb;
+    // --layered: the array target and the pipeline whose vertex shader picks a layer.
+    id<MTLTexture> _layeredTarget;
+    id<MTLRenderPipelineState> _layeredPipeline;
     // The triangle is drawn into a 4x multisampled target resolved into _resolved, which the
     // drawable pass then samples. The private-storage vertices are what an engine binds.
     id<MTLTexture> _msaaTarget;
@@ -325,14 +416,20 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                    rayTracing:(BOOL)rayTracing
                    staticBlas:(BOOL)staticBlas
                     insideOut:(BOOL)insideOut
+                textureWrites:(BOOL)textureWrites
+                     indirect:(BOOL)indirect
+                      layered:(BOOL)layered
 {
     if (!(self = [super init]))
         return nil;
+    _indirect = indirect;
+    _layered = layered;
     _insideOut = insideOut;
     _occluded = occluded;
     _stencil = stencil;
     _rayTracing = rayTracing;
     _staticBlas = staticBlas;
+    _textureWrites = textureWrites;
     _layer = layer;
     _device = layer.device;
     _queue = [_device newCommandQueue];
@@ -377,6 +474,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     }
     pipelineDescriptor.vertexDescriptor = vertexDescriptor;
     pipelineDescriptor.colorAttachments[0].pixelFormat = layer.pixelFormat;
+    // --indirect: a pipeline an indirect command may bind has to say so when it is built.
+    pipelineDescriptor.supportIndirectCommandBuffers = indirect;
     // --stencil shares --occluded's single-sampled depth path: a multisampled depth attachment is
     // deliberately not copied for the overdraw measurement, and the stencil read-back wants a
     // target it can actually blit from.
@@ -436,10 +535,13 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                                                                                         width:(NSUInteger)size.width
                                                                                        height:(NSUInteger)size.height
                                                                                     mipmapped:NO];
-    resolved.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    resolved.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead
+        | (textureWrites ? MTLTextureUsageShaderWrite : 0);
     resolved.storageMode = MTLStorageModePrivate;
     _resolved = [_device newTextureWithDescriptor:resolved];
     _resolved.label = @"triangle resolved";
+    if (textureWrites)
+        [self setUpTextureWrites:library];
 
     _wave = [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"wave_main"]
                                                    error:&error];
@@ -481,6 +583,11 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     _waveOut = [_device newBufferWithLength:kWaveCount * sizeof(float)
                                     options:MTLResourceStorageModeShared];
     _waveOut.label = @"wave output";
+
+    if (indirect)
+        [self setUpIndirect];
+    if (layered)
+        [self setUpLayered:library vertexDescriptor:vertexDescriptor size:size];
 
     // A heap, the way an engine reserves once and suballocates: the resources made from it never
     // pass through the device, so they reach the library through the heap's own hooks
@@ -546,6 +653,136 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
     _later = [NSMutableArray array];
     return self;
+}
+
+/**
+ * --layered: a two-layer array target and the pipeline that renders into a layer of it. The
+ * pipeline has to declare its primitive topology: a vertex shader can only write
+ * [[render_target_array_index]] when the pipeline says what it is rasterizing.
+ */
+- (void)setUpLayered:(id<MTLLibrary>)library vertexDescriptor:(MTLVertexDescriptor*)vertexDescriptor size:(CGSize)size
+{
+    MTLTextureDescriptor* layers =
+        [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:_layer.pixelFormat
+                                                           width:(NSUInteger)size.width
+                                                          height:(NSUInteger)size.height
+                                                       mipmapped:NO];
+    layers.textureType = MTLTextureType2DArray;
+    layers.arrayLength = kLayers;
+    layers.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+    layers.storageMode = MTLStorageModePrivate;
+    _layeredTarget = [_device newTextureWithDescriptor:layers];
+    _layeredTarget.label = @"layered target";
+
+    MTLRenderPipelineDescriptor* descriptor = [[MTLRenderPipelineDescriptor alloc] init];
+    descriptor.label = @"layered pipeline";
+    descriptor.vertexFunction = [library newFunctionWithName:@"layered_vertex"];
+    descriptor.fragmentFunction = [library newFunctionWithName:@"layered_fragment"];
+    descriptor.vertexDescriptor = vertexDescriptor;
+    descriptor.colorAttachments[0].pixelFormat = _layer.pixelFormat;
+    descriptor.inputPrimitiveTopology = MTLPrimitiveTopologyClassTriangle;
+    NSError* error = nil;
+    _layeredPipeline = [_device newRenderPipelineStateWithDescriptor:descriptor error:&error];
+    if (!_layeredPipeline)
+    {
+        NSLog(@"--layered: pipeline creation failed: %@", error);
+        exit(1);
+    }
+}
+
+/**
+ * --indirect: two draw commands encoded into an indirect command buffer once, at start-up, the way
+ * an engine builds one and re-executes it. Shared storage, so the CPU can encode them; a private
+ * one would have to be filled by a compute kernel.
+ */
+- (void)setUpIndirect
+{
+    MTLIndirectCommandBufferDescriptor* descriptor = [[MTLIndirectCommandBufferDescriptor alloc] init];
+    descriptor.commandTypes = MTLIndirectCommandTypeDrawIndexed;
+    descriptor.inheritPipelineState = NO;
+    descriptor.inheritBuffers = NO;
+    descriptor.maxVertexBufferBindCount = 2;
+    descriptor.maxFragmentBufferBindCount = 0;
+    _icb = [_device newIndirectCommandBufferWithDescriptor:descriptor
+                                           maxCommandCount:kIndirectCommands
+                                                   options:MTLResourceStorageModeShared];
+    if (!_icb)
+    {
+        NSLog(@"--indirect: this device cannot make an indirect command buffer");
+        exit(1);
+    }
+    _icb.label = @"triangle commands";
+    for (NSUInteger i = 0; i < kIndirectCommands; i++)
+    {
+        // A different instance count each, so the two commands are distinguishable in a pixel
+        // history: the instances are rotated copies, so the second command covers more of the
+        // image than the first.
+        id<MTLIndirectRenderCommand> command = [_icb indirectRenderCommandAtIndex:i];
+        [command setRenderPipelineState:_pipeline];
+        [command setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
+        [command setVertexBuffer:_uniforms offset:0 atIndex:1];
+        [command drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                            indexCount:sizeof(kIndices) / sizeof(kIndices[0])
+                             indexType:MTLIndexTypeUInt16
+                           indexBuffer:_indices
+                     indexBufferOffset:0
+                         instanceCount:i + 1
+                            baseVertex:0
+                          baseInstance:0];
+    }
+}
+
+/**
+ * --texture-writes: the kernel that paints a band into the resolve target, and the block a blit
+ * stamps into the middle of it. The stamp is filled once from a buffer, so the copy the frame
+ * makes has something with a known value in it.
+ */
+- (void)setUpTextureWrites:(id<MTLLibrary>)library
+{
+    NSError* error = nil;
+    _paint = [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"paint_main"]
+                                                    error:&error];
+    if (!_paint)
+    {
+        NSLog(@"paint pipeline creation failed: %@", error);
+        exit(1);
+    }
+    MTLTextureDescriptor* stamp = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:_layer.pixelFormat
+                                                                                     width:kStampSize
+                                                                                    height:kStampSize
+                                                                                 mipmapped:NO];
+    stamp.usage = MTLTextureUsageShaderRead;
+    stamp.storageMode = MTLStorageModePrivate;
+    _stamp = [_device newTextureWithDescriptor:stamp];
+    _stamp.label = @"stamp";
+    // BGRA8 bytes: a flat blue-green the copy is recognizable by.
+    const NSUInteger bytesPerRow = kStampSize * 4;
+    id<MTLBuffer> pixels = [_device newBufferWithLength:bytesPerRow * kStampSize
+                                                options:MTLResourceStorageModeShared];
+    pixels.label = @"stamp pixels";
+    uint8_t* bytes = (uint8_t*)pixels.contents;
+    for (NSUInteger i = 0; i < kStampSize * kStampSize; i++)
+    {
+        bytes[i * 4 + 0] = 0xC0;   // B
+        bytes[i * 4 + 1] = 0x60;   // G
+        bytes[i * 4 + 2] = 0x10;   // R
+        bytes[i * 4 + 3] = 0xFF;
+    }
+    id<MTLCommandBuffer> upload = [_queue commandBuffer];
+    upload.label = @"stamp upload";
+    id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
+    [blit copyFromBuffer:pixels
+              sourceOffset:0
+         sourceBytesPerRow:bytesPerRow
+       sourceBytesPerImage:bytesPerRow * kStampSize
+                sourceSize:MTLSizeMake(kStampSize, kStampSize, 1)
+                 toTexture:_stamp
+          destinationSlice:0
+          destinationLevel:0
+         destinationOrigin:MTLOriginMake(0, 0, 0)];
+    [blit endEncoding];
+    [upload commit];
+    [upload waitUntilCompleted];
 }
 
 /**
@@ -873,32 +1110,142 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         [encoder setDepthStencilState:_depthState];
     if (self.stencil)
         [encoder setStencilReferenceValue:1];
-    [encoder setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
-    [encoder setVertexBuffer:_uniforms offset:0 atIndex:1];
-    [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
-                        indexCount:sizeof(kIndices) / sizeof(kIndices[0])
-                         indexType:MTLIndexTypeUInt16
-                       indexBuffer:_indices
-                 indexBufferOffset:0
-                     instanceCount:3];
-    if (self.occluded)
+    if (self.indirect)
     {
-        // The same triangles again, behind the ones just drawn: every fragment is rasterized and
-        // every one of them fails the depth test, so a measurement that counts fragments with the
-        // pass's depth test must come out half of the one that counts without it.
-        Uniforms behind = uniforms;
-        behind.depth = 0.8f;
-        [encoder setVertexBytes:&behind length:sizeof(behind) atIndex:1];
+        // --indirect: the draws come out of the indirect command buffer instead. What its commands
+        // read has to be made resident by hand — a command names its buffers, but the encoder is
+        // what tells Metal they are in use.
+        [encoder useResource:_verticesPrivate usage:MTLResourceUsageRead stages:MTLRenderStageVertex];
+        [encoder useResource:_uniforms usage:MTLResourceUsageRead stages:MTLRenderStageVertex];
+        [encoder useResource:_indices usage:MTLResourceUsageRead stages:MTLRenderStageVertex];
+        [encoder executeCommandsInBuffer:_icb withRange:NSMakeRange(0, kIndirectCommands)];
+    }
+    else
+    {
+        [encoder setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
+        [encoder setVertexBuffer:_uniforms offset:0 atIndex:1];
         [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
                             indexCount:sizeof(kIndices) / sizeof(kIndices[0])
                              indexType:MTLIndexTypeUInt16
                            indexBuffer:_indices
                      indexBufferOffset:0
                          instanceCount:3];
+        if (self.occluded)
+        {
+            // The same triangles again, behind the ones just drawn: every fragment is rasterized
+            // and every one of them fails the depth test, so a measurement that counts fragments
+            // with the pass's depth test must come out half of the one that counts without it.
+            Uniforms behind = uniforms;
+            behind.depth = 0.8f;
+            [encoder setVertexBytes:&behind length:sizeof(behind) atIndex:1];
+            [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                                indexCount:sizeof(kIndices) / sizeof(kIndices[0])
+                                 indexType:MTLIndexTypeUInt16
+                               indexBuffer:_indices
+                         indexBufferOffset:0
+                             instanceCount:3];
+        }
     }
     [encoder popDebugGroup];
     [encoder endEncoding];
     [parallel endEncoding];
+
+    // --layered: a pass into a two-layer array target, one draw per layer, the second layer drawn
+    // first so that a history of layer 0 has a draw *before* the one that wrote it which went
+    // somewhere else. Then layer 0 onto the resolve target, so the window shows it.
+    if (self.layered)
+    {
+        MTLRenderPassDescriptor* layered = [MTLRenderPassDescriptor renderPassDescriptor];
+        layered.colorAttachments[0].texture = _layeredTarget;
+        layered.colorAttachments[0].slice = 0;
+        layered.colorAttachments[0].loadAction = MTLLoadActionClear;
+        layered.colorAttachments[0].clearColor = MTLClearColorMake(0.05, 0.05, 0.08, 1.0);
+        layered.colorAttachments[0].storeAction = MTLStoreActionStore;
+        layered.renderTargetArrayLength = kLayers;
+        id<MTLRenderCommandEncoder> into = [commandBuffer renderCommandEncoderWithDescriptor:layered];
+        into.label = @"layers";
+        [into setRenderPipelineState:_layeredPipeline];
+        [into setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
+        [into setVertexBuffer:_uniforms offset:0 atIndex:1];
+        for (NSUInteger i = kLayers; i-- > 0;)
+        {
+            const uint32_t which = (uint32_t)i;
+            [into setVertexBytes:&which length:sizeof(which) atIndex:2];
+            [into drawIndexedPrimitives:MTLPrimitiveTypeTriangle
+                             indexCount:sizeof(kIndices) / sizeof(kIndices[0])
+                              indexType:MTLIndexTypeUInt16
+                            indexBuffer:_indices
+                      indexBufferOffset:0
+                          instanceCount:1];
+        }
+        [into endEncoding];
+        id<MTLBlitCommandEncoder> show = [commandBuffer blitCommandEncoder];
+        show.label = @"layer 0 to the resolve";
+        [show copyFromTexture:_layeredTarget
+                  sourceSlice:0
+                  sourceLevel:0
+                 sourceOrigin:MTLOriginMake(0, 0, 0)
+                   sourceSize:MTLSizeMake(_layeredTarget.width, _layeredTarget.height, 1)
+                    toTexture:_resolved
+             destinationSlice:0
+             destinationLevel:0
+            destinationOrigin:MTLOriginMake(0, 0, 0)];
+        [show endEncoding];
+    }
+
+    // --texture-writes: the resolve target written three more ways, none of them a draw of the
+    // pass that owns it. A pixel history has to account for each (src/metal/src/pixel_history.mm):
+    // the multisample resolve the pass just stored, a dispatch, and a copy.
+    if (self.textureWrites)
+    {
+        const NSUInteger width = _resolved.width, height = _resolved.height;
+        const uint32_t band = (uint32_t)(height / 2 - kBandHeight / 2);
+        id<MTLComputeCommandEncoder> paint = [commandBuffer computeCommandEncoder];
+        paint.label = @"paint band";
+        [paint setComputePipelineState:_paint];
+        [paint setTexture:_resolved atIndex:0];
+        [paint setBytes:&band length:sizeof(band) atIndex:0];
+        [paint dispatchThreads:MTLSizeMake(width, kBandHeight, 1)
+            threadsPerThreadgroup:MTLSizeMake(32, 4, 1)];
+        [paint endEncoding];
+
+        // A block into the middle of it, so the pixel the history follows (the center) is one the
+        // copy wrote.
+        id<MTLBlitCommandEncoder> stamp = [commandBuffer blitCommandEncoder];
+        stamp.label = @"stamp";
+        [stamp copyFromTexture:_stamp
+                   sourceSlice:0
+                   sourceLevel:0
+                  sourceOrigin:MTLOriginMake(0, 0, 0)
+                    sourceSize:MTLSizeMake(kStampSize, kStampSize, 1)
+                     toTexture:_resolved
+              destinationSlice:0
+              destinationLevel:0
+             destinationOrigin:MTLOriginMake(width / 2 - kStampSize / 2, height / 2 - kStampSize / 2, 0)];
+        [stamp endEncoding];
+
+        // And a pass of its own over it, with two draws. Two, so that the pass with the most draws
+        // — which is the one --debug-view=pixel-history follows a pixel of — is this one and not
+        // the drawable's.
+        MTLRenderPassDescriptor* over = [MTLRenderPassDescriptor renderPassDescriptor];
+        over.colorAttachments[0].texture = _resolved;
+        over.colorAttachments[0].loadAction = MTLLoadActionLoad;
+        over.colorAttachments[0].storeAction = MTLStoreActionStore;
+        id<MTLRenderCommandEncoder> overlay = [commandBuffer renderCommandEncoderWithDescriptor:over];
+        overlay.label = @"over the stamp";
+        [overlay setRenderPipelineState:_blit];
+        [overlay setFragmentTexture:_stamp atIndex:0];
+        [overlay setFragmentSamplerState:_sampler atIndex:0];
+        for (int i = 0; i < 2; i++)
+        {
+            // Nearly transparent, so the stamp and the band stay visible under them; the draws are
+            // here to be followed, not to be seen.
+            const float faint[4] = {1.0f, 1.0f, 1.0f, 0.02f * (float)(i + 1)};
+            [overlay setFragmentBytes:faint length:sizeof(faint) atIndex:0];
+            [overlay drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
+        }
+        [overlay endEncoding];
+    }
 
     // The resolve onto the drawable, tinted through inline constants. Store, so a capture that
     // reads the attachment back sees the result. A pass that did not store would be the Metal
@@ -960,6 +1307,9 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL staticBlas;
 @property(nonatomic) BOOL stencilPass;
 @property(nonatomic) BOOL insideOut;
+@property(nonatomic) BOOL textureWrites;
+@property(nonatomic) BOOL indirect;
+@property(nonatomic) BOOL layered;
 @end
 
 @implementation AppDelegate
@@ -1005,7 +1355,10 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                                         stencil:self.stencilPass
                                      rayTracing:self.rayTracing
                                      staticBlas:self.staticBlas
-                                      insideOut:self.insideOut];
+                                      insideOut:self.insideOut
+                                  textureWrites:self.textureWrites
+                                       indirect:self.indirect
+                                        layered:self.layered];
     _renderer.presentDirect = self.presentDirect;
     _renderer.compileHitch = self.compileHitch;
     _renderer.hitchEvery = self.hitchEvery;
@@ -1049,6 +1402,9 @@ int main(int argc, const char* argv[])
     BOOL staticBlas = NO;
     BOOL stencil = NO;
     BOOL insideOut = NO;
+    BOOL textureWrites = NO;
+    BOOL indirect = NO;
+    BOOL layered = NO;
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc)
@@ -1071,6 +1427,12 @@ int main(int argc, const char* argv[])
             rayTracing = YES;
         else if (strcmp(argv[i], "--static-blas") == 0)
             staticBlas = YES;
+        else if (strcmp(argv[i], "--texture-writes") == 0)
+            textureWrites = YES;
+        else if (strcmp(argv[i], "--indirect") == 0)
+            indirect = YES;
+        else if (strcmp(argv[i], "--layered") == 0)
+            layered = YES;
     }
     // --static-blas only means anything with a scene to build.
     if (staticBlas)
@@ -1090,6 +1452,9 @@ int main(int argc, const char* argv[])
         delegate.insideOut = insideOut;
         delegate.rayTracing = rayTracing;
         delegate.staticBlas = staticBlas;
+        delegate.textureWrites = textureWrites;
+        delegate.indirect = indirect;
+        delegate.layered = layered;
         app.delegate = delegate;
         [app run];
     }

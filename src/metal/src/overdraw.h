@@ -110,7 +110,14 @@ public:
     }
     /** A draw, which the measurement issues through `draw` as many times as it needs, or not at all. */
     virtual void IssueDraw(id<MTLRenderCommandEncoder> encoder, const std::function<void(id<MTLRenderCommandEncoder>)>& draw) = 0;
-    /** A draw that cannot be measured at all (an indirect command buffer's). */
+    /**
+     * An indirect command buffer's commands executed. Each carries its own pipeline, which the
+     * library never saw created and so cannot copy: a measurement that needs pipeline copies (the
+     * overdraw count, a draw overlay's mask) can only skip them. The pixel history does not need
+     * copies for its last count, so it overrides this and runs the commands one at a time.
+     */
+    virtual void ExecuteIndirect(id<MTLRenderCommandEncoder>, id, NSRange) { Skip(); }
+    /** A draw that cannot be measured at all (an indirect command buffer's, for most measurements). */
     virtual void Skip() = 0;
 
 protected:
@@ -226,7 +233,56 @@ void SendOverdraw();
 /** A capture starts recording: the pixel it follows, if any (pixel_history.mm). */
 void StartPixelHistoryCapture(const PixelHistoryRequest& request);
 
+/**
+ * Whether the capture follows a pixel. Checked by the hooks of every texture bind and every blit
+ * command before they say anything about one, so the ordinary case costs an atomic load.
+ */
+bool PixelHistoryActive();
+
 /** The capture's command buffers have completed: the pixel's history is sent as CapturePixelHistory. */
 void SendPixelHistory();
+
+// --------------------------------------------------------------------------------------------
+// Writes from outside a render pass, for the pixel history (pixel_history.mm). Nothing here does
+// anything unless a capture is following a pixel of the texture written.
+
+/** Where one blit command wrote: the subresources of a texture, and the region within each. */
+struct BlitWrite
+{
+    id texture = nil;
+    NSUInteger slice = 0;
+    NSUInteger sliceCount = 1;
+    NSUInteger level = 0;
+    NSUInteger levelCount = 1;
+    /** The command writes all of each level (copyFromTexture:toTexture:, generateMipmapsForTexture:). */
+    bool wholeLevel = false;
+    MTLOrigin origin = {0, 0, 0};
+    MTLSize size = {0, 0, 0};
+    /** The history's event kind: "copy" for a copy, "blit" for a regenerated mipmap. */
+    const char* kind = "copy";
+    /** What the event says happened, in the words the Vulkan replay uses ("copied from a buffer"). */
+    const char* detail = "";
+};
+
+/**
+ * A blit command wrote a texture. When it is the one a pixel history follows and the write covers
+ * the pixel, the pixel is copied into a staging buffer on the application's own blit encoder,
+ * right after the command, and reported as an event of the history. Called after the command has
+ * been forwarded, so the read-back is encoded behind it.
+ */
+void NotePixelHistoryBlit(id encoder, const BlitWrite& write);
+
+/** A compute encoder bound a texture at `index`, or nil to unbind that slot. */
+void NotePixelHistoryComputeTexture(id encoder, id texture, NSUInteger index);
+
+/**
+ * A compute encoder dispatched. When the followed texture is bound to it, the encoder is noted:
+ * a compute encoder cannot be interrupted to read a texture, so the pixel is read once the
+ * application closes it, and the history reports one event per encoder rather than per dispatch.
+ */
+void NotePixelHistoryDispatch(id encoder);
+
+/** An encoder has been closed: the pixel is read back for a compute encoder that was noted. */
+void EndPixelHistoryEncoder(id encoder);
 
 }  // namespace mtlinsp

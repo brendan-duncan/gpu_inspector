@@ -101,7 +101,11 @@ public:
 };
 bool IsInternal();
 
-/** Logging: `MTLINSP_LOG=1` in the environment, matching the layer's VKINSP_LOG. */
+/**
+ * Logging: `MTLINSP_LOG=1` in the environment, matching the layer's VKINSP_LOG.
+ * `MTLINSP_LOG_FILE=<path>` appends the lines to a file too, for an application whose stderr
+ * nobody can read (a Unity player), matching VKINSP_LOG_FILE and DXINSP_LOG_FILE.
+ */
 bool LogEnabled();
 void Log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 

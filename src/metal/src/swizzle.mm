@@ -80,13 +80,31 @@ void Log(const char* format, ...)
 {
     if (!LogEnabled())
         return;
+    char line[2048];
     va_list args;
     va_start(args, format);
-    fprintf(stderr, "[mtlinsp] ");
-    vfprintf(stderr, format, args);
-    fprintf(stderr, "\n");
+    const int n = vsnprintf(line, sizeof(line), format, args);
     va_end(args);
+    if (n < 0)
+        return;
+    static std::mutex mutex;
+    std::lock_guard<std::mutex> lock(mutex);
+    fprintf(stderr, "[mtlinsp] %s\n", line);
     fflush(stderr);
+    // A GUI application (a Unity player) redirects its stderr where nobody can read it:
+    // MTLINSP_LOG_FILE appends the same lines to a file, the way VKINSP_LOG_FILE does for the
+    // Vulkan layer and DXINSP_LOG_FILE for the Direct3D 12 library. Opened once and left open:
+    // a logged run writes tens of thousands of lines, and reopening for each would be most of
+    // what the library costs the application.
+    static FILE* const file = [] {
+        const char* path = getenv("MTLINSP_LOG_FILE");
+        return path != nullptr && path[0] != '\0' ? fopen(path, "ab") : nullptr;
+    }();
+    if (file != nullptr)
+    {
+        fprintf(file, "[mtlinsp] %s\n", line);
+        fflush(file);
+    }
 }
 
 const char* ClassName(id object)

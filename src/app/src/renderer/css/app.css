@@ -785,7 +785,9 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .pixel-event.outcome-depth .pixel-event-summary, .pixel-event.outcome-stencil .pixel-event-summary,
 .pixel-event.outcome-depth-stencil .pixel-event-summary, .pixel-event.outcome-tests .pixel-event-summary { color: var(--accent-warning); }
 .pixel-event.outcome-culled .pixel-event-summary, .pixel-event.outcome-discarded .pixel-event-summary, .pixel-event.outcome-missed .pixel-event-summary,
-.pixel-event.outcome-scissored .pixel-event-summary, .pixel-event.outcome-unmeasured .pixel-event-summary { color: var(--fg-muted); }
+.pixel-event.outcome-scissored .pixel-event-summary, .pixel-event.outcome-unmeasured .pixel-event-summary,
+/* An indirect command buffer's command: only whether it wrote the pixel was measurable. */
+.pixel-event.outcome-none .pixel-event-summary { color: var(--fg-muted); }
 .pixel-event.outcome-load .pixel-event-summary, .pixel-event.outcome-clear .pixel-event-summary,
 /* Writes from outside a render pass: a copy, a blit, a resolve, or a dispatch that had the image bound. */
 .pixel-event.outcome-copy .pixel-event-summary, .pixel-event.outcome-blit .pixel-event-summary,

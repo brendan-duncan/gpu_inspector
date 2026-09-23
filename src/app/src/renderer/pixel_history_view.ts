@@ -12,7 +12,7 @@ import { Div } from "./widget/div.js";
 import { NumberInput } from "./widget/number_input.js";
 import { Span } from "./widget/span.js";
 import {
-  drawOutcome, eventSummary, fragmentsText, sampleCountsText, texelCss, texelLines, touchesPixel,
+  drawOutcome, eventSummary, fragmentsText, sampleCountsText, texelCss, texelLines, texelValues, touchesPixel,
   type PixelEvent, type PixelHistory, type PixelRequest,
 } from "./pixel_history.js";
 
@@ -106,6 +106,10 @@ export class PixelHistoryView {
       request: this._request, running: this._running, error: this._error || null, prompt: this._prompt?.text ?? null,
       events: h?.events.length ?? 0,
       touched: h ? h.events.filter(touchesPixel).map(eventSummary) : [],
+      // What the pixel ended up as. The only thing that says *which* of a layered pass's layers
+      // was read: two draws of one pass can both report writing it and still have gone to
+      // different layers (tools/ui_tests.py's metal-pixel-layered).
+      value: h && h.events.length ? texelValues(h.pixelFormat, h.events[h.events.length - 1].value) : null,
       // A draw broken into its fragments: how many each has, and the primitive of each
       // (src/replay/src/history.cpp's fragment round).
       fragments: h ? h.events.filter((e) => e.fragments.length > 1)

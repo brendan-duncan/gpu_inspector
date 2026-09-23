@@ -19,8 +19,23 @@
 // Cull mode and the depth-stencil state are encoder state in Metal, so only the two pipeline copies
 // (a fragment function that writes nothing, and the application's with color writes off) are made.
 //
-// Not followed: multisampled and layered passes, and indirect command buffers' draws (their
-// commands carry their own pipelines).
+// The shadows take the pass's shape: its sample count, since the draws re-issued into them are the
+// application's and a pipeline's sample count has to match its attachment, and its
+// renderTargetArrayLength, since a layered pass's draws pick a layer with
+// `render_target_array_index` and one without those layers would have nowhere to put them. Nothing
+// can be blitted out of a multisampled texture, so the two attachments the pixel is read from
+// resolve into single-sample copies first.
+//
+// An indirect command buffer's commands carry their own pipelines, which the library never saw
+// created and so cannot copy: those are executed one at a time under a visibility result, which
+// says what each wrote at the pixel but not where its fragments stopped.
+//
+// Writes to the texture from outside any render pass are events of their own, with no fragments to
+// account for and the value after the write as the whole answer: a pass's multisample resolve
+// (FollowPixelResolve), a blit command (NotePixelHistoryBlit, per command, read back on the
+// application's own encoder), and a compute encoder that had the texture bound
+// (EndPixelHistoryEncoder, per encoder — a compute encoder cannot be interrupted to read a
+// texture, so its dispatches share one event).
 #include "overdraw.h"
 
 #include "capture.h"
@@ -34,9 +49,11 @@
 #import <Metal/Metal.h>
 
 #include <algorithm>
+#include <atomic>
 #include <list>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace mtlinsp
@@ -51,6 +68,13 @@ struct HistoryPass
     uint32_t y = 0;
     uint32_t width = 0;
     uint32_t height = 0;
+    /**
+     * The pass's renderTargetArrayLength, 1 when it is not layered: how many layers the shadows
+     * have, so a draw picking one with `render_target_array_index` lands where it did.
+     */
+    uint32_t layers = 1;
+    /** Which of those layers the pixel is in: the request's slice, less the attachment's base. */
+    uint32_t layer = 0;
     /** The color attachment the pixel is read from. */
     int target = -1;
     /** Why the pass is not followed. */
@@ -97,6 +121,8 @@ namespace
 {
 
 constexpr int kVariants = 6;
+/** The last variant: the draw with every test, which is what it actually wrote at the pixel. */
+constexpr int kPassedVariant = 5;
 /** Draws followed per pass: two encoders each, in the application's command buffer. */
 constexpr uint32_t kMaxDraws = 1024;
 
@@ -140,10 +166,32 @@ struct PendingHistory
 
 std::mutex g_mutex;
 PixelHistoryRequest g_request;
+/** g_request.enabled, without the lock: the hooks of every bind and blit read it (PixelHistoryActive). */
+std::atomic<bool> g_active{false};
 /** Whether the request's texture is (or was) a drawable, so that whichever drawable the frame renders into is followed. */
 bool g_resolved = false;
 bool g_anyDrawable = false;
 std::vector<PendingHistory> g_pending;
+/**
+ * Compute encoders the followed texture is bound to, and whether one of them has dispatched.
+ * Keyed by the encoder; an entry appears the first time the texture is bound to it and is taken
+ * out when the encoder closes.
+ */
+struct ComputeBinding
+{
+    /** The slots the followed texture is bound to: empty once every one of them is rebound. */
+    std::vector<NSUInteger> slots;
+    /**
+     * The texture itself, retained: what the pixel is read out of when the encoder closes. Kept
+     * rather than looked up from the request, which for a drawable names whichever one the earlier
+     * capture saw, not the one this frame bound.
+     */
+    Strong texture;
+    /** The last dispatch made while it was bound, and how many there were. */
+    uint32_t command = 0;
+    uint32_t dispatches = 0;
+};
+std::unordered_map<const void*, ComputeBinding> g_computeBindings;
 
 /**
  * The calls in effect at a point of an encoder: each call recorded, less those a later call undid
@@ -209,6 +257,9 @@ public:
     MTLScissorRect scissor{};
     std::function<void(id<MTLRenderCommandEncoder>)> draw;
     bool skipped = false;
+    /** An indirect command buffer's commands, executed one at a time rather than as one draw. */
+    id indirect = nil;
+    NSRange indirectRange = {0, 0};
 
     void BindPipeline(id<MTLRenderCommandEncoder> encoder, id state) override
     {
@@ -234,6 +285,22 @@ public:
             scissor = rects[0];
     }
     void IssueDraw(id<MTLRenderCommandEncoder>, const std::function<void(id<MTLRenderCommandEncoder>)>& d) override { draw = d; }
+    /**
+     * Kept, not issued: the history runs each command of the range on its own, under the pixel's
+     * scissor and a visibility result. The commands carry their own pipelines, so the copies the
+     * other counts need (a fragment function that writes nothing, one with color writes off)
+     * cannot be made — only the last count, of what the command actually wrote, is measurable.
+     */
+    void ExecuteIndirect(id<MTLRenderCommandEncoder>, id icb, NSRange range) override
+    {
+        if (icb == nil || range.length == 0)
+        {
+            skipped = true;
+            return;
+        }
+        indirect = icb;
+        indirectRange = range;
+    }
     void Skip() override { skipped = true; }
 };
 
@@ -254,6 +321,11 @@ std::string Hex(const uint8_t* bytes, size_t size)
 
 // --------------------------------------------------------------------------------------------
 
+bool PixelHistoryActive()
+{
+    return g_active.load(std::memory_order_relaxed);
+}
+
 void StartPixelHistoryCapture(const PixelHistoryRequest& request)
 {
     std::vector<PendingHistory> pending;
@@ -266,17 +338,261 @@ void StartPixelHistoryCapture(const PixelHistoryRequest& request)
         g_resolved = false;
         g_anyDrawable = false;
     }
+    g_active.store(request.enabled, std::memory_order_relaxed);
     for (PendingHistory& h : pending)
     {
         [h.staging release];
         for (id<MTLBuffer> b : h.visibility)
             [b release];
     }
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_computeBindings.clear();
+    }
     if (request.enabled)
     {
         Log("pixel history: following pixel (%u, %u) of texture %llu, level %u, slice %u", request.x, request.y,
             (unsigned long long)request.texture, request.level, request.slice);
     }
+}
+
+// --------------------------------------------------------------------------------------------
+// Writes from outside a render pass: blit commands, compute encoders, and a pass's multisample
+// resolve. None of them has fragments to account for, so the event is the value after the write —
+// which is the whole answer the history can give for one (renderer/pixel_history.ts's "copy",
+// "blit", "resolve" and "compute" kinds, rendered under "Outside a render pass").
+
+namespace
+{
+
+/** No pass: the index the renderer reads as "Outside a render pass" (capture_panel.ts). */
+constexpr uint32_t kNoPass = 0xffffffffu;
+
+/** Whether a texture is the one the capture follows, at the level and slice it follows. */
+bool FollowedSubresource(id texture, NSUInteger slice, NSUInteger sliceCount, NSUInteger level, NSUInteger levelCount)
+{
+    PixelHistoryRequest request;
+    bool anyDrawable = false;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        request = g_request;
+        anyDrawable = g_anyDrawable;
+    }
+    if (!request.enabled || texture == nil)
+        return false;
+    const bool same = request.texture != 0 && IdOf(texture) == request.texture;
+    if (!same && !(anyDrawable && IsDrawableTexture(texture)))
+        return false;
+    return request.slice >= slice && request.slice < slice + sliceCount && request.level >= level
+        && request.level < level + levelCount;
+}
+
+/**
+ * The pixel copied out of a texture into a staging buffer of its own, on an encoder the caller
+ * owns, and pushed as a one-event history. `command` is the command the capture recorded the
+ * write as.
+ */
+void ReadPixelAfterWrite(id<MTLBlitCommandEncoder> blit, id<MTLTexture> texture, uint64_t commandBufferId,
+    uint32_t command, const char* kind, const char* detail)
+{
+    PixelHistoryRequest request;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        request = g_request;
+    }
+    const PixelFormatInfo info = PixelFormatDetails(texture.pixelFormat);
+    const std::string where = "command buffer " + std::to_string(commandBufferId);
+    PendingHistory out;
+    out.texture = IdOf(texture);
+    out.device = texture.device.name.UTF8String ?: "";
+    if (info.name == nullptr || info.name[0] == '\0' || info.blockWidth != 1 || info.blockHeight != 1
+        || texture.sampleCount > 1)
+    {
+        // A compressed or multisampled texture cannot be the source of a one-texel copy. The event
+        // is still worth reporting: what wrote the pixel is the question, and the value is extra.
+        out.notes.push_back(where + std::string(": the value after the ") + kind + " could not be read back out of "
+            + PixelFormatEnumName(texture.pixelFormat));
+    }
+    else
+    {
+        out.pixelFormat = info.name;
+        out.colorBytes = info.blockBytes;
+        out.staging = [texture.device newBufferWithLength:info.blockBytes options:MTLResourceStorageModeShared];
+        if (out.staging == nil)
+            out.colorBytes = 0;
+    }
+    PendingEvent e;
+    e.kind = kind;
+    e.detail = detail;
+    e.command = command;
+    e.method = RecordedCommandMethod(command);
+    e.commandBuffer = commandBufferId;
+    e.frame = CaptureFrameIndex();
+    e.passIndex = kNoPass;
+    if (out.colorBytes != 0)
+    {
+        [blit copyFromTexture:texture
+                  sourceSlice:request.slice
+                  sourceLevel:request.level
+                 sourceOrigin:MTLOriginMake(request.x, request.y, 0)
+                   sourceSize:MTLSizeMake(1, 1, 1)
+                     toBuffer:out.staging
+            destinationOffset:0
+       destinationBytesPerRow:out.colorBytes
+     destinationBytesPerImage:out.colorBytes];
+        e.slot = 0;
+    }
+    out.events.push_back(std::move(e));
+    std::lock_guard<std::mutex> lock(g_mutex);
+    g_pending.push_back(std::move(out));
+}
+
+}  // namespace
+
+int MatchPixelHistoryResolve(MTLRenderPassDescriptor* descriptor)
+{
+    if (!PixelHistoryActive() || descriptor == nil)
+        return -1;
+    for (NSUInteger i = 0; i < 8; i++)
+    {
+        MTLRenderPassColorAttachmentDescriptor* a = descriptor.colorAttachments[i];
+        id<MTLTexture> t = a.resolveTexture;
+        if (t == nil)
+            continue;
+        const NSUInteger slice = t.textureType == MTLTextureType3D ? a.resolveDepthPlane : a.resolveSlice;
+        if (!FollowedSubresource(t, slice, 1, a.resolveLevel, 1))
+            continue;
+        return (int)i;
+    }
+    return -1;
+}
+
+void PreparePixelHistoryResolve(OverdrawPass& pass, MTLRenderPassDescriptor* descriptor, int attachment)
+{
+    pass.historyResolve = [descriptor.colorAttachments[attachment].resolveTexture retain];
+}
+
+void FollowPixelResolve(OverdrawPass& pass)
+{
+    if (pass.historyResolve == nil || pass.commandBuffer == nil)
+        return;
+    @autoreleasepool
+    {
+        Internal internal;
+        id<MTLBlitCommandEncoder> blit = [(id<MTLCommandBuffer>)pass.commandBuffer blitCommandEncoder];
+        if (blit == nil)
+            return;
+        blit.label = @"gpu-inspector pixel history resolve read";
+        ReadPixelAfterWrite(blit, pass.historyResolve, pass.commandBufferId, pass.beginCommand, "resolve",
+            "resolved from the pass's multisampled attachment");
+        [blit endEncoding];
+    }
+    Log("pixel history: pass %u resolved into the texture", pass.passIndex);
+}
+
+void NotePixelHistoryBlit(id encoder, const BlitWrite& write)
+{
+    if (!PixelHistoryActive() || encoder == nil || write.texture == nil)
+        return;
+    id<MTLTexture> texture = (id<MTLTexture>)write.texture;
+    if (!FollowedSubresource(texture, write.slice, write.sliceCount, write.level, write.levelCount))
+        return;
+    PixelHistoryRequest request;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        request = g_request;
+    }
+    if (!write.wholeLevel)
+    {
+        // The pixel is in the level's coordinates; so is the destination origin.
+        const NSUInteger x = request.x, y = request.y;
+        if (x < write.origin.x || x >= write.origin.x + write.size.width || y < write.origin.y
+            || y >= write.origin.y + write.size.height)
+        {
+            return;
+        }
+    }
+    id commandBuffer = EncoderCommandBuffer(encoder, nullptr);
+    if (commandBuffer == nil)
+        return;
+    Internal internal;
+    // On the application's own encoder, behind the write it just made: a blit encoder cannot be
+    // interrupted by one of the library's own, and a copy out of a texture is all this needs.
+    ReadPixelAfterWrite((id<MTLBlitCommandEncoder>)encoder, texture, CommandBufferId(commandBuffer),
+        LastRecordedCommand(), write.kind, write.detail);
+    Log("pixel history: %s wrote the pixel (%s)", write.kind, write.detail);
+}
+
+void NotePixelHistoryComputeTexture(id encoder, id texture, NSUInteger index)
+{
+    if (!PixelHistoryActive() || encoder == nil)
+        return;
+    const bool followed = FollowedSubresource(texture, 0, texture != nil ? [(id<MTLTexture>)texture arrayLength] : 1,
+        0, texture != nil ? [(id<MTLTexture>)texture mipmapLevelCount] : 1);
+    const void* key = (__bridge const void*)encoder;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    if (followed)
+    {
+        ComputeBinding& binding = g_computeBindings[key];
+        binding.texture = Strong(texture);
+        if (std::find(binding.slots.begin(), binding.slots.end(), index) == binding.slots.end())
+            binding.slots.push_back(index);
+        return;
+    }
+    auto it = g_computeBindings.find(key);
+    if (it == g_computeBindings.end())
+        return;
+    std::vector<NSUInteger>& slots = it->second.slots;
+    slots.erase(std::remove(slots.begin(), slots.end(), index), slots.end());
+}
+
+void NotePixelHistoryDispatch(id encoder)
+{
+    if (!PixelHistoryActive() || encoder == nil)
+        return;
+    std::lock_guard<std::mutex> lock(g_mutex);
+    auto it = g_computeBindings.find((__bridge const void*)encoder);
+    if (it == g_computeBindings.end() || it->second.slots.empty())
+        return;
+    it->second.command = LastRecordedCommand();
+    it->second.dispatches++;
+}
+
+void EndPixelHistoryEncoder(id encoder)
+{
+    if (!PixelHistoryActive() || encoder == nil)
+        return;
+    ComputeBinding binding;
+    {
+        std::lock_guard<std::mutex> lock(g_mutex);
+        auto it = g_computeBindings.find((__bridge const void*)encoder);
+        if (it == g_computeBindings.end())
+            return;
+        binding = it->second;
+        g_computeBindings.erase(it);
+    }
+    if (binding.dispatches == 0)
+        return;
+    id commandBuffer = EncoderCommandBuffer(encoder, nullptr);
+    id texture = binding.texture.get();
+    if (commandBuffer == nil || texture == nil)
+        return;
+    @autoreleasepool
+    {
+        Internal internal;
+        id<MTLBlitCommandEncoder> blit = [(id<MTLCommandBuffer>)commandBuffer blitCommandEncoder];
+        if (blit == nil)
+            return;
+        blit.label = @"gpu-inspector pixel history compute read";
+        const std::string detail = binding.dispatches == 1
+            ? "dispatched with the texture bound to be written"
+            : std::to_string(binding.dispatches)
+                + " dispatches of the encoder had the texture bound to be written; the value is the pixel after all of them";
+        ReadPixelAfterWrite(blit, (id<MTLTexture>)texture, CommandBufferId(commandBuffer), binding.command,
+            "compute", detail.c_str());
+        [blit endEncoding];
+    }
+    Log("pixel history: a compute encoder's %u dispatch(es) had the texture bound", binding.dispatches);
 }
 
 int MatchPixelHistoryAttachment(MTLRenderPassDescriptor* descriptor)
@@ -296,6 +612,9 @@ int MatchPixelHistoryAttachment(MTLRenderPassDescriptor* descriptor)
         // own, which is the one to follow.
         id texture = request.texture != 0 ? LiveObject(request.texture) : nil;
         const bool anyDrawable = texture == nil || IsDrawableTexture(texture);
+        Log("pixel history: texture %llu is %s, so %s", (unsigned long long)request.texture,
+            texture == nil ? "gone from the frame" : (anyDrawable ? "a drawable" : "still live"),
+            anyDrawable ? "whichever drawable the frame renders into is followed" : "only that texture is followed");
         std::lock_guard<std::mutex> lock(g_mutex);
         g_anyDrawable = anyDrawable;
         g_resolved = true;
@@ -313,10 +632,23 @@ int MatchPixelHistoryAttachment(MTLRenderPassDescriptor* descriptor)
             continue;
         const bool same = request.texture != 0 && IdOf(t) == request.texture;
         if (!same && !(anyDrawable && IsDrawableTexture(t)))
+        {
+            Log("pixel history: attachment %lu is texture %llu%s, not the one followed", (unsigned long)i,
+                (unsigned long long)IdOf(t), IsDrawableTexture(t) ? " (a drawable)" : "");
             continue;
+        }
         const NSUInteger slice = t.textureType == MTLTextureType3D ? a.depthPlane : a.slice;
-        if (a.level != request.level || slice != request.slice)
+        // A layered pass renders to `renderTargetArrayLength` slices from that one, which draws
+        // pick between with `render_target_array_index`: the pixel is in the pass if it is in any
+        // of them.
+        const NSUInteger layers = std::max<NSUInteger>(1, descriptor.renderTargetArrayLength);
+        if (a.level != request.level || request.slice < slice || request.slice >= slice + layers)
+        {
+            Log("pixel history: attachment %lu is the texture followed at level %lu slice %lu (%lu layer(s)), not level %u slice %u",
+                (unsigned long)i, (unsigned long)a.level, (unsigned long)slice, (unsigned long)layers, request.level,
+                request.slice);
             continue;
+        }
         return (int)i;
     }
     return -1;
@@ -343,11 +675,12 @@ void PreparePixelHistory(OverdrawPass& pass, id commandBuffer, MTLRenderPassDesc
         h->note = "the pixel is outside the pass's render target";
         return;
     }
-    if (pass.layered)
-    {
-        h->note = "a layered pass is not followed yet";
-        return;
-    }
+    // A layered pass: the shadows are arrays of the same length, so a draw that picks a layer
+    // with `render_target_array_index` lands in the same one, and the pixel is read out of the
+    // layer the request named.
+    h->layers = (uint32_t)std::max<NSUInteger>(1, descriptor.renderTargetArrayLength);
+    const NSUInteger baseSlice = target.texture.textureType == MTLTextureType3D ? target.depthPlane : target.slice;
+    h->layer = request.slice >= baseSlice ? (uint32_t)(request.slice - baseSlice) : 0;
 
     Internal internal;
     id<MTLCommandBuffer> cb = (id<MTLCommandBuffer>)commandBuffer;
@@ -366,7 +699,7 @@ void PreparePixelHistory(OverdrawPass& pass, id commandBuffer, MTLRenderPassDesc
         out.format = a.texture.pixelFormat;
         out.loadAction = a.loadAction;
         out.sampleCount = (uint32_t)std::max<NSUInteger>(1, a.texture.sampleCount);
-        out.shadow = NewRenderTexture(device, out.format, width, height, out.sampleCount);
+        out.shadow = NewRenderTexture(device, out.format, width, height, out.sampleCount, h->layers);
         if (out.shadow == nil)
         {
             h->note = "no memory for copies of the pass's attachments";
@@ -382,13 +715,16 @@ void PreparePixelHistory(OverdrawPass& pass, id commandBuffer, MTLRenderPassDesc
                 blit = [cb blitCommandEncoder];
                 blit.label = @"gpu-inspector pixel history start";
             }
+            // Only the layer the pixel is in: the others are never read out of the shadow.
+            const NSUInteger base = a.texture.textureType == MTLTextureType3D ? a.depthPlane : a.slice;
+            const bool is3D = a.texture.textureType == MTLTextureType3D;
             [blit copyFromTexture:a.texture
-                      sourceSlice:a.slice
+                      sourceSlice:is3D ? 0 : base + h->layer
                       sourceLevel:a.level
-                     sourceOrigin:MTLOriginMake(h->x, h->y, a.texture.textureType == MTLTextureType3D ? a.depthPlane : 0)
+                     sourceOrigin:MTLOriginMake(h->x, h->y, is3D ? base + h->layer : 0)
                        sourceSize:MTLSizeMake(1, 1, 1)
                         toTexture:out.shadow
-                 destinationSlice:0
+                 destinationSlice:h->layer
                  destinationLevel:0
                 destinationOrigin:pixel];
         }
@@ -432,7 +768,7 @@ void PreparePixelHistory(OverdrawPass& pass, id commandBuffer, MTLRenderPassDesc
     auto resolveTarget = [&](HistoryPass::Attachment& out) {
         if (out.shadow == nil || out.sampleCount <= 1 || !h->note.empty())
             return;
-        out.resolve = NewRenderTexture(device, out.format, h->width, h->height);
+        out.resolve = NewRenderTexture(device, out.format, h->width, h->height, 1, h->layers);
         if (out.resolve == nil)
             h->note = "no memory for the resolve of the pass's multisampled attachments";
     };
@@ -449,6 +785,7 @@ void FollowPixel(OverdrawPass& pass)
     out.texture = h.texture;
     if (!h.note.empty())
     {
+        Log("pixel history: %s declined: %s", where.c_str(), h.note.c_str());
         out.notes.push_back(where + ": " + h.note);
         std::lock_guard<std::mutex> lock(g_mutex);
         g_pending.push_back(std::move(out));
@@ -505,7 +842,10 @@ void FollowPixel(OverdrawPass& pass)
             draws = kMaxDraws;
         }
         const uint32_t slotBytes = out.colorBytes + out.depthBytes;
-        out.staging = [device newBufferWithLength:std::max<NSUInteger>(1, (NSUInteger)(draws + 1) * slotBytes) options:MTLResourceStorageModeShared];
+        // One slot per event. Sized for the cap rather than for the draws just counted: an
+        // indirect command buffer's execution is one op here and one event per *command* there,
+        // and how many commands that is only comes out when the op runs.
+        out.staging = [device newBufferWithLength:std::max<NSUInteger>(1, (NSUInteger)(kMaxDraws + 1) * slotBytes) options:MTLResourceStorageModeShared];
         if (out.staging == nil)
         {
             out.notes.push_back(where + ": no staging memory for the pixel's values");
@@ -542,6 +882,10 @@ void FollowPixel(OverdrawPass& pass)
             }
             if (visibility != nil)
                 rp.visibilityResultBuffer = visibility;
+            // A layered pass: the same number of layers, so a draw's render_target_array_index
+            // means the same thing here as it did in the application's pass.
+            if (h.layers > 1)
+                rp.renderTargetArrayLength = h.layers;
             return rp;
         };
     // Nothing can be copied out of a multisampled texture, so a multisampled shadow is resolved
@@ -555,6 +899,8 @@ void FollowPixel(OverdrawPass& pass)
             if (!colorMs && !depthMs)
                 return;
             MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            if (h.layers > 1)
+                rp.renderTargetArrayLength = h.layers;
             if (colorMs)
             {
                 rp.colorAttachments[0].texture = target.shadow;
@@ -587,7 +933,7 @@ void FollowPixel(OverdrawPass& pass)
             if (out.colorBytes)
             {
                 [blit copyFromTexture:colorFrom
-                                 sourceSlice:0
+                                 sourceSlice:h.layer
                                  sourceLevel:0
                                 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
                                   sourceSize:MTLSizeMake(1, 1, 1)
@@ -599,7 +945,7 @@ void FollowPixel(OverdrawPass& pass)
             if (out.depthBytes)
             {
                 [blit copyFromTexture:depthFrom
-                                 sourceSlice:0
+                                 sourceSlice:h.layer
                                  sourceLevel:0
                                 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
                                   sourceSize:MTLSizeMake(1, 1, 1)
@@ -652,7 +998,9 @@ void FollowPixel(OverdrawPass& pass)
                     snapshot.Apply(op);
                     continue;
                 }
-                if (drawIndex >= draws)
+                // Against the cap, not against `draws`: an indirect command buffer's execution is
+                // one op there and one event per command here.
+                if (drawIndex >= kMaxDraws)
                     break;
                 PendingEvent e;
                 e.kind = "draw";
@@ -687,6 +1035,55 @@ void FollowPixel(OverdrawPass& pass)
                 if (replay.skipped)
                 {
                     noteIndirect = true;
+                }
+                else if (replay.indirect != nil && inside)
+                {
+                    // An indirect command buffer's commands, one at a time. Each is a draw with a
+                    // pipeline of its own, which the library never saw created and so cannot copy:
+                    // only the last count — what the command actually wrote at the pixel — can be
+                    // measured, and it comes from running the command under a visibility result.
+                    // This encoder issued nothing; each command gets one of its own.
+                    [encoder endEncoding];
+                    const NSRange range = replay.indirectRange;
+                    for (NSUInteger i = 0; i < range.length && drawIndex < kMaxDraws; i++)
+                    {
+                        id<MTLBuffer> counts = [device newBufferWithLength:kVariants * 8 options:MTLResourceStorageModeShared];
+                        if (counts == nil)
+                        {
+                            out.notes.push_back(where + ": no memory for the indirect commands' sample counts");
+                            break;
+                        }
+                        const int64_t indirectQuery = (int64_t)out.visibility.size();
+                        out.visibility.push_back(counts);
+                        id<MTLRenderCommandEncoder> one = [commandBuffer renderCommandEncoderWithDescriptor:descriptorFor(false, counts)];
+                        if (one == nil)
+                        {
+                            out.notes.push_back(where + ": could not open an encoder to follow the pixel");
+                            break;
+                        }
+                        one.label = @"gpu-inspector pixel history (indirect)";
+                        HistoryReplay again;
+                        for (const LoggedOp* state : snapshot.ops())
+                            state->op(one, again);
+                        [one setScissorRect:pixel];
+                        [one setVisibilityResultMode:MTLVisibilityResultModeCounting offset:kPassedVariant * 8];
+                        [one executeCommandsInBuffer:(id<MTLIndirectCommandBuffer>)replay.indirect
+                                           withRange:NSMakeRange(range.location + i, 1)];
+                        [one setVisibilityResultMode:MTLVisibilityResultModeDisabled offset:0];
+                        [one endEncoding];
+                        readback(drawIndex + 1);
+                        PendingEvent c = e;
+                        c.detail = "command " + std::to_string((unsigned long long)(range.location + i))
+                            + " of the indirect command buffer";
+                        c.query = indirectQuery;
+                        c.testsMeasured = 1u << kPassedVariant;
+                        c.slot = drawIndex + 1;
+                        out.events.push_back(std::move(c));
+                        drawIndex++;
+                    }
+                    if (drawIndex >= kMaxDraws && range.length > 0)
+                        out.notes.push_back(where + ": the indirect command buffer's later commands are not followed");
+                    continue;
                 }
                 else if (!inside)
                 {
@@ -740,9 +1137,14 @@ void FollowPixel(OverdrawPass& pass)
             }
         }
         if (noteIndirect)
-            out.notes.push_back(where + ": indirect command buffers' draws are not followed; the values after them may be missing their writes");
+            out.notes.push_back(where + ": an indirect command buffer executed over a range the GPU chooses is not followed; the values after it may be missing its writes");
         if (!copyError.empty())
             out.notes.push_back(where + ": some draws were not measured: " + copyError);
+        size_t ops = 0;
+        for (const OverdrawPass::Segment& segment : pass.segments)
+            ops += segment.ops.size();
+        Log("pixel history: %s followed at (%u, %u): %zu encoder(s), %zu recorded call(s), %u draw(s), %zu event(s)",
+            where.c_str(), h.x, h.y, pass.segments.size(), ops, draws, out.events.size());
         std::lock_guard<std::mutex> lock(g_mutex);
         g_pending.push_back(std::move(out));
     }
@@ -757,7 +1159,9 @@ void SendPixelHistory()
         request = g_request;
         pending.swap(g_pending);
         g_request = PixelHistoryRequest();
+        g_computeBindings.clear();
     }
+    g_active.store(false, std::memory_order_relaxed);
     if (!request.enabled)
         return;
 
@@ -807,6 +1211,7 @@ void SendPixelHistory()
     w.Key("events");
     w.BeginArray();
     size_t events = 0;
+    size_t drawEvents = 0;
     for (const PendingHistory& h : pending)
     {
         const uint8_t* staging = h.staging != nil ? static_cast<const uint8_t*>(h.staging.contents) : nullptr;
@@ -851,6 +1256,7 @@ void SendPixelHistory()
             w.String(read && h.depthBytes ? Hex(staging + e.slot * slotBytes + h.colorBytes, h.depthBytes) : "");
             w.EndObject();
             events++;
+            drawEvents += e.kind == "draw" ? 1 : 0;
         }
     }
     w.EndArray();
@@ -859,6 +1265,13 @@ void SendPixelHistory()
     if (pending.empty())
     {
         w.String("No render pass of the capture rendered to the texture at that level and slice.");
+    }
+    else if (drawEvents == 0)
+    {
+        // Every pass that renders to the texture only clears or loads it. Worth saying outright:
+        // without it the tab is a list of pass starts and nothing explains the absence of draws,
+        // which is what a Unity frame's clear-only passes looked like (TODO.md).
+        w.String("No pass that renders to the texture makes a draw, so only their starts are reported.");
     }
     for (const PendingHistory& h : pending)
     {

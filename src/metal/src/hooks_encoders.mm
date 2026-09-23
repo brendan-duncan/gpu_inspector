@@ -150,6 +150,9 @@ void E_endEncoding(id self, SEL _cmd)
         // The pass drawn again to count its overdraw, after the read-back of what it drew.
         if (!secondary)
             EndOverdrawPass(self);
+        // A compute encoder that had the followed texture bound: its pixel, now that the encoder
+        // is closed and a blit encoder can be made (pixel_history.mm).
+        EndPixelHistoryEncoder(self);
         ForgetEncoder(self);
     }
 }
@@ -1626,9 +1629,19 @@ void R_useHeapsStages(id self, SEL _cmd, const id* heaps, NSUInteger count, NSUI
 }
 
 /**
- * An indirect command buffer's draws cannot be measured: the pipeline each command uses is in the
- * buffer, where a counting copy cannot replace it. They are reported as not counted.
+ * An indirect command buffer executed over a range the CPU knows. The buffer and the range are
+ * kept, so a measurement that can use them does: the pixel history runs the commands one at a
+ * time. The rest report them as not counted — the pipeline each command uses is in the buffer,
+ * where a counting copy cannot replace it.
  */
+void LogIndirectCommands(id self, id icb, NSRange range)
+{
+    LogOverdrawOp(self, OpKey::DrawCall(), [b = Strong(icb), range](id<MTLRenderCommandEncoder> e, OverdrawReplay& r) {
+        r.ExecuteIndirect(e, b.get(), range);
+    });
+}
+
+/** The indirect form, whose range comes from a buffer the CPU cannot read: nothing to run. */
 void LogIndirectCommands(id self)
 {
     LogOverdrawOp(self, OpKey::DrawCall(), [](id<MTLRenderCommandEncoder>, OverdrawReplay& r) { r.Skip(); });
@@ -1647,7 +1660,7 @@ void R_executeCommandsInBuffer(id self, SEL _cmd, id icb, NSRange range)
         }
     }
     if (Measuring(reentry))
-        LogIndirectCommands(self);
+        LogIndirectCommands(self, icb, range);
     ORIG(void (*)(id, SEL, id, NSRange))
     (self, _cmd, icb, range);
 }
@@ -1833,6 +1846,8 @@ void C_setTexture(id self, SEL _cmd, id texture, NSUInteger index)
             Args().ref("texture", texture, "MTLTexture").u("index", index).str(),
             {QueueTextureCapture(self, texture)});
     }
+    if (reentry.outermost())
+        NotePixelHistoryComputeTexture(self, texture, index);
     ORIG(void (*)(id, SEL, id, NSUInteger))
     (self, _cmd, texture, index);
 }
@@ -1849,6 +1864,11 @@ void C_setTextures(id self, SEL _cmd, const id* textures, NSRange range)
         RecordCommandWithTextures("setTextures:withRange:", self,
             Args().refs("textures", textures, range.length, "MTLTexture").range("range", range).str(),
             std::move(data));
+    }
+    if (reentry.outermost())
+    {
+        for (NSUInteger i = 0; i < range.length; i++)
+            NotePixelHistoryComputeTexture(self, textures == nullptr ? nil : textures[i], range.location + i);
     }
     ORIG(void (*)(id, SEL, const id*, NSRange))
     (self, _cmd, textures, range);
@@ -1945,6 +1965,8 @@ void C_dispatchThreadgroups(id self, SEL _cmd, MTLSize groups, MTLSize perGroup)
                 Args().size("threadgroupsPerGrid", groups).size("threadsPerThreadgroup", perGroup).str());
         }
     }
+    if (reentry.outermost())
+        NotePixelHistoryDispatch(self);
     ORIG(void (*)(id, SEL, MTLSize, MTLSize))
     (self, _cmd, groups, perGroup);
 }
@@ -1961,6 +1983,8 @@ void C_dispatchThreads(id self, SEL _cmd, MTLSize threads, MTLSize perGroup)
                 Args().size("threadsPerGrid", threads).size("threadsPerThreadgroup", perGroup).str());
         }
     }
+    if (reentry.outermost())
+        NotePixelHistoryDispatch(self);
     ORIG(void (*)(id, SEL, MTLSize, MTLSize))
     (self, _cmd, threads, perGroup);
 }
@@ -1980,6 +2004,8 @@ void C_dispatchThreadgroupsIndirect(id self, SEL _cmd, id indirect, NSUInteger o
                 {QueueBufferCapture(self, indirect, offset, 12)});
         }
     }
+    if (reentry.outermost())
+        NotePixelHistoryDispatch(self);
     ORIG(void (*)(id, SEL, id, NSUInteger, MTLSize))
     (self, _cmd, indirect, offset, perGroup);
 }
@@ -2217,6 +2243,17 @@ void B_copyTextureToTexture(id self, SEL _cmd, id source, NSUInteger sourceSlice
     (
         self, _cmd, source, sourceSlice, sourceLevel, sourceOrigin, sourceSize, destination,
         destinationSlice, destinationLevel, destinationOrigin);
+    if (reentry.outermost())
+    {
+        BlitWrite write;
+        write.texture = destination;
+        write.slice = destinationSlice;
+        write.level = destinationLevel;
+        write.origin = destinationOrigin;
+        write.size = sourceSize;
+        write.detail = "copied from a texture";
+        NotePixelHistoryBlit(self, write);
+    }
 }
 
 std::string TextureToBufferArgs(id source, NSUInteger sourceSlice, NSUInteger sourceLevel, MTLOrigin sourceOrigin,
@@ -2296,6 +2333,17 @@ void B_copyBufferToTexture(id self, SEL _cmd, id source, NSUInteger offset, NSUI
     (
         self, _cmd, source, offset, bytesPerRow, bytesPerImage, sourceSize, destination, destinationSlice,
         destinationLevel, destinationOrigin);
+    if (reentry.outermost())
+    {
+        BlitWrite write;
+        write.texture = destination;
+        write.slice = destinationSlice;
+        write.level = destinationLevel;
+        write.origin = destinationOrigin;
+        write.size = sourceSize;
+        write.detail = "copied from a buffer";
+        NotePixelHistoryBlit(self, write);
+    }
 }
 
 void B_copyBufferToTextureOptions(id self, SEL _cmd, id source, NSUInteger offset, NSUInteger bytesPerRow,
@@ -2316,6 +2364,17 @@ void B_copyBufferToTextureOptions(id self, SEL _cmd, id source, NSUInteger offse
         NSUInteger))
     (self, _cmd, source, offset, bytesPerRow, bytesPerImage, sourceSize, destination,
         destinationSlice, destinationLevel, destinationOrigin, options);
+    if (reentry.outermost())
+    {
+        BlitWrite write;
+        write.texture = destination;
+        write.slice = destinationSlice;
+        write.level = destinationLevel;
+        write.origin = destinationOrigin;
+        write.size = sourceSize;
+        write.detail = "copied from a buffer";
+        NotePixelHistoryBlit(self, write);
+    }
 }
 
 void B_copyBufferToBuffer(id self, SEL _cmd, id source, NSUInteger sourceOffset, id destination,
@@ -2342,6 +2401,16 @@ void B_copyTextureToTextureWhole(id self, SEL _cmd, id source, id destination)
     }
     ORIG(void (*)(id, SEL, id, id))
     (self, _cmd, source, destination);
+    if (reentry.outermost() && destination != nil)
+    {
+        BlitWrite write;
+        write.texture = destination;
+        write.sliceCount = [(id<MTLTexture>)destination arrayLength];
+        write.levelCount = [(id<MTLTexture>)destination mipmapLevelCount];
+        write.wholeLevel = true;
+        write.detail = "copied from a texture";
+        NotePixelHistoryBlit(self, write);
+    }
 }
 
 void B_copyTextureSlices(id self, SEL _cmd, id source, NSUInteger sourceSlice, NSUInteger sourceLevel,
@@ -2360,6 +2429,18 @@ void B_copyTextureSlices(id self, SEL _cmd, id source, NSUInteger sourceSlice, N
     (
         self, _cmd, source, sourceSlice, sourceLevel, destination, destinationSlice, destinationLevel,
         sliceCount, levelCount);
+    if (reentry.outermost())
+    {
+        BlitWrite write;
+        write.texture = destination;
+        write.slice = destinationSlice;
+        write.sliceCount = sliceCount;
+        write.level = destinationLevel;
+        write.levelCount = levelCount;
+        write.wholeLevel = true;
+        write.detail = "copied from a texture";
+        NotePixelHistoryBlit(self, write);
+    }
 }
 
 void B_generateMipmaps(id self, SEL _cmd, id texture)
@@ -2371,6 +2452,19 @@ void B_generateMipmaps(id self, SEL _cmd, id texture)
     }
     ORIG(void (*)(id, SEL, id))
     (self, _cmd, texture);
+    if (reentry.outermost() && texture != nil && [(id<MTLTexture>)texture mipmapLevelCount] > 1)
+    {
+        // Every level but the top, of every slice.
+        BlitWrite write;
+        write.texture = texture;
+        write.sliceCount = [(id<MTLTexture>)texture arrayLength];
+        write.level = 1;
+        write.levelCount = [(id<MTLTexture>)texture mipmapLevelCount] - 1;
+        write.wholeLevel = true;
+        write.kind = "blit";
+        write.detail = "regenerated by generateMipmapsForTexture:";
+        NotePixelHistoryBlit(self, write);
+    }
 }
 
 void B_fillBuffer(id self, SEL _cmd, id buffer, NSRange range, uint8_t value)

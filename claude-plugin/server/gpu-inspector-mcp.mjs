@@ -33386,7 +33386,10 @@ function drawOutcome(e) {
   if (depthFailed && stencilFailed) return "depth-stencil";
   if (depthFailed) return "depth";
   if (stencilFailed) return "stencil";
-  if (measured(MEASURED_ALL)) return e.passed ? "wrote" : "tests";
+  if (measured(MEASURED_ALL)) {
+    if (e.passed) return "wrote";
+    return e.testsMeasured === MEASURED_ALL ? "none" : "tests";
+  }
   return "covers";
 }
 var OUTCOME_TEXT = {
@@ -33400,7 +33403,8 @@ var OUTCOME_TEXT = {
   "depth-stencil": "failed the depth and stencil tests",
   tests: "failed the depth and stencil tests together",
   wrote: "wrote the pixel",
-  covers: "covers the pixel"
+  covers: "covers the pixel",
+  none: "wrote nothing at the pixel"
 };
 var KINDS2 = ["load", "clear", "draw", "copy", "blit", "resolve", "compute"];
 function touchesPixel(e) {
@@ -33415,7 +33419,8 @@ function eventSummary(e) {
   const outcome = drawOutcome(e);
   const samples = outcome === "wrote" ? ` (${e.passed} sample${e.passed === 1 ? "" : "s"} passed)` : "";
   const primitive = outcome === "wrote" && e.primitive >= 0 ? `, primitive ${e.primitive}` : "";
-  return `${e.method}: ${OUTCOME_TEXT[outcome]}${samples}${primitive}`;
+  const which = e.detail ? ` ${e.detail}` : "";
+  return `${e.method}${which}: ${OUTCOME_TEXT[outcome]}${samples}${primitive}`;
 }
 function texelInfo(format, depth) {
   return { format, aspect: depth ? "depth" : "color", width: 1, height: 1 };

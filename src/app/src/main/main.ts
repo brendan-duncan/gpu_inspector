@@ -610,10 +610,14 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
 function spawnMetalTarget(s: Session, library: string, exe: string): LaunchResult {
   const config = s.config;
   if (!config) return { ok: false, error: "session has no launch configuration" };
+  // Testing aid: with --debug-log the library also writes its log to a file (a Unity player
+  // redirects its stderr away from the pipe the session reads).
+  const debugLog = cliOption("debug-log");
   const env: NodeJS.ProcessEnv = {
     ...process.env,
     ...parseEnvLines(config.env ?? ""),
     ...captureEnvironment(library, s.port, config.log ?? true, config.validation, config.stacktraces),
+    ...(debugLog ? { MTLINSP_LOG_FILE: `${debugLog}.metal.log` } : {}),
   };
   // A plugin's library goes in the same way, inserted beside the Metal one.
   const pluginNotes = applyPreloads(env, launchPlugins(s), "DYLD_INSERT_LIBRARIES");

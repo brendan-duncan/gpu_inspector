@@ -58,6 +58,11 @@ struct OverdrawPass
     /** The pixel followed through the pass, when the capture follows one of its render target's. */
     std::shared_ptr<HistoryPass> history;
     /**
+     * The pass resolves into the texture the capture follows: the pixel is read out of this
+     * texture once the pass has stored, as one "resolve" event. Retained.
+     */
+    id<MTLTexture> historyResolve = nil;
+    /**
      * The recorded calls, per encoder: one for a render encoder, one per sub-encoder, in creation
      * order, for a parallel render encoder. Each is drawn in an encoder of its own, since each
      * started from Metal's default state.
@@ -74,6 +79,7 @@ struct OverdrawPass
         [commandBuffer release];
         [depthStart release];
         [stencilStart release];
+        [historyResolve release];
     }
 };
 
@@ -81,9 +87,12 @@ struct OverdrawPass
  * A private render target texture of one level; +1, the caller releases it. `sampleCount` above 1
  * makes it multisampled, which a copy of a multisampled pass's attachment has to be: the pipelines
  * drawn into it are the application's, and a pipeline's sample count has to match its attachment.
+ * `layers` above 1 makes it an array, which a copy of a *layered* pass's attachment has to be: its
+ * draws pick a layer with `render_target_array_index`, and one without those layers would have
+ * nowhere to put them.
  */
 id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height,
-    uint32_t sampleCount = 1);
+    uint32_t sampleCount = 1, uint32_t layers = 1);
 
 /** A function of Metal Shading Language compiled once per device; nil when it does not compile. Not retained for the caller. */
 id<MTLFunction> LibraryFunction(id<MTLDevice> device, const char* name, NSString* source);
@@ -152,6 +161,13 @@ id DepthStencilCopy(id<MTLDevice> device, id state, DepthStencilVariant variant)
 /** The color attachment of a pass that renders to the pixel the capture follows, or -1. */
 int MatchPixelHistoryAttachment(MTLRenderPassDescriptor* descriptor);
 
+/**
+ * The attachment of a pass that *resolves* into the texture the capture follows, or -1. A resolve
+ * writes the texture at the pass's store, from outside any draw, so the history reports it as one
+ * "resolve" event rather than following the pass's draws.
+ */
+int MatchPixelHistoryResolve(MTLRenderPassDescriptor* descriptor);
+
 // ---------------------------------------------------------------------------------------------
 // Draw overlays (draw_overlay.mm), the third consumer of this machinery.
 
@@ -169,7 +185,13 @@ void SendDrawOverlay();
 /** Before the pass begins: copies of its attachments at the pixel, for the history to start from. */
 void PreparePixelHistory(OverdrawPass& pass, id commandBuffer, MTLRenderPassDescriptor* descriptor, int attachment);
 
+/** Before the pass begins: the resolve target the history reads the pixel out of when it ends. */
+void PreparePixelHistoryResolve(OverdrawPass& pass, MTLRenderPassDescriptor* descriptor, int attachment);
+
 /** After the application's endEncoding: the pass drawn again one draw at a time, measured at the pixel. */
 void FollowPixel(OverdrawPass& pass);
+
+/** After the application's endEncoding: the pixel read out of the pass's resolve target. */
+void FollowPixelResolve(OverdrawPass& pass);
 
 }  // namespace mtlinsp

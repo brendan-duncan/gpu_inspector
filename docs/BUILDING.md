@@ -181,6 +181,9 @@ differently or misbehave on purpose.
 | `--hitch-every <n>` | Stalls 100 ms inside every nth frame, in its own code, for **Capture on hitch** |
 | `--occluded` | Draws the triangles twice, the second set behind the first with a depth test, so overdraw has fragments to reject |
 | `--half-scissor` | A scissor that keeps the left half of the target, for the **Viewport / Scissor** overlay |
+| `--layered` | One pass into a two-layer array target, a draw per layer through `[[render_target_array_index]]`, for a pixel history of a layered pass |
+| `--indirect` | The triangle drawn through an `MTLIndirectCommandBuffer` of two commands instead of by calls on the encoder |
+| `--texture-writes` | Writes the resolve target from a compute kernel and a blit as well as from a pass, for the pixel history's "resolve", "compute" and "copy" events |
 
 `dxinsp_triangle`:
 

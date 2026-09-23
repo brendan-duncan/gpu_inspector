@@ -1245,23 +1245,95 @@ backend does. Ordered by value per effort.
       into a single-sample copy first (color the way the hardware would, depth sample 0). The
       sample now reports "wrote the pixel (12 samples passed)" — three instances over four
       samples. `metal-pixel-history` in `tools/ui_tests.py`.
-- [ ] Metal pixel history on a Unity player: it runs, follows the drawable and declines no pass,
-      but attributes no *draw* to the pixel — three passes render to the drawable in that frame
-      and all three report only their pass start. Whether those passes genuinely have no draw
-      covering the pixel or the draws are not being followed is unsettled; the library's own log
-      is the way to tell (`MTLINSP_LOG=1`, launched by hand), which this did not get to.
-      `unity-pixel-history` keeps it honest: it asserts events arrive and no pass is declined,
-      not that a draw wrote the pixel.
-- [ ] Metal pixel history, the rest: **layered** passes, indirect command buffers' draws, and
-      writes outside render passes (blits, compute). The renderer is already waiting for the last
-      of these — `PixelEventKind` in `renderer/pixel_history.ts` has `"copy"`, `"blit"`,
-      `"resolve"` and `"compute"`, and `passLabelOf` renders an event with no pass index as
-      "Outside a render pass" — so that one is library-side only. A blit encoder's commands can be
-      bracketed per command (a 1×1 copy into the shadow before and after, on the application's own
-      encoder); a compute encoder cannot, and either needs the bound state saved and restored
-      around a copy kernel or has to settle for per-encoder granularity.
-      Layered passes want array shadows and a way to exercise them: neither the sample nor the
-      Unity frame has one, so writing it now would repeat the "Untested on a Mac" mistake.
+- [x] Metal pixel history on a Unity player (2026-09-23): a real frame's draws are attributed now —
+      18 events over two passes of one `fps_microgame` frame, four of them "wrote the pixel".
+
+      The library was right all along. The three passes that reported only their start make **no
+      recorded calls at all** — not a pipeline bind, not a viewport — so they are Unity's
+      clear-only passes, one at the head of each command buffer, and "pass 0 begins (Clear)" was
+      the honest and complete answer for them. What was wrong was the *pixel being followed*.
+
+      Two things had to exist before that could be said rather than guessed:
+      - **`MTLINSP_LOG_FILE`** (`swizzle.mm`), the Metal counterpart of `VKINSP_LOG_FILE` and
+        `DXINSP_LOG_FILE`. A Unity player's stderr goes nowhere anyone can read, so `MTLINSP_LOG=1`
+        alone produced no lines at all — the session's **Log** tab was empty for the whole run.
+        `--debug-log=<file>` now sets it for a Metal launch too, beside the layer's and the D3D12
+        library's.
+      - **Log lines the question needs**: which texture each pass's attachments are and why one is
+        declined, and per followed pass "1 encoder(s), 0 recorded call(s), 0 draw(s), 1 event(s)",
+        which is the line that settled it.
+
+      What was actually wrong: `--debug-view=pixel-history` fell back to "the center of the first
+      color render target", and a real frame's first render target is one of those clear-only
+      passes'. It picks the color target of the pass with the **most draws** now
+      (`debugHistoryPixel` in `capture_panel.ts`) — and the two callers that had each copied the
+      old rule, `showView` and `debugCaptureHistory`, share it, which is a second thing this found:
+      they disagreed, so the tab opened on one texture while the library was asked to follow
+      another.
+
+      A history where no pass makes a draw says so rather than leaving a list of pass starts with
+      nothing to explain it. `unity-pixel-history` now asserts a draw wrote the pixel.
+- [ ] A pixel history of a **ping-ponged** render target, which is what `unity-pixel-history` runs
+      into half the time: `fps_microgame` alternates its camera color target between two textures
+      of its own, so the frame captured to follow the pixel renders to the one the *earlier*
+      capture showed only every other frame. The other frames report "No render pass of the capture
+      rendered to the texture at that level and slice", which is true and useless. The case accepts
+      both outcomes for now and fails on anything else, so it still catches a regression in the
+      path — but only when the parity is right.
+
+      Ruled out on the way: those two textures are not drawables the library failed to register.
+      Logging the texture of every drawable presented says the pool is three textures, all three in
+      `g_drawableOfTexture`, and neither of the ping-ponged pair is among them — so `anyDrawable`,
+      which exists for exactly this shape of problem, does not apply and should not be stretched
+      to.
+
+      Two candidate fixes, neither obviously right:
+      - **Anchor on the pass, not the texture.** A draw overlay already names its draw by pass and
+        ordinal rather than by command index, because the next frame numbers its commands afresh
+        (`DrawOverlayRequest`). The pixel history could resolve its texture the same way: take the
+        color attachment of the pass the request names, then follow *that* texture through the rest
+        of the frame, so all the passes writing it are still reported. The weakness is the same one
+        the overlay has — `passIndex` is per command buffer, so "pass 3" names one pass per command
+        buffer, not one per frame.
+      - **Follow two frames instead of one.** Covers any ping-pong of any period 2, costs the
+        application a second measured frame, and needs the tab to say which frame each event is
+        from (the events already carry one).
+- [x] Metal pixel history, the rest (2026-09-23): **layered** passes, indirect command buffers'
+      draws, and writes from outside a render pass.
+      - **Layered passes.** The shadows take the pass's `renderTargetArrayLength` as well as its
+        sample count, so a draw that picks a layer with `render_target_array_index` lands in the
+        same one, and the pixel is read from the layer the request named rather than from slice 0.
+        `mtlinsp_triangle --layered` exercises it: one pass, a two-layer array target, a draw per
+        layer in different colors, layer 1 drawn *first*. Following layer 0's center reports both
+        draws — a visibility result counts either's samples whichever layer they went to — and the
+        pixel ends up green. Red would mean the shadows were not arrays and both draws landed in
+        the same layer, which is why `metal-pixel-layered` checks the value and not just the
+        events; the tab's debug state carries the last event's value for it.
+      - **Indirect command buffers.** `executeCommandsInBuffer:withRange:` is executed one command
+        at a time, each in an encoder of its own under a visibility result. Each command carries
+        its own pipeline, which the library never saw created and so cannot copy, so only the last
+        of the six counts is measurable: the event says whether the command wrote the pixel, not
+        where its fragments stopped. That needed a `DrawOutcome` of its own — with only the final
+        count measured, zero means "wrote nothing at the pixel", not "failed the depth and stencil
+        tests", which is what the existing reading of that count would have claimed. The form whose
+        range comes from a buffer the CPU cannot read is still skipped, with a note.
+        `mtlinsp_triangle --indirect`, `metal-pixel-indirect`.
+      - **Writes from outside a render pass.** A blit command per command, read back on the
+        application's own blit encoder right behind the write (a blit encoder cannot be interrupted
+        by one of the library's, and a texture-to-buffer copy is all this needs); a compute encoder
+        per *encoder*, read once the application closes it, because a compute encoder cannot be
+        interrupted to read a texture at all; and a pass's multisample **resolve** into the followed
+        texture, which writes it at the pass's store and so matches no attachment —
+        `MatchPixelHistoryResolve` finds those. The renderer already had the kinds and the
+        "Outside a render pass" label. `mtlinsp_triangle --texture-writes` writes the resolve
+        target all three ways in one frame and then draws over it twice, and
+        `metal-pixel-writes` asserts the history holds the resolve, the dispatch, the copy and the
+        draws, in that order.
+
+      Not covered, and honest about it: a texture written through an argument buffer or made
+      resident with `useResource:` rather than bound with `setTexture:` is not noticed on a compute
+      encoder, and a layered *multisampled* pass's resolve is written but untested — nothing here
+      has one.
 - [x] Ray tracing (`src/metal/src/raytracing.h`, `renderer/metal/raytracing.ts`), the third
       backend's. The smallest of the three, because Metal names things with objects where the other
       two name them with numbers: an `MTLAccelerationStructure` is a real object with a `dealloc`

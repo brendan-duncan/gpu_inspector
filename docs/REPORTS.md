@@ -404,10 +404,13 @@ more than one fragment on the pixel. The first 16 fragments of a draw are measur
 - **Metal** — another frame is captured while following the pixel, so the application must still
   be running.
 
-Current limits: a draw is one event, so it names the primitive that won the pixel but not every
-fragment of the draw with its own value; only the first layer of a layered pass is followed; and a
-multisampled depth target cannot be read (a multisampled color target is, through the resolve of
-the pixel's samples). The full list is in [Capture replay](REPLAY.md#pixel-history).
+Current limits of the Vulkan replay: a draw is one event, so it names the primitive that won the
+pixel but not every fragment of the draw with its own value; only the first layer of a layered pass
+is followed; and a multisampled depth target cannot be read (a multisampled color target is,
+through the resolve of the pixel's samples). The full list is in
+[Capture replay](REPLAY.md#pixel-history). What a Metal capture reports instead — layered passes,
+indirect command buffers, and writes from outside a render pass — is in
+[Metal](METAL.md#measuring-a-draw-inside-the-application).
 
 A draw's row has **Debug**, which opens the [shader debugger](#shader-debugger) on that draw's
 fragment shader at the pixel.

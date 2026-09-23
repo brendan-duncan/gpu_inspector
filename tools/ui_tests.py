@@ -762,6 +762,72 @@ def metal_pixel_history(state, log):
         expect(any("wrote the pixel" in e for e in touched), f"no draw wrote the pixel: {touched}")
 
 
+def metal_pixel_writes(state, log):
+    # mtlinsp_triangle --texture-writes: the resolve target is written by the triangle pass's
+    # multisample resolve, by a compute kernel, by a blit, and by two draws of a pass of its own —
+    # and the pass with the most draws, which --debug-view=pixel-history follows a pixel of, is
+    # that last one. So the history has to hold all four kinds (src/metal/src/pixel_history.mm).
+    caps = session(state).get("captures") or []
+    h = next((c.get("textureTab", {}).get("history") or {} for c in reversed(caps)
+              if (c.get("textureTab") or {}).get("history", {}).get("events")), {})
+    touched = h.get("touched") or []
+    text = " | ".join(touched)
+    return check_connected(state, log) + \
+        expect(len(caps) >= 2, f"{len(caps)} captures: the second, following the pixel, was not taken") + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {text}") + \
+        expect(any("wrote the pixel" in e for e in touched), f"no draw wrote the pixel: {text}") + \
+        expect("resolved from the pass's multisampled attachment" in text,
+               f"the pass's resolve into the texture is not in the history: {text}") + \
+        expect("dispatched with the texture bound to be written" in text,
+               f"the compute pass that wrote the texture is not in the history: {text}") + \
+        expect("copied from a texture" in text,
+               f"the blit that wrote the texture is not in the history: {text}")
+
+
+def metal_pixel_indirect(state, log):
+    # mtlinsp_triangle --indirect: the triangle pass's only draw is an indirect command buffer's
+    # two commands. Each carries its own pipeline, which the library never saw created, so the
+    # copies the other counts need cannot be made — the history runs each command on its own under
+    # a visibility result and reports what it wrote, and nothing more
+    # (src/metal/src/pixel_history.mm, HistoryReplay::ExecuteIndirect).
+    caps = session(state).get("captures") or []
+    h = next((c.get("textureTab", {}).get("history") or {} for c in reversed(caps)
+              if (c.get("textureTab") or {}).get("history", {}).get("events")), {})
+    touched = h.get("touched") or []
+    notes = h.get("notes") or []
+    commands = [e for e in touched if "of the indirect command buffer" in e]
+    return check_connected(state, log) + \
+        expect(len(caps) >= 2, f"{len(caps)} captures: the second, following the pixel, was not taken") + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(not any("not followed" in n for n in notes), f"the indirect commands were declined: {notes}") + \
+        expect(len(commands) == 2, f"{len(commands)} of the 2 indirect commands are in the history: {touched}") + \
+        expect(all("wrote the pixel" in e for e in commands),
+               f"an indirect command that covers the pixel did not write it: {commands}")
+
+
+def metal_pixel_layered(state, log):
+    # mtlinsp_triangle --layered: one pass into a two-layer array target, a draw per layer, layer 1
+    # drawn first. Following the center of layer 0 has to report both draws — a visibility result
+    # counts the samples of either, whichever layer they went to — and leave the pixel green, layer
+    # 0's color. Red would mean the shadows the history draws into were not arrays and both draws
+    # landed in the same layer (src/metal/src/pixel_history.mm).
+    caps = session(state).get("captures") or []
+    h = next((c.get("textureTab", {}).get("history") or {} for c in reversed(caps)
+              if (c.get("textureTab") or {}).get("history", {}).get("events")), {})
+    touched = h.get("touched") or []
+    notes = h.get("notes") or []
+    value = h.get("value") or []
+    green = len(value) >= 3 and value[1] > 0.5 and value[0] < 0.5
+    return check_connected(state, log) + \
+        expect(len(caps) >= 2, f"{len(caps)} captures: the second, following the pixel, was not taken") + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(not any("layered" in n for n in notes), f"the layered pass was declined: {notes}") + \
+        expect(sum("wrote the pixel" in e for e in touched) == 2,
+               f"the layered pass's two draws are not both in the history: {touched}") + \
+        expect(green, f"the pixel ended up {value}, not layer 0's green: the draws went into the wrong layer")
+
+
 def unity_overdraw(state, log):
     c = capture(state)
     t = c.get("textureTab") or {}
@@ -776,15 +842,30 @@ def unity_overdraw(state, log):
 
 
 def unity_pixel_history(state, log):
+    # A real frame's pixel, followed while the next one is captured. The pixel is the center of the
+    # color target of the pass with the most draws (--debug-view=pixel-history), not the first
+    # render target: a Unity frame opens each of its command buffers with a clear-only pass, and
+    # following a pixel of one of those can only ever report pass starts — which is all this case
+    # used to check, until MTLINSP_LOG_FILE let the library's own log say the passes had no draws.
+    #
+    # Unity ping-pongs that target between two textures of its own, so the frame captured to follow
+    # the pixel renders to the one the first capture showed only half the time. The other half is
+    # the library correctly saying no pass rendered to it (TODO.md). Both are accepted; what is not
+    # is an empty history with nothing to explain it, or a followed pass with no draw in it.
     caps = session(state).get("captures") or []
-    h = next((c.get("textureTab", {}).get("history") or {} for c in reversed(caps)
-              if (c.get("textureTab") or {}).get("history", {}).get("events")), {})
+    h = ((caps[-1].get("textureTab") or {}).get("history") or {}) if caps else {}
     notes = h.get("notes") or []
+    touched = h.get("touched") or []
+    elsewhere = any("No render pass of the capture rendered" in n for n in notes)
     return check_connected(state, log) + \
         expect(len(caps) >= 2, f"{len(caps)} captures: the second, following the pixel, was not taken") + \
         expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
-        expect((h.get("events") or 0) > 0, f"the pixel history of a real frame is empty: {h}") + \
-        expect(not any("not followed yet" in n for n in notes), f"a pass of a real frame was declined: {notes}")
+        expect(not any("not followed yet" in n for n in notes), f"a pass of a real frame was declined: {notes}") + \
+        expect(elsewhere or (h.get("events") or 0) > 0,
+               f"the pixel history of a real frame is empty and says nothing about why: {h}") + \
+        expect(elsewhere or any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}") + \
+        expect(elsewhere or any("wrote the pixel" in e for e in touched),
+               f"no draw of a real frame wrote the pixel: {touched} {notes}")
 
 
 def unity_cases(player):
@@ -1200,6 +1281,18 @@ def metal_cases(triangle):
         # capture: the library follows a pixel while it captures, so the first only names one.
         Case("metal-pixel-history", launch + ["--debug-capture", "--debug-view=pixel-history", "--debug-settle=10000"],
              metal_pixel_history, delay_ms=26000),
+        # A layered pass: the draws pick a layer, so the copies drawn into have to be arrays.
+        Case("metal-pixel-layered", launch + ["--args=--layered", "--debug-capture",
+                                              "--debug-view=pixel-history", "--debug-settle=10000"],
+             metal_pixel_layered, delay_ms=26000),
+        # The pass's draws coming out of an indirect command buffer instead of the encoder.
+        Case("metal-pixel-indirect", launch + ["--args=--indirect", "--debug-capture",
+                                               "--debug-view=pixel-history", "--debug-settle=10000"],
+             metal_pixel_indirect, delay_ms=26000),
+        # The same, on the mode that writes the followed texture from outside a render pass too.
+        Case("metal-pixel-writes", launch + ["--args=--texture-writes", "--debug-capture",
+                                             "--debug-view=pixel-history", "--debug-settle=10000"],
+             metal_pixel_writes, delay_ms=26000),
         # Memory Use on the MTLDevice. No --debug-capture: the checks read the live object graph,
         # and taking a capture would leave the Capture tab in front so the screenshot would not
         # show the rows this case is about.

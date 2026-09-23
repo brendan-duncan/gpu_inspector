@@ -2052,8 +2052,14 @@ void OnDrawableAcquired(id drawable, id texture)
     {
         info.drawableID = (uint64_t)[(id<MTLDrawable>)drawable drawableID];
     }
+    const uint64_t textureId = IdOf(texture);
     std::lock_guard<std::mutex> lock(g_mutex);
-    g_drawableOfTexture[(__bridge const void*)texture] = info;
+    const bool first = g_drawableOfTexture.insert_or_assign((__bridge const void*)texture, info).second;
+    // A layer cycles a small pool of drawables, so this is a handful of lines over a run. Worth
+    // one each: a pixel history of a drawable follows whichever one the next frame renders into,
+    // and that only works for the textures this list holds.
+    if (first)
+        Log("drawable texture %llu noted", (unsigned long long)textureId);
 }
 
 void OnRenderTarget(id commandBuffer, id texture)
