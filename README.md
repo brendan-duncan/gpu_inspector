@@ -13,6 +13,7 @@ Supports **Vulkan**, **Direct3D 12**, **Direct3D 11**, **Metal**, **OpenGL ES**,
 * **Shader editing**: change a shader and see the running application use it.
 * **Shader debugger**: step through a vertex, pixel or compute shader line by line.
 * **Profiling**: GPU time for each pass, and what bounds the frame.
+* **In the application's own window**: a frame-time HUD, a capture hotkey, and a live pause that freezes it on a frame.
 * **GPU bottlenecks**: overdraw, triangle size and wasted work, with likely causes.
 * **Pixel history**: every draw that touched a pixel, and what happened to it.
 * **Mesh view**: a draw's vertices before and after its vertex shader, in 3D and as a table.
@@ -35,7 +36,7 @@ The user documentation is in [docs](docs/README.md):
 | [Inspect](docs/INSPECT.md) · [Capture](docs/CAPTURE.md) · [Reports](docs/REPORTS.md) | using the inspector |
 | [Finding GPU bottlenecks](docs/PROFILING.md) | working out what limits a frame |
 | [Claude Code plugin](docs/MCP.md) | asking Claude about a capture |
-| [Comparison](COMPARISON.md) | GPU Inspector's features next to RenderDoc, PIX and Nsight Graphics |
+| [Comparison](docs/COMPARISON.md) | GPU Inspector's features next to RenderDoc, PIX and Nsight Graphics |
 | [Troubleshooting](docs/TROUBLESHOOTING.md) · [Building from source](docs/BUILDING.md) | when something does not work, and building it yourself |
 
 ---

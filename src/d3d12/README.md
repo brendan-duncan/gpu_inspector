@@ -312,8 +312,9 @@ the boundaries the UI's pass model needs, and says so in the stream:
   that pools its lists resets one as soon as it has run, frames before it records into it again,
   so that `Reset` is long past when a capture is armed. The recorder is made at the first call seen,
   with a `Reset` that names no allocator and carries `adopted: true`. What state such a list is in
-  is unknown (it may be inside a pass), so it is treated like a suspended pass throughout: recorded,
-  with its copies after the submission, and no timings or target read-back.
+  is unknown (it may be inside a pass), so it takes even less than a suspended pass does: recorded,
+  with its copies after the submission, and no queries at all -- a timestamp inside a pass region is
+  fine, but this list may be anywhere, and the pass it is in may have begun before the capture.
 * **Contents are taken in the frame of recording before the capture as well** (`TakesContents`). An
   engine records a frame's lists during the frame before, and a list recorded then and run in the
   captured frame would otherwise bind buffers the capture never read. Entries that frame queued

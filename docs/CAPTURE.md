@@ -32,8 +32,16 @@ On macOS there are also **Overdraw** and **Xcode Trace**; see [Metal](METAL.md#m
 Turning off what you do not need makes a capture smaller and faster, which matters most on mobile
 GPUs. Leaving everything on is the right default on a desktop.
 
-To catch a frame that goes by before you can press anything, use **Queued Capture** in the launch
-dialog — it captures automatically as soon as the application connects.
+To catch a frame that goes by before you can press anything:
+
+- **Queued Capture** in the launch dialog captures automatically as soon as the application
+  connects, at a frame number or after a delay.
+- **F11 in the application's own window**, with the HUD on, takes the capture the button would, so
+  you can capture without looking away from the application
+  ([the capture hotkey](INSPECT.md#the-capture-hotkey)).
+- **Pause, then capture.** The pause button holds the application on the frame it has just drawn,
+  and a capture asked for while paused captures *that* frame and leaves the application paused on
+  it ([live pause](INSPECT.md#live-pause)).
 
 ### Capturing from the application
 

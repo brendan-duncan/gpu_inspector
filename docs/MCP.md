@@ -94,7 +94,9 @@ With GPU Inspector's capture library available, the plugin can start an applicat
 work on it without GPU Inspector running:
 
 - launch it, and watch its frame rate
-- capture frames into `.gpucap` files
+- capture frames into `.gpucap` files, including the captures the application asks for itself
+  through `include/gpu_inspector.h` (saved under the label it gave; `get_session_status` lists them
+  as `appCaptures` and `list_captures` includes them)
 - replace a pipeline's shader while it runs, then capture again to measure the change
 - launch a debuggable package on an [Android device](ANDROID.md) over adb
 

@@ -189,6 +189,7 @@ differently or misbehave on purpose.
 | `--hitch-every <n>` | Stalls 100 ms inside every nth frame, for **Capture on hitch** |
 | `--compute`, `--bundle`, `--indirect` | A dispatch, a bundle, and an indirect draw |
 | `--render-pass` | Uses `ID3D12GraphicsCommandList4` render passes |
+| `--suspend` | A render pass suspended across two command lists, submitted together (implies `--render-pass`) |
 | `--debug-layer` | Turns the D3D12 debug layer on from the application |
 | `--msaa`, `--stencil`, `--leak`, `--offscreen`, `--heavy`, `--churn`, `--capture-at <frame>` | As above |
 | `--evict` | A 32 MB buffer evicted every 120th frame and made resident 60 frames later, for the residency marks |
