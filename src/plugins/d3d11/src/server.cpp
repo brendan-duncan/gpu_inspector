@@ -6,6 +6,9 @@
 #include <gpu_inspector/sdk/config.h>
 #include <gpu_inspector/sdk/transport.h>
 
+#include <cstring>
+#include <string>
+
 namespace d3d11insp {
 
 using gpuinsp::sdk::Config;
@@ -81,14 +84,23 @@ extern "C" __declspec(dllexport) int GpuInspectorConnected(void) {
     return gpuinsp::sdk::Server::Get().Connected() ? 1 : 0;
 }
 
-extern "C" __declspec(dllexport) int GpuInspectorCapture(uint32_t frameCount) {
+extern "C" __declspec(dllexport) int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label) {
     if (!gpuinsp::sdk::Server::Get().Connected()) return 0;
+    // The label is the application's words for the capture (the tab's name); bounded, since a
+    // string that is not one would otherwise become a message of any length.
+    const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
     d3d11insp::JsonWriter w;
     w.BeginObject();
     w.Key("action"); w.String("AppCaptureRequest");
     w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
+    if (!name.empty()) { w.Key("label"); w.String(name); }
     w.EndObject();
     gpuinsp::sdk::Server::Get().SendJson(w.str());
-    d3d11insp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    if (name.empty()) d3d11insp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    else d3d11insp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
     return 1;
+}
+
+extern "C" __declspec(dllexport) int GpuInspectorCapture(uint32_t frameCount) {
+    return GpuInspectorCaptureNamed(frameCount, nullptr);
 }

@@ -141,7 +141,9 @@ See [Android and Quest](ANDROID.md#build-the-android-layer).
 
 Each feature of the inspector has a mode of the test application that exercises it, which is how
 they are developed and how a regression is reproduced. `--frames N`, `--width` and `--height` apply
-to both; the rest draw the cube differently or misbehave on purpose.
+to both, and every sample (Metal's and the plugins' too) takes `--capture-at N`, which asks the
+inspector for a capture at frame N through `include/gpu_inspector.h`; the rest draw the cube
+differently or misbehave on purpose.
 
 `vkinsp_triangle`:
 

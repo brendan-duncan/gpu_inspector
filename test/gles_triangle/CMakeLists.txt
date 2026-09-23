@@ -49,3 +49,6 @@ if(ANGLE_DIR AND EXISTS "${ANGLE_DIR}/libEGL.dll" AND EXISTS "${ANGLE_DIR}/libGL
 else()
     message(STATUS "glesinsp_triangle: no ANGLE found (set ANGLE_DIR); it runs with --angle <dir> instead")
 endif()
+
+# include/gpu_inspector.h, for --capture-at: the application asking for the capture itself.
+target_include_directories(glesinsp_triangle PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")

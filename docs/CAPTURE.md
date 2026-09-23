@@ -37,21 +37,32 @@ dialog — it captures automatically as soon as the application connects.
 ### Capturing from the application
 
 When the frame worth capturing is one only the application can recognize — the first frame of a
-level, the frame after an assertion — it can ask for the capture itself. `include/gpu_inspector.h`
-is one header with no library to link (the installers put it in the app's `resources/include`):
+level, the frame after an assertion, the frame a test failed on — it can ask for the capture itself.
+`include/gpu_inspector.h` is one header with no library to link (the installers put it in the app's
+`resources/include`):
 
 ```c
 #include "gpu_inspector.h"
 
-if (the_frame_i_care_about) gpu_inspector_capture(1);   // frames to capture
+if (the_frame_i_care_about) gpu_inspector_capture(1);                        // frames to capture
+if (!shadow_test_passed) gpu_inspector_capture_named(1, "shadow test failed");   // and a name for it
 ```
 
 The capture library is already in the process when GPU Inspector started it, and the header finds it
 there; in a build nobody is inspecting the call returns 0 and does nothing, so it can stay in the
 code. The request goes to the inspector, which takes the capture with the capture bar's options as
 if **Capture** had been pressed at that moment, so it begins at a frame boundary a frame or two
-after the call. `gpu_inspector_connected()` says whether anyone is listening. Vulkan and
-Direct3D 12; the samples' `--capture-at N` does it at frame N.
+after the call. `gpu_inspector_connected()` says whether anyone is listening. A request made while
+a capture is already being taken is dropped, and the status bar says so.
+
+The name given to `gpu_inspector_capture_named` is the tab's — *shadow test failed (Frame 212)* —
+and goes into the saved file's name and the file itself, so a capture taken from an assertion still
+says what it is after it has been saved and opened again. It is cut at 200 characters.
+
+Every API answers it the same way: the Vulkan layer, the Direct3D 12 library, the Metal library and
+the Direct3D 11 and OpenGL ES plugins (on Windows, Linux and Android). The header looks for
+whichever of them is in the process and connected. Every sample's `--capture-at N` does it at frame
+N (`gles_linux --capture-at=N`).
 
 ## Reading the frame
 

@@ -13,6 +13,7 @@
 //     gles_linux --dlopen        offscreen, EGL loaded with dlopen("libEGL.so.1") and its entry
 //                                points taken with dlsym, the way SDL and GLFW do by hand
 //     gles_linux --frames=N      stop after N frames (default: run until killed)
+//     gles_linux --capture-at=N  ask the inspector for a capture at frame N (include/gpu_inspector.h)
 //
 // Frames end at a swap, about 60 a second. The windowed modes are the only ones that make a window
 // surface (and on X11 the only ones that reach OpenGL ES through GLX); the pbuffer modes are the
@@ -29,6 +30,8 @@
 #include <string>
 #include <thread>
 #include <unistd.h>
+
+#include "gpu_inspector.h"   // --capture-at: the application asking for the capture itself
 
 #if GLES_LINUX_HAVE_SDL
 #include <SDL.h>
@@ -89,6 +92,9 @@ EGLDisplay OpenDisplay(const Egl& e) {
     return EGL_NO_DISPLAY;
 }
 
+/** --capture-at=N: the frame at which the application asks the inspector for a capture itself. */
+long g_captureAt = 0;
+
 /** The scene, drawn until `frames` have gone by (or forever if it is 0). `swap` ends each frame. */
 template <typename Swap>
 void RunScene(long frames, int width, int height, Swap&& swap) {
@@ -99,6 +105,14 @@ void RunScene(long frames, int width, int height, Swap&& swap) {
         const float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
         scene.Render(t, width, height);
         if (!swap()) return;
+        // Asked again each frame until somebody is there to hear it: the inspector connects a
+        // few frames after the context is made.
+        static bool captureAsked = false;
+        if (g_captureAt > 0 && frame >= g_captureAt && !captureAsked) {
+            char label[48];
+            snprintf(label, sizeof label, "asked at frame %ld", g_captureAt);   // the tab's name
+            captureAsked = gpu_inspector_capture_named(1, label) != 0;
+        }
         if (frame % 600 == 0) printf("frame %ld\n", frame), fflush(stdout);
         std::this_thread::sleep_for(std::chrono::milliseconds(16));
     }
@@ -221,8 +235,9 @@ int main(int argc, char** argv) {
         else if (strcmp(argv[i], "--pbuffer") == 0) mode = Mode::Pbuffer;
         else if (strcmp(argv[i], "--dlopen") == 0) mode = Mode::Dlopen;
         else if (strncmp(argv[i], "--frames=", 9) == 0) frames = strtol(argv[i] + 9, nullptr, 10);
+        else if (strncmp(argv[i], "--capture-at=", 13) == 0) g_captureAt = strtol(argv[i] + 13, nullptr, 10);
         else {
-            printf("unknown option: %s (--window, --window-egl, --pbuffer, --dlopen, --frames=N)\n", argv[i]);
+            printf("unknown option: %s (--window, --window-egl, --pbuffer, --dlopen, --frames=N, --capture-at=N)\n", argv[i]);
             return 2;
         }
     }

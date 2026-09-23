@@ -3256,6 +3256,12 @@ var CaptureData = class {
   frames = 1;
   /** Which API produced it. Captures made before the field existed are Vulkan. */
   api = "vulkan";
+  /**
+   * The application's name for the capture when it asked for it itself (gpu_inspector_capture_named
+   * in include/gpu_inspector.h): the tab's name and the saved file's. Null for a capture the
+   * button took.
+   */
+  requestLabel = null;
   commands = [];
   textures = [];
   buffers = /* @__PURE__ */ new Map();
@@ -3333,6 +3339,7 @@ var CaptureData = class {
     this.frame = 0;
     this.frames = 1;
     this.api = "vulkan";
+    this.requestLabel = null;
     this.commands = [];
     this.textures = [];
     this.buffers = /* @__PURE__ */ new Map();
@@ -3416,6 +3423,7 @@ var CaptureData = class {
     this.frame = c2.manifest.frame;
     this.frames = Math.max(1, c2.manifest.frames ?? 1);
     this.api = c2.api;
+    this.requestLabel = c2.manifest.label || null;
     this.commands = c2.commands;
     this.textures = c2.textures;
     this.buffers = c2.buffers;
@@ -3443,8 +3451,10 @@ var CaptureData = class {
   }
   handleMessage(msg) {
     switch (msg.action) {
-      case "CaptureFrameResults":
+      case "CaptureFrameResults": {
+        const requestLabel = this.requestLabel;
         this.reset();
+        this.requestLabel = requestLabel;
         this.frame = msg.frame;
         this.frames = Math.max(1, msg.frames ?? 1);
         this.api = msg.api ?? "vulkan";
@@ -3452,6 +3462,7 @@ var CaptureData = class {
         this.onCaptureStatus.emit(`receiving ${msg.count} commands...`);
         if (msg.count === 0) this.onCommandsComplete.emit();
         break;
+      }
       case "CaptureFrameCommands":
         for (const c2 of msg.commands) this.commands[c2.index] = c2;
         if (this.commands.length >= this._expectedCommands) {
@@ -3824,10 +3835,14 @@ var CAPTURE_FILE_EXTENSION = "gpucap";
 var MAGIC2 = "GPUCAP 1\n";
 var CAPTURE_FORMAT = "gpu-inspector-capture";
 var CAPTURE_VERSION = 1;
-function captureFileName(source, frame, frames) {
-  const cleaned = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
-  const base = cleaned.length > 64 ? cleaned.slice(0, 64).replace(/_+$/, "") : cleaned;
-  return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
+function captureFileName(source, frame, frames, label) {
+  const clean = (s, max) => {
+    const cleaned = s.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
+    return cleaned.length > max ? cleaned.slice(0, max).replace(/_+$/, "") : cleaned;
+  };
+  const base = clean(source.replace(/\.[^.]+$/, ""), 64) || "capture";
+  const named = label ? clean(label, 48) : "";
+  return `${base}_${named ? `${named}_` : ""}frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
 }
 function encodeCaptureFile(manifest, payloads, options = {}) {
   const json = stringifyJsonObject(manifest, options);
@@ -29614,6 +29629,7 @@ async function serializeCapture(session, data, options = {}) {
     source: { name: session.name },
     frame: data.frame,
     frames: data.frames,
+    ...data.requestLabel ? { label: data.requestLabel } : {},
     frameTimeMs: db.frameTimeMs,
     submitMs: db.submitMs,
     refreshMs: db.refreshMs,
@@ -30018,7 +30034,7 @@ var LiveSession = class {
     } else {
       const dir = capturesDir();
       fs12.mkdirSync(dir, { recursive: true });
-      const name = captureFileName(this.name, data.frame, data.frames);
+      const name = captureFileName(this.name, data.frame, data.frames, data.requestLabel);
       target = path12.join(dir, name);
       for (let n = 2; fs12.existsSync(target); n++) target = path12.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
     }

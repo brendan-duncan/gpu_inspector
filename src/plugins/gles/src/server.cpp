@@ -6,6 +6,9 @@
 #include <gpu_inspector/sdk/config.h>
 #include <gpu_inspector/sdk/transport.h>
 
+#include <cstring>
+#include <string>
+
 namespace glesinsp {
 
 using gpuinsp::sdk::Config;
@@ -56,3 +59,38 @@ void StartServer() {
 }
 
 }  // namespace glesinsp
+
+// The application's side of a capture (include/gpu_inspector.h), which finds these by name: on
+// Windows in the injected DLL, on Linux in the preloaded library, on Android in the OpenGL ES
+// layer. The request goes to the inspector rather than straight to the capture: the capture bar's
+// options are the inspector's to choose, and a tab has to be waiting for what comes back.
+#if defined(_WIN32)
+#define GLESINSP_API extern "C" __declspec(dllexport)
+#else
+#define GLESINSP_API extern "C" __attribute__((visibility("default")))
+#endif
+
+GLESINSP_API int GpuInspectorConnected(void) {
+    return gpuinsp::sdk::Server::Get().Connected() ? 1 : 0;
+}
+
+GLESINSP_API int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label) {
+    if (!gpuinsp::sdk::Server::Get().Connected()) return 0;
+    // The label is the application's words for the capture (the tab's name); bounded, since a
+    // string that is not one would otherwise become a message of any length.
+    const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
+    gpuinsp::sdk::JsonWriter w;
+    w.BeginObject();
+    w.Key("action"); w.String("AppCaptureRequest");
+    w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
+    if (!name.empty()) { w.Key("label"); w.String(name); }
+    w.EndObject();
+    gpuinsp::sdk::Server::Get().SendJson(w.str());
+    if (name.empty()) glesinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    else glesinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
+    return 1;
+}
+
+GLESINSP_API int GpuInspectorCapture(uint32_t frameCount) {
+    return GpuInspectorCaptureNamed(frameCount, nullptr);
+}

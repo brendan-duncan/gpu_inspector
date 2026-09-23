@@ -1,3 +1,10 @@
+## Unreleased
+
+### Added
+- An application asks for a capture with a name for it: `gpu_inspector_capture_named(frames, label)` in `include/gpu_inspector.h`, and the label names the tab, the saved file and its manifest.
+- The Metal library and the OpenGL ES plugin answer `include/gpu_inspector.h` too, so every API can capture from an assertion or a failed test; the header finds the library on macOS, Linux and Android as well as Windows.
+- `--capture-at N` on the Metal and OpenGL ES samples, and UI test cases for the application's capture on every Windows backend.
+
 ## v0.22.1
 
 ### Fixed

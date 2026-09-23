@@ -66,6 +66,16 @@ def find_d3d12_triangle():
     return None
 
 
+def find_plugin_sample(exe):
+    """A plugin's sample (test/d3d11_triangle, test/gles_triangle): Windows only, like the plugins."""
+    if sys.platform != "win32":
+        return None
+    for c in [os.path.join(ROOT, "build", "bin", "Release", exe), os.path.join(ROOT, "build", "bin", exe)]:
+        if os.path.isfile(c):
+            return c
+    return None
+
+
 def find_replay():
     for c in [os.path.join(ROOT, "build", "bin", "Release", "vkinsp_replay.exe"),
               os.path.join(ROOT, "build", "bin", "vkinsp_replay.exe"),
@@ -1350,8 +1360,13 @@ def app_capture(state, log):
     # The application asked for the capture itself (include/gpu_inspector.h, the sample's
     # --capture-at): nothing on the command line takes one, so a capture tab can only be the
     # request's doing.
+    c = capture(state)
     return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
-        expect("capture requested by the application" in log, "the capture library never logged the application's request")
+        expect("capture requested by the application" in log, "the capture library never logged the application's request") + \
+        expect(c.get("requestLabel") == "asked at frame 200",
+               f"the tab did not take the application's label (gpu_inspector_capture_named): {c.get('requestLabel')!r}") + \
+        expect(str(c.get("label") or "").startswith("asked at frame 200 (Frame "),
+               f"the tab is named {c.get('label')!r}, not after the label and the frame")
 
 
 def shader_edit(state, log):
@@ -1374,9 +1389,21 @@ def shader_edit(state, log):
         expect("shader-edit" in (c.get("reportTabs") or []), f"the result did not open in a tab: {c.get('reportTabs')}")
 
 
+def app_capture_open(state, log):
+    # The label went into the file's manifest, so the reopened capture is still named by it.
+    c = capture(state)
+    return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") + \
+        expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands in the reopened file") + \
+        expect(c.get("requestLabel") == "asked at frame 200",
+               f"the reopened file lost the application's label: {c.get('requestLabel')!r}") + \
+        expect(str(c.get("label") or "").startswith("asked at frame 200 (Frame "),
+               f"the reopened tab is named {c.get('label')!r}")
+
+
 def triangle_cases(triangle):
     launch = [f"--launch={triangle}"]
     source_root = os.path.join(ROOT, "test")
+    saved_app = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_app_capture.gpucap")
     exported = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_report.html")
 
     def start_triangle():
@@ -1431,7 +1458,8 @@ def triangle_cases(triangle):
         Case("plain", launch + ["--debug-capture"], triangle_plain),
         Case("timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
         Case("memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
-        Case("app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
+        Case("app-capture", launch + ["--args=--capture-at 200", f"--debug-save={saved_app}"], app_capture, delay_ms=14000),
+        Case("app-capture-open", [f"--debug-open={saved_app}"], app_capture_open, delay_ms=9000),
         Case("shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),
         Case("sources", launch + [f"--source-roots={source_root}", "--debug-capture", "--debug-command=5",
                                   "--debug-expand=Compute Shader"], triangle_sources, delay_ms=14000),
@@ -1793,6 +1821,19 @@ def d3d12_debug_compute(state, log):
         expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}")
 
 
+def plugin_cases(d3d11_triangle, gles_triangle):
+    """
+    The plugin samples (docs/PLUGINS.md), each asking for its own capture through
+    include/gpu_inspector.h: the one path every capture library has to answer the same way.
+    """
+    cases = []
+    if d3d11_triangle:
+        cases.append(Case("d3d11-app-capture", [f"--launch={d3d11_triangle}", "--args=--capture-at 200"], app_capture, delay_ms=14000))
+    if gles_triangle:
+        cases.append(Case("gles-app-capture", [f"--launch={gles_triangle}", "--args=--capture-at 200"], app_capture, delay_ms=14000))
+    return cases
+
+
 def d3d12_cases(triangle):
     launch = [f"--launch={triangle}"]
     saved = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12.gpucap")
@@ -1918,6 +1959,7 @@ def main():
             cases += d3d12_cases(d3d12_triangle)
         elif sys.platform == "win32":
             print("  (dxinsp_triangle not built: skipping the Direct3D 12 cases)")
+        cases += plugin_cases(find_plugin_sample("d3d11insp_triangle.exe"), find_plugin_sample("glesinsp_triangle.exe"))
     if args.captures:
         for p in sorted(glob.glob(os.path.join(args.captures, "*.gpucap"))):
             cases.append(capture_case(p))

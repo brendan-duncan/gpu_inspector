@@ -975,7 +975,20 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       thousands of entries for a bindless heap. A replay with SPIR-V rewritten to record the
       indices it reads fits beside the ablation variants (`renderer/vulkan/spirv_ablate.ts`), and
       would limit sampled-image read-back to what was sampled.
-- [ ] App-triggered captures: a capture from a failed test, an assert or a debug key.
+- [x] App-triggered captures: a capture from a failed test, an assert or a debug key.
+      `include/gpu_inspector.h`: `gpu_inspector_capture(frames)` and
+      `gpu_inspector_capture_named(frames, label)`, answered by every capture library (the Vulkan
+      layer, D3D12, Metal, and the D3D11 and OpenGL ES plugins on Windows, Linux and Android)
+      through three exports found by the library's file name (`GpuInspectorConnected`,
+      `GpuInspectorCapture`, `GpuInspectorCaptureNamed`). The library sends `AppCaptureRequest` to
+      the inspector, which takes the capture with the bar's options; the label names the tab
+      (*shadow test failed (Frame 212)*), the saved file and the file's manifest, so it survives a
+      save. Every sample's `--capture-at N` exercises it, and `tools/ui_tests.py` runs it on all four
+      Windows backends (`app-capture`, `d3d12-app-capture`, `d3d11-app-capture`,
+      `gles-app-capture`). Metal and Linux are written but untested from here.
+      Still open: an MCP session (`launch_app`) ignores `AppCaptureRequest`, since it captures only
+      when a tool asks; an agent-driven test harness would want the application's request to
+      become a capture it can list.
 
       **Not by answering RenderDoc's API.** Unity, Unreal and the test harnesses that already call
       it find it with `GetModuleHandle("renderdoc.dll")`, so being found at all would mean shipping

@@ -12,7 +12,8 @@
 // ANGLE is not part of Windows: libEGL.dll and libGLESv2.dll are loaded from beside the executable,
 // where the build copies them from ANGLE_DIR (CMakeLists.txt), or from the directory --angle names.
 //
-// Usage: glesinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--angle <dir>]
+// Usage: glesinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--angle <dir>] [--capture-at N]
+//   --capture-at N asks the inspector for a capture at frame N itself (include/gpu_inspector.h).
 #include <windows.h>
 
 #include "../../src/plugins/gles/gen/gles_api.gen.h"
@@ -25,6 +26,8 @@
 #include <cstring>
 #include <string>
 #include <vector>
+
+#include "gpu_inspector.h"   // --capture-at: the application asking for the capture itself
 
 // ------------------------------------------------------------------------------------------------
 // EGL, the few entry points this uses.
@@ -262,12 +265,15 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
 int main(int argc, char** argv) {
     int frames = 0;
+    int captureAt = 0;   // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
+    bool captureAsked = false;
     int width = 800, height = 600;
     bool msaa = false;
     std::string angle;
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if (a == "--frames" && i + 1 < argc) frames = atoi(argv[++i]);
+        else if (a == "--capture-at" && i + 1 < argc) captureAt = atoi(argv[++i]);
         else if (a == "--width" && i + 1 < argc) width = atoi(argv[++i]);
         else if (a == "--height" && i + 1 < argc) height = atoi(argv[++i]);
         else if (a == "--msaa") msaa = true;
@@ -547,6 +553,13 @@ int main(int argc, char** argv) {
 
         eglSwapBuffers(display, surface);
         if (const GLenum e = glGetError()) fprintf(stderr, "frame %d: GL error 0x%X\n", frame, e);
+        // Asked again each frame until somebody is there to hear it: the inspector connects a
+        // few frames after the context is made.
+        if (captureAt > 0 && frame >= captureAt && !captureAsked) {
+            char label[48];
+            snprintf(label, sizeof label, "asked at frame %d", captureAt);   // the tab's name
+            captureAsked = gpu_inspector_capture_named(1, label) != 0;
+        }
         ++frame;
         if (frames && frame >= frames) break;
     }

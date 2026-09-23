@@ -114,7 +114,7 @@ while it runs.
 | Histogram per channel | ● | ● | ● | ● |
 | Per-command call stacks | ● | ● | ● | ● |
 | Custom visualization shaders over a target | ○ | ● | ● | ● |
-| Programmatic capture from the application | ● [`gpu_inspector.h`: Vulkan, D3D12](CAPTURE.md#capturing-from-the-application) | ● in-application API | ● `PIXBeginCapture` | ● |
+| Programmatic capture from the application | ● [`gpu_inspector.h`, every API, with a name for the capture](CAPTURE.md#capturing-from-the-application) | ● in-application API | ● `PIXBeginCapture` | ● |
 
 ---
 

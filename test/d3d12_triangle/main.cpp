@@ -1363,7 +1363,11 @@ struct App {
             if (stallMs) Sleep(stallMs);
             // Asked again each frame until somebody is there to hear it: the inspector connects a
             // few frames after the device is made.
-            if (captureAt && frameCount >= captureAt && !captureAsked) captureAsked = gpu_inspector_capture(1) != 0;
+            if (captureAt && frameCount >= captureAt && !captureAsked) {
+                char label[48];
+                snprintf(label, sizeof label, "asked at frame %llu", (unsigned long long)captureAt);   // the tab's name
+                captureAsked = gpu_inspector_capture_named(1, label) != 0;
+            }
             if (churn) {
                 churnRecent.push_back(CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, 64 * 1024, D3D12_RESOURCE_STATE_GENERIC_READ,
                                                    D3D12_RESOURCE_FLAG_NONE, L"Churn: per-frame scratch"));

@@ -189,6 +189,21 @@ The second is asked for every EGL and GL entry point and returns the layer's own
 calls `next`, or `next` itself. On consoles getting in is the platform's business: a tool, a build
 flag.
 
+An application can ask for a capture itself through `include/gpu_inspector.h` (docs/CAPTURE.md,
+"Capturing from the application"), which looks the plugin's library up by its file name and calls
+three exports of it, so a plugin that wants to answer exports them too:
+
+```cpp
+extern "C" int GpuInspectorConnected(void);                                   // 1 while the inspector is
+extern "C" int GpuInspectorCapture(uint32_t frameCount);                      // sends AppCaptureRequest
+extern "C" int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label);
+```
+
+They send `{"action": "AppCaptureRequest", "frameCount": N, "label": "..."}` to the inspector rather
+than starting a capture, and return 1 when it went: the capture bar's options are the inspector's,
+and it answers with an ordinary `Capture`. The header only finds libraries named in it, so a new
+plugin's name goes into its list.
+
 ### What it must send
 
 On connect, the objects that exist: `Snapshot` with their count, then an `AddObject` for each

@@ -830,8 +830,9 @@ loaded capture. Its `send()` answers `RequestBlob` from the file, so shader view
 parsed buffer contents and the source view work as they do live; anything only a running
 application could answer (image read-back, descriptor contents, shader edits) is declined and
 the panels say so. "Open in New Tab" on a capture tab goes through the same serialization in
-memory and opens an independent copy. `--debug-save=<file>` after `--debug-capture` and
-`--debug-open=<file>` exercise the round trip unattended.
+memory and opens an independent copy. `--debug-save=<file>` after `--debug-capture` (or on its
+own, saving the capture the application asks for with `--capture-at`) and `--debug-open=<file>`
+exercise the round trip unattended.
 
 #### Shader editor
 

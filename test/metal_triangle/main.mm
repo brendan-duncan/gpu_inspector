@@ -8,6 +8,8 @@
 //
 //   mtlinsp_triangle              a window, until it is closed
 //   mtlinsp_triangle --frames N   render N frames and exit (no interaction needed)
+//   mtlinsp_triangle --capture-at N
+//                                 ask the inspector for a capture at frame N (gpu_inspector.h)
 //   mtlinsp_triangle --present-direct
 //                                 present through [drawable present] from a scheduled handler,
 //                                 the way Unity's macOS player does, instead of through
@@ -52,6 +54,8 @@
 
 #include <cstdlib>
 #include <cstring>
+
+#include "gpu_inspector.h"   // --capture-at: the application asking for the capture itself
 
 namespace {
 
@@ -847,6 +851,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
 @interface AppDelegate : NSObject <NSApplicationDelegate>
 @property(nonatomic) NSUInteger frameLimit;  // 0: run until the window is closed
+@property(nonatomic) NSUInteger captureAt;   // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
+@property(nonatomic) BOOL captureAsked;
 @property(nonatomic) BOOL presentDirect;
 @property(nonatomic) BOOL compileHitch;
 @property(nonatomic) BOOL occluded;
@@ -900,6 +906,13 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                                              repeats:YES
                                                block:^(NSTimer *t) {
         [self->_renderer renderFrame];
+        // Asked again each frame until somebody is there to hear it: the inspector connects a
+        // few frames after the device is made.
+        if (self.captureAt > 0 && self->_renderer.frameCount >= self.captureAt && !self.captureAsked) {
+            char label[48];
+            snprintf(label, sizeof label, "asked at frame %lu", (unsigned long)self.captureAt);   // the tab's name
+            self.captureAsked = gpu_inspector_capture_named(1, label) != 0;
+        }
         if (self.frameLimit > 0 && self->_renderer.frameCount >= self.frameLimit) {
             NSLog(@"rendered %lu frames", (unsigned long)self->_renderer.frameCount);
             [t invalidate];
@@ -916,6 +929,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
 int main(int argc, const char *argv[]) {
     NSUInteger frameLimit = 0;
+    NSUInteger captureAt = 0;
     BOOL presentDirect = NO;
     BOOL compileHitch = NO;
     BOOL occluded = NO;
@@ -925,6 +939,7 @@ int main(int argc, const char *argv[]) {
     BOOL insideOut = NO;
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--capture-at") == 0 && i + 1 < argc) captureAt = (NSUInteger)atoi(argv[++i]);
         else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
         else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
         else if (strcmp(argv[i], "--occluded") == 0) occluded = YES;
@@ -940,6 +955,7 @@ int main(int argc, const char *argv[]) {
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
         AppDelegate *delegate = [[AppDelegate alloc] init];
         delegate.frameLimit = frameLimit;
+        delegate.captureAt = captureAt;
         delegate.presentDirect = presentDirect;
         delegate.compileHitch = compileHitch;
         delegate.occluded = occluded;

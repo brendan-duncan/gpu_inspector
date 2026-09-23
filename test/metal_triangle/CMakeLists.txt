@@ -19,3 +19,6 @@ target_link_libraries(mtlinsp_triangle PRIVATE
 # see src/metal/README.md.
 set_target_properties(mtlinsp_triangle PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# include/gpu_inspector.h, for --capture-at: the application asking for the capture itself.
+target_include_directories(mtlinsp_triangle PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")

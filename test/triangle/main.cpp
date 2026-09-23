@@ -2591,7 +2591,11 @@ struct App {
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
             // Asked again each frame until somebody is there to hear it: the inspector connects a
             // few frames after the device is made.
-            if (captureAt > 0 && (int)frameCount >= captureAt && !captureAsked) captureAsked = gpu_inspector_capture(1) != 0;
+            if (captureAt > 0 && (int)frameCount >= captureAt && !captureAsked) {
+                char label[48];
+                snprintf(label, sizeof label, "asked at frame %d", captureAt);   // the tab's name
+                captureAsked = gpu_inspector_capture_named(1, label) != 0;
+            }
             if (churn) Churn();
             if (!DrawFrame(t)) std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }

@@ -60,6 +60,8 @@ export interface CaptureFileManifest {
   source: { name: string };
   frame: number;
   frames: number;
+  /** The application's name for the capture, when it asked for it (gpu_inspector_capture_named). */
+  label?: string;
   /** The live frame interval and submit time when the capture was taken (Frame Bound card). */
   frameTimeMs: number;
   submitMs: number;
@@ -132,10 +134,15 @@ export interface LoadedCapture {
  * command line, and a browser's is hundreds of characters of switches, which would make a path no
  * Windows API could open: the application's own part of it is kept and the rest cut.
  */
-export function captureFileName(source: string, frame: number, frames: number): string {
-  const cleaned = source.replace(/\.[^.]+$/, "").replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "") || "capture";
-  const base = cleaned.length > 64 ? cleaned.slice(0, 64).replace(/_+$/, "") : cleaned;
-  return `${base}_frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
+export function captureFileName(source: string, frame: number, frames: number, label?: string | null): string {
+  const clean = (s: string, max: number): string => {
+    const cleaned = s.replace(/[^\w.-]+/g, "_").replace(/^_+|_+$/g, "");
+    return cleaned.length > max ? cleaned.slice(0, max).replace(/_+$/, "") : cleaned;
+  };
+  const base = clean(source.replace(/\.[^.]+$/, ""), 64) || "capture";
+  // The application's own name for the capture (gpu_inspector_capture_named), between the two.
+  const named = label ? clean(label, 48) : "";
+  return `${base}_${named ? `${named}_` : ""}frame_${frame}${frames > 1 ? `-${frame + frames - 1}` : ""}.${CAPTURE_FILE_EXTENSION}`;
 }
 
 /**

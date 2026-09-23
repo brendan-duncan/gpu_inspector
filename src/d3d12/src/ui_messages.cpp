@@ -22,6 +22,7 @@
 #include "validation.h"
 
 #include <cstdlib>
+#include <cstring>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -347,14 +348,23 @@ extern "C" __declspec(dllexport) int GpuInspectorConnected(void) {
     return dxinsp::Transport::Get().Connected() ? 1 : 0;
 }
 
-extern "C" __declspec(dllexport) int GpuInspectorCapture(uint32_t frameCount) {
+extern "C" __declspec(dllexport) int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label) {
     if (!dxinsp::Transport::Get().Connected()) return 0;
+    // The label is the application's words for the capture (the tab's name); bounded, since a
+    // string that is not one would otherwise become a message of any length.
+    const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
     dxinsp::JsonWriter w;
     w.BeginObject();
     w.Key("action"); w.String("AppCaptureRequest");
     w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
+    if (!name.empty()) { w.Key("label"); w.String(name); }
     w.EndObject();
     dxinsp::Transport::Get().SendJson(std::move(w.str()));
-    dxinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    if (name.empty()) dxinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    else dxinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
     return 1;
+}
+
+extern "C" __declspec(dllexport) int GpuInspectorCapture(uint32_t frameCount) {
+    return GpuInspectorCaptureNamed(frameCount, nullptr);
 }

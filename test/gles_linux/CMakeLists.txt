@@ -12,7 +12,8 @@ endif()
 
 add_executable(gles_linux main.cpp)
 target_compile_features(gles_linux PRIVATE cxx_std_17)
-target_include_directories(gles_linux PRIVATE "${GLES_LINUX_EGL_INCLUDE}" "${GLES_LINUX_GLES_INCLUDE}")
+target_include_directories(gles_linux PRIVATE "${GLES_LINUX_EGL_INCLUDE}" "${GLES_LINUX_GLES_INCLUDE}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../include")   # gpu_inspector.h, for --capture-at
 target_link_libraries(gles_linux PRIVATE "${GLES_LINUX_EGL}" "${GLES_LINUX_GLESV2}" ${CMAKE_DL_LIBS})
 set_target_properties(gles_linux PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 

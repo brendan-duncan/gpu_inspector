@@ -47,6 +47,7 @@ Electron's ANGLE, is not the system's and is not captured.
 | `gles_linux --pbuffer` | offscreen, EGL linked, as an application built against libEGL is |
 | `gles_linux --dlopen` | offscreen, EGL `dlopen`ed and `dlsym`ed by hand |
 | `gles_linux --frames=N` | stop after N frames |
+| `gles_linux --capture-at=N` | ask the inspector for a capture at frame N itself (`include/gpu_inspector.h`) |
 
 The windowed modes need `libsdl2-dev` at build time; without it only the offscreen modes are built
 and `--window` says so. The offscreen modes put **nothing on screen** — expected, not a failed

@@ -116,7 +116,7 @@ export class InspectorWindow extends Window {
       const panel = this._sessions.get(s.sessionId);
       if (!panel) return;
       panel.setStatus(s);
-      if (s.state === "connected" && this._debug?.capture) this._debugCapture(panel);
+      if (s.state === "connected") this._debugOnConnect(panel);
     });
     window.inspector.onLog((l) => this._sessions.get(l.sessionId)?.appendLog(l.line));
     window.inspector.onRecents((recents) => this._setRecents(recents));
@@ -200,7 +200,7 @@ export class InspectorWindow extends Window {
     // A window that picks up a running session needs the layer's object list again.
     if (info.state === "connected") {
       void window.inspector.refresh(info.id);
-      if (this._debug?.capture) this._debugCapture(panel);
+      this._debugOnConnect(panel);
     }
     panel.debugCaptureWithout = this._debug?.captureWithout ?? null;
     if (this._debug?.select) this._debugSelect(panel, this._debug.select);
@@ -582,6 +582,26 @@ export class InspectorWindow extends Window {
     }, 1500);
   }
 
+  /** The testing flows that start when a launched application connects (tools/ui_tests.py). */
+  private _debugOnConnect(panel: SessionPanel): void {
+    if (this._debug?.capture) this._debugCapture(panel);
+    // --debug-save without --debug-capture: the capture to save is one the application asks for
+    // itself (gpu_inspector_capture in include/gpu_inspector.h, the samples' --capture-at), so
+    // the save waits from the connection rather than from a capture the UI took. The delay has to
+    // cover the frame the application asks at plus the capture's own arrival; --debug-save-delay
+    // sets it, and the default suits the samples' --capture-at 200.
+    else if (this._debug?.saveCapture) this._debugSave(panel, this._debug.saveCaptureDelayMs ?? 8000);
+  }
+
+  /** --debug-save=<file>: saves the active capture tab after `ms`. */
+  private _debugSave(panel: SessionPanel, ms: number): void {
+    const save = this._debug?.saveCapture;
+    if (!save) return;
+    setTimeout(() => {
+      void panel.capturePanel.saveActive(save).then((p) => console.log(p ? `capture saved: ${p}` : "capture save failed"));
+    }, ms);
+  }
+
   private _debugCapture(panel: SessionPanel): void {
     // --debug-capture-delay=<ms>: a real application is still loading 1.5 s after it connects, so
     // a case that wants a frame of the application itself rather than of its splash says when.
@@ -610,12 +630,7 @@ export class InspectorWindow extends Window {
       // --debug-save-delay=<ms> waits longer, for a flow that takes a *second* capture and makes
       // that one active: an overlay, a pixel history or a mesh output. Four seconds is enough for
       // one capture's data and too early for the second.
-      const save = this._debug?.saveCapture;
-      if (save) {
-        setTimeout(() => {
-          void panel.capturePanel.saveActive(save).then((p) => console.log(p ? `capture saved: ${p}` : "capture save failed"));
-        }, this._debug?.saveCaptureDelayMs ?? 4000);
-      }
+      this._debugSave(panel, this._debug?.saveCaptureDelayMs ?? 4000);
     }, this._debug?.captureDelayMs ?? 1500);
   }
 }

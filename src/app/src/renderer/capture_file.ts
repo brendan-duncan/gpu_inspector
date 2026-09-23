@@ -168,7 +168,7 @@ export async function serializeCapture(session: LayerSession & { readonly name: 
   const manifest: CaptureFileManifest = {
     format: CAPTURE_FORMAT, version: CAPTURE_VERSION, api: data.api, application: "GPU Inspector", savedAt: new Date().toISOString(),
     source: { name: session.name },
-    frame: data.frame, frames: data.frames, frameTimeMs: db.frameTimeMs, submitMs: db.submitMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource,
+    frame: data.frame, frames: data.frames, ...(data.requestLabel ? { label: data.requestLabel } : {}), frameTimeMs: db.frameTimeMs, submitMs: db.submitMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource,
     displayRefreshMs: db.displayRefreshMs, frameBoundary: db.frameBoundary,
     objects: records,
     commands: data.commands,

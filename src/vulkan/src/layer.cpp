@@ -1012,16 +1012,25 @@ VKINSP_EXPORT int GpuInspectorConnected(void) {
     return vkinsp::Transport::Get().Connected() ? 1 : 0;
 }
 
-VKINSP_EXPORT int GpuInspectorCapture(uint32_t frameCount) {
+VKINSP_EXPORT int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label) {
     if (!vkinsp::Transport::Get().Connected()) return 0;
+    // The label is the application's words for the capture (the tab's name); bounded, since a
+    // string that is not one would otherwise become a message of any length.
+    const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
     vkinsp::JsonWriter w;
     w.BeginObject();
     w.Key("action"); w.String("AppCaptureRequest");
     w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
+    if (!name.empty()) { w.Key("label"); w.String(name); }
     w.EndObject();
     vkinsp::Transport::Get().SendJson(std::move(w.str()));
-    vkinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    if (name.empty()) vkinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    else vkinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
     return 1;
+}
+
+VKINSP_EXPORT int GpuInspectorCapture(uint32_t frameCount) {
+    return GpuInspectorCaptureNamed(frameCount, nullptr);
 }
 
 #if defined(__ANDROID__)

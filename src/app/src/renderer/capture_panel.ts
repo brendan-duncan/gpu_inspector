@@ -592,7 +592,7 @@ export class CapturePanel {
     }
     const bytes = await this._serialize(view);
     if (!bytes) return null;
-    const defaultPath = captureFileName(this.window.name, view.data.frame, view.data.frames);
+    const defaultPath = captureFileName(this.window.name, view.data.frame, view.data.frames, view.data.requestLabel);
     const saved = await window.inspector.saveFile({ title: "Save capture", defaultPath, filters: CAPTURE_FILE_FILTERS, ...(path ? { path } : {}) }, bytes);
     this._statusLabel.text = saved ? `saved ${saved} (${(bytes.byteLength / (1024 * 1024)).toFixed(1)} MB)` : view.status;
     if (saved) void window.inspector.addRecentCapture(saved);
@@ -622,7 +622,7 @@ export class CapturePanel {
     const bytes = await this._serialize(view);
     if (!bytes) return;
     const ok = await window.inspector.openCaptureWindow({
-      data: bytes, name: captureFileName(this.window.name, view.data.frame, view.data.frames), ...(report ? { view: report } : {}),
+      data: bytes, name: captureFileName(this.window.name, view.data.frame, view.data.frames, view.data.requestLabel), ...(report ? { view: report } : {}),
     });
     this._statusLabel.text = ok ? view.status : "could not open a window for the capture";
   }
@@ -642,9 +642,18 @@ export class CapturePanel {
     if (msg.action === "AppCaptureRequest") {
       // The application called gpu_inspector_capture (include/gpu_inspector.h): the same capture
       // the button takes, with the bar's options. One already streaming in would make the capture
-      // library ignore the request, and this would leave an empty tab behind.
-      if (this._liveStreaming) this._statusLabel.text = "the application asked for a capture while one was being taken";
-      else this.capture(Math.max(1, Math.floor(msg.frameCount) || 1));
+      // library ignore the request, and this would leave an empty tab behind. The label is the
+      // application's name for the capture (gpu_inspector_capture_named), which the tab takes.
+      const label = typeof msg.label === "string" ? msg.label.trim().slice(0, 200) : "";
+      if (this._liveStreaming) {
+        this._statusLabel.text = `the application asked for a capture${label ? ` (${label})` : ""} while one was being taken`;
+        return;
+      }
+      const view = this.capture(Math.max(1, Math.floor(msg.frameCount) || 1));
+      if (view && label) {
+        view.data.requestLabel = label;
+        view.onLabelChanged.emit();
+      }
       return;
     }
     this._live?.handleMessage(msg);
@@ -1174,7 +1183,7 @@ export class CapturePanel {
     if (!chosen) return null;
     // A capture opened from a file is named after the file, which says its frame already.
     const source = this.window.name;
-    const name = exportFolderName(/\.gpucap$/i.test(source) ? source : captureFileName(source, view.data.frame, view.data.frames));
+    const name = exportFolderName(/\.gpucap$/i.test(source) ? source : captureFileName(source, view.data.frame, view.data.frames, view.data.requestLabel));
     const written = await view.exportCpp(`${chosen.replace(/[\\/]+$/, "")}/${name}`);
     // The project is what the user came for, so it is shown; not when a directory was given
     // (--debug-export-cpp, a test), which has nobody to show it to.
@@ -1469,12 +1478,16 @@ export class CaptureView implements CaptureHost {
     return { passes, originTicks: this.data.passTimingOrigin };
   }
 
-  /** Tab label: the captured frame number(s) once known. */
+  /**
+   * Tab label: the captured frame number(s) once known, behind the application's own name for the
+   * capture when it asked for it (gpu_inspector_capture_named).
+   */
   get label(): string {
     if (this.customLabel) return this.customLabel;
     const d = this.data;
-    if (!d.commands.length && !d.frame) return `Capture ${this.captureIndex}`;
-    return d.frames > 1 ? `Frames ${d.frame}-${d.frame + d.frames - 1}` : `Frame ${d.frame}`;
+    const frame = !d.commands.length && !d.frame ? `Capture ${this.captureIndex}`
+      : d.frames > 1 ? `Frames ${d.frame}-${d.frame + d.frames - 1}` : `Frame ${d.frame}`;
+    return d.requestLabel ? `${d.requestLabel} (${frame})` : frame;
   }
 
   handleMessage(msg: LayerMessage): void {
@@ -1887,7 +1900,8 @@ export class CaptureView implements CaptureHost {
     const passes = d.commands.filter((c) => sets.PASS_BEGIN.has(c.method)).length;
     if (!this._analysis && d.commands.length) this._analysis = analyzeFrame(d, db, this.renderGraph());
     return {
-      status: this.status, frame: d.frame, frames: d.frames, commands: d.commands.length, draws, passes,
+      status: this.status, label: this.label, requestLabel: d.requestLabel,
+      frame: d.frame, frames: d.frames, commands: d.commands.length, draws, passes,
       textures: d.textures.length, textureErrors: d.textures.filter((t) => !!t.info.error).length,
       texturesLoaded: d.textures.filter((t) => !!t.data).length,
       // Each read-back's shape, which a count cannot answer for: which aspects of a pass came

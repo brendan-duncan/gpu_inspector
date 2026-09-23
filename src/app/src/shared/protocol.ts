@@ -784,11 +784,13 @@ export interface MemoryEventsMessage {
 }
 
 /**
- * The application asked for a capture through include/gpu_inspector.h (`gpu_inspector_capture`).
- * The capture library passes the request on rather than acting on it: the capture bar's options are
- * the inspector's, and a tab has to be waiting for the capture's messages.
+ * The application asked for a capture through include/gpu_inspector.h (`gpu_inspector_capture`,
+ * `gpu_inspector_capture_named`). The capture library passes the request on rather than acting on
+ * it: the capture bar's options are the inspector's, and a tab has to be waiting for the capture's
+ * messages. `label` is the application's name for the capture (an assertion's message, a test's
+ * name), which the tab and the saved file take.
  */
-export interface AppCaptureRequestMessage { action: "AppCaptureRequest"; frameCount: number }
+export interface AppCaptureRequestMessage { action: "AppCaptureRequest"; frameCount: number; label?: string }
 
 /**
  * Call stacks sampled during a timing capture (src/vulkan/src/cpu_sampler.h), in batches on the

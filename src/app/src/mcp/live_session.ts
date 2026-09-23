@@ -495,7 +495,7 @@ export class LiveSession {
     } else {
       const dir = capturesDir();
       fs.mkdirSync(dir, { recursive: true });
-      const name = captureFileName(this.name, data.frame, data.frames);
+      const name = captureFileName(this.name, data.frame, data.frames, data.requestLabel);
       target = path.join(dir, name);
       for (let n = 2; fs.existsSync(target); n++) target = path.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
     }

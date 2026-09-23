@@ -77,6 +77,12 @@ export class CaptureData {
   frames = 1;
   /** Which API produced it. Captures made before the field existed are Vulkan. */
   api: CaptureApi = "vulkan";
+  /**
+   * The application's name for the capture when it asked for it itself (gpu_inspector_capture_named
+   * in include/gpu_inspector.h): the tab's name and the saved file's. Null for a capture the
+   * button took.
+   */
+  requestLabel: string | null = null;
   commands: CaptureCommand[] = [];
   textures: CapturedTexture[] = [];
   buffers = new Map<number, CapturedBuffer>();
@@ -158,6 +164,7 @@ export class CaptureData {
     this.frame = 0;
     this.frames = 1;
     this.api = "vulkan";
+    this.requestLabel = null;
     this.commands = [];
     this.textures = [];
     this.buffers = new Map();
@@ -256,6 +263,7 @@ export class CaptureData {
     this.frame = c.manifest.frame;
     this.frames = Math.max(1, c.manifest.frames ?? 1);
     this.api = c.api;
+    this.requestLabel = c.manifest.label || null;
     this.commands = c.commands;          // saved after flattenSecondaries: already one stream per primary
     this.textures = c.textures;
     this.buffers = c.buffers;
@@ -284,8 +292,11 @@ export class CaptureData {
 
   handleMessage(msg: LayerMessage): void {
     switch (msg.action) {
-      case "CaptureFrameResults":
+      case "CaptureFrameResults": {
+        // The label is the request's, not the stream's: it outlives the reset.
+        const requestLabel = this.requestLabel;
         this.reset();
+        this.requestLabel = requestLabel;
         this.frame = msg.frame;
         this.frames = Math.max(1, msg.frames ?? 1);
         this.api = msg.api ?? "vulkan";
@@ -293,6 +304,7 @@ export class CaptureData {
         this.onCaptureStatus.emit(`receiving ${msg.count} commands...`);
         if (msg.count === 0) this.onCommandsComplete.emit();
         break;
+      }
       case "CaptureFrameCommands":
         for (const c of msg.commands) this.commands[c.index] = c;
         if (this.commands.length >= this._expectedCommands) {
