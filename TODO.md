@@ -1026,11 +1026,15 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       period, so the number says **(estimated)** there and not on D3D12 (`droppedMeasured`).
       `test/d3d12_triangle --stall <ms>` misses refreshes on purpose.
 - [ ] Present statistics, the rest:
-  - Dropped frames on Vulkan, measured: `VK_EXT_present_timing` (available on this machine, unlike
-    `VK_GOOGLE_display_timing`) reports when each present was actually shown, but only for presents
-    the application tagged with a `presentId` — so the layer would have to inject
-    `VkPresentTimingInfoEXT` into every `VkPresentInfoKHR` and number them itself. Worth doing; it
-    replaces the estimate with a measurement on the backend that matters most here.
+  - [x] Dropped frames on Vulkan, measured (`src/vulkan/src/present_timing.h`): every present the
+    application did not time itself gets a `VkPresentTimingsInfoEXT` asking for the first-pixel-out
+    stage (or the nearest the surface reports), the results are drained before each present, and
+    two frames shown n refreshes apart are n-1 dropped. No present ids were needed after all:
+    results come back in present order. A full results queue refuses the present, which is made
+    again untagged. `test/triangle --stall <ms>`, and `dropped-frames` / `d3d12-dropped-frames` in
+    `tools/ui_tests.py`. Checked against a 144 Hz display: a 41 ms frame counts five drops a frame.
+    Not checked under validation: the SDK's validation layer here (1.4.304) predates the extension,
+    so the layer keeps present timing off whenever it is enabled (the existing guard).
   - Present latency: `DXGI_FRAME_STATISTICS::SyncQPCTime` against the present call, and the same
     from present timing on Vulkan.
   - Metal's `presentedTime` / the drawable's presented handler.

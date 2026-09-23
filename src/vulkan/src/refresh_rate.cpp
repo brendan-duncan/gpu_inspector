@@ -136,15 +136,25 @@ void PlanRefreshSource(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDe
     }
 }
 
-bool SurfaceSupportsPresentTiming(DeviceData* dev, VkSurfaceKHR surface) {
+static bool QuerySurfacePresentTiming(DeviceData* dev, VkSurfaceKHR surface, VkPresentTimingSurfaceCapabilitiesEXT& timing) {
     if (!dev || !dev->presentTiming || !dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilities2KHR) return false;
-    VkPresentTimingSurfaceCapabilitiesEXT timing{VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT};
+    timing = VkPresentTimingSurfaceCapabilitiesEXT{VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT};
     VkSurfaceCapabilities2KHR caps{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
     caps.pNext = &timing;
     VkPhysicalDeviceSurfaceInfo2KHR info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR};
     info.surface = surface;
     if (dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilities2KHR(dev->physicalDevice, &info, &caps) != VK_SUCCESS) return false;
     return timing.presentTimingSupported == VK_TRUE;
+}
+
+bool SurfaceSupportsPresentTiming(DeviceData* dev, VkSurfaceKHR surface) {
+    VkPresentTimingSurfaceCapabilitiesEXT timing;
+    return QuerySurfacePresentTiming(dev, surface, timing);
+}
+
+VkPresentStageFlagsEXT SurfacePresentStages(DeviceData* dev, VkSurfaceKHR surface) {
+    VkPresentTimingSurfaceCapabilitiesEXT timing;
+    return QuerySurfacePresentTiming(dev, surface, timing) ? timing.presentStageQueries : 0;
 }
 
 #if defined(_WIN32)

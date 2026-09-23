@@ -10,6 +10,7 @@
 #include "format_info.h"
 #include "image_readback.h"
 #include "pipeline_stats.h"
+#include "present_timing.h"
 #include "refresh_rate.h"
 #include "shader_edit.h"
 #include "layer.h"
@@ -991,6 +992,9 @@ void Hook_vkCreateSwapchainKHR(VkDevice device, const VkSwapchainCreateInfoKHR* 
     info.refreshSource = (int)source;
     if (info.refreshMs > 0) Log("swapchain refresh period %.3f ms (%s)", info.refreshMs, RefreshSourceName(source));
     ResourceRegistry::Get().AddSwapchain(*pSwapchain, info);
+    // Dropped frames measured by the display (present_timing.h), on a swapchain made with the
+    // present-timing flag (the pre-hook above adds it when the surface supports it).
+    PresentTiming::Get().OnCreateSwapchain(GetDeviceData(device), *pSwapchain, pCreateInfo->surface);
 }
 
 void Hook_vkGetSwapchainImagesKHR(VkDevice device, VkSwapchainKHR swapchain, uint32_t* pSwapchainImageCount,

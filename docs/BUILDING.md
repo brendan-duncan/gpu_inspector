@@ -153,6 +153,7 @@ differently or misbehave on purpose.
 | `--descriptor-buffer` | Binds its set through `VK_EXT_descriptor_buffer` instead of a descriptor set |
 | `--compile-hitch` | Builds a pipeline inside every frame, so the CPU timeline has a compile in it |
 | `--hitch-every <n>` | Stalls 100 ms inside every nth frame, in its own code, for **Capture on hitch** |
+| `--stall <ms>` | Sleeps each frame so vsynced presents miss refreshes, for the dropped-frame count |
 | `--oob` | Writes past its storage buffer from the shader: found only by **GPU validation** |
 | `--hazard` | Writes the vertex buffer with no barrier, for synchronization validation |
 | `--leak` | Never destroys what it creates, for the leak report |

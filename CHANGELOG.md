@@ -6,6 +6,8 @@
 - `--capture-at N` on the Metal and OpenGL ES samples, and UI test cases for the application's capture on every Windows backend.
 - **Capture on hitch**: with a timing capture running, the first frame over its hitch threshold takes a frame capture of the next frame, in a tab named after the hitch.
 - `--hitch-every N` on the Vulkan, Direct3D 12 and Metal samples stalls one frame in N, for a timing capture to catch.
+- Dropped frames on Vulkan are measured by the display through `VK_EXT_present_timing` where the driver offers it, instead of estimated from the frame interval.
+- `test/triangle --stall <ms>` sleeps every frame so vsynced presents miss refreshes, as the Direct3D 12 sample's does.
 
 ## v0.22.1
 

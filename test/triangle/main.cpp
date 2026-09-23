@@ -165,6 +165,7 @@ struct App {
     bool descriptorBuffer = false;
     bool compileHitch = false;
     int hitchEvery = 0;       // --hitch-every N: stall 100 ms inside every Nth frame, for Capture on hitch
+    int stallMs = 0;          // --stall <ms>: sleep this long every frame, so vsynced presents miss refreshes
     bool outOfBounds = false;
     VkPipeline hitchPipeline{};
     // --pipeline-library: the cube pipeline is linked from two graphics pipeline libraries (vertex
@@ -2391,6 +2392,9 @@ struct App {
         // --hitch-every: the application's own work stalling the frame, which no call the layer
         // times accounts for. One frame in N, so a timing run has a hitch to trigger on.
         if (hitchEvery > 0 && frameCount > 0 && (int)(frameCount % hitchEvery) == 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        // --stall: every frame late, so a vsynced present misses refreshes and the display repeats
+        // the frame before it, which is what the dropped-frame count has to see.
+        if (stallMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
         VkFence fence = inFlight[frameSlot];
         CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
         uint32_t imageIndex = 0;
@@ -2629,6 +2633,7 @@ int RunApp(int argc, char** argv) {
         else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;
         else if (!strcmp(argv[i], "--compile-hitch")) app.compileHitch = true;
         else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc) app.hitchEvery = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stall") && i + 1 < argc) app.stallMs = atoi(argv[++i]);
         else if (!strcmp(argv[i], "--oob")) app.outOfBounds = true;
         else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;

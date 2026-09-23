@@ -142,6 +142,11 @@ struct DeviceData {
     double deficitRefreshMs = 0; // the estimate refreshDeficit was accumulated with
     long refreshDeficit = 0;     // refreshes elapsed minus frames presented, while vsync is on
     long droppedTotal = 0;       // the reported dropped frames: the largest deficit so far
+    // Dropped frames measured by the display through VK_EXT_present_timing (present_timing.h),
+    // which replace the estimate above in the report once a result has come back.
+    bool droppedMeasured = false;
+    uint32_t droppedMeasuredSince = 0;
+    uint64_t droppedMeasuredTotal = 0;
 
     // Returns the recorder for a command buffer that is being captured, else nullptr.
     // Cheap when no capture is active: a single relaxed atomic load.

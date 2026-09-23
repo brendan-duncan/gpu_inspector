@@ -44,6 +44,9 @@ void PlanRefreshSource(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDe
 
 // Whether a surface supports present timing (VK_EXT_present_timing), for the swapchain flag.
 bool SurfaceSupportsPresentTiming(DeviceData* dev, VkSurfaceKHR surface);
+// The present stages the surface can report times for (0 when it supports no present timing),
+// which is what the dropped-frame measurement asks for (present_timing.h).
+VkPresentStageFlagsEXT SurfacePresentStages(DeviceData* dev, VkSurfaceKHR surface);
 
 // The swapchain's refresh period in milliseconds through the device's source, 0 when unknown.
 double QueryRefreshMs(DeviceData* dev, VkSwapchainKHR swapchain, RefreshSource& source);

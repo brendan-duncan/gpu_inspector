@@ -1356,6 +1356,23 @@ def memory_capture(state, log):
         expect("still held" in (m.get("verdict") or "") and "pool" in (m.get("verdict") or ""), f"the verdict is {m.get('verdict')!r}")
 
 
+def dropped_frames(measured, vulkan=False):
+    # The sample sleeps 40 ms every frame under vsync (--stall 40), so the display repeats each
+    # frame at least once: the count has to be well over zero, and on Vulkan it has to be the
+    # display's own through VK_EXT_present_timing (src/vulkan/src/present_timing.h) rather
+    # than the estimate, which the FrameStats message says with droppedMeasured. D3D12 measures
+    # through DXGI_FRAME_STATISTICS already.
+    def check(state, log):
+        s = session(state)
+        return check_connected(state, log) + \
+            expect((s.get("droppedFrames") or 0) >= 20, f"{s.get('droppedFrames')} dropped frames counted under a 40 ms stall") + \
+            expect(not measured or s.get("droppedMeasured") is True,
+                   "the dropped frames were estimated from the frame interval, not measured by the display") + \
+            expect(not vulkan or "present timing: measuring dropped frames" in log,
+                   "the layer never set up present timing on the swapchain")
+    return check
+
+
 def capture_on_hitch(state, log):
     # Capture on hitch (--debug-capture-on-hitch with --debug-timing): the sample stalls one frame
     # in ninety (--hitch-every 90), and the timing run's first hitch has to take a frame capture
@@ -1474,6 +1491,7 @@ def triangle_cases(triangle):
         Case("timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
         Case("capture-on-hitch", launch + ["--args=--hitch-every 90", "--debug-timing=5000", "--debug-capture-on-hitch"],
              capture_on_hitch, delay_ms=15000),
+        Case("dropped-frames", launch + ["--args=--stall 40"], dropped_frames(measured=True), delay_ms=9000),
         Case("memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
         Case("app-capture", launch + ["--args=--capture-at 200", f"--debug-save={saved_app}"], app_capture, delay_ms=14000),
         Case("app-capture-open", [f"--debug-open={saved_app}"], app_capture_open, delay_ms=9000),
@@ -1887,6 +1905,7 @@ def d3d12_cases(triangle):
         Case("d3d12-timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
         Case("d3d12-capture-on-hitch", launch + ["--args=--hitch-every 90", "--debug-timing=5000", "--debug-capture-on-hitch"],
              capture_on_hitch, delay_ms=15000),
+        Case("d3d12-dropped-frames", launch + ["--args=--stall 40"], dropped_frames(measured=True), delay_ms=9000),
         Case("d3d12-memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
         Case("d3d12-app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
         Case("d3d12-shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),

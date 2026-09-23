@@ -62,6 +62,8 @@ add_library(${LAYER_LIB} SHARED
     src/validation.cpp
     src/refresh_rate.h
     src/refresh_rate.cpp
+    src/present_timing.h
+    src/present_timing.cpp
     src/depth_resolve.h
     src/depth_resolve.cpp
     src/pipeline_stats.h

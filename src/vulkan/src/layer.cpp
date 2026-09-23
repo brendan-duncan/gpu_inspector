@@ -17,6 +17,7 @@
 #include "cpu_timeline.h"
 #include "shader_statistics.h"
 #include "pipeline_stats.h"
+#include "present_timing.h"
 #include "refresh_rate.h"
 #include "stacktrace.h"
 #include "validation.h"
@@ -814,7 +815,13 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             // A new estimate (start-up, a mode switch) invalidates the deficit so far; the total
             // is the layer's, the UI shows it as sent.
             uint32_t dropped = 0;
-            if (data->refreshMs > 0) {
+            uint64_t droppedTotal = 0;
+            uint32_t measuredSince = 0;
+            const bool measured = PresentTiming::Get().Measured(data, measuredSince, droppedTotal);
+            if (measured) {
+                // The display's own count (present_timing.h) rather than the estimate below.
+                dropped = measuredSince;
+            } else if (data->refreshMs > 0) {
                 if (data->refreshMs != data->deficitRefreshMs) {
                     data->deficitRefreshMs = data->refreshMs;
                     data->refreshDeficit = 0;
@@ -825,9 +832,11 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
                     dropped = (uint32_t)(data->refreshDeficit - data->droppedTotal);
                     data->droppedTotal = data->refreshDeficit;
                 }
+                droppedTotal = (uint64_t)std::max(0L, data->droppedTotal);
             }
             w.Key("dropped"); w.Uint(dropped);
-            w.Key("droppedTotal"); w.Uint((uint64_t)std::max(0L, data->droppedTotal));
+            w.Key("droppedTotal"); w.Uint(droppedTotal);
+            if (measured) { w.Key("droppedMeasured"); w.Boolean(true); }
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
             data->frameTimeAccumMs = 0;
@@ -903,6 +912,7 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroySwapchainKHR(VkDevice device, VkSwapch
                                                       const VkAllocationCallbacks* pAllocator) {
     DeviceData* data = GetDeviceData(device);
     Hud::Get().OnDestroySwapchain(data, swapchain);
+    PresentTiming::Get().OnDestroySwapchain(swapchain);
     Tracker::Get().OnDestroy(HT_VkSwapchainKHR, (uint64_t)(uintptr_t)swapchain);
     data->dispatch.DestroySwapchainKHR(device, swapchain, pAllocator);
 }
@@ -919,9 +929,18 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     VkPresentInfoKHR hudPresent{};
     std::vector<VkSemaphore> hudWaits;
     if (Hud::Get().Draw(data, queue, pPresentInfo, hudPresent, hudWaits)) pPresentInfo = &hudPresent;
+    // Dropped frames measured by the display (present_timing.h): the earlier presents' results
+    // are read and this one asks for its own. A results queue that turns out full refuses the
+    // present, which is then made again as the application wrote it.
+    PresentTiming::PresentStorage timing;
+    const VkPresentInfoKHR* timed = PresentTiming::Get().BeforePresent(data, pPresentInfo, timing);
     // Hand-written, so the generated CPU timing does not reach it (see cpu_timeline.h).
     const uint64_t cpuStart = CpuEventBegin();
-    VkResult res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
+    VkResult res = data->dispatch.QueuePresentKHR(queue, timed);
+    if (timed != pPresentInfo && res == VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT) {
+        PresentTiming::Get().AfterPresent(timed, res);
+        res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
+    }
     CpuEventEnd(data, cpuStart, CpuCategory::Present);
     // This entry point is hand-written, so the generated device-lost check does not reach it.
     if (res == VK_ERROR_DEVICE_LOST) OnDeviceLost(data, "vkQueuePresentKHR");

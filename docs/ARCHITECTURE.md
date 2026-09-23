@@ -362,6 +362,17 @@ much slower than on the desktop.
    `refreshSource` and `displayRefreshMs`. An enabled Khronos validation layer older than the
    layer's headers does not know `VK_EXT_present_timing` (the SDK 1.4.304 one crashes on it),
    so the extension stays off then; `VKINSP_NO_REFRESH_EXTENSIONS=1` disables both.
+   With present timing on, the dropped frames are the display's own count rather than the
+   deficit above (`src/present_timing.*`): each swapchain gets a results queue
+   (`vkSetSwapchainPresentTimingQueueSizeEXT`), a time domain and the earliest display stage
+   the surface reports (first pixel out, first pixel visible, or the request dequeued), and
+   every present the application did not chain its own timing or present id into gets a
+   `VkPresentTimingsInfoEXT` asking for that stage. The results are drained before each present
+   (`vkGetPastPresentationTimingEXT`), and two consecutive frames shown n refresh periods apart
+   mean the display repeated the earlier one n-1 times. `FrameStats` then carries
+   `droppedMeasured`, as D3D12's does. A results queue that turns out full refuses the present
+   with `VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT`, which the layer answers by presenting again
+   untagged, so the application never sees the error.
 10. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
    owns one capture's data and views), as WebGPU Inspector does; earlier captures stay open for
    comparison until their tab is closed. Layer messages go to the most recently requested capture.
