@@ -37,17 +37,27 @@
 #include <unordered_set>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-namespace {
+namespace
+{
 
 constexpr uint32_t kRuns = 5;   // rasterized, passed, wireframe, stencil, back-facing
 
 /** One run of the pass: which draws it issues, and with which copy of their pipelines. */
-enum class OverlayMode : uint32_t { Rasterized = 0, Passed = 1, Wireframe = 2, Stencil = 3, BackFace = 4 };
+enum class OverlayMode : uint32_t
+{
+    Rasterized = 0,
+    Passed = 1,
+    Wireframe = 2,
+    Stencil = 3,
+    BackFace = 4
+};
 
 /** The pipeline copies this file asks for, beside overdraw's and the pixel history's (VariantKind). */
-enum class OverlayVariant : uint64_t {
+enum class OverlayVariant : uint64_t
+{
     Target = 16,      // the measured draw: the counting pixel shader, no tests, its own culling
     Tested = 17,      // ... with the pass's depth-stencil attached and its own tests
     Wireframe = 18,   // ... no tests, filled as lines
@@ -56,12 +66,14 @@ enum class OverlayVariant : uint64_t {
     BackFace = 21,    // ... nothing culled, and a shader that writes only for back faces
 };
 
-inline uint64_t OverlayKey(OverlayVariant v, DXGI_FORMAT depthFormat) {
+inline uint64_t OverlayKey(OverlayVariant v, DXGI_FORMAT depthFormat)
+{
     return (uint64_t)v | ((uint64_t)(uint32_t)depthFormat << 8);
 }
 
 /** One measured draw, held until the capture's lists have run and the counts can be read. */
-struct PendingOverlay {
+struct PendingOverlay
+{
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;   // not AddRef'd: only a key for the frame it ran in
     uint64_t listId = 0;
@@ -85,13 +97,15 @@ struct PendingOverlay {
 
 static_assert(std::is_nothrow_move_constructible_v<PendingOverlay>);
 
-struct OverlayState {
+struct OverlayState
+{
     std::mutex mutex;
     DrawOverlayRequest request;
     std::vector<PendingOverlay> pending;
 };
 
-OverlayState& State() {
+OverlayState& State()
+{
     static OverlayState* s = new OverlayState();
     return *s;
 }
@@ -101,63 +115,79 @@ OverlayState& State() {
  * Passed run alone -- the draws before it with their color writes off, so the depth and stencil
  * they wrote are there for the measured draw to test against.
  */
-class OverlayReplay final : public PassReplay {
+class OverlayReplay final : public PassReplay
+{
 public:
     OverlayReplay(OverlayMode mode, uint32_t drawIndex, DXGI_FORMAT depthFormat, D3D12_CPU_DESCRIPTOR_HANDLE dsv, bool dsvBound,
-                  const MeasuredPass& pass, PendingOverlay& out)
+        const MeasuredPass& pass, PendingOverlay& out)
         : _mode(mode), _target(drawIndex), _depthFormat(depthFormat), _dsv(dsv), _dsvBound(dsvBound), _pass(pass), _out(out) {}
 
-    void SetPipeline(ID3D12GraphicsCommandList* list, ID3D12PipelineState* pipeline) override {
+    void SetPipeline(ID3D12GraphicsCommandList* list, ID3D12PipelineState* pipeline) override
+    {
         _pipeline = pipeline;
         _list = list;
     }
 
     void ClearDepthStencil(ID3D12GraphicsCommandList* list, D3D12_CPU_DESCRIPTOR_HANDLE handle, D3D12_CLEAR_FLAGS flags,
-                           FLOAT depth, UINT8 stencil, UINT numRects, const D3D12_RECT* rects) override {
+        FLOAT depth, UINT8 stencil, UINT numRects, const D3D12_RECT* rects) override
+    {
         // The application clearing the pass's depth-stencil clears the measurement's copy of it,
         // so the draws that follow test against what they tested against in the frame.
-        if (_dsvBound && handle.ptr == _pass.depth.handle.ptr) list->ClearDepthStencilView(_dsv, flags, depth, stencil, numRects, rects);
+        if (_dsvBound && handle.ptr == _pass.depth.handle.ptr)
+            list->ClearDepthStencilView(_dsv, flags, depth, stencil, numRects, rects);
     }
 
-    void IssueDraw(ID3D12GraphicsCommandList* list, const std::function<void(ID3D12GraphicsCommandList*)>& draw) override {
+    void IssueDraw(ID3D12GraphicsCommandList* list, const std::function<void(ID3D12GraphicsCommandList*)>& draw) override
+    {
         const uint32_t index = _drawIndex++;
         const bool measured = index == _target;
         // Only the measured draw is issued, except in the Passed run, where the draws before it
         // have to move the depth and stencil first.
-        if (!measured && (_mode != OverlayMode::Passed || index > _target)) return;
-        if (!_pipeline) {
-            if (measured) Note("the draw had no pipeline bound");
+        if (!measured && (_mode != OverlayMode::Passed || index > _target))
+            return;
+        if (!_pipeline)
+        {
+            if (measured)
+                Note("the draw had no pipeline bound");
             return;
         }
         std::string error;
         ID3D12PipelineState* variant = VariantFor(measured, error);
-        if (!variant) {
-            if (measured) Note("the draw's pipeline could not be copied: " + error);
+        if (!variant)
+        {
+            if (measured)
+                Note("the draw's pipeline could not be copied: " + error);
             return;
         }
         list->SetPipelineState(variant);
-        if (_kept.insert(variant).second) KeepObject(_out.keep, variant);
+        if (_kept.insert(variant).second)
+            KeepObject(_out.keep, variant);
         draw(list);
-        if (measured) _issued = true;
+        if (measured)
+            _issued = true;
     }
 
-    void Skip() override {
+    void Skip() override
+    {
         const uint32_t index = _drawIndex++;
         // An ExecuteIndirect draws out of a buffer the GPU reads, so it cannot be issued on its own.
-        if (index == _target) Note("an indirect execution's draws cannot be issued one at a time");
+        if (index == _target)
+            Note("an indirect execution's draws cannot be issued one at a time");
     }
 
     /** The measured draw was issued in this run. */
     bool issued() const { return _issued; }
 
 private:
-    ID3D12PipelineState* VariantFor(bool measured, std::string& error) {
+    ID3D12PipelineState* VariantFor(bool measured, std::string& error)
+    {
         PipelineVariant v;
         v.countFormat = DXGI_FORMAT_R16_FLOAT;
         v.setDepthFormat = true;
         v.depthFormat = _dsvBound ? _depthFormat : DXGI_FORMAT_UNKNOWN;
         v.singleSample = true;
-        if (!measured) {
+        if (!measured)
+        {
             // An earlier draw of the Passed run: its own shaders, writing no color, so what it
             // leaves in the depth-stencil is what the measured draw meets.
             v.disableColorWrites = true;
@@ -165,29 +195,39 @@ private:
         }
         const bool dxil = ShaderEditor::Get().PipelineIsDxil(_pipeline);
         const D3D12_SHADER_BYTECODE* shader = CountingPixelShader(dxil, error);
-        if (!shader) return nullptr;
+        if (!shader)
+            return nullptr;
         v.pixelShader = shader->pShaderBytecode;
         v.pixelShaderSize = shader->BytecodeLength;
         OverlayVariant kind = OverlayVariant::Target;
-        if (_mode == OverlayMode::Passed) {
+        if (_mode == OverlayMode::Passed)
+        {
             kind = OverlayVariant::Tested;   // its own depth and stencil state, against the copy
-        } else if (_mode == OverlayMode::Stencil) {
+        }
+        else if (_mode == OverlayMode::Stencil)
+        {
             // The stencil test on its own: the depth test is what the Depth Test overlay answers,
             // and a fragment both would have rejected must not be reported as the stencil's doing.
             v.disableDepth = true;
             v.disableDepthWrite = true;
             kind = OverlayVariant::Stencil;
-        } else {
+        }
+        else
+        {
             v.disableDepth = true;
             v.disableStencil = true;
-            if (_mode == OverlayMode::Wireframe) {
+            if (_mode == OverlayMode::Wireframe)
+            {
                 v.wireframe = true;
                 kind = OverlayVariant::Wireframe;
-            } else if (_mode == OverlayMode::BackFace) {
+            }
+            else if (_mode == OverlayMode::BackFace)
+            {
                 // Its own geometry with nothing culled, and a shader that writes only where a
                 // back-facing fragment landed.
                 const D3D12_SHADER_BYTECODE* back = BackFacePixelShader(dxil, error);
-                if (!back) return nullptr;
+                if (!back)
+                    return nullptr;
                 v.pixelShader = back->pShaderBytecode;
                 v.pixelShaderSize = back->BytecodeLength;
                 v.disableCull = true;
@@ -198,8 +238,10 @@ private:
     }
 
     /** The first reason the draw could not be measured, beside whatever the pass already said. */
-    void Note(const std::string& text) {
-        if (_noted) return;
+    void Note(const std::string& text)
+    {
+        if (_noted)
+            return;
         _noted = true;
         _out.note += (_out.note.empty() ? "" : "; ") + text;
     }
@@ -220,11 +262,15 @@ private:
 };
 
 /** The command index of the pass's `drawIndex`-th draw, and the method recorded for it. */
-void FindDrawCommand(const ListOps& ops, CommandRecorder* rec, uint32_t drawIndex, uint32_t& command, std::string& method) {
+void FindDrawCommand(const ListOps& ops, CommandRecorder* rec, uint32_t drawIndex, uint32_t& command, std::string& method)
+{
     uint32_t index = 0;
-    for (size_t k = ops.passFirst; k < ops.ops.size(); ++k) {
-        if (ops.ops[k].key.policy != OpPolicy::Draw) continue;
-        if (index++ != drawIndex) continue;
+    for (size_t k = ops.passFirst; k < ops.ops.size(); ++k)
+    {
+        if (ops.ops[k].key.policy != OpPolicy::Draw)
+            continue;
+        if (index++ != drawIndex)
+            continue;
         command = ops.ops[k].command;
         method = RecordedMethod(rec, ops.ops[k].command);
         return;
@@ -232,16 +278,19 @@ void FindDrawCommand(const ListOps& ops, CommandRecorder* rec, uint32_t drawInde
 }
 
 /** How many draws the pass kept, so a request past the end says so rather than measuring nothing. */
-uint32_t DrawCountOf(const ListOps& ops) {
+uint32_t DrawCountOf(const ListOps& ops)
+{
     uint32_t count = 0;
     for (size_t k = ops.passFirst; k < ops.ops.size(); ++k)
-        if (ops.ops[k].key.policy == OpPolicy::Draw) count++;
+        if (ops.ops[k].key.policy == OpPolicy::Draw)
+            count++;
     return count;
 }
 
 }  // namespace
 
-void StartDrawOverlay(const DrawOverlayRequest& request) {
+void StartDrawOverlay(const DrawOverlayRequest& request)
+{
     OverlayState& s = State();
     std::vector<PendingOverlay> pending;
     {
@@ -253,26 +302,30 @@ void StartDrawOverlay(const DrawOverlayRequest& request) {
         Log("draw overlay: following draw %u of pass %u", request.drawIndex, request.passIndex);
 }
 
-bool DrawOverlayRequested() {
+bool DrawOverlayRequested()
+{
     OverlayState& s = State();
     std::lock_guard<std::mutex> lock(s.mutex);
     return s.request.enabled;
 }
 
-bool MatchDrawOverlayPass(const MeasuredPass& pass) {
+bool MatchDrawOverlayPass(const MeasuredPass& pass)
+{
     OverlayState& s = State();
     std::lock_guard<std::mutex> lock(s.mutex);
     return s.request.enabled && s.request.passIndex == pass.passIndex;
 }
 
-void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps& ops) {
+void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps& ops)
+{
     DrawOverlayRequest request;
     {
         OverlayState& s = State();
         std::lock_guard<std::mutex> lock(s.mutex);
         request = s.request;
     }
-    if (!request.enabled) return;
+    if (!request.enabled)
+        return;
 
     ScopedInternal internal;
     ID3D12GraphicsCommandList* list = pass.list;
@@ -287,15 +340,21 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
     FindDrawCommand(ops, rec, request.drawIndex, m.command, m.method);
 
     const uint32_t drawCount = DrawCountOf(ops);
-    if (!pass.note.empty()) {
+    if (!pass.note.empty())
+    {
         m.note = pass.note;
-    } else if (request.drawIndex >= drawCount) {
+    }
+    else if (request.drawIndex >= drawCount)
+    {
         m.note = "the pass holds " + std::to_string(drawCount) + " draws, and draw " + std::to_string(request.drawIndex) +
-                 " was asked for: the frame captured now is not the frame the draw was chosen in";
-    } else if (pass.layered) {
+            " was asked for: the frame captured now is not the frame the draw was chosen in";
+    }
+    else if (pass.layered)
+    {
         m.note = "a layered pass is not measured";
     }
-    if (!m.note.empty()) {
+    if (!m.note.empty())
+    {
         OverlayState& s = State();
         std::lock_guard<std::mutex> lock(s.mutex);
         s.pending.push_back(std::move(m));
@@ -306,27 +365,32 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
     // attachment as the pass began (CopyDepthStart), so the earlier draws move that rather than
     // the application's own.
     const bool tests = pass.hasDepth && pass.samples == 1 && pass.depthStart;
-    if (pass.hasDepth && !tests) {
+    if (pass.hasDepth && !tests)
+    {
         m.note = "the pass's depth-stencil attachment could not be copied, so the depth test overlay is not measured";
     }
 
     const std::vector<const LoggedOp*> before = EffectiveOps(ops.ops, ops.passFirst);
     const uint32_t rowPitch = (uint32_t)(((uint64_t)pass.width * 2 + D3D12_TEXTURE_DATA_PITCH_ALIGNMENT - 1) /
-                                         D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
+        D3D12_TEXTURE_DATA_PITCH_ALIGNMENT * D3D12_TEXTURE_DATA_PITCH_ALIGNMENT);
     m.rowPitch = rowPitch;
     bool any = false;
-    for (uint32_t run = 0; run < kRuns; ++run) {
+    for (uint32_t run = 0; run < kRuns; ++run)
+    {
         const OverlayMode mode = (OverlayMode)run;
-        if (mode == OverlayMode::Passed && !tests) continue;
+        if (mode == OverlayMode::Passed && !tests)
+            continue;
         // The stencil test alone needs a stencil aspect in the pass's depth-stencil copy.
-        if (mode == OverlayMode::Stencil && (!tests || !FormatOf(pass.depth.format).stencil)) continue;
+        if (mode == OverlayMode::Stencil && (!tests || !FormatOf(pass.depth.format).stencil))
+            continue;
 
         D3D12_CLEAR_VALUE clear{};
         clear.Format = DXGI_FORMAT_R16_FLOAT;
         ComPtr<ID3D12Resource> target = NewMeasurementTexture(device, DXGI_FORMAT_R16_FLOAT, pass.width, pass.height, 1, false,
-                                                              D3D12_RESOURCE_STATE_RENDER_TARGET, &clear);
+            D3D12_RESOURCE_STATE_RENDER_TARGET, &clear);
         D3D12_CPU_DESCRIPTOR_HANDLE rtv{};
-        if (!target || !MeasurementDescriptor(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, rtv)) {
+        if (!target || !MeasurementDescriptor(device, D3D12_DESCRIPTOR_HEAP_TYPE_RTV, rtv))
+        {
             m.note += std::string(m.note.empty() ? "" : "; ") + "no memory for the overlay target";
             break;
         }
@@ -341,7 +405,8 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
         D3D12_CPU_DESCRIPTOR_HANDLE dsv{};
         bool dsvBound = false;
         if ((mode == OverlayMode::Passed || mode == OverlayMode::Stencil) &&
-            MeasurementDescriptor(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, dsv)) {
+            MeasurementDescriptor(device, D3D12_DESCRIPTOR_HEAP_TYPE_DSV, dsv))
+        {
             D3D12_DEPTH_STENCIL_VIEW_DESC d{};
             d.Format = pass.depth.format;
             d.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
@@ -353,25 +418,32 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
         list->OMSetRenderTargets(1, &rtv, FALSE, dsvBound ? &dsv : nullptr);
         const FLOAT zero[4] = {0.0f, 0.0f, 0.0f, 0.0f};
         list->ClearRenderTargetView(rtv, zero, 0, nullptr);
-        if (dsvBound) {
+        if (dsvBound)
+        {
             // A real render pass clears its depth-stencil in BeginRenderPass rather than in a
             // command of its own, so the copy is cleared here the way the pass began.
             D3D12_CLEAR_FLAGS flags = (D3D12_CLEAR_FLAGS)0;
-            if (pass.depth.beginAccess == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR) flags |= D3D12_CLEAR_FLAG_DEPTH;
-            if (pass.depth.stencilBeginAccess == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR) flags |= D3D12_CLEAR_FLAG_STENCIL;
+            if (pass.depth.beginAccess == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+                flags |= D3D12_CLEAR_FLAG_DEPTH;
+            if (pass.depth.stencilBeginAccess == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR)
+                flags |= D3D12_CLEAR_FLAG_STENCIL;
             if (flags)
                 list->ClearDepthStencilView(dsv, flags, pass.depth.clearValue.DepthStencil.Depth,
-                                            pass.depth.clearValue.DepthStencil.Stencil, 0, nullptr);
+                    pass.depth.clearValue.DepthStencil.Stencil, 0, nullptr);
         }
 
         OverlayReplay replay(mode, request.drawIndex, pass.depth.format, dsv, dsvBound, pass, m);
-        for (const LoggedOp* op : before) op->op(list, replay);
-        for (size_t k = ops.passFirst; k < ops.ops.size(); ++k) ops.ops[k].op(list, replay);
+        for (const LoggedOp* op : before)
+            op->op(list, replay);
+        for (size_t k = ops.passFirst; k < ops.ops.size(); ++k)
+            ops.ops[k].op(list, replay);
         list->OMSetRenderTargets(0, nullptr, FALSE, nullptr);
-        if (!replay.issued()) continue;
+        if (!replay.issued())
+            continue;
 
         ComPtr<ID3D12Resource> staging = NewMeasurementReadback(device, (uint64_t)rowPitch * pass.height);
-        if (!staging) {
+        if (!staging)
+        {
             m.note += std::string(m.note.empty() ? "" : "; ") + "no staging memory for the overlay";
             break;
         }
@@ -391,28 +463,36 @@ void MeasureDrawOverlay(MeasuredPass& pass, CommandRecorder* rec, const ListOps&
         src.SubresourceIndex = 0;
         list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
         m.staging[run] = std::move(staging);
-        if (mode == OverlayMode::Passed) m.depthTested = true;
-        if (mode == OverlayMode::Wireframe) m.wireframe = true;
-        if (mode == OverlayMode::Stencil) m.stencilTested = true;
-        if (mode == OverlayMode::BackFace) m.backFaceTested = true;
+        if (mode == OverlayMode::Passed)
+            m.depthTested = true;
+        if (mode == OverlayMode::Wireframe)
+            m.wireframe = true;
+        if (mode == OverlayMode::Stencil)
+            m.stencilTested = true;
+        if (mode == OverlayMode::BackFace)
+            m.backFaceTested = true;
         any = true;
     }
     m.measured = any;
-    if (!any && m.note.empty()) m.note = "the draw was not issued again: it is not one this pass kept";
+    if (!any && m.note.empty())
+        m.note = "the draw was not issued again: it is not one this pass kept";
 
     OverlayState& s = State();
     std::lock_guard<std::mutex> lock(s.mutex);
     s.pending.push_back(std::move(m));
 }
 
-void AssignDrawOverlayFrame(ID3D12GraphicsCommandList* list, uint32_t frame) {
+void AssignDrawOverlayFrame(ID3D12GraphicsCommandList* list, uint32_t frame)
+{
     OverlayState& s = State();
     std::lock_guard<std::mutex> lock(s.mutex);
     for (PendingOverlay& m : s.pending)
-        if (m.list == list && m.frame == UINT32_MAX) m.frame = frame;
+        if (m.list == list && m.frame == UINT32_MAX)
+            m.frame = frame;
 }
 
-void SendDrawOverlay() {
+void SendDrawOverlay()
+{
     OverlayState& s = State();
     std::vector<PendingOverlay> pending;
     bool enabled = false;
@@ -422,42 +502,58 @@ void SendDrawOverlay() {
         enabled = s.request.enabled;
         s.request = DrawOverlayRequest{};
     }
-    if (!enabled) return;
+    if (!enabled)
+        return;
 
     // The counts of the three runs, folded into the one byte per pixel the UI draws
     // (OVERLAY_COVERED, OVERLAY_PASSED, OVERLAY_WIREFRAME in draw_overlay.ts).
     constexpr uint8_t kCovered = 1, kPassed = 2, kWireframe = 4, kStencilPassed = 8, kBackFacing = 16;
-    for (PendingOverlay& m : pending) {
+    for (PendingOverlay& m : pending)
+    {
         const size_t pixels = (size_t)m.width * m.height;
         std::vector<uint8_t> mask;
         uint64_t fragments = 0, covered = 0, passed = 0, stencilRejected = 0, backFacing = 0;
-        if (m.frame == UINT32_MAX) {
+        if (m.frame == UINT32_MAX)
+        {
             m.measured = false;
             m.note = "the command list was not executed during the capture";
         }
-        if (m.measured && pixels) {
+        if (m.measured && pixels)
+        {
             mask.assign(pixels, 0);
-            for (uint32_t run = 0; run < kRuns; ++run) {
-                if (!m.staging[run]) continue;
+            for (uint32_t run = 0; run < kRuns; ++run)
+            {
+                if (!m.staging[run])
+                    continue;
                 const uint8_t* mapped = nullptr;
                 {
                     ScopedInternal internal;
                     void* p = nullptr;
-                    if (SUCCEEDED(m.staging[run]->Map(0, nullptr, &p))) mapped = static_cast<const uint8_t*>(p);
+                    if (SUCCEEDED(m.staging[run]->Map(0, nullptr, &p)))
+                        mapped = static_cast<const uint8_t*>(p);
                 }
-                if (!mapped) continue;
-                const uint8_t bit = run == 0 ? kCovered : run == 1 ? kPassed : run == 2 ? kWireframe
-                                  : run == 3 ? kStencilPassed : kBackFacing;
-                for (uint32_t y = 0; y < m.height; ++y) {
+                if (!mapped)
+                    continue;
+                const uint8_t bit = run == 0 ? kCovered : run == 1 ? kPassed
+                    : run == 2                                     ? kWireframe
+                    : run == 3                                     ? kStencilPassed
+                                                                   : kBackFacing;
+                for (uint32_t y = 0; y < m.height; ++y)
+                {
                     const uint16_t* row = reinterpret_cast<const uint16_t*>(mapped + (uint64_t)y * m.rowPitch);
-                    for (uint32_t x = 0; x < m.width; ++x) {
+                    for (uint32_t x = 0; x < m.width; ++x)
+                    {
                         const float count = HalfToFloat(row[x]);
-                        if (count <= 0.0f) continue;
+                        if (count <= 0.0f)
+                            continue;
                         mask[(size_t)y * m.width + x] |= bit;
-                        if (run == 0) {
+                        if (run == 0)
+                        {
                             fragments += (uint64_t)(count + 0.5f);
                             covered++;
-                        } else if (run == 1) {
+                        }
+                        else if (run == 1)
+                        {
                             passed++;
                         }
                     }
@@ -467,52 +563,89 @@ void SendDrawOverlay() {
             }
         }
 
-        if (m.measured && pixels) {
-            for (uint8_t& bits : mask) {
-                if (!m.stencilTested && (bits & kCovered)) bits |= kStencilPassed;
-                else if (m.stencilTested && (bits & kCovered) && !(bits & kStencilPassed)) stencilRejected++;
+        if (m.measured && pixels)
+        {
+            for (uint8_t& bits : mask)
+            {
+                if (!m.stencilTested && (bits & kCovered))
+                    bits |= kStencilPassed;
+                else if (m.stencilTested && (bits & kCovered) && !(bits & kStencilPassed))
+                    stencilRejected++;
                 // Every pixel of a closed mesh has a back face behind it, so the bit only says
                 // something where culling left nothing: a back face landed and no front one did.
-                if (!(bits & kBackFacing)) continue;
-                if (bits & kCovered) bits &= (uint8_t)~kBackFacing;
-                else backFacing++;
+                if (!(bits & kBackFacing))
+                    continue;
+                if (bits & kCovered)
+                    bits &= (uint8_t)~kBackFacing;
+                else
+                    backFacing++;
             }
         }
 
         JsonWriter w;
         w.BeginObject();
-        w.Key("action"); w.String("CaptureDrawOverlay");
-        w.Key("command"); w.Uint(m.command);
-        w.Key("method"); w.String(m.method);
-        w.Key("frame"); w.Uint(m.frame == UINT32_MAX ? 0 : m.frame);
-        w.Key("commandBuffer"); w.Uint(m.listId);
-        w.Key("passIndex"); w.Uint(m.passIndex);
-        w.Key("drawIndex"); w.Uint(m.drawIndex);
-        w.Key("measured"); w.Boolean(m.measured);
-        w.Key("width"); w.Uint(m.width);
-        w.Key("height"); w.Uint(m.height);
-        w.Key("fragments"); w.Uint(fragments);
-        w.Key("pixelsCovered"); w.Uint(covered);
-        w.Key("pixelsPassed"); w.Uint(m.depthTested ? passed : covered);
-        w.Key("pixelsRejected"); w.Uint(m.depthTested && covered >= passed ? covered - passed : 0);
-        w.Key("depthTested"); w.Boolean(m.depthTested);
-        w.Key("wireframe"); w.Boolean(m.wireframe);
-        w.Key("stencilTested"); w.Boolean(m.stencilTested);
-        w.Key("backFaceTested"); w.Boolean(m.backFaceTested);
-        w.Key("pixelsStencilRejected"); w.Uint(stencilRejected);
-        w.Key("pixelsBackFacing"); w.Uint(backFacing);
-        w.Key("size"); w.Uint(mask.size());
-        if (!m.note.empty()) { w.Key("note"); w.String(m.note); }
+        w.Key("action");
+        w.String("CaptureDrawOverlay");
+        w.Key("command");
+        w.Uint(m.command);
+        w.Key("method");
+        w.String(m.method);
+        w.Key("frame");
+        w.Uint(m.frame == UINT32_MAX ? 0 : m.frame);
+        w.Key("commandBuffer");
+        w.Uint(m.listId);
+        w.Key("passIndex");
+        w.Uint(m.passIndex);
+        w.Key("drawIndex");
+        w.Uint(m.drawIndex);
+        w.Key("measured");
+        w.Boolean(m.measured);
+        w.Key("width");
+        w.Uint(m.width);
+        w.Key("height");
+        w.Uint(m.height);
+        w.Key("fragments");
+        w.Uint(fragments);
+        w.Key("pixelsCovered");
+        w.Uint(covered);
+        w.Key("pixelsPassed");
+        w.Uint(m.depthTested ? passed : covered);
+        w.Key("pixelsRejected");
+        w.Uint(m.depthTested && covered >= passed ? covered - passed : 0);
+        w.Key("depthTested");
+        w.Boolean(m.depthTested);
+        w.Key("wireframe");
+        w.Boolean(m.wireframe);
+        w.Key("stencilTested");
+        w.Boolean(m.stencilTested);
+        w.Key("backFaceTested");
+        w.Boolean(m.backFaceTested);
+        w.Key("pixelsStencilRejected");
+        w.Uint(stencilRejected);
+        w.Key("pixelsBackFacing");
+        w.Uint(backFacing);
+        w.Key("size");
+        w.Uint(mask.size());
+        if (!m.note.empty())
+        {
+            w.Key("note");
+            w.String(m.note);
+        }
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
 
-        if (!mask.empty()) {
+        if (!mask.empty())
+        {
             JsonWriter h;
             h.BeginObject();
-            h.Key("action"); h.String("CaptureDrawOverlayData");
-            h.Key("command"); h.Uint(m.command);
-            h.Key("commandBuffer"); h.Uint(m.listId);
-            h.Key("size"); h.Uint(mask.size());
+            h.Key("action");
+            h.String("CaptureDrawOverlayData");
+            h.Key("command");
+            h.Uint(m.command);
+            h.Key("commandBuffer");
+            h.Uint(m.listId);
+            h.Key("size");
+            h.Uint(mask.size());
             h.EndObject();
             Transport::Get().SendBinary(std::move(h.str()), mask.data(), mask.size());
         }

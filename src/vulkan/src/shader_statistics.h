@@ -20,13 +20,15 @@
 
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 struct InstanceData;
 
 /** What a device asked for at creation, decided before vkCreateDevice. */
-struct ShaderStatisticsSetup {
+struct ShaderStatisticsSetup
+{
     /** Our copy of the device's extension list, when the layer had to extend it. */
     std::vector<const char*> extensionNames;
     VkPhysicalDevicePipelineExecutablePropertiesFeaturesKHR features{
@@ -42,7 +44,7 @@ struct ShaderStatisticsSetup {
  * statistics were asked for and the physical device offers them. `info` is the layer's copy.
  */
 void PlanShaderStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info,
-                          ShaderStatisticsSetup& setup);
+    ShaderStatisticsSetup& setup);
 
 /** Whether the layer should add the capture flag and query the statistics on this device. */
 bool ShaderStatisticsEnabled(const DeviceData* dev);

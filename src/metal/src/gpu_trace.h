@@ -12,13 +12,14 @@
 
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * Asks for the next frame as a .gputrace at `path`, or at a default beside the Desktop when
  * empty. Answered with a `GpuTrace` message once written, or once it could not be.
  */
-void RequestGpuTrace(const std::string &path);
+void RequestGpuTrace(const std::string& path);
 
 /** A frame boundary, with the device the frame ran on: starts or stops the trace. */
 void GpuTraceAtFrameBoundary(id device);

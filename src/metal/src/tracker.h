@@ -24,7 +24,8 @@
 
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * Registers an object under the protocol name the application knows it by, and streams AddObject.
@@ -37,8 +38,8 @@ namespace mtlinsp {
  * object back more than once (the device, most obviously). Returns 0, tracking nothing, for an
  * object the library made for itself (see Internal in swizzle.h).
  */
-uint64_t TrackObject(id object, const char *type, const char *cmd, id parent,
-                     const std::string &argsJson);
+uint64_t TrackObject(id object, const char* type, const char* cmd, id parent,
+    const std::string& argsJson);
 
 /** Drops an object that is being deallocated, and streams DeleteObjects. No-op if untracked. */
 void UntrackObject(id object);
@@ -69,20 +70,20 @@ id LiveObject(uint64_t id);
  * goes here when it was compiled from source, and its metallib bytes when it was loaded
  * precompiled — the two cases a real engine mixes.
  */
-void AddBlob(id object, const char *name, const void *data, size_t size);
+void AddBlob(id object, const char* name, const void* data, size_t size);
 
 /**
  * A property that changed after creation (a heap's usage, a resource's purgeable state), as an
  * `ObjectUpdate` carrying the fields of `argsJson`, an object. The latest update per `key` is
  * kept and replayed after the object in a snapshot, so a UI connecting later sees it too.
  */
-void UpdateObject(id object, const char *key, const std::string &argsJson);
+void UpdateObject(id object, const char* key, const std::string& argsJson);
 
 /** Answers `RequestBlob` with an `ObjectBlob` message and the bytes. */
 void SendBlob(uint64_t objectId, uint32_t index);
 
 /** Answers `RequestStacktraces` with the symbolized creation stacks of the ids that have one. */
-void SendStacktraces(const std::vector<uint64_t> &ids);
+void SendStacktraces(const std::vector<uint64_t>& ids);
 
 /** Streams ObjectSetLabel when an object's label has changed since it was last seen. */
 void TrackLabel(id object);

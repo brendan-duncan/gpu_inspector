@@ -116,7 +116,8 @@
 #define GPUINSP_SAMPLER_LINUX 0
 #endif
 
-namespace gpuinsp {
+namespace gpuinsp
+{
 
 #if GPUINSP_SAMPLER_LINUX
 /**
@@ -128,7 +129,8 @@ namespace gpuinsp {
  * gave up would otherwise write into the slot while the next thread is being sampled: it checks
  * the generation it was sent for, and a stale one returns without touching anything.
  */
-struct CpuSamplerSlot {
+struct CpuSamplerSlot
+{
     std::atomic<uint32_t> target{0};       // the thread expected to answer; 0 when none is
     std::atomic<uint32_t> generation{0};
     uint64_t stackTop = 0;                 // in: how far up the handler may copy
@@ -140,14 +142,31 @@ struct CpuSamplerSlot {
 inline CpuSamplerSlot _slot;
 #endif
 
-class CpuSampler {
+class CpuSampler
+{
 public:
     /** What was recorded since the last Take. */
-    struct Batch {
-        struct Thread { uint32_t id = 0; std::string name; };
-        struct Stack { uint32_t id = 0; std::vector<uint64_t> addresses; };
+    struct Batch
+    {
+        struct Thread
+        {
+            uint32_t id = 0;
+            std::string name;
+        };
+        struct Stack
+        {
+            uint32_t id = 0;
+            std::vector<uint64_t> addresses;
+        };
         /** `count` samples of thread `thread` (an index into `threads`) under stack `stack` in frame `frame`. */
-        struct Sample { uint32_t frame = 0; uint32_t thread = 0; uint32_t stack = 0; bool running = false; uint32_t count = 0; };
+        struct Sample
+        {
+            uint32_t frame = 0;
+            uint32_t thread = 0;
+            uint32_t stack = 0;
+            bool running = false;
+            uint32_t count = 0;
+        };
         double periodMs = 0;
         /** Every thread seen so far, so an index stays good from one batch to the next. */
         std::vector<Thread> threads;
@@ -158,7 +177,8 @@ public:
         uint64_t dropped = 0;
     };
 
-    static CpuSampler& Get() {
+    static CpuSampler& Get()
+    {
         static CpuSampler instance;
         return instance;
     }
@@ -167,7 +187,8 @@ public:
     static bool Available() { return GPUINSP_CPU_SAMPLER != 0; }
 
     /** The calling thread is the library's own and is left out: its stack is never the application's answer. */
-    void ExcludeCurrentThread() {
+    void ExcludeCurrentThread()
+    {
 #if GPUINSP_SAMPLER_WINDOWS
         std::lock_guard<std::mutex> lock(_mutex);
         _excluded.insert(GetCurrentThreadId());
@@ -179,14 +200,17 @@ public:
     }
 
     /** Starts sampling at `hz` (clamped to 10..2000), discarding what an earlier run recorded. False where it cannot. */
-    bool Start(uint32_t hz) {
+    bool Start(uint32_t hz)
+    {
 #if GPUINSP_CPU_SAMPLER
         Stop();
 #if GPUINSP_SAMPLER_LINUX
-        if (!InstallHandler()) return false;
+        if (!InstallHandler())
+            return false;
 #endif
         std::lock_guard<std::mutex> lock(_mutex);
-        _periodMs = 1000.0 / (double)(hz < 10 ? 10 : hz > 2000 ? 2000 : hz);
+        _periodMs = 1000.0 / (double)(hz < 10 ? 10 : hz > 2000 ? 2000
+                                                               : hz);
         _threads.clear();
         _threadIndex.clear();
         _stackIds.clear();
@@ -203,10 +227,13 @@ public:
 #endif
     }
 
-    void Stop() {
+    void Stop()
+    {
 #if GPUINSP_CPU_SAMPLER
-        if (!_running.exchange(false, std::memory_order_acq_rel)) return;
-        if (_worker.joinable()) _worker.join();
+        if (!_running.exchange(false, std::memory_order_acq_rel))
+            return;
+        if (_worker.joinable())
+            _worker.join();
 #endif
     }
 
@@ -216,17 +243,22 @@ public:
     void NoteFrame(uint32_t frame) { _frame.store(frame, std::memory_order_relaxed); }
 
     /** What was recorded since the last call; false when that is nothing. */
-    bool Take(Batch& out) {
+    bool Take(Batch& out)
+    {
         std::lock_guard<std::mutex> lock(_mutex);
-        if (_counts.empty() && _stacksSent >= _stacks.size()) return false;
+        if (_counts.empty() && _stacksSent >= _stacks.size())
+            return false;
         out.periodMs = _periodMs;
         out.threads.clear();
-        for (const ThreadInfo& t : _threads) out.threads.push_back({t.id, t.name});
+        for (const ThreadInfo& t : _threads)
+            out.threads.push_back({t.id, t.name});
         out.stacks.clear();
-        for (size_t i = _stacksSent; i < _stacks.size(); ++i) out.stacks.push_back({(uint32_t)i + 1, _stacks[i]});
+        for (size_t i = _stacksSent; i < _stacks.size(); ++i)
+            out.stacks.push_back({(uint32_t)i + 1, _stacks[i]});
         _stacksSent = _stacks.size();
         out.samples.clear();
-        for (const auto& [key, count] : _counts) {
+        for (const auto& [key, count] : _counts)
+        {
             Batch::Sample s;
             s.frame = std::get<0>(key);
             s.thread = std::get<1>(key);
@@ -244,7 +276,8 @@ private:
     CpuSampler() = default;
     ~CpuSampler() { Stop(); }
 
-    struct ThreadInfo {
+    struct ThreadInfo
+    {
         uint32_t id = 0;
         std::string name;
 #if GPUINSP_SAMPLER_WINDOWS
@@ -314,7 +347,8 @@ private:
     using GetThreadDescriptionFn = HRESULT(WINAPI*)(HANDLE, PWSTR*);
 
     /** ThreadBasicInformation: the TEB is the second pointer of it. */
-    struct ThreadBasicInformation {
+    struct ThreadBasicInformation
+    {
         LONG exitStatus;
         PVOID tebBaseAddress;
         PVOID clientId[2];
@@ -329,33 +363,42 @@ private:
      * the application's own thread takes that lock when it collects a batch (Take), from inside
      * its frame, and a frame that waits milliseconds for a profiler is a hitch the profiler made.
      */
-    void RefreshThreads(uint32_t self) {
+    void RefreshThreads(uint32_t self)
+    {
         static const auto query = reinterpret_cast<NtQueryInformationThreadFn>(GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "NtQueryInformationThread"));
         static const auto describe = reinterpret_cast<GetThreadDescriptionFn>(GetProcAddress(GetModuleHandleW(L"kernelbase.dll"), "GetThreadDescription"));
-        if (!query) return;
+        if (!query)
+            return;
         const HANDLE snapshot = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
-        if (snapshot == INVALID_HANDLE_VALUE) return;
+        if (snapshot == INVALID_HANDLE_VALUE)
+            return;
         const DWORD pid = GetCurrentProcessId();
         std::unordered_set<uint32_t> alive;
         THREADENTRY32 entry{};
         entry.dwSize = sizeof(entry);
         for (BOOL more = Thread32First(snapshot, &entry); more; more = Thread32Next(snapshot, &entry))
-            if (entry.th32OwnerProcessID == pid) alive.insert(entry.th32ThreadID);
+            if (entry.th32OwnerProcessID == pid)
+                alive.insert(entry.th32ThreadID);
         CloseHandle(snapshot);
 
         // Known threads are only ever changed by this thread, so they can be read without the lock.
         std::vector<ThreadInfo> found;
-        for (const uint32_t id : alive) {
+        for (const uint32_t id : alive)
+        {
             bool skip = id == self || _threadIndex.count(id) != 0 || _threads.size() + found.size() >= kMaxThreads;
-            if (!skip) {
+            if (!skip)
+            {
                 std::lock_guard<std::mutex> lock(_mutex);
                 skip = _excluded.count(id) != 0;
             }
-            if (skip) continue;
+            if (skip)
+                continue;
             const HANDLE handle = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, id);
-            if (!handle) continue;
+            if (!handle)
+                continue;
             ThreadBasicInformation basic{};
-            if (query(handle, 0, &basic, sizeof(basic), nullptr) < 0 || !basic.tebBaseAddress) {
+            if (query(handle, 0, &basic, sizeof(basic), nullptr) < 0 || !basic.tebBaseAddress)
+            {
                 CloseHandle(handle);
                 continue;
             }
@@ -365,9 +408,11 @@ private:
             t.tib = static_cast<const NT_TIB*>(basic.tebBaseAddress);
             QueryThreadCycleTime(handle, &t.cycles);
             PWSTR wide = nullptr;
-            if (describe && SUCCEEDED(describe(handle, &wide)) && wide) {
+            if (describe && SUCCEEDED(describe(handle, &wide)) && wide)
+            {
                 const int n = WideCharToMultiByte(CP_UTF8, 0, wide, -1, nullptr, 0, nullptr, nullptr);
-                if (n > 1) {
+                if (n > 1)
+                {
                     t.name.resize((size_t)n - 1);
                     WideCharToMultiByte(CP_UTF8, 0, wide, -1, t.name.data(), n, nullptr, nullptr);
                 }
@@ -376,12 +421,15 @@ private:
             found.push_back(std::move(t));
         }
         std::lock_guard<std::mutex> lock(_mutex);
-        for (ThreadInfo& t : found) {
+        for (ThreadInfo& t : found)
+        {
             _threadIndex[t.id] = (uint32_t)_threads.size();
             _threads.push_back(std::move(t));
         }
-        for (ThreadInfo& t : _threads) {
-            if (t.gone || alive.count(t.id)) continue;
+        for (ThreadInfo& t : _threads)
+        {
+            if (t.gone || alive.count(t.id))
+                continue;
             t.gone = true;
             CloseHandle(t.handle);
             t.handle = nullptr;
@@ -394,49 +442,69 @@ private:
      * unwind restores, are moved into the copy as they appear. Plain data only, so that the walk
      * can sit in a __try: a frame that runs past what was copied reads past the buffer.
      */
-    static size_t Unwind(CONTEXT context, const uint8_t* copy, size_t copied, uint64_t original, uint64_t* out, size_t capacity) {
+    static size_t Unwind(CONTEXT context, const uint8_t* copy, size_t copied, uint64_t original, uint64_t* out, size_t capacity)
+    {
         size_t count = 0;
         const uint64_t low = reinterpret_cast<uint64_t>(copy), high = low + copied;
         const int64_t delta = (int64_t)low - (int64_t)original;
         auto move = [&](DWORD64& r) { if (r >= original && r < original + copied) r = (DWORD64)((int64_t)r + delta); };
         auto moveAll = [&](CONTEXT& c) {
-            move(c.Rsp); move(c.Rbp); move(c.Rbx); move(c.Rsi); move(c.Rdi);
-            move(c.R12); move(c.R13); move(c.R14); move(c.R15);
+            move(c.Rsp);
+            move(c.Rbp);
+            move(c.Rbx);
+            move(c.Rsi);
+            move(c.Rdi);
+            move(c.R12);
+            move(c.R13);
+            move(c.R14);
+            move(c.R15);
         };
-        __try {
-            if (capacity) out[count++] = context.Rip;
+        __try
+        {
+            if (capacity)
+                out[count++] = context.Rip;
             moveAll(context);
-            while (count < capacity) {
-                if (context.Rsp < low || context.Rsp + sizeof(uint64_t) > high) break;
+            while (count < capacity)
+            {
+                if (context.Rsp < low || context.Rsp + sizeof(uint64_t) > high)
+                    break;
                 DWORD64 imageBase = 0;
                 const PRUNTIME_FUNCTION function = RtlLookupFunctionEntry(context.Rip, &imageBase, nullptr);
-                if (!function) {
+                if (!function)
+                {
                     // A leaf: its return address is at the top of the stack.
                     std::memcpy(&context.Rip, reinterpret_cast<const void*>(context.Rsp), sizeof(uint64_t));
                     context.Rsp += sizeof(uint64_t);
-                } else {
+                }
+                else
+                {
                     PVOID handlerData = nullptr;
                     DWORD64 establisher = 0;
                     RtlVirtualUnwind(UNW_FLAG_NHANDLER, imageBase, context.Rip, function, &context, &handlerData, &establisher, nullptr);
                     moveAll(context);
                 }
-                if (!context.Rip) break;
+                if (!context.Rip)
+                    break;
                 out[count++] = context.Rip;
             }
-        } __except (EXCEPTION_EXECUTE_HANDLER) {
+        }
+        __except (EXCEPTION_EXECUTE_HANDLER)
+        {
             // What was walked before the fault stands.
         }
         return count;
     }
 
-    void Run() {
+    void Run()
+    {
         const uint32_t self = GetCurrentThreadId();
         // A finer timer for the life of the capture: the default 15.6 ms tick would make 250 Hz 64.
         const HMODULE winmm = LoadLibraryW(L"winmm.dll");
         using PeriodFn = UINT(WINAPI*)(UINT);
         const auto beginPeriod = winmm ? reinterpret_cast<PeriodFn>(GetProcAddress(winmm, "timeBeginPeriod")) : nullptr;
         const auto endPeriod = winmm ? reinterpret_cast<PeriodFn>(GetProcAddress(winmm, "timeEndPeriod")) : nullptr;
-        if (beginPeriod) beginPeriod(1);
+        if (beginPeriod)
+            beginPeriod(1);
 
         std::vector<uint8_t> copy(kMaxCopy + 4096, 0);   // and a page of zeros after it for a walk that overruns a little
         uint64_t frames[kMaxFrames];
@@ -447,15 +515,20 @@ private:
         std::vector<ThreadInfo*> targets;
         targets.reserve(kMaxThreads);
 
-        while (_running.load(std::memory_order_relaxed)) {
+        while (_running.load(std::memory_order_relaxed))
+        {
             const double periodMs = _periodMs;   // set before this thread started
             // Twice a second: a snapshot walks every thread of the system.
-            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0) RefreshThreads(self);
+            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0)
+                RefreshThreads(self);
             // Only this thread adds to the list or marks a thread gone, so it reads it as it is.
             targets.clear();
-            for (ThreadInfo& t : _threads) if (!t.gone) targets.push_back(&t);
+            for (ThreadInfo& t : _threads)
+                if (!t.gone)
+                    targets.push_back(&t);
             const uint32_t frame = _frame.load(std::memory_order_relaxed);
-            for (ThreadInfo* t : targets) {
+            for (ThreadInfo* t : targets)
+            {
                 // Whether it ran since the sample before: a thread that used no cycles was waiting.
                 // None to speak of, that is: being stopped for the last sample woke it for the few
                 // thousand cycles a suspend costs, which a thread that really ran spends in microseconds.
@@ -463,7 +536,8 @@ private:
                 const bool ran = QueryThreadCycleTime(t->handle, &cycles) && cycles - t->cycles > kRunningCycles;
                 t->cycles = cycles;
                 // Still where it was: the wait it was last found in, which needs no stopping it to know.
-                if (!ran && t->lastStack) {
+                if (!ran && t->lastStack)
+                {
                     Count(frame, *t, t->lastStack, false);
                     continue;
                 }
@@ -473,13 +547,16 @@ private:
                 size_t copied = 0;
                 uint64_t original = 0;
                 bool ok = false;
-                if (SuspendThread(t->handle) != (DWORD)-1) {
+                if (SuspendThread(t->handle) != (DWORD)-1)
+                {
                     // ---- The thread is stopped and may hold any lock: memory is copied, and nothing else.
-                    if (GetThreadContext(t->handle, &context)) {
+                    if (GetThreadContext(t->handle, &context))
+                    {
                         const uint64_t base = reinterpret_cast<uint64_t>(t->tib->StackBase);
                         const uint64_t limit = reinterpret_cast<uint64_t>(t->tib->StackLimit);
                         original = context.Rsp;
-                        if (original >= limit && original < base) {
+                        if (original >= limit && original < base)
+                        {
                             copied = (size_t)(base - original < kMaxCopy ? base - original : kMaxCopy);
                             std::memcpy(copy.data(), reinterpret_cast<const void*>(original), copied);
                             ok = true;
@@ -488,9 +565,11 @@ private:
                     ResumeThread(t->handle);
                     // ---- Running again.
                 }
-                if (!ok) continue;
+                if (!ok)
+                    continue;
                 const size_t depth = Unwind(context, copy.data(), copied, original, frames, kMaxFrames);
-                if (!depth) continue;
+                if (!depth)
+                    continue;
                 t->lastStack = Record(frame, *t, frames, depth, ran);
                 // Being stopped cost it cycles of its own, which are not work it did.
                 QueryThreadCycleTime(t->handle, &cycles);
@@ -499,17 +578,23 @@ private:
             next.QuadPart += (LONGLONG)((double)frequency.QuadPart * periodMs / 1000.0);
             LARGE_INTEGER now;
             QueryPerformanceCounter(&now);
-            if (next.QuadPart <= now.QuadPart) {
+            if (next.QuadPart <= now.QuadPart)
+            {
                 next = now;   // fell behind (many threads, or a stall): no catching up in a burst
-            } else {
+            }
+            else
+            {
                 const DWORD ms = (DWORD)((next.QuadPart - now.QuadPart) * 1000 / frequency.QuadPart);
                 Sleep(ms ? ms : 1);
             }
         }
-        if (endPeriod) endPeriod(1);
+        if (endPeriod)
+            endPeriod(1);
         std::lock_guard<std::mutex> lock(_mutex);
-        for (ThreadInfo& t : _threads) {
-            if (t.handle) CloseHandle(t.handle);
+        for (ThreadInfo& t : _threads)
+        {
+            if (t.handle)
+                CloseHandle(t.handle);
             t.handle = nullptr;
         }
     }
@@ -517,7 +602,8 @@ private:
 #elif GPUINSP_SAMPLER_MACH
 
     /** This thread's Mach port as an id. The port is released; the name is what identifies it. */
-    static uint32_t SelfId() {
+    static uint32_t SelfId()
+    {
         const mach_port_t port = mach_thread_self();
         mach_port_deallocate(mach_task_self(), port);
         return (uint32_t)port;
@@ -535,26 +621,32 @@ private:
      * takes that lock to collect a batch from inside its frame, and a frame that waits on a
      * profiler is a hitch the profiler made.
      */
-    void RefreshThreads(uint32_t self) {
+    void RefreshThreads(uint32_t self)
+    {
         thread_act_array_t list = nullptr;
         mach_msg_type_number_t count = 0;
-        if (task_threads(mach_task_self(), &list, &count) != KERN_SUCCESS) return;
+        if (task_threads(mach_task_self(), &list, &count) != KERN_SUCCESS)
+            return;
 
         std::unordered_set<uint32_t> alive;
-        for (mach_msg_type_number_t i = 0; i < count; ++i) alive.insert((uint32_t)list[i]);
+        for (mach_msg_type_number_t i = 0; i < count; ++i)
+            alive.insert((uint32_t)list[i]);
 
         std::vector<ThreadInfo> found;
-        for (mach_msg_type_number_t i = 0; i < count; ++i) {
+        for (mach_msg_type_number_t i = 0; i < count; ++i)
+        {
             const thread_act_t port = list[i];
             const uint32_t id = (uint32_t)port;
             bool skip = id == self || _threadIndex.count(id) != 0 || _threads.size() + found.size() >= kMaxThreads;
-            if (!skip) {
+            if (!skip)
+            {
                 std::lock_guard<std::mutex> lock(_mutex);
                 skip = _excluded.count(id) != 0;
             }
             // A port this run is not going to keep is released here; the ones kept are released
             // when the thread is found gone, or when sampling stops.
-            if (skip) {
+            if (skip)
+            {
                 mach_port_deallocate(mach_task_self(), port);
                 continue;
             }
@@ -563,7 +655,8 @@ private:
             // stack bounds to copy within, and a copy without bounds is a crash rather than a
             // sample, so it is left alone.
             const pthread_t thread = pthread_from_mach_thread_np(port);
-            if (!thread) {
+            if (!thread)
+            {
                 mach_port_deallocate(mach_task_self(), port);
                 continue;
             }
@@ -573,39 +666,47 @@ private:
             t.stackBase = (uint64_t)pthread_get_stackaddr_np(thread);
             t.stackLimit = t.stackBase - (uint64_t)pthread_get_stacksize_np(thread);
             char name[64] = {0};
-            if (pthread_getname_np(thread, name, sizeof(name)) == 0 && name[0]) t.name = name;
+            if (pthread_getname_np(thread, name, sizeof(name)) == 0 && name[0])
+                t.name = name;
             t.micros = CpuMicros(port);
             found.push_back(std::move(t));
         }
         vm_deallocate(mach_task_self(), (vm_address_t)list, count * sizeof(thread_act_t));
 
         std::lock_guard<std::mutex> lock(_mutex);
-        for (ThreadInfo& t : found) {
+        for (ThreadInfo& t : found)
+        {
             _threadIndex[t.id] = (uint32_t)_threads.size();
             _threads.push_back(std::move(t));
         }
-        for (ThreadInfo& t : _threads) {
-            if (t.gone || alive.count(t.id)) continue;
+        for (ThreadInfo& t : _threads)
+        {
+            if (t.gone || alive.count(t.id))
+                continue;
             t.gone = true;
-            if (t.port != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), t.port);
+            if (t.port != MACH_PORT_NULL)
+                mach_port_deallocate(mach_task_self(), t.port);
             t.port = MACH_PORT_NULL;
         }
     }
 
     /** A thread's own CPU time, user and system together, in microseconds; 0 when it cannot be asked. */
-    static uint64_t CpuMicros(thread_act_t port) {
+    static uint64_t CpuMicros(thread_act_t port)
+    {
         thread_basic_info_data_t info;
         mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
-        if (thread_info(port, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS) return 0;
-        return (uint64_t)info.user_time.seconds * 1000000 + (uint64_t)info.user_time.microseconds
-             + (uint64_t)info.system_time.seconds * 1000000 + (uint64_t)info.system_time.microseconds;
+        if (thread_info(port, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS)
+            return 0;
+        return (uint64_t)info.user_time.seconds * 1000000 + (uint64_t)info.user_time.microseconds + (uint64_t)info.system_time.seconds * 1000000 + (uint64_t)info.system_time.microseconds;
     }
 
     /** Whether a thread is on a core right now, which is the other half of "has it run". */
-    static bool OnCore(thread_act_t port) {
+    static bool OnCore(thread_act_t port)
+    {
         thread_basic_info_data_t info;
         mach_msg_type_number_t count = THREAD_BASIC_INFO_COUNT;
-        if (thread_info(port, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS) return true;
+        if (thread_info(port, THREAD_BASIC_INFO, (thread_info_t)&info, &count) != KERN_SUCCESS)
+            return true;
         return info.run_state == TH_STATE_RUNNING;
     }
 
@@ -621,29 +722,37 @@ private:
      * the same: the saved frame pointer at [fp] and the return address at [fp + 8].
      */
     static size_t Unwind(uint64_t pc, uint64_t fp, const uint8_t* copy, size_t copied, uint64_t original,
-                         uint64_t* out, size_t capacity) {
+        uint64_t* out, size_t capacity)
+    {
         size_t count = 0;
-        if (capacity) out[count++] = pc;
+        if (capacity)
+            out[count++] = pc;
         const uint64_t low = original, high = original + copied;
         auto read = [&](uint64_t at, uint64_t& value) -> bool {
-            if (at < low || at + sizeof(uint64_t) > high) return false;
+            if (at < low || at + sizeof(uint64_t) > high)
+                return false;
             std::memcpy(&value, copy + (at - low), sizeof(uint64_t));
             return true;
         };
-        while (count < capacity) {
+        while (count < capacity)
+        {
             uint64_t caller = 0, ret = 0;
-            if (!read(fp, caller) || !read(fp + 8, ret)) break;
-            if (!ret) break;
+            if (!read(fp, caller) || !read(fp + 8, ret))
+                break;
+            if (!ret)
+                break;
             out[count++] = ret;
             // A frame pointer that does not move up the stack is not one: the chain has ended, or
             // what was read is not a frame at all.
-            if (caller <= fp) break;
+            if (caller <= fp)
+                break;
             fp = caller;
         }
         return count;
     }
 
-    void Run() {
+    void Run()
+    {
         const uint32_t self = SelfId();
         std::vector<uint8_t> copy(kMaxCopy + 4096, 0);
         uint64_t frames[kMaxFrames];
@@ -652,14 +761,19 @@ private:
         targets.reserve(kMaxThreads);
         auto next = std::chrono::steady_clock::now();
 
-        while (_running.load(std::memory_order_relaxed)) {
+        while (_running.load(std::memory_order_relaxed))
+        {
             const double periodMs = _periodMs;   // set before this thread started
-            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0) RefreshThreads(self);
+            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0)
+                RefreshThreads(self);
             // Only this thread adds to the list or marks a thread gone, so it reads it as it is.
             targets.clear();
-            for (ThreadInfo& t : _threads) if (!t.gone) targets.push_back(&t);
+            for (ThreadInfo& t : _threads)
+                if (!t.gone)
+                    targets.push_back(&t);
             const uint32_t frame = _frame.load(std::memory_order_relaxed);
-            for (ThreadInfo* t : targets) {
+            for (ThreadInfo* t : targets)
+            {
                 // Whether it has run since the sample before. The CPU time catches a thread that
                 // woke, worked and went back to waiting between two samples; `run_state` catches
                 // the one that is on a core right now, whose time may not have ticked over a
@@ -668,7 +782,8 @@ private:
                 const bool ran = micros - t->micros > kRunningMicros || OnCore(t->port);
                 t->micros = micros;
                 // Still where it was: the wait it was last found in, which needs no stopping to know.
-                if (!ran && t->lastStack) {
+                if (!ran && t->lastStack)
+                {
                     Count(frame, *t, t->lastStack, false);
                     continue;
                 }
@@ -685,10 +800,12 @@ private:
                 size_t copied = 0;
                 uint64_t original = 0, pc = 0, fp = 0;
                 bool ok = false;
-                if (thread_suspend(t->port) == KERN_SUCCESS) {
+                if (thread_suspend(t->port) == KERN_SUCCESS)
+                {
                     // ---- Stopped, and it may hold any lock: memory is copied, and nothing else.
                     //      No allocation, no logging, no unwinding until it is running again.
-                    if (thread_get_state(t->port, flavor, (thread_state_t)&state, &stateCount) == KERN_SUCCESS) {
+                    if (thread_get_state(t->port, flavor, (thread_state_t)&state, &stateCount) == KERN_SUCCESS)
+                    {
 #if defined(__aarch64__)
                         pc = arm_thread_state64_get_pc(state);
                         fp = arm_thread_state64_get_fp(state);
@@ -700,7 +817,8 @@ private:
 #endif
                         // Within the stack pthread says it has, or nothing is copied: the bounds
                         // are the whole of what keeps the memcpy below from faulting.
-                        if (original >= t->stackLimit && original < t->stackBase) {
+                        if (original >= t->stackLimit && original < t->stackBase)
+                        {
                             const uint64_t room = t->stackBase - original;
                             copied = (size_t)(room < kMaxCopy ? room : kMaxCopy);
                             std::memcpy(copy.data(), (const void*)original, copied);
@@ -710,9 +828,11 @@ private:
                     thread_resume(t->port);
                     // ---- Running again.
                 }
-                if (!ok) continue;
+                if (!ok)
+                    continue;
                 const size_t depth = Unwind(pc, fp, copy.data(), copied, original, frames, kMaxFrames);
-                if (!depth) continue;
+                if (!depth)
+                    continue;
                 t->lastStack = Record(frame, *t, frames, depth, ran);
                 // Being stopped cost it time of its own, which is not work it did.
                 t->micros = CpuMicros(t->port);
@@ -720,12 +840,16 @@ private:
             next += std::chrono::microseconds((long long)(periodMs * 1000.0));
             const auto now = std::chrono::steady_clock::now();
             // Fell behind (many threads, or a stall): no catching up in a burst.
-            if (next <= now) next = now;
-            else std::this_thread::sleep_until(next);
+            if (next <= now)
+                next = now;
+            else
+                std::this_thread::sleep_until(next);
         }
         std::lock_guard<std::mutex> lock(_mutex);
-        for (ThreadInfo& t : _threads) {
-            if (t.port != MACH_PORT_NULL) mach_port_deallocate(mach_task_self(), t.port);
+        for (ThreadInfo& t : _threads)
+        {
+            if (t.port != MACH_PORT_NULL)
+                mach_port_deallocate(mach_task_self(), t.port);
             t.port = MACH_PORT_NULL;
         }
     }
@@ -751,10 +875,12 @@ private:
      * the callers' part of the stack, which nothing is changing. The handler's own frames are
      * below it.
      */
-    static void OnSignal(int, siginfo_t*, void* ucontext) {
+    static void OnSignal(int, siginfo_t*, void* ucontext)
+    {
         CpuSamplerSlot& s = _slot;
         const uint32_t generation = s.generation.load(std::memory_order_acquire);
-        if (s.target.load(std::memory_order_acquire) != (uint32_t)syscall(SYS_gettid)) return;
+        if (s.target.load(std::memory_order_acquire) != (uint32_t)syscall(SYS_gettid))
+            return;
         const ucontext_t* uc = static_cast<const ucontext_t*>(ucontext);
 #if defined(__x86_64__)
         s.pc = (uint64_t)uc->uc_mcontext.gregs[REG_RIP];
@@ -769,7 +895,8 @@ private:
         // The first sample of a thread has no stack top yet, so it copies nothing and the sample
         // is its program counter alone; the sampler learns the top from this sp and the next one
         // is a full stack.
-        if (s.stackTop > s.sp && s.copy) {
+        if (s.stackTop > s.sp && s.copy)
+        {
             const uint64_t room = s.stackTop - s.sp;
             copied = (size_t)(room < kMaxCopy ? room : kMaxCopy);
             std::memcpy(s.copy, (const void*)s.sp, copied);
@@ -777,22 +904,30 @@ private:
         s.copied = copied;
         // Last, and only if this is still the request that was sent: everything above is written
         // before the sampler is told it may read.
-        if (s.generation.load(std::memory_order_acquire) == generation) sem_post(&s.sem);
+        if (s.generation.load(std::memory_order_acquire) == generation)
+            sem_post(&s.sem);
     }
 
     /** Installs the handler on first use. The signal is a real-time one, which applications use far less than SIGPROF. */
-    bool InstallHandler() {
-        if (_signal) return true;
+    bool InstallHandler()
+    {
+        if (_signal)
+            return true;
         int chosen = 0;
-        if (const char* name = std::getenv("VKINSP_SAMPLE_SIGNAL")) chosen = atoi(name);
+        if (const char* name = std::getenv("VKINSP_SAMPLE_SIGNAL"))
+            chosen = atoi(name);
         // SIGRTMIN..SIGRTMIN+2 are glibc's (thread cancellation, setxid), so this starts past them.
-        if (chosen <= 0 || chosen >= NSIG) chosen = SIGRTMIN + 4 <= SIGRTMAX ? SIGRTMIN + 4 : SIGPROF;
-        if (sem_init(&_slot.sem, 0, 0) != 0) return false;
-        struct sigaction action {};
+        if (chosen <= 0 || chosen >= NSIG)
+            chosen = SIGRTMIN + 4 <= SIGRTMAX ? SIGRTMIN + 4 : SIGPROF;
+        if (sem_init(&_slot.sem, 0, 0) != 0)
+            return false;
+        struct sigaction action
+        {};
         action.sa_sigaction = &CpuSampler::OnSignal;
         action.sa_flags = SA_SIGINFO | SA_RESTART;
         sigfillset(&action.sa_mask);
-        if (sigaction(chosen, &action, nullptr) != 0) {
+        if (sigaction(chosen, &action, nullptr) != 0)
+        {
             sem_destroy(&_slot.sem);
             return false;
         }
@@ -801,10 +936,13 @@ private:
     }
 
     /** Reads a small /proc file that is already open. Returns the bytes read, 0 on failure. */
-    static size_t ReadAt(int fd, char* buffer, size_t size) {
-        if (fd < 0) return 0;
+    static size_t ReadAt(int fd, char* buffer, size_t size)
+    {
+        if (fd < 0)
+            return 0;
         const ssize_t n = pread(fd, buffer, size - 1, 0);
-        if (n <= 0) return 0;
+        if (n <= 0)
+            return 0;
         buffer[n] = 0;
         return (size_t)n;
     }
@@ -816,25 +954,35 @@ private:
      * clock ticks, which is 10 ms of granularity, so that path also asks whether the thread is
      * on a core right now.
      */
-    static uint64_t CpuNanos(ThreadInfo& t, bool* onCore) {
+    static uint64_t CpuNanos(ThreadInfo& t, bool* onCore)
+    {
         char buffer[512];
-        if (onCore) *onCore = false;
-        if (ReadAt(t.schedstat, buffer, sizeof(buffer))) {
+        if (onCore)
+            *onCore = false;
+        if (ReadAt(t.schedstat, buffer, sizeof(buffer)))
+        {
             return strtoull(buffer, nullptr, 10);
         }
         const size_t n = ReadAt(t.stat, buffer, sizeof(buffer));
-        if (!n) return t.nanos;
+        if (!n)
+            return t.nanos;
         // The comm field is parenthesized and may hold spaces, so the fields are counted from the
         // last ')' rather than from the start.
         const char* p = strrchr(buffer, ')');
-        if (!p) return t.nanos;
+        if (!p)
+            return t.nanos;
         ++p;
-        while (*p == ' ') ++p;
-        if (onCore) *onCore = *p == 'R';
+        while (*p == ' ')
+            ++p;
+        if (onCore)
+            *onCore = *p == 'R';
         // From the state, utime is the 11th field and stime the 12th.
-        for (int field = 0; field < 11 && *p; ++field) {
-            while (*p && *p != ' ') ++p;
-            while (*p == ' ') ++p;
+        for (int field = 0; field < 11 && *p; ++field)
+        {
+            while (*p && *p != ' ')
+                ++p;
+            while (*p == ' ')
+                ++p;
         }
         char* end = nullptr;
         const unsigned long long utime = strtoull(p, &end, 10);
@@ -849,17 +997,22 @@ private:
      * from the TEB; Linux keeps a thread's stack in an ordinary anonymous mapping, and /proc is
      * what knows where it ends.
      */
-    static uint64_t MappingEnd(uint64_t address) {
+    static uint64_t MappingEnd(uint64_t address)
+    {
         FILE* maps = fopen("/proc/self/maps", "re");
-        if (!maps) return 0;
+        if (!maps)
+            return 0;
         char line[512];
         uint64_t end = 0;
-        while (fgets(line, sizeof(line), maps)) {
+        while (fgets(line, sizeof(line), maps))
+        {
             char* dash = nullptr;
             const uint64_t low = strtoull(line, &dash, 16);
-            if (!dash || *dash != '-') continue;
+            if (!dash || *dash != '-')
+                continue;
             const uint64_t high = strtoull(dash + 1, nullptr, 16);
-            if (address >= low && address < high) {
+            if (address >= low && address < high)
+            {
                 end = high;
                 break;
             }
@@ -876,22 +1029,29 @@ private:
      * takes that lock to collect a batch from inside its frame, and a frame that waits on a
      * profiler is a hitch the profiler made.
      */
-    void RefreshThreads(uint32_t self) {
+    void RefreshThreads(uint32_t self)
+    {
         DIR* dir = opendir("/proc/self/task");
-        if (!dir) return;
+        if (!dir)
+            return;
         std::unordered_set<uint32_t> alive;
         std::vector<ThreadInfo> found;
-        while (const dirent* entry = readdir(dir)) {
-            if (entry->d_name[0] < '0' || entry->d_name[0] > '9') continue;
+        while (const dirent* entry = readdir(dir))
+        {
+            if (entry->d_name[0] < '0' || entry->d_name[0] > '9')
+                continue;
             const uint32_t id = (uint32_t)strtoul(entry->d_name, nullptr, 10);
-            if (!id) continue;
+            if (!id)
+                continue;
             alive.insert(id);
             bool skip = id == self || _threadIndex.count(id) != 0 || _threads.size() + found.size() >= kMaxThreads;
-            if (!skip) {
+            if (!skip)
+            {
                 std::lock_guard<std::mutex> lock(_mutex);
                 skip = _excluded.count(id) != 0;
             }
-            if (skip) continue;
+            if (skip)
+                continue;
             ThreadInfo t;
             t.id = id;
             char path[128];
@@ -900,11 +1060,14 @@ private:
             snprintf(path, sizeof(path), "/proc/self/task/%u/stat", id);
             t.stat = open(path, O_RDONLY | O_CLOEXEC);
             snprintf(path, sizeof(path), "/proc/self/task/%u/comm", id);
-            if (const int fd = open(path, O_RDONLY | O_CLOEXEC); fd >= 0) {
+            if (const int fd = open(path, O_RDONLY | O_CLOEXEC); fd >= 0)
+            {
                 char name[64];
-                if (const size_t n = ReadAt(fd, name, sizeof(name))) {
+                if (const size_t n = ReadAt(fd, name, sizeof(name)))
+                {
                     size_t len = n;
-                    while (len && (name[len - 1] == '\n' || name[len - 1] == ' ')) --len;
+                    while (len && (name[len - 1] == '\n' || name[len - 1] == ' '))
+                        --len;
                     t.name.assign(name, len);
                 }
                 close(fd);
@@ -915,20 +1078,26 @@ private:
         closedir(dir);
 
         std::lock_guard<std::mutex> lock(_mutex);
-        for (ThreadInfo& t : found) {
+        for (ThreadInfo& t : found)
+        {
             _threadIndex[t.id] = (uint32_t)_threads.size();
             _threads.push_back(std::move(t));
         }
-        for (ThreadInfo& t : _threads) {
-            if (t.gone || alive.count(t.id)) continue;
+        for (ThreadInfo& t : _threads)
+        {
+            if (t.gone || alive.count(t.id))
+                continue;
             MarkGone(t);
         }
     }
 
-    static void MarkGone(ThreadInfo& t) {
+    static void MarkGone(ThreadInfo& t)
+    {
         t.gone = true;
-        if (t.schedstat >= 0) close(t.schedstat);
-        if (t.stat >= 0) close(t.stat);
+        if (t.schedstat >= 0)
+            close(t.schedstat);
+        if (t.stat >= 0)
+            close(t.stat);
         t.schedstat = t.stat = -1;
     }
 
@@ -944,27 +1113,35 @@ private:
      * system libraries a waiting thread sits in on distributions that build with it, unwind fully.
      */
     static size_t Unwind(uint64_t pc, uint64_t fp, const uint8_t* copy, size_t copied, uint64_t original,
-                         uint64_t* out, size_t capacity) {
+        uint64_t* out, size_t capacity)
+    {
         size_t count = 0;
-        if (capacity) out[count++] = pc;
+        if (capacity)
+            out[count++] = pc;
         const uint64_t low = original, high = original + copied;
         auto read = [&](uint64_t at, uint64_t& value) -> bool {
-            if (at < low || at + sizeof(uint64_t) > high) return false;
+            if (at < low || at + sizeof(uint64_t) > high)
+                return false;
             std::memcpy(&value, copy + (at - low), sizeof(uint64_t));
             return true;
         };
-        while (count < capacity) {
+        while (count < capacity)
+        {
             uint64_t caller = 0, ret = 0;
-            if (!read(fp, caller) || !read(fp + 8, ret)) break;
-            if (!ret) break;
+            if (!read(fp, caller) || !read(fp + 8, ret))
+                break;
+            if (!ret)
+                break;
             out[count++] = ret;
-            if (caller <= fp) break;
+            if (caller <= fp)
+                break;
             fp = caller;
         }
         return count;
     }
 
-    void Run() {
+    void Run()
+    {
         const uint32_t self = SelfId();
         const pid_t pid = getpid();
         std::vector<uint8_t> copy(kMaxCopy + 4096, 0);
@@ -974,14 +1151,19 @@ private:
         targets.reserve(kMaxThreads);
         auto next = std::chrono::steady_clock::now();
 
-        while (_running.load(std::memory_order_relaxed)) {
+        while (_running.load(std::memory_order_relaxed))
+        {
             const double periodMs = _periodMs;   // set before this thread started
-            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0) RefreshThreads(self);
+            if (tick++ % (uint32_t)(500.0 / periodMs + 1) == 0)
+                RefreshThreads(self);
             // Only this thread adds to the list or marks a thread gone, so it reads it as it is.
             targets.clear();
-            for (ThreadInfo& t : _threads) if (!t.gone) targets.push_back(&t);
+            for (ThreadInfo& t : _threads)
+                if (!t.gone)
+                    targets.push_back(&t);
             const uint32_t frame = _frame.load(std::memory_order_relaxed);
-            for (ThreadInfo* t : targets) {
+            for (ThreadInfo* t : targets)
+            {
                 bool onCore = false;
                 const uint64_t nanos = CpuNanos(*t, &onCore);
                 const bool ran = nanos - t->nanos > kRunningNanos || onCore;
@@ -989,7 +1171,8 @@ private:
                 // Still where it was: the wait it was last found in, which needs no interrupting
                 // to know. This is also what keeps the signal off threads that are blocked in a
                 // syscall, where delivering one would cost them an EINTR they may not expect.
-                if (!ran && t->lastStack) {
+                if (!ran && t->lastStack)
+                {
                     Count(frame, *t, t->lastStack, false);
                     continue;
                 }
@@ -997,33 +1180,43 @@ private:
                 // A signal from a request that timed out may still be in flight; it is told to
                 // stand down by the generation, and any post it managed is drained here.
                 _slot.generation.fetch_add(1, std::memory_order_acq_rel);
-                while (sem_trywait(&_slot.sem) == 0) {}
+                while (sem_trywait(&_slot.sem) == 0)
+                {
+                }
                 _slot.stackTop = t->stackTop;
                 _slot.copy = copy.data();
                 _slot.target.store(t->id, std::memory_order_release);
 
                 bool answered = false;
-                if (syscall(SYS_tgkill, pid, (int)t->id, _signal) == 0) {
+                if (syscall(SYS_tgkill, pid, (int)t->id, _signal) == 0)
+                {
                     timespec deadline{};
                     clock_gettime(CLOCK_REALTIME, &deadline);
                     deadline.tv_nsec += kSignalWaitNanos;
                     deadline.tv_sec += deadline.tv_nsec / 1000000000;
                     deadline.tv_nsec %= 1000000000;
-                    while (sem_timedwait(&_slot.sem, &deadline) != 0) {
-                        if (errno != EINTR) break;
+                    while (sem_timedwait(&_slot.sem, &deadline) != 0)
+                    {
+                        if (errno != EINTR)
+                            break;
                     }
                     answered = errno != ETIMEDOUT;
-                } else if (errno == ESRCH) {
+                }
+                else if (errno == ESRCH)
+                {
                     MarkGone(*t);
                 }
                 _slot.target.store(0, std::memory_order_release);
-                if (!answered) continue;
+                if (!answered)
+                    continue;
 
                 // The first sample of a thread arrives with no stack copied, because until it
                 // reported a stack pointer there was nothing to say how far up its stack ran.
-                if (!t->stackTop) t->stackTop = MappingEnd(_slot.sp);
+                if (!t->stackTop)
+                    t->stackTop = MappingEnd(_slot.sp);
                 const size_t depth = Unwind(_slot.pc, _slot.fp, copy.data(), _slot.copied, _slot.sp, frames, kMaxFrames);
-                if (!depth) continue;
+                if (!depth)
+                    continue;
                 t->lastStack = Record(frame, *t, frames, depth, ran);
                 // Being interrupted cost it time of its own, which is not work it did.
                 t->nanos = CpuNanos(*t, nullptr);
@@ -1031,38 +1224,50 @@ private:
             next += std::chrono::microseconds((long long)(periodMs * 1000.0));
             const auto now = std::chrono::steady_clock::now();
             // Fell behind (many threads, or a stall): no catching up in a burst.
-            if (next <= now) next = now;
-            else std::this_thread::sleep_until(next);
+            if (next <= now)
+                next = now;
+            else
+                std::this_thread::sleep_until(next);
         }
         std::lock_guard<std::mutex> lock(_mutex);
-        for (ThreadInfo& t : _threads) if (!t.gone) MarkGone(t);
+        for (ThreadInfo& t : _threads)
+            if (!t.gone)
+                MarkGone(t);
     }
 
 #endif  // the platform halves
 
 #if GPUINSP_CPU_SAMPLER
-    void Count(uint32_t frame, const ThreadInfo& thread, uint32_t stack, bool running) {
+    void Count(uint32_t frame, const ThreadInfo& thread, uint32_t stack, bool running)
+    {
         std::lock_guard<std::mutex> lock(_mutex);
         const auto it = _threadIndex.find(thread.id);
-        if (it != _threadIndex.end()) ++_counts[{frame, it->second, stack, running}];
+        if (it != _threadIndex.end())
+            ++_counts[{frame, it->second, stack, running}];
     }
 
     /** Files a sample under its stack, interning the stack; the stack's id, or 0 when the table is full. */
-    uint32_t Record(uint32_t frame, const ThreadInfo& thread, const uint64_t* frames, size_t depth, bool running) {
+    uint32_t Record(uint32_t frame, const ThreadInfo& thread, const uint64_t* frames, size_t depth, bool running)
+    {
         uint64_t hash = 1469598103934665603ull;
-        for (size_t i = 0; i < depth; ++i) hash = (hash ^ frames[i]) * 1099511628211ull;
+        for (size_t i = 0; i < depth; ++i)
+            hash = (hash ^ frames[i]) * 1099511628211ull;
         std::lock_guard<std::mutex> lock(_mutex);
         uint32_t id = 0;
         std::vector<uint32_t>& candidates = _stackIds[hash];
-        for (uint32_t candidate : candidates) {
+        for (uint32_t candidate : candidates)
+        {
             const std::vector<uint64_t>& s = _stacks[candidate - 1];
-            if (s.size() == depth && std::memcmp(s.data(), frames, depth * sizeof(uint64_t)) == 0) {
+            if (s.size() == depth && std::memcmp(s.data(), frames, depth * sizeof(uint64_t)) == 0)
+            {
                 id = candidate;
                 break;
             }
         }
-        if (!id) {
-            if (_stacks.size() >= kMaxStacks) {
+        if (!id)
+        {
+            if (_stacks.size() >= kMaxStacks)
+            {
                 ++_dropped;
                 return 0;
             }
@@ -1071,7 +1276,8 @@ private:
             candidates.push_back(id);
         }
         const auto it = _threadIndex.find(thread.id);
-        if (it != _threadIndex.end()) ++_counts[{frame, it->second, id, running}];
+        if (it != _threadIndex.end())
+            ++_counts[{frame, it->second, id, running}];
         return id;
     }
 #endif

@@ -14,10 +14,12 @@
 #include "json_writer.h"
 #include "vk_commands.gen.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 // One descriptor (one array element of a binding).
-struct DescriptorEntry {
+struct DescriptorEntry
+{
     bool written = false;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceSize offset = 0;
@@ -29,7 +31,8 @@ struct DescriptorEntry {
     VkAccelerationStructureKHR accelerationStructure = VK_NULL_HANDLE;
 };
 
-struct DescriptorBinding {
+struct DescriptorBinding
+{
     uint32_t binding = 0;
     VkDescriptorType type = VK_DESCRIPTOR_TYPE_MAX_ENUM;
     VkShaderStageFlags stages = 0;
@@ -37,19 +40,22 @@ struct DescriptorBinding {
     std::vector<DescriptorEntry> entries;   // descriptorCount elements
 };
 
-struct DescriptorSetContents {
+struct DescriptorSetContents
+{
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     std::vector<DescriptorBinding> bindings;  // sorted by binding number
 };
 
-struct DescriptorTemplateInfo {
+struct DescriptorTemplateInfo
+{
     std::vector<VkDescriptorUpdateTemplateEntry> entries;
     VkDescriptorUpdateTemplateType type = VK_DESCRIPTOR_UPDATE_TEMPLATE_TYPE_DESCRIPTOR_SET;
     VkDescriptorSetLayout layout = VK_NULL_HANDLE;
     VkPipelineBindPoint bindPoint = VK_PIPELINE_BIND_POINT_GRAPHICS;   // push descriptor templates
 };
 
-class DescriptorTracker {
+class DescriptorTracker
+{
 public:
     static DescriptorTracker& Get();
 
@@ -64,7 +70,7 @@ public:
     VkDescriptorSetLayout SetLayoutOf(VkPipelineLayout layout, uint32_t set) const;
     void OnAllocateSets(const VkDescriptorSetAllocateInfo* info, const VkDescriptorSet* sets);
     void OnUpdateSets(uint32_t writeCount, const VkWriteDescriptorSet* writes, uint32_t copyCount,
-                      const VkCopyDescriptorSet* copies);
+        const VkCopyDescriptorSet* copies);
     void OnCreateTemplate(VkDescriptorUpdateTemplate tmpl, const VkDescriptorUpdateTemplateCreateInfo* info);
     void OnUpdateWithTemplate(VkDescriptorSet set, VkDescriptorUpdateTemplate tmpl, const void* data);
     void OnDestroy(HandleType type, uint64_t handle);
@@ -76,13 +82,13 @@ public:
     static DescriptorSetContents FromWrites(uint32_t writeCount, const VkWriteDescriptorSet* writes);
     // The same from a push through an update template and its data; false for an unknown template.
     bool FromTemplate(VkDescriptorUpdateTemplate tmpl, const void* data, DescriptorSetContents& out,
-                      VkPipelineBindPoint& bindPoint) const;
+        VkPipelineBindPoint& bindPoint) const;
 
 private:
     DescriptorTracker() = default;
     void ApplyWrite(DescriptorSetContents& set, uint32_t binding, uint32_t arrayElement, VkDescriptorType type,
-                    uint32_t count, const VkDescriptorImageInfo* images, const VkDescriptorBufferInfo* buffers,
-                    const VkBufferView* views, size_t stride, const VkAccelerationStructureKHR* structures = nullptr);
+        uint32_t count, const VkDescriptorImageInfo* images, const VkDescriptorBufferInfo* buffers,
+        const VkBufferView* views, size_t stride, const VkAccelerationStructureKHR* structures = nullptr);
 
     mutable std::shared_mutex _mutex;
     std::unordered_map<uint64_t, DescriptorSetContents> _layouts;
@@ -98,14 +104,14 @@ private:
 // `dynamicOffsets` is advanced for every *_DYNAMIC descriptor; `dataIds` (same shape as the
 // bindings' entries, 0 = none) are the buffer capture ids attached to buffer descriptors.
 void WriteDescriptorSetJson(JsonWriter& w, uint32_t setIndex, VkDescriptorSet set, const DescriptorSetContents& contents,
-                            const uint32_t* dynamicOffsets, uint32_t dynamicOffsetCount, uint32_t& dynamicIndex,
-                            const std::vector<std::vector<uint32_t>>* dataIds);
+    const uint32_t* dynamicOffsets, uint32_t dynamicOffsetCount, uint32_t& dynamicIndex,
+    const std::vector<std::vector<uint32_t>>* dataIds);
 
 // Writes just the bindings array of a set (the value of "bindings" above). Used for the live
 // contents of a set shown in the Inspect panel, where there are no dynamic offsets or captures.
 void WriteDescriptorBindingsJson(JsonWriter& w, const DescriptorSetContents& contents, const uint32_t* dynamicOffsets,
-                                 uint32_t dynamicOffsetCount, uint32_t& dynamicIndex,
-                                 const std::vector<std::vector<uint32_t>>* dataIds);
+    uint32_t dynamicOffsetCount, uint32_t& dynamicIndex,
+    const std::vector<std::vector<uint32_t>>* dataIds);
 
 // Effective range of a buffer descriptor (VK_WHOLE_SIZE resolved against the buffer's size).
 VkDeviceSize DescriptorBufferRange(const DescriptorEntry& e);

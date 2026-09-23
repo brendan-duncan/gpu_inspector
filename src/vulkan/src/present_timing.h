@@ -36,11 +36,13 @@
 #include <unordered_map>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 
-class PresentTiming {
+class PresentTiming
+{
 public:
     static PresentTiming& Get();
 
@@ -50,7 +52,8 @@ public:
     void OnDestroySwapchain(VkSwapchainKHR swapchain);
 
     // The arrays a tagged present points at; lives on the caller's stack for the call.
-    struct PresentStorage {
+    struct PresentStorage
+    {
         VkPresentInfoKHR info{};
         VkPresentTimingsInfoEXT timings{VK_STRUCTURE_TYPE_PRESENT_TIMINGS_INFO_EXT};
         std::vector<VkPresentTimingInfoEXT> infos;
@@ -77,7 +80,8 @@ public:
     bool Measured(DeviceData* dev, uint32_t& sinceReport, uint64_t& total, double& latencyMs);
 
 private:
-    struct State {
+    struct State
+    {
         DeviceData* dev = nullptr;
         bool enabled = false;
         uint32_t queueSize = 0;

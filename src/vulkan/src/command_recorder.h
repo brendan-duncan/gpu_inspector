@@ -16,9 +16,11 @@
 #include "stacktrace.h"
 #include "vk_commands.gen.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-struct RecordedCommand {
+struct RecordedCommand
+{
     VkCmdId id;
     int64_t result;
     std::string args;      // JSON object with the command's arguments
@@ -31,7 +33,8 @@ using CommandList = std::vector<RecordedCommand>;
 // A pass this command buffer holds, kept after it ends: a buffer recorded before the capture
 // started (an engine's static command buffer) has no read-back copies in it, so the capture
 // reads its attachments back after the submission instead (CaptureManager::ReadBackAfterSubmit).
-struct RecordedPass {
+struct RecordedPass
+{
     std::vector<VkImageView> attachments;
     std::vector<VkImageLayout> layouts;
     std::vector<VkImageView> resolveViews;
@@ -41,7 +44,8 @@ struct RecordedPass {
     bool readBack = false;   // copies were recorded at the pass end (the buffer was recorded during the capture)
 };
 
-struct ActivePass {
+struct ActivePass
+{
     bool active = false;
     bool dynamic = false;                    // vkCmdBeginRendering
     // Dynamic rendering split across command buffers (VK_RENDERING_SUSPENDING_BIT / RESUMING_BIT):
@@ -66,7 +70,8 @@ struct ActivePass {
 // A run of dispatches outside a render pass, timed as one "compute pass": from the first dispatch
 // to the next barrier, event wait, render pass, debug label, secondary execution or the end of
 // the command buffer (see CaptureManager::OnBeforeDispatch / OnEndComputePass).
-struct ActiveComputePass {
+struct ActiveComputePass
+{
     bool active = false;
     uint32_t index = 0;                      // index of this compute pass within the command buffer
     uint32_t query = UINT32_MAX;             // timestamp query pair when profiling
@@ -75,7 +80,8 @@ struct ActiveComputePass {
 // A buffer range queued for readback (see CaptureManager::QueueBufferCapture). The copy into
 // staging is recorded when the pending list is flushed: at once outside a render pass, at the
 // end of the pass otherwise (transfer commands are not allowed inside one).
-struct PendingBufferCopy {
+struct PendingBufferCopy
+{
     uint32_t captureId = 0;
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceSize offset = 0;
@@ -86,7 +92,8 @@ struct PendingBufferCopy {
 
 // A sampled / storage image queued for readback (see CaptureManager::QueueImageCapture); the copy
 // is recorded when the pending list is flushed, like buffer copies.
-struct PendingImageCopy {
+struct PendingImageCopy
+{
     uint32_t captureId = 0;        // index + 1 into the capture's texture list
     VkImage image = VK_NULL_HANDLE;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -104,33 +111,40 @@ struct PendingImageCopy {
     VkImageView dstView = VK_NULL_HANDLE;
 };
 
-class CommandRecorder {
+class CommandRecorder
+{
 public:
     CommandRecorder(VkDevice device, VkCommandBuffer cb, HandleResolver* resolver)
         : _device(device), _commandBuffer(cb), _writer(resolver) {}
 
-    JsonWriter& Begin(VkCmdId id) {
+    JsonWriter& Begin(VkCmdId id)
+    {
         _current = id;
         _writer.Reset();
         return _writer;
     }
 
-    void End(JsonWriter& w, int64_t result) {
+    void End(JsonWriter& w, int64_t result)
+    {
         // With stack traces on, the command carries where the application recorded it.
         _commands->push_back({_current, result, std::move(w.str()), _captureStacks ? StackExtraJson(CaptureStack(0)) : std::string()});
         w.Reset();
     }
 
     // Appends extra JSON (a pre-separated member list) to the most recently recorded command.
-    void SetExtraOnLast(std::string extra) {
-        if (!_commands->empty()) _commands->back().extra += extra;
+    void SetExtraOnLast(std::string extra)
+    {
+        if (!_commands->empty())
+            _commands->back().extra += extra;
     }
 
     // Replaces the arguments of the most recently recorded command: a post-call hook that knows
     // the command ran with other arguments than the application's (a live shader edit's
     // replacement pipeline) records those instead.
-    void ReplaceLastArgs(std::string args) {
-        if (!_commands->empty()) _commands->back().args = std::move(args);
+    void ReplaceLastArgs(std::string args)
+    {
+        if (!_commands->empty())
+            _commands->back().args = std::move(args);
     }
 
     void SetCaptureStacks(bool on) { _captureStacks = on; }
@@ -139,7 +153,8 @@ public:
     // only when the command buffer is re-begun).
     std::shared_ptr<const CommandList> Snapshot() const { return _commands; }
 
-    void Reset(bool renderPassContinue = false) {
+    void Reset(bool renderPassContinue = false)
+    {
         _commands = std::make_shared<CommandList>();
         _pass = ActivePass{};
         _passes.clear();

@@ -27,34 +27,61 @@
 #define TAG "xr_triangle"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
-#define XR_CHECK(x) do { XrResult r_ = (x); if (XR_FAILED(r_)) { LOGE("%s failed: %d (%s:%d)", #x, (int)r_, __FILE__, __LINE__); abort(); } } while (0)
-#define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { LOGE("%s failed: %d (%s:%d)", #x, (int)r_, __FILE__, __LINE__); abort(); } } while (0)
+#define XR_CHECK(x)                                                         \
+    do                                                                      \
+    {                                                                       \
+        XrResult r_ = (x);                                                  \
+        if (XR_FAILED(r_))                                                  \
+        {                                                                   \
+            LOGE("%s failed: %d (%s:%d)", #x, (int)r_, __FILE__, __LINE__); \
+            abort();                                                        \
+        }                                                                   \
+    } while (0)
+#define VK_CHECK(x)                                                         \
+    do                                                                      \
+    {                                                                       \
+        VkResult r_ = (x);                                                  \
+        if (r_ != VK_SUCCESS)                                               \
+        {                                                                   \
+            LOGE("%s failed: %d (%s:%d)", #x, (int)r_, __FILE__, __LINE__); \
+            abort();                                                        \
+        }                                                                   \
+    } while (0)
 
-namespace {
+namespace
+{
 
 // ------------------------------------------------------------------------------------ math
 
-struct Mat4 { float m[16]; };   // column-major
+struct Mat4
+{
+    float m[16];
+};   // column-major
 
-Mat4 Identity() {
+Mat4 Identity()
+{
     Mat4 r{};
     r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;
     return r;
 }
 
-Mat4 Multiply(const Mat4& a, const Mat4& b) {
+Mat4 Multiply(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
-        for (int rr = 0; rr < 4; ++rr) {
+        for (int rr = 0; rr < 4; ++rr)
+        {
             float s = 0;
-            for (int k = 0; k < 4; ++k) s += a.m[k * 4 + rr] * b.m[c * 4 + k];
+            for (int k = 0; k < 4; ++k)
+                s += a.m[k * 4 + rr] * b.m[c * 4 + k];
             r.m[c * 4 + rr] = s;
         }
     return r;
 }
 
 // OpenXR's asymmetric fov to a Vulkan clip space projection (depth 0..1, y down).
-Mat4 Projection(const XrFovf& fov, float nearZ, float farZ) {
+Mat4 Projection(const XrFovf& fov, float nearZ, float farZ)
+{
     const float l = tanf(fov.angleLeft), r = tanf(fov.angleRight), d = tanf(fov.angleDown), u = tanf(fov.angleUp);
     Mat4 p{};
     p.m[0] = 2.0f / (r - l);
@@ -68,16 +95,24 @@ Mat4 Projection(const XrFovf& fov, float nearZ, float farZ) {
 }
 
 // The inverse of a rigid pose (rotation quaternion + position): the view matrix.
-Mat4 ViewFromPose(const XrPosef& pose) {
+Mat4 ViewFromPose(const XrPosef& pose)
+{
     const float x = pose.orientation.x, y = pose.orientation.y, z = pose.orientation.z, w = pose.orientation.w;
     Mat4 rot = Identity();
-    rot.m[0] = 1 - 2 * (y * y + z * z); rot.m[4] = 2 * (x * y - z * w);     rot.m[8] = 2 * (x * z + y * w);
-    rot.m[1] = 2 * (x * y + z * w);     rot.m[5] = 1 - 2 * (x * x + z * z); rot.m[9] = 2 * (y * z - x * w);
-    rot.m[2] = 2 * (x * z - y * w);     rot.m[6] = 2 * (y * z + x * w);     rot.m[10] = 1 - 2 * (x * x + y * y);
+    rot.m[0] = 1 - 2 * (y * y + z * z);
+    rot.m[4] = 2 * (x * y - z * w);
+    rot.m[8] = 2 * (x * z + y * w);
+    rot.m[1] = 2 * (x * y + z * w);
+    rot.m[5] = 1 - 2 * (x * x + z * z);
+    rot.m[9] = 2 * (y * z - x * w);
+    rot.m[2] = 2 * (x * z - y * w);
+    rot.m[6] = 2 * (y * z + x * w);
+    rot.m[10] = 1 - 2 * (x * x + y * y);
     // Inverse: transpose the rotation, negate the translation rotated by it.
     Mat4 inv = Identity();
     for (int c = 0; c < 3; ++c)
-        for (int rr = 0; rr < 3; ++rr) inv.m[c * 4 + rr] = rot.m[rr * 4 + c];
+        for (int rr = 0; rr < 3; ++rr)
+            inv.m[c * 4 + rr] = rot.m[rr * 4 + c];
     const float px = pose.position.x, py = pose.position.y, pz = pose.position.z;
     inv.m[12] = -(inv.m[0] * px + inv.m[4] * py + inv.m[8] * pz);
     inv.m[13] = -(inv.m[1] * px + inv.m[5] * py + inv.m[9] * pz);
@@ -85,23 +120,30 @@ Mat4 ViewFromPose(const XrPosef& pose) {
     return inv;
 }
 
-Mat4 RotationY(float a) {
+Mat4 RotationY(float a)
+{
     Mat4 r = Identity();
-    r.m[0] = cosf(a); r.m[8] = sinf(a);
-    r.m[2] = -sinf(a); r.m[10] = cosf(a);
+    r.m[0] = cosf(a);
+    r.m[8] = sinf(a);
+    r.m[2] = -sinf(a);
+    r.m[10] = cosf(a);
     return r;
 }
 
-Mat4 RotationZ(float a) {
+Mat4 RotationZ(float a)
+{
     Mat4 r = Identity();
-    r.m[0] = cosf(a); r.m[4] = -sinf(a);
-    r.m[1] = sinf(a); r.m[5] = cosf(a);
+    r.m[0] = cosf(a);
+    r.m[4] = -sinf(a);
+    r.m[1] = sinf(a);
+    r.m[5] = cosf(a);
     return r;
 }
 
 // ------------------------------------------------------------------------------------ app
 
-struct SwapchainImage {
+struct SwapchainImage
+{
     VkImage image = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;             // both layers (multiview)
     VkFramebuffer framebuffer = VK_NULL_HANDLE;
@@ -111,7 +153,8 @@ struct SwapchainImage {
 
 // The package the activity runs as: the "slow" package (...xrtriangle.slow) renders the same
 // scene with deliberate inefficiencies for the inspector's frame analysis to flag.
-std::string PackageName(android_app* app) {
+std::string PackageName(android_app* app)
+{
     JNIEnv* env = nullptr;
     app->activity->vm->AttachCurrentThread(&env, nullptr);
     jobject activity = app->activity->clazz;
@@ -120,8 +163,10 @@ std::string PackageName(android_app* app) {
     jstring js = (jstring)env->CallObjectMethod(activity, method);
     const char* utf = js ? env->GetStringUTFChars(js, nullptr) : nullptr;
     std::string name = utf ? utf : "";
-    if (utf) env->ReleaseStringUTFChars(js, utf);
-    if (js) env->DeleteLocalRef(js);
+    if (utf)
+        env->ReleaseStringUTFChars(js, utf);
+    if (js)
+        env->DeleteLocalRef(js);
     env->DeleteLocalRef(cls);
     app->activity->vm->DetachCurrentThread();
     return name;
@@ -129,7 +174,8 @@ std::string PackageName(android_app* app) {
 
 constexpr uint32_t kTriangles = 48;   // the ring (kTriangles in xr.vert)
 
-struct App {
+struct App
+{
     android_app* android = nullptr;
     bool resumed = false;
     // The slow package: one pass per eye instead of multiview, the color target cleared with a
@@ -174,7 +220,8 @@ struct App {
 
     // ---------------------------------------------------------------------------- OpenXR
 
-    void CreateInstance() {
+    void CreateInstance()
+    {
         // The loader must learn about the JavaVM / activity before anything else on Android.
         PFN_xrInitializeLoaderKHR initializeLoader = nullptr;
         XR_CHECK(xrGetInstanceProcAddr(XR_NULL_HANDLE, "xrInitializeLoaderKHR", (PFN_xrVoidFunction*)&initializeLoader));
@@ -209,7 +256,8 @@ struct App {
     }
 
     template <typename F>
-    F XrProc(const char* name) {
+    F XrProc(const char* name)
+    {
         PFN_xrVoidFunction fn = nullptr;
         XR_CHECK(xrGetInstanceProcAddr(instance, name, &fn));
         return (F)fn;
@@ -217,7 +265,8 @@ struct App {
 
     // ---------------------------------------------------------------------------- Vulkan
 
-    void CreateVulkan() {
+    void CreateVulkan()
+    {
         auto getRequirements = XrProc<PFN_xrGetVulkanGraphicsRequirements2KHR>("xrGetVulkanGraphicsRequirements2KHR");
         XrGraphicsRequirementsVulkan2KHR req{XR_TYPE_GRAPHICS_REQUIREMENTS_VULKAN2_KHR};
         XR_CHECK(getRequirements(instance, system, &req));
@@ -239,7 +288,8 @@ struct App {
         VkResult vkRes = VK_SUCCESS;
         auto createInstance = XrProc<PFN_xrCreateVulkanInstanceKHR>("xrCreateVulkanInstanceKHR");
         XR_CHECK(createInstance(instance, &xici, &vkInstance, &vkRes));
-        if (vkRes != VK_SUCCESS) {
+        if (vkRes != VK_SUCCESS)
+        {
             // Without debug utils (an older loader): try again without the extension.
             ici.enabledExtensionCount = 0;
             XR_CHECK(createInstance(instance, &xici, &vkInstance, &vkRes));
@@ -261,7 +311,11 @@ struct App {
         vkGetPhysicalDeviceQueueFamilyProperties(gpu, &familyCount, families.data());
         queueFamily = 0;
         for (uint32_t i = 0; i < familyCount; ++i)
-            if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { queueFamily = i; break; }
+            if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            {
+                queueFamily = i;
+                break;
+            }
 
         float priority = 1.0f;
         VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -304,8 +358,10 @@ struct App {
         VK_CHECK(vkCreateFence(device, &fci, nullptr, &fence));
     }
 
-    void Name(VkObjectType type, uint64_t handle, const char* name) {
-        if (!setName) return;
+    void Name(VkObjectType type, uint64_t handle, const char* name)
+    {
+        if (!setName)
+            return;
         VkDebugUtilsObjectNameInfoEXT ni{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
         ni.objectType = type;
         ni.objectHandle = handle;
@@ -313,22 +369,26 @@ struct App {
         setName(device, &ni);
     }
 
-    int32_t TryFindMemoryType(uint32_t bits, VkMemoryPropertyFlags props) {
+    int32_t TryFindMemoryType(uint32_t bits, VkMemoryPropertyFlags props)
+    {
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(gpu, &mp);
         for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
-            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props) return (int32_t)i;
+            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props)
+                return (int32_t)i;
         return -1;
     }
 
-    uint32_t FindMemoryType(uint32_t bits, VkMemoryPropertyFlags props) {
+    uint32_t FindMemoryType(uint32_t bits, VkMemoryPropertyFlags props)
+    {
         int32_t i = TryFindMemoryType(bits, props);
         return i < 0 ? 0 : (uint32_t)i;
     }
 
     // ---------------------------------------------------------------------------- session
 
-    void CreateSession() {
+    void CreateSession()
+    {
         XrGraphicsBindingVulkan2KHR binding{XR_TYPE_GRAPHICS_BINDING_VULKAN2_KHR};
         binding.instance = vkInstance;
         binding.physicalDevice = gpu;
@@ -361,10 +421,16 @@ struct App {
         std::vector<int64_t> formats(formatCount);
         XR_CHECK(xrEnumerateSwapchainFormats(session, formatCount, &formatCount, formats.data()));
         swapchainFormat = formats[0];
-        for (int64_t f : formats) if (f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB) { swapchainFormat = f; break; }
+        for (int64_t f : formats)
+            if (f == VK_FORMAT_R8G8B8A8_SRGB || f == VK_FORMAT_B8G8R8A8_SRGB)
+            {
+                swapchainFormat = f;
+                break;
+            }
         XrSwapchainCreateInfo swci{XR_TYPE_SWAPCHAIN_CREATE_INFO};
         swci.usageFlags = XR_SWAPCHAIN_USAGE_COLOR_ATTACHMENT_BIT | XR_SWAPCHAIN_USAGE_SAMPLED_BIT;
-        if (slow) swci.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;   // for the clear command
+        if (slow)
+            swci.usageFlags |= XR_SWAPCHAIN_USAGE_TRANSFER_DST_BIT;   // for the clear command
         swci.format = swapchainFormat;
         swci.sampleCount = 1;
         swci.width = width;
@@ -383,7 +449,8 @@ struct App {
         CreatePipeline();
         CreateDepth();
         images.resize(imageCount);
-        for (uint32_t i = 0; i < imageCount; ++i) {
+        for (uint32_t i = 0; i < imageCount; ++i)
+        {
             images[i].image = xrImages[i].image;
             char name[32];
             snprintf(name, sizeof(name), "XR swapchain image %u", i);
@@ -397,16 +464,20 @@ struct App {
             fbci.width = width;
             fbci.height = height;
             fbci.layers = 1;   // multiview: the view mask selects the layers
-            if (!slow) {
+            if (!slow)
+            {
                 vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
                 vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, viewCount};
                 VK_CHECK(vkCreateImageView(device, &vci, nullptr, &images[i].view));
                 VkImageView attachments[] = {images[i].view, depthView};
                 fbci.pAttachments = attachments;
                 VK_CHECK(vkCreateFramebuffer(device, &fbci, nullptr, &images[i].framebuffer));
-            } else {
+            }
+            else
+            {
                 // Slow: a framebuffer per eye over one layer each.
-                for (uint32_t v = 0; v < viewCount && v < 2; ++v) {
+                for (uint32_t v = 0; v < viewCount && v < 2; ++v)
+                {
                     vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
                     vci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, v, 1};
                     VK_CHECK(vkCreateImageView(device, &vci, nullptr, &images[i].eyeViews[v]));
@@ -418,7 +489,8 @@ struct App {
         }
     }
 
-    void CreateRenderPass() {
+    void CreateRenderPass()
+    {
         VkAttachmentDescription atts[2]{};
         atts[0].format = (VkFormat)swapchainFormat;
         atts[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -473,7 +545,8 @@ struct App {
         Name(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)renderPass, slow ? "Eye pass" : "Stereo pass");
     }
 
-    void CreateDepth() {
+    void CreateDepth()
+    {
         VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = VK_FORMAT_D24_UNORM_S8_UINT;
@@ -502,10 +575,14 @@ struct App {
         vci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
         vci.format = VK_FORMAT_D24_UNORM_S8_UINT;
         vci.subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT | VK_IMAGE_ASPECT_STENCIL_BIT, 0, 1, 0, viewCount};
-        if (!slow) {
+        if (!slow)
+        {
             VK_CHECK(vkCreateImageView(device, &vci, nullptr, &depthView));
-        } else {
-            for (uint32_t v = 0; v < viewCount && v < 2; ++v) {
+        }
+        else
+        {
+            for (uint32_t v = 0; v < viewCount && v < 2; ++v)
+            {
                 vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
                 vci.subresourceRange.baseArrayLayer = v;
                 vci.subresourceRange.layerCount = 1;
@@ -515,7 +592,8 @@ struct App {
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Stereo depth");
     }
 
-    VkShaderModule Module(const uint32_t* code, size_t bytes) {
+    VkShaderModule Module(const uint32_t* code, size_t bytes)
+    {
         VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         ci.codeSize = bytes;
         ci.pCode = code;
@@ -524,7 +602,8 @@ struct App {
         return m;
     }
 
-    void CreatePipeline() {
+    void CreatePipeline()
+    {
         VkPushConstantRange range{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(Mat4) * 2};
         VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
         plci.pushConstantRangeCount = 1;
@@ -587,11 +666,14 @@ struct App {
 
     // ---------------------------------------------------------------------------- frame
 
-    void HandleSessionState(const XrEventDataSessionStateChanged& e) {
+    void HandleSessionState(const XrEventDataSessionStateChanged& e)
+    {
         state = e.state;
         LOGI("session state %d", (int)state);
-        switch (state) {
-            case XR_SESSION_STATE_READY: {
+        switch (state)
+        {
+            case XR_SESSION_STATE_READY:
+            {
                 XrSessionBeginInfo bi{XR_TYPE_SESSION_BEGIN_INFO};
                 bi.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                 XR_CHECK(xrBeginSession(session, &bi));
@@ -610,9 +692,11 @@ struct App {
         }
     }
 
-    void PollEvents() {
+    void PollEvents()
+    {
         XrEventDataBuffer event{XR_TYPE_EVENT_DATA_BUFFER};
-        while (xrPollEvent(instance, &event) == XR_SUCCESS) {
+        while (xrPollEvent(instance, &event) == XR_SUCCESS)
+        {
             if (event.type == XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED)
                 HandleSessionState(*reinterpret_cast<const XrEventDataSessionStateChanged*>(&event));
             else if (event.type == XR_TYPE_EVENT_DATA_INSTANCE_LOSS_PENDING)
@@ -621,7 +705,8 @@ struct App {
         }
     }
 
-    void RenderFrame() {
+    void RenderFrame()
+    {
         XrFrameWaitInfo fwi{XR_TYPE_FRAME_WAIT_INFO};
         XrFrameState fs{XR_TYPE_FRAME_STATE};
         XR_CHECK(xrWaitFrame(session, &fwi, &fs));
@@ -633,7 +718,8 @@ struct App {
         const XrCompositionLayerBaseHeader* layers[1] = {reinterpret_cast<XrCompositionLayerBaseHeader*>(&layer)};
         uint32_t layerCount = 0;
 
-        if (fs.shouldRender) {
+        if (fs.shouldRender)
+        {
             XrViewLocateInfo vli{XR_TYPE_VIEW_LOCATE_INFO};
             vli.viewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
             vli.displayTime = fs.predictedDisplayTime;
@@ -662,7 +748,8 @@ struct App {
             XrSwapchainImageReleaseInfo ri{XR_TYPE_SWAPCHAIN_IMAGE_RELEASE_INFO};
             XR_CHECK(xrReleaseSwapchainImage(swapchain, &ri));
 
-            for (uint32_t v = 0; v < viewCount; ++v) {
+            for (uint32_t v = 0; v < viewCount; ++v)
+            {
                 projViews[v].pose = views[v].pose;
                 projViews[v].fov = views[v].fov;
                 projViews[v].subImage.swapchain = swapchain;
@@ -684,7 +771,8 @@ struct App {
         XR_CHECK(xrEndFrame(session, &fei));
     }
 
-    void Record(uint32_t imageIndex, XrTime time) {
+    void Record(uint32_t imageIndex, XrTime time)
+    {
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_CHECK(vkBeginCommandBuffer(commandBuffer, &bi));
@@ -706,7 +794,8 @@ struct App {
         rpbi.clearValueCount = 2;
         rpbi.pClearValues = clears;
 
-        if (!slow) {
+        if (!slow)
+        {
             Label("Stereo scene");
             rpbi.framebuffer = images[imageIndex].framebuffer;
             vkCmdBeginRenderPass(commandBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
@@ -714,9 +803,13 @@ struct App {
             vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp), mvp);
             vkCmdDraw(commandBuffer, 3, kTriangles, 0, 0);   // the whole ring, instanced
             vkCmdEndRenderPass(commandBuffer);
-            if (endLabel) endLabel(commandBuffer);
-        } else {
-            for (uint32_t v = 0; v < viewCount && v < 2; ++v) {
+            if (endLabel)
+                endLabel(commandBuffer);
+        }
+        else
+        {
+            for (uint32_t v = 0; v < viewCount && v < 2; ++v)
+            {
                 Label(v == 0 ? "Left eye" : "Right eye");
                 // A clear command instead of loadOp CLEAR: a separate pass over the image on a
                 // tiled GPU, and the render pass then loads what it cleared.
@@ -728,28 +821,36 @@ struct App {
                 vkCmdBeginRenderPass(commandBuffer, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
                 // gl_ViewIndex is 0 without multiview: this eye's matrix goes into slot 0.
                 Mat4 eye[2] = {mvp[v], mvp[v]};
-                for (uint32_t i = 0; i < kTriangles; ++i) {
+                for (uint32_t i = 0; i < kTriangles; ++i)
+                {
                     // One draw per triangle, the pipeline and constants re-bound every time.
                     vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
                     vkCmdPushConstants(commandBuffer, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(eye), eye);
                     vkCmdDraw(commandBuffer, 3, 1, 0, i);
                 }
                 vkCmdEndRenderPass(commandBuffer);
-                if (endLabel) endLabel(commandBuffer);
+                if (endLabel)
+                    endLabel(commandBuffer);
             }
         }
         VK_CHECK(vkEndCommandBuffer(commandBuffer));
     }
 
-    void Label(const char* name) {
-        if (!beginLabel) return;
+    void Label(const char* name)
+    {
+        if (!beginLabel)
+            return;
         VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
         label.pLabelName = name;
-        label.color[0] = 0.2f; label.color[1] = 0.8f; label.color[2] = 0.4f; label.color[3] = 1.0f;
+        label.color[0] = 0.2f;
+        label.color[1] = 0.8f;
+        label.color[2] = 0.4f;
+        label.color[3] = 1.0f;
         beginLabel(commandBuffer, &label);
     }
 
-    void Transition(VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to) {
+    void Transition(VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to)
+    {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.srcAccessMask = from == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
         b.dstAccessMask = to == VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL ? VK_ACCESS_TRANSFER_WRITE_BIT : VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
@@ -763,38 +864,64 @@ struct App {
         vkCmdPipelineBarrier(commandBuffer, src, dst, 0, 0, nullptr, 0, nullptr, 1, &b);
     }
 
-    void Shutdown() {
-        if (device) vkDeviceWaitIdle(device);
-        for (auto& i : images) {
-            if (i.framebuffer) vkDestroyFramebuffer(device, i.framebuffer, nullptr);
-            if (i.view) vkDestroyImageView(device, i.view, nullptr);
-            for (uint32_t v = 0; v < 2; ++v) {
-                if (i.eyeFramebuffers[v]) vkDestroyFramebuffer(device, i.eyeFramebuffers[v], nullptr);
-                if (i.eyeViews[v]) vkDestroyImageView(device, i.eyeViews[v], nullptr);
+    void Shutdown()
+    {
+        if (device)
+            vkDeviceWaitIdle(device);
+        for (auto& i : images)
+        {
+            if (i.framebuffer)
+                vkDestroyFramebuffer(device, i.framebuffer, nullptr);
+            if (i.view)
+                vkDestroyImageView(device, i.view, nullptr);
+            for (uint32_t v = 0; v < 2; ++v)
+            {
+                if (i.eyeFramebuffers[v])
+                    vkDestroyFramebuffer(device, i.eyeFramebuffers[v], nullptr);
+                if (i.eyeViews[v])
+                    vkDestroyImageView(device, i.eyeViews[v], nullptr);
             }
         }
         images.clear();
-        if (swapchain) xrDestroySwapchain(swapchain);
-        if (depthView) vkDestroyImageView(device, depthView, nullptr);
-        for (uint32_t v = 0; v < 2; ++v) if (depthEyeViews[v]) vkDestroyImageView(device, depthEyeViews[v], nullptr);
-        if (depthImage) vkDestroyImage(device, depthImage, nullptr);
-        if (depthMemory) vkFreeMemory(device, depthMemory, nullptr);
-        if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
-        if (pipelineLayout) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        if (renderPass) vkDestroyRenderPass(device, renderPass, nullptr);
-        if (fence) vkDestroyFence(device, fence, nullptr);
-        if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
-        if (space) xrDestroySpace(space);
-        if (session) xrDestroySession(session);
-        if (device) vkDestroyDevice(device, nullptr);
-        if (vkInstance) vkDestroyInstance(vkInstance, nullptr);
-        if (instance) xrDestroyInstance(instance);
+        if (swapchain)
+            xrDestroySwapchain(swapchain);
+        if (depthView)
+            vkDestroyImageView(device, depthView, nullptr);
+        for (uint32_t v = 0; v < 2; ++v)
+            if (depthEyeViews[v])
+                vkDestroyImageView(device, depthEyeViews[v], nullptr);
+        if (depthImage)
+            vkDestroyImage(device, depthImage, nullptr);
+        if (depthMemory)
+            vkFreeMemory(device, depthMemory, nullptr);
+        if (pipeline)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        if (pipelineLayout)
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        if (renderPass)
+            vkDestroyRenderPass(device, renderPass, nullptr);
+        if (fence)
+            vkDestroyFence(device, fence, nullptr);
+        if (commandPool)
+            vkDestroyCommandPool(device, commandPool, nullptr);
+        if (space)
+            xrDestroySpace(space);
+        if (session)
+            xrDestroySession(session);
+        if (device)
+            vkDestroyDevice(device, nullptr);
+        if (vkInstance)
+            vkDestroyInstance(vkInstance, nullptr);
+        if (instance)
+            xrDestroyInstance(instance);
     }
 };
 
-void OnAppCommand(android_app* app, int32_t cmd) {
+void OnAppCommand(android_app* app, int32_t cmd)
+{
     App* self = (App*)app->userData;
-    switch (cmd) {
+    switch (cmd)
+    {
         case APP_CMD_RESUME: self->resumed = true; break;
         case APP_CMD_PAUSE: self->resumed = false; break;
         default: break;
@@ -803,7 +930,8 @@ void OnAppCommand(android_app* app, int32_t cmd) {
 
 }  // namespace
 
-void android_main(android_app* app) {
+void android_main(android_app* app)
+{
     App self;
     self.android = app;
     app->userData = &self;
@@ -816,17 +944,22 @@ void android_main(android_app* app) {
     self.CreateVulkan();
     self.CreateSession();
 
-    while (!app->destroyRequested && !self.exitRequested) {
+    while (!app->destroyRequested && !self.exitRequested)
+    {
         // Events: block while nothing runs, poll while rendering.
-        for (;;) {
+        for (;;)
+        {
             int events = 0;
             android_poll_source* source = nullptr;
             const int timeout = (!self.resumed && !self.running) || app->destroyRequested ? -1 : 0;
-            if (ALooper_pollOnce(timeout, nullptr, &events, (void**)&source) < 0) break;
-            if (source) source->process(app, source);
+            if (ALooper_pollOnce(timeout, nullptr, &events, (void**)&source) < 0)
+                break;
+            if (source)
+                source->process(app, source);
         }
         self.PollEvents();
-        if (self.running) self.RenderFrame();
+        if (self.running)
+            self.RenderFrame();
     }
     self.Shutdown();
     LOGI("exiting after %llu frames", (unsigned long long)self.frameCount);

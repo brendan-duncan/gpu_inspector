@@ -7,27 +7,32 @@
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 
-struct FrameWindow {
+struct FrameWindow
+{
     Display* display = nullptr;
     Window window = 0;
     Atom deleteMessage = 0;
     bool closed = false;
 };
 
-FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height) {
+FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
+{
     Display* display = XOpenDisplay(nullptr);
-    if (!display) return nullptr;   // no display: a session over ssh, a build machine
+    if (!display)
+        return nullptr;   // no display: a session over ssh, a build machine
     const int screen = DefaultScreen(display);
     auto* window = new FrameWindow;
     window->display = display;
     window->window = XCreateSimpleWindow(display, RootWindow(display, screen), 0, 0, width, height, 0, BlackPixel(display, screen), BlackPixel(display, screen));
-    if (!window->window) {
+    if (!window->window)
+    {
         XCloseDisplay(display);
         delete window;
         return nullptr;
     }
     // Not resizable: the swap chain is made once, for this size.
-    if (XSizeHints* hints = XAllocSizeHints()) {
+    if (XSizeHints* hints = XAllocSizeHints())
+    {
         hints->flags = PMinSize | PMaxSize;
         hints->min_width = hints->max_width = (int)width;
         hints->min_height = hints->max_height = (int)height;
@@ -44,26 +49,36 @@ FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
     return window;
 }
 
-bool PumpFrameWindow(FrameWindow* window) {
-    if (!window) return false;
-    while (XPending(window->display)) {
+bool PumpFrameWindow(FrameWindow* window)
+{
+    if (!window)
+        return false;
+    while (XPending(window->display))
+    {
         XEvent event;
         XNextEvent(window->display, &event);
-        if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == window->deleteMessage) window->closed = true;
-        else if (event.type == KeyPress && XLookupKeysym(&event.xkey, 0) == XK_Escape) window->closed = true;
-        else if (event.type == DestroyNotify) window->closed = true;
+        if (event.type == ClientMessage && (Atom)event.xclient.data.l[0] == window->deleteMessage)
+            window->closed = true;
+        else if (event.type == KeyPress && XLookupKeysym(&event.xkey, 0) == XK_Escape)
+            window->closed = true;
+        else if (event.type == DestroyNotify)
+            window->closed = true;
     }
     return !window->closed;
 }
 
-void SetFrameWindowTitle(FrameWindow* window, const char* title) {
-    if (!window) return;
+void SetFrameWindowTitle(FrameWindow* window, const char* title)
+{
+    if (!window)
+        return;
     XStoreName(window->display, window->window, title ? title : "");
     XFlush(window->display);
 }
 
-void CloseFrameWindow(FrameWindow* window) {
-    if (!window) return;
+void CloseFrameWindow(FrameWindow* window)
+{
+    if (!window)
+        return;
     XDestroyWindow(window->display, window->window);
     XCloseDisplay(window->display);
     delete window;

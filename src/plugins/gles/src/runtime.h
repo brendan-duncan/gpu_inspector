@@ -11,7 +11,8 @@
 #include <cstdio>
 #include <string>
 
-namespace glesinsp {
+namespace glesinsp
+{
 
 using gpuinsp::sdk::JsonWriter;
 
@@ -20,9 +21,20 @@ using gpuinsp::sdk::JsonWriter;
  * group (their names mean the same thing in each); the container objects from VertexArray on belong
  * to the one context that made them, as the GL specification has it.
  */
-enum class ObjType : uint8_t {
-    Buffer, Texture, Renderbuffer, Program, Shader, Sampler, Sync,
-    VertexArray, Framebuffer, Query, TransformFeedback, ProgramPipeline,
+enum class ObjType : uint8_t
+{
+    Buffer,
+    Texture,
+    Renderbuffer,
+    Program,
+    Shader,
+    Sampler,
+    Sync,
+    VertexArray,
+    Framebuffer,
+    Query,
+    TransformFeedback,
+    ProgramPipeline,
     Count,
 };
 
@@ -33,7 +45,8 @@ const char* TypeName(ObjType t);
 inline bool IsShared(ObjType t) { return t < ObjType::VertexArray; }
 
 /** One call in flight: its arguments are written into `args` when a capture is recording it. */
-struct Call {
+struct Call
+{
     JsonWriter args;
     const char* name = nullptr;
     bool recording = false;
@@ -56,15 +69,29 @@ void WriteString(JsonWriter& w, const GLchar* s, GLsizei length);
 std::string JoinStrings(GLsizei count, const GLchar* const* strings, const GLint* lengths);
 
 template <class T>
-void WriteArray(JsonWriter& w, const T* values, size_t n, size_t max) {
-    if (!values) { w.Null(); return; }
-    if (n > max) { w.ArraySummary(n); return; }
+void WriteArray(JsonWriter& w, const T* values, size_t n, size_t max)
+{
+    if (!values)
+    {
+        w.Null();
+        return;
+    }
+    if (n > max)
+    {
+        w.ArraySummary(n);
+        return;
+    }
     w.BeginArray();
-    for (size_t i = 0; i < n; ++i) {
-        if constexpr (std::is_floating_point_v<T>) w.Double((double)values[i]);
-        else if constexpr (std::is_signed_v<T>) w.Int((int64_t)values[i]);
-        else if constexpr (sizeof(T) == 1) w.Boolean(values[i] != 0);   // GLboolean
-        else w.Uint((uint64_t)values[i]);
+    for (size_t i = 0; i < n; ++i)
+    {
+        if constexpr (std::is_floating_point_v<T>)
+            w.Double((double)values[i]);
+        else if constexpr (std::is_signed_v<T>)
+            w.Int((int64_t)values[i]);
+        else if constexpr (sizeof(T) == 1)
+            w.Boolean(values[i] != 0);   // GLboolean
+        else
+            w.Uint((uint64_t)values[i]);
     }
     w.EndArray();
 }

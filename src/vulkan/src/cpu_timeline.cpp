@@ -17,16 +17,24 @@
 #include "tracker.h"
 #include "transport.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 const char* const kCpuCategoryNames[(size_t)CpuCategory::Count] = {
-    "submit", "present", "waitFences", "acquire", "waitIdle", "pipeline",
+    "submit",
+    "present",
+    "waitFences",
+    "acquire",
+    "waitIdle",
+    "pipeline",
 };
 
-namespace {
+namespace
+{
 
 /** One timed call. Kept small: a busy frame records a few hundred of these. */
-struct CpuEvent {
+struct CpuEvent
+{
     uint64_t startNs = 0;      // steady_clock nanoseconds since the capture's origin
     uint32_t durationNs = 0;   // a single call over four seconds is not a thing worth recording exactly
     uint32_t thread = 0;       // index into the timeline's thread list, not an OS id
@@ -66,10 +74,12 @@ uint64_t g_deviceTicks = 0;
 double g_hostMs = 0;          // host time of that instant, relative to the origin
 double g_timestampPeriod = 0; // nanoseconds per GPU tick
 
-uint32_t ThreadIndex() {
+uint32_t ThreadIndex()
+{
     const std::thread::id id = std::this_thread::get_id();
     auto it = g_threadIndex.find(id);
-    if (it != g_threadIndex.end()) return it->second;
+    if (it != g_threadIndex.end())
+        return it->second;
     const uint32_t index = (uint32_t)g_threadIds.size();
     g_threadIndex.emplace(id, index);
     uint64_t osId = 0;
@@ -81,59 +91,74 @@ uint32_t ThreadIndex() {
 
 } // namespace
 
-void PlanCpuTimeline(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, CpuTimelineSetup& setup) {
-    if (!inst || !inst->dispatch.EnumerateDeviceExtensionProperties) return;
+void PlanCpuTimeline(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, CpuTimelineSetup& setup)
+{
+    if (!inst || !inst->dispatch.EnumerateDeviceExtensionProperties)
+        return;
     uint32_t count = 0;
     inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr);
     std::vector<VkExtensionProperties> available(count);
-    if (count) inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, available.data());
+    if (count)
+        inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, available.data());
     auto offers = [&](const char* name) {
         return std::any_of(available.begin(), available.end(),
-                           [&](const VkExtensionProperties& e) { return std::strcmp(e.extensionName, name) == 0; });
+            [&](const VkExtensionProperties& e) { return std::strcmp(e.extensionName, name) == 0; });
     };
     // Either spelling will do; the entry points are the same shape.
     const char* name = offers(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) ? VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
-                     : offers(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) ? VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
-                     : nullptr;
-    if (!name) return;
+        : offers(VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)              ? VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME
+                                                                           : nullptr;
+    if (!name)
+        return;
     setup.extensionNames.assign(info.ppEnabledExtensionNames, info.ppEnabledExtensionNames + info.enabledExtensionCount);
     const bool already = std::any_of(setup.extensionNames.begin(), setup.extensionNames.end(),
-                                     [&](const char* e) { return std::strcmp(e, name) == 0; });
-    if (!already) setup.extensionNames.push_back(name);
+        [&](const char* e) { return std::strcmp(e, name) == 0; });
+    if (!already)
+        setup.extensionNames.push_back(name);
     info.ppEnabledExtensionNames = setup.extensionNames.data();
     info.enabledExtensionCount = (uint32_t)setup.extensionNames.size();
     setup.calibrated = true;
     setup.added = !already;
 }
 
-void InitCpuTimeline(DeviceData* dev, const CpuTimelineSetup& setup) {
+void InitCpuTimeline(DeviceData* dev, const CpuTimelineSetup& setup)
+{
     dev->calibratedTimestamps = setup.calibrated;
     dev->memoryBudget = setup.memoryBudget;
 }
 
-uint64_t CpuEventBegin() {
+uint64_t CpuEventBegin()
+{
     // Either a capture (which keeps every call) or a timing capture (which keeps per-frame totals)
     // needs the clock; neither means this costs one relaxed read and nothing else.
-    if (!g_recording.load(std::memory_order_relaxed) && !g_timing.load(std::memory_order_relaxed)) return 0;
+    if (!g_recording.load(std::memory_order_relaxed) && !g_timing.load(std::memory_order_relaxed))
+        return 0;
     return (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
 }
 
-void CpuEventEnd(DeviceData* dev, uint64_t started, CpuCategory category) {
-    if (!started) return;
+void CpuEventEnd(DeviceData* dev, uint64_t started, CpuCategory category)
+{
+    if (!started)
+        return;
     const bool recording = g_recording.load(std::memory_order_relaxed);
     const bool timing = g_timing.load(std::memory_order_relaxed);
-    if (!recording && !timing) return;
+    if (!recording && !timing)
+        return;
     const uint64_t now = (uint64_t)std::chrono::steady_clock::now().time_since_epoch().count();
     const uint64_t durationNs = now > started ? now - started : 0;
     std::lock_guard lock(g_mutex);
     // The frame's running total, which is all a timing capture keeps of an individual call.
-    if (timing && (size_t)category < (size_t)CpuCategory::Count) {
+    if (timing && (size_t)category < (size_t)CpuCategory::Count)
+    {
         g_frameCategoryMs[(size_t)category] += (double)durationNs / 1e6;
     }
-    if (!recording || !g_running) return;
+    if (!recording || !g_running)
+        return;
     const uint64_t originNs = (uint64_t)g_origin.time_since_epoch().count();
-    if (started < originNs) return;   // began before the capture did
-    if (g_events.size() >= kMaxEvents) {
+    if (started < originNs)
+        return;   // began before the capture did
+    if (g_events.size() >= kMaxEvents)
+    {
         ++g_dropped;
         return;
     }
@@ -146,72 +171,94 @@ void CpuEventEnd(DeviceData* dev, uint64_t started, CpuCategory category) {
     g_events.push_back(e);
 }
 
-void BeginTimingCapture(uint32_t sampleHz) {
+void BeginTimingCapture(uint32_t sampleHz)
+{
     {
         std::lock_guard lock(g_mutex);
         g_frames.clear();
         g_framesSent = 0;
-        for (double& v : g_frameCategoryMs) v = 0;
+        for (double& v : g_frameCategoryMs)
+            v = 0;
         g_timing.store(true, std::memory_order_relaxed);
     }
     const bool sampling = sampleHz > 0 && gpuinsp::CpuSampler::Get().Start(sampleHz);
-    Log("timing capture: started%s", sampling ? ", sampling call stacks" : sampleHz ? " (call stacks are not sampled on this platform)" : "");
+    Log("timing capture: started%s", sampling ? ", sampling call stacks" : sampleHz ? " (call stacks are not sampled on this platform)"
+                                                                                    : "");
 }
 
-void EndTimingCapture() {
+void EndTimingCapture()
+{
     gpuinsp::CpuSampler::Get().Stop();
     std::lock_guard lock(g_mutex);
     g_timing.store(false, std::memory_order_relaxed);
     Log("timing capture: stopped after %zu frames", g_frames.size());
 }
 
-bool TimingCaptureRunning() {
+bool TimingCaptureRunning()
+{
     return g_timing.load(std::memory_order_relaxed);
 }
 
-void NoteFrameTiming(uint32_t frame, double frameMs) {
-    if (!g_timing.load(std::memory_order_relaxed)) return;
+void NoteFrameTiming(uint32_t frame, double frameMs)
+{
+    if (!g_timing.load(std::memory_order_relaxed))
+        return;
     // The frame that ends here is `frame`; what is sampled from now on is the next one's.
     gpuinsp::CpuSampler::Get().NoteFrame(frame + 1);
     std::lock_guard lock(g_mutex);
-    if (!g_timing.load(std::memory_order_relaxed)) return;
+    if (!g_timing.load(std::memory_order_relaxed))
+        return;
     FrameTiming t;
     t.frame = frame;
     t.durationMs = (float)frameMs;
-    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) {
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i)
+    {
         t.categoryMs[i] = (float)g_frameCategoryMs[i];
         g_frameCategoryMs[i] = 0;
     }
     // The oldest go when the ring is full: a timing capture left running should not grow without
     // bound, and what matters is the recent minutes.
-    if (g_frames.size() >= kMaxFrames) {
+    if (g_frames.size() >= kMaxFrames)
+    {
         g_frames.erase(g_frames.begin(), g_frames.begin() + (g_frames.size() - kMaxFrames + 1));
-        if (g_framesSent > g_frames.size()) g_framesSent = 0;
+        if (g_framesSent > g_frames.size())
+            g_framesSent = 0;
     }
     g_frames.push_back(t);
 }
 
-void SendTimingFrames() {
+void SendTimingFrames()
+{
     std::vector<FrameTiming> batch;
     {
         std::lock_guard lock(g_mutex);
-        if (g_framesSent >= g_frames.size()) return;
+        if (g_framesSent >= g_frames.size())
+            return;
         batch.assign(g_frames.begin() + (ptrdiff_t)g_framesSent, g_frames.end());
         g_framesSent = g_frames.size();
     }
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("TimingFrames");
-    w.Key("categories"); w.BeginArray();
-    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.String(kCpuCategoryNames[i]);
+    w.Key("action");
+    w.String("TimingFrames");
+    w.Key("categories");
+    w.BeginArray();
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i)
+        w.String(kCpuCategoryNames[i]);
     w.EndArray();
-    w.Key("frames"); w.BeginArray();
-    for (const FrameTiming& t : batch) {
+    w.Key("frames");
+    w.BeginArray();
+    for (const FrameTiming& t : batch)
+    {
         w.BeginObject();
-        w.Key("frame"); w.Uint(t.frame);
-        w.Key("durationMs"); w.Double(t.durationMs);
-        w.Key("categoryMs"); w.BeginArray();
-        for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.Double(t.categoryMs[i]);
+        w.Key("frame");
+        w.Uint(t.frame);
+        w.Key("durationMs");
+        w.Double(t.durationMs);
+        w.Key("categoryMs");
+        w.BeginArray();
+        for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i)
+            w.Double(t.categoryMs[i]);
         w.EndArray();
         w.EndObject();
     }
@@ -220,44 +267,70 @@ void SendTimingFrames() {
     Transport::Get().SendJson(std::move(w.str()));
 }
 
-void SendTimingSamples() {
+void SendTimingSamples()
+{
     gpuinsp::CpuSampler::Batch batch;
-    if (!gpuinsp::CpuSampler::Get().Take(batch)) return;
+    if (!gpuinsp::CpuSampler::Get().Take(batch))
+        return;
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("TimingSamples");
-    w.Key("periodMs"); w.Double(batch.periodMs);
-    w.Key("threads"); w.BeginArray();
-    for (const auto& t : batch.threads) {
+    w.Key("action");
+    w.String("TimingSamples");
+    w.Key("periodMs");
+    w.Double(batch.periodMs);
+    w.Key("threads");
+    w.BeginArray();
+    for (const auto& t : batch.threads)
+    {
         w.BeginObject();
-        w.Key("id"); w.Uint(t.id);
-        if (!t.name.empty()) { w.Key("name"); w.String(t.name); }
+        w.Key("id");
+        w.Uint(t.id);
+        if (!t.name.empty())
+        {
+            w.Key("name");
+            w.String(t.name);
+        }
         w.EndObject();
     }
     w.EndArray();
     // Only the stacks this batch is the first to use: an id means the same stack for the whole capture.
-    w.Key("stacks"); w.BeginArray();
-    for (const auto& s : batch.stacks) {
+    w.Key("stacks");
+    w.BeginArray();
+    for (const auto& s : batch.stacks)
+    {
         w.BeginObject();
-        w.Key("id"); w.Uint(s.id);
-        w.Key("addresses"); WriteStackAddresses(w, s.addresses);
+        w.Key("id");
+        w.Uint(s.id);
+        w.Key("addresses");
+        WriteStackAddresses(w, s.addresses);
         w.EndObject();
     }
     w.EndArray();
     // [frame, thread (an index into threads), stack id, running (1) or waiting (0), samples]
-    w.Key("samples"); w.BeginArray();
-    for (const auto& s : batch.samples) {
+    w.Key("samples");
+    w.BeginArray();
+    for (const auto& s : batch.samples)
+    {
         w.BeginArray();
-        w.Uint(s.frame); w.Uint(s.thread); w.Uint(s.stack); w.Uint(s.running ? 1 : 0); w.Uint(s.count);
+        w.Uint(s.frame);
+        w.Uint(s.thread);
+        w.Uint(s.stack);
+        w.Uint(s.running ? 1 : 0);
+        w.Uint(s.count);
         w.EndArray();
     }
     w.EndArray();
-    if (batch.dropped) { w.Key("dropped"); w.Uint(batch.dropped); }
+    if (batch.dropped)
+    {
+        w.Key("dropped");
+        w.Uint(batch.dropped);
+    }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 }
 
-void BeginCpuTimeline() {
+void BeginCpuTimeline()
+{
     std::lock_guard lock(g_mutex);
     g_events.clear();
     g_threadIndex.clear();
@@ -269,11 +342,14 @@ void BeginCpuTimeline() {
     g_recording.store(true, std::memory_order_relaxed);
 }
 
-bool SampleCalibration(DeviceData* dev) {
-    if (!dev || !dev->calibratedTimestamps) return false;
+bool SampleCalibration(DeviceData* dev)
+{
+    if (!dev || !dev->calibratedTimestamps)
+        return false;
     auto get = dev->dispatch.GetCalibratedTimestampsKHR ? dev->dispatch.GetCalibratedTimestampsKHR
                                                         : dev->dispatch.GetCalibratedTimestampsEXT;
-    if (!get) return false;
+    if (!get)
+        return false;
 #if defined(_WIN32)
     const VkTimeDomainKHR hostDomain = VK_TIME_DOMAIN_QUERY_PERFORMANCE_COUNTER_KHR;
 #else
@@ -286,7 +362,8 @@ bool SampleCalibration(DeviceData* dev) {
     infos[1].timeDomain = hostDomain;
     uint64_t stamps[2] = {0, 0};
     uint64_t deviation = 0;
-    if (get(dev->device, 2, infos, stamps, &deviation) != VK_SUCCESS) return false;
+    if (get(dev->device, 2, infos, stamps, &deviation) != VK_SUCCESS)
+        return false;
 
     // The host stamp is in the host domain's own units; what the timeline needs is where that
     // instant sits on the same steady_clock the events use. Reading the clock either side of the
@@ -300,7 +377,8 @@ bool SampleCalibration(DeviceData* dev) {
     return g_calibrated;
 }
 
-void SendCpuTimeline() {
+void SendCpuTimeline()
+{
     std::vector<CpuEvent> events;
     std::vector<uint64_t> threads;
     size_t dropped = 0;
@@ -319,33 +397,50 @@ void SendCpuTimeline() {
         hostMs = g_hostMs;
         period = g_timestampPeriod;
     }
-    if (events.empty()) return;
+    if (events.empty())
+        return;
     // In time order, so a reader can draw them without sorting.
     std::sort(events.begin(), events.end(), [](const CpuEvent& a, const CpuEvent& b) { return a.startNs < b.startNs; });
 
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("CaptureCpuTimeline");
-    w.Key("threads"); w.BeginArray();
-    for (uint64_t id : threads) w.Uint(id);
+    w.Key("action");
+    w.String("CaptureCpuTimeline");
+    w.Key("threads");
+    w.BeginArray();
+    for (uint64_t id : threads)
+        w.Uint(id);
     w.EndArray();
-    if (dropped) w.Key("dropped"), w.Uint(dropped);
+    if (dropped)
+        w.Key("dropped"), w.Uint(dropped);
     // How to place a GPU timestamp on this axis: hostMs + (ticks - deviceTicks) * period / 1e6.
-    if (calibrated) {
-        w.Key("calibration"); w.BeginObject();
-        w.Key("deviceTicks"); w.Uint(deviceTicks);
-        w.Key("hostMs"); w.Double(hostMs);
-        w.Key("timestampPeriod"); w.Double(period);
+    if (calibrated)
+    {
+        w.Key("calibration");
+        w.BeginObject();
+        w.Key("deviceTicks");
+        w.Uint(deviceTicks);
+        w.Key("hostMs");
+        w.Double(hostMs);
+        w.Key("timestampPeriod");
+        w.Double(period);
         w.EndObject();
     }
-    w.Key("events"); w.BeginArray();
-    for (const CpuEvent& e : events) {
+    w.Key("events");
+    w.BeginArray();
+    for (const CpuEvent& e : events)
+    {
         w.BeginObject();
-        w.Key("thread"); w.Uint(e.thread);
-        w.Key("category"); w.String(kCpuCategoryNames[e.category < (uint16_t)CpuCategory::Count ? e.category : 0]);
-        w.Key("frame"); w.Uint(e.frame);
-        w.Key("startMs"); w.Double((double)e.startNs / 1e6);
-        w.Key("durationMs"); w.Double((double)e.durationNs / 1e6);
+        w.Key("thread");
+        w.Uint(e.thread);
+        w.Key("category");
+        w.String(kCpuCategoryNames[e.category < (uint16_t)CpuCategory::Count ? e.category : 0]);
+        w.Key("frame");
+        w.Uint(e.frame);
+        w.Key("startMs");
+        w.Double((double)e.startNs / 1e6);
+        w.Key("durationMs");
+        w.Double((double)e.durationNs / 1e6);
         w.EndObject();
     }
     w.EndArray();
@@ -356,37 +451,47 @@ void SendCpuTimeline() {
 // ---------------------------------------------------------------------------------------------
 // Memory residency (VK_EXT_memory_budget)
 
-void PlanMemoryBudget(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, CpuTimelineSetup& setup) {
-    if (!inst || !inst->dispatch.EnumerateDeviceExtensionProperties) return;
+void PlanMemoryBudget(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, CpuTimelineSetup& setup)
+{
+    if (!inst || !inst->dispatch.EnumerateDeviceExtensionProperties)
+        return;
     uint32_t count = 0;
     inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr);
     std::vector<VkExtensionProperties> available(count);
-    if (count) inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, available.data());
+    if (count)
+        inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, available.data());
     const bool has = std::any_of(available.begin(), available.end(), [](const VkExtensionProperties& e) {
         return std::strcmp(e.extensionName, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0;
     });
-    if (!has) return;
+    if (!has)
+        return;
     // PlanCpuTimeline may already have taken a copy of the list; extend whichever is current.
-    if (setup.extensionNames.empty()) {
+    if (setup.extensionNames.empty())
+    {
         setup.extensionNames.assign(info.ppEnabledExtensionNames, info.ppEnabledExtensionNames + info.enabledExtensionCount);
     }
     const bool already = std::any_of(setup.extensionNames.begin(), setup.extensionNames.end(),
-                                     [](const char* e) { return std::strcmp(e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0; });
-    if (!already) setup.extensionNames.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
+        [](const char* e) { return std::strcmp(e, VK_EXT_MEMORY_BUDGET_EXTENSION_NAME) == 0; });
+    if (!already)
+        setup.extensionNames.push_back(VK_EXT_MEMORY_BUDGET_EXTENSION_NAME);
     info.ppEnabledExtensionNames = setup.extensionNames.data();
     info.enabledExtensionCount = (uint32_t)setup.extensionNames.size();
     setup.memoryBudget = true;
     setup.added = setup.added || !already;
 }
 
-void SendMemoryBudget(DeviceData* dev) {
-    if (!dev || !dev->memoryBudget || !dev->instance) return;
+void SendMemoryBudget(DeviceData* dev)
+{
+    if (!dev || !dev->memoryBudget || !dev->instance)
+        return;
     auto get = dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
-                 ? dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
-                 : dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2KHR;
-    if (!get) return;
+        ? dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
+        : dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2KHR;
+    if (!get)
+        return;
     const uint64_t id = Tracker::Get().Resolve(HT_VkPhysicalDevice, (uint64_t)(uintptr_t)dev->physicalDevice);
-    if (!id) return;
+    if (!id)
+        return;
 
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
     VkPhysicalDeviceMemoryProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
@@ -396,28 +501,36 @@ void SendMemoryBudget(DeviceData* dev) {
 
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("ObjectUpdate");
-    w.Key("id"); w.Uint(id);
-    w.Key("memoryBudget"); w.BeginObject();
+    w.Key("action");
+    w.String("ObjectUpdate");
+    w.Key("id");
+    w.Uint(id);
+    w.Key("memoryBudget");
+    w.BeginObject();
     // What the driver will let this process have, and what is resident from every process.
-    w.Key("heapBudget"); w.BeginArray();
-    for (uint32_t i = 0; i < heaps; ++i) w.Uint(budget.heapBudget[i]);
+    w.Key("heapBudget");
+    w.BeginArray();
+    for (uint32_t i = 0; i < heaps; ++i)
+        w.Uint(budget.heapBudget[i]);
     w.EndArray();
-    w.Key("heapUsage"); w.BeginArray();
-    for (uint32_t i = 0; i < heaps; ++i) w.Uint(budget.heapUsage[i]);
+    w.Key("heapUsage");
+    w.BeginArray();
+    for (uint32_t i = 0; i < heaps; ++i)
+        w.Uint(budget.heapUsage[i]);
     w.EndArray();
     w.EndObject();
     w.EndObject();
     Tracker::Get().Update(id, "memoryBudget", w.str());
 }
 
-
 // ---------------------------------------------------------------------------------------------
 // Memory over time
 
-namespace {
+namespace
+{
 
-struct AllocationRecord {
+struct AllocationRecord
+{
     uint64_t size = 0;
     uint32_t heap = 0;
     /** The tracker's id, read while a memory capture runs; 0 for an allocation older than it. */
@@ -430,7 +543,8 @@ uint64_t g_heapBytes[VK_MAX_MEMORY_HEAPS] = {};
 uint32_t g_heapCount[VK_MAX_MEMORY_HEAPS] = {};
 
 // Memory captures (cpu_timeline.h).
-struct MemoryEvent {
+struct MemoryEvent
+{
     uint32_t frame = 0;
     float ms = 0;          // since the capture began
     uint64_t id = 0;       // the tracker's id
@@ -450,9 +564,12 @@ size_t g_memoryEventsDropped = 0;
 constexpr size_t kMaxMemoryEvents = 1u << 20;
 
 /** Under g_memoryMutex. */
-void RecordMemoryEvent(DeviceData* dev, uint64_t id, uint64_t bytes, uint32_t heap, bool released) {
-    if (!g_memoryCapture.load(std::memory_order_relaxed)) return;
-    if (g_memoryEventsTotal >= kMaxMemoryEvents) {
+void RecordMemoryEvent(DeviceData* dev, uint64_t id, uint64_t bytes, uint32_t heap, bool released)
+{
+    if (!g_memoryCapture.load(std::memory_order_relaxed))
+        return;
+    if (g_memoryEventsTotal >= kMaxMemoryEvents)
+    {
         ++g_memoryEventsDropped;
         return;
     }
@@ -469,29 +586,36 @@ void RecordMemoryEvent(DeviceData* dev, uint64_t id, uint64_t bytes, uint32_t he
 
 }  // namespace
 
-void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAllocateInfo* info) {
-    if (!dev || !memory || !info) return;
+void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAllocateInfo* info)
+{
+    if (!dev || !memory || !info)
+        return;
     const uint32_t type = info->memoryTypeIndex;
-    if (type >= dev->memoryProperties.memoryTypeCount) return;
+    if (type >= dev->memoryProperties.memoryTypeCount)
+        return;
     // Kept apart from the per-heap totals below: reading a descriptor buffer means finding the
     // allocation a buffer sits in and whether the application has it mapped (descriptor_buffer.h).
     ResourceRegistry::Get().NoteMemory(
         memory, info->allocationSize,
         (dev->memoryProperties.memoryTypes[type].propertyFlags & VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT) != 0);
     const uint32_t heap = dev->memoryProperties.memoryTypes[type].heapIndex;
-    if (heap >= VK_MAX_MEMORY_HEAPS) return;
+    if (heap >= VK_MAX_MEMORY_HEAPS)
+        return;
     // The tracker already has the allocation (vk_entry.gen.cpp notes it after), and is asked
     // before the lock: it has its own. A driver hands the same handle out again within a frame or
     // two of a free, so the id has to be read while the handle still means this allocation.
     const uint64_t id = g_memoryCapture.load(std::memory_order_relaxed)
-                            ? Tracker::Get().Resolve(HT_VkDeviceMemory, (uint64_t)(uintptr_t)memory) : 0;
+        ? Tracker::Get().Resolve(HT_VkDeviceMemory, (uint64_t)(uintptr_t)memory)
+        : 0;
     std::lock_guard lock(g_memoryMutex);
     AllocationRecord& r = g_allocations[(uint64_t)(uintptr_t)memory];
     // A handle the driver has handed out again after a free it did not report: the old record would
     // otherwise be counted twice.
-    if (r.size) {
+    if (r.size)
+    {
         g_heapBytes[r.heap] -= std::min(g_heapBytes[r.heap], r.size);
-        if (g_heapCount[r.heap]) --g_heapCount[r.heap];
+        if (g_heapCount[r.heap])
+            --g_heapCount[r.heap];
     }
     r.size = info->allocationSize;
     r.heap = heap;
@@ -501,25 +625,32 @@ void NoteAllocation(DeviceData* dev, VkDeviceMemory memory, const VkMemoryAlloca
     RecordMemoryEvent(dev, id, r.size, heap, false);
 }
 
-void NoteFree(DeviceData* dev, VkDeviceMemory memory) {
-    if (!memory) return;
+void NoteFree(DeviceData* dev, VkDeviceMemory memory)
+{
+    if (!memory)
+        return;
     // Still tracked here (vk_entry.gen.cpp notes the free first): an allocation made before the
     // capture began has no id on its record.
     const uint64_t known = g_memoryCapture.load(std::memory_order_relaxed)
-                               ? Tracker::Get().Resolve(HT_VkDeviceMemory, (uint64_t)(uintptr_t)memory) : 0;
+        ? Tracker::Get().Resolve(HT_VkDeviceMemory, (uint64_t)(uintptr_t)memory)
+        : 0;
     std::lock_guard lock(g_memoryMutex);
     auto it = g_allocations.find((uint64_t)(uintptr_t)memory);
-    if (it == g_allocations.end()) return;
+    if (it == g_allocations.end())
+        return;
     const AllocationRecord& r = it->second;
-    if (r.heap < VK_MAX_MEMORY_HEAPS) {
+    if (r.heap < VK_MAX_MEMORY_HEAPS)
+    {
         g_heapBytes[r.heap] -= std::min(g_heapBytes[r.heap], r.size);
-        if (g_heapCount[r.heap]) --g_heapCount[r.heap];
+        if (g_heapCount[r.heap])
+            --g_heapCount[r.heap];
     }
     RecordMemoryEvent(dev, r.id ? r.id : known, r.size, r.heap, true);
     g_allocations.erase(it);
 }
 
-void BeginMemoryCapture() {
+void BeginMemoryCapture()
+{
     std::lock_guard lock(g_memoryMutex);
     g_memoryEvents.clear();
     g_memoryEventsTotal = 0;
@@ -530,13 +661,15 @@ void BeginMemoryCapture() {
     Log("memory capture: started");
 }
 
-void EndMemoryCapture() {
+void EndMemoryCapture()
+{
     std::lock_guard lock(g_memoryMutex);
     g_memoryCapture.store(false, std::memory_order_relaxed);
     Log("memory capture: stopped after %zu events (%zu not recorded)", g_memoryEventsTotal, g_memoryEventsDropped);
 }
 
-void SendMemoryEvents(DeviceData* dev) {
+void SendMemoryEvents(DeviceData* dev)
+{
     const uint32_t heaps = dev ? std::min<uint32_t>(dev->memoryProperties.memoryHeapCount, VK_MAX_MEMORY_HEAPS) : 0;
     std::vector<MemoryEvent> batch;
     bool baseline = false;
@@ -545,48 +678,83 @@ void SendMemoryEvents(DeviceData* dev) {
     size_t dropped = 0;
     {
         std::lock_guard lock(g_memoryMutex);
-        if (g_memoryEvents.empty() && !g_memoryBaselinePending) return;
+        if (g_memoryEvents.empty() && !g_memoryBaselinePending)
+            return;
         batch.swap(g_memoryEvents);
         baseline = g_memoryBaselinePending;
         g_memoryBaselinePending = false;
         dropped = g_memoryEventsDropped;
-        if (baseline) {
+        if (baseline)
+        {
             std::copy(std::begin(g_heapBytes), std::end(g_heapBytes), std::begin(bytes));
             std::copy(std::begin(g_heapCount), std::end(g_heapCount), std::begin(counts));
         }
     }
     // What is held now, less what this batch did, is what was held before it: the totals the
     // capture began with, which the first message carries.
-    if (baseline) {
-        for (const MemoryEvent& e : batch) {
-            if (e.heap >= VK_MAX_MEMORY_HEAPS) continue;
-            if (e.released) { bytes[e.heap] += e.bytes; ++counts[e.heap]; }
-            else { bytes[e.heap] -= std::min(bytes[e.heap], e.bytes); if (counts[e.heap]) --counts[e.heap]; }
+    if (baseline)
+    {
+        for (const MemoryEvent& e : batch)
+        {
+            if (e.heap >= VK_MAX_MEMORY_HEAPS)
+                continue;
+            if (e.released)
+            {
+                bytes[e.heap] += e.bytes;
+                ++counts[e.heap];
+            }
+            else
+            {
+                bytes[e.heap] -= std::min(bytes[e.heap], e.bytes);
+                if (counts[e.heap])
+                    --counts[e.heap];
+            }
         }
     }
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("MemoryEvents");
-    if (baseline) {
-        w.Key("baseline"); w.BeginArray();
-        for (uint32_t i = 0; i < heaps; ++i) {
+    w.Key("action");
+    w.String("MemoryEvents");
+    if (baseline)
+    {
+        w.Key("baseline");
+        w.BeginArray();
+        for (uint32_t i = 0; i < heaps; ++i)
+        {
             w.BeginObject();
-            w.Key("allocated"); w.Uint(bytes[i]);
-            w.Key("allocations"); w.Uint(counts[i]);
+            w.Key("allocated");
+            w.Uint(bytes[i]);
+            w.Key("allocations");
+            w.Uint(counts[i]);
             w.EndObject();
         }
         w.EndArray();
     }
-    if (dropped) { w.Key("dropped"); w.Uint(dropped); }
-    w.Key("events"); w.BeginArray();
-    for (const MemoryEvent& e : batch) {
+    if (dropped)
+    {
+        w.Key("dropped");
+        w.Uint(dropped);
+    }
+    w.Key("events");
+    w.BeginArray();
+    for (const MemoryEvent& e : batch)
+    {
         w.BeginObject();
-        w.Key("frame"); w.Uint(e.frame);
-        w.Key("ms"); w.Double(e.ms);
-        w.Key("id"); w.Uint(e.id);
-        w.Key("bytes"); w.Uint(e.bytes);
-        w.Key("heap"); w.Uint(e.heap);
-        if (e.released) { w.Key("free"); w.Boolean(true); }
+        w.Key("frame");
+        w.Uint(e.frame);
+        w.Key("ms");
+        w.Double(e.ms);
+        w.Key("id");
+        w.Uint(e.id);
+        w.Key("bytes");
+        w.Uint(e.bytes);
+        w.Key("heap");
+        w.Uint(e.heap);
+        if (e.released)
+        {
+            w.Key("free");
+            w.Boolean(true);
+        }
         w.EndObject();
     }
     w.EndArray();
@@ -594,20 +762,25 @@ void SendMemoryEvents(DeviceData* dev) {
     Transport::Get().SendJson(std::move(w.str()));
 }
 
-void SendMemorySample(DeviceData* dev) {
-    if (!dev || !dev->instance) return;
+void SendMemorySample(DeviceData* dev)
+{
+    if (!dev || !dev->instance)
+        return;
     const uint32_t heaps = dev->memoryProperties.memoryHeapCount;
-    if (!heaps) return;
+    if (!heaps)
+        return;
 
     // The driver's own view, where the device reports one. Absent is not zero, so the two are kept
     // apart: a sample with no budget still carries what the application holds.
     bool hasBudget = false;
     VkPhysicalDeviceMemoryBudgetPropertiesEXT budget{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_BUDGET_PROPERTIES_EXT};
-    if (dev->memoryBudget) {
+    if (dev->memoryBudget)
+    {
         auto get = dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
-                     ? dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
-                     : dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2KHR;
-        if (get) {
+            ? dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2
+            : dev->instance->dispatch.GetPhysicalDeviceMemoryProperties2KHR;
+        if (get)
+        {
             VkPhysicalDeviceMemoryProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MEMORY_PROPERTIES_2};
             props.pNext = &budget;
             get(dev->physicalDevice, &props);
@@ -625,16 +798,25 @@ void SendMemorySample(DeviceData* dev) {
 
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("MemorySample");
-    w.Key("frame"); w.Uint(dev->frameIndex);
-    w.Key("heaps"); w.BeginArray();
-    for (uint32_t i = 0; i < heaps && i < VK_MAX_MEMORY_HEAPS; ++i) {
+    w.Key("action");
+    w.String("MemorySample");
+    w.Key("frame");
+    w.Uint(dev->frameIndex);
+    w.Key("heaps");
+    w.BeginArray();
+    for (uint32_t i = 0; i < heaps && i < VK_MAX_MEMORY_HEAPS; ++i)
+    {
         w.BeginObject();
-        w.Key("allocated"); w.Uint(bytes[i]);
-        w.Key("allocations"); w.Uint(counts[i]);
-        if (hasBudget) {
-            w.Key("usage"); w.Uint(budget.heapUsage[i]);
-            w.Key("budget"); w.Uint(budget.heapBudget[i]);
+        w.Key("allocated");
+        w.Uint(bytes[i]);
+        w.Key("allocations");
+        w.Uint(counts[i]);
+        if (hasBudget)
+        {
+            w.Key("usage");
+            w.Uint(budget.heapUsage[i]);
+            w.Key("budget");
+            w.Uint(budget.heapBudget[i]);
         }
         w.EndObject();
     }

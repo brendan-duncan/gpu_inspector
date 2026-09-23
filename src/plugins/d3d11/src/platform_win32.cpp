@@ -14,29 +14,37 @@
 
 #include <gpu_inspector/sdk/config.h>
 
-namespace {
+namespace
+{
 bool g_initialized = false;
 }
 
 using namespace d3d11insp;
 
-extern "C" __declspec(dllexport) DWORD WINAPI GpuInspectorInitialize(LPVOID settings) {
-    if (g_initialized) return 0;
+extern "C" __declspec(dllexport) DWORD WINAPI GpuInspectorInitialize(LPVOID settings)
+{
+    if (g_initialized)
+        return 0;
     g_initialized = true;
     const std::string applied = gpuinsp::sdk::Config::Get().ApplySettingsBlock((const wchar_t*)settings);
     LogAlways("loaded into pid %lu", GetCurrentProcessId());
-    if (!applied.empty()) LogAlways("settings from the launcher: %s", applied.c_str());
+    if (!applied.empty())
+        LogAlways("settings from the launcher: %s", applied.c_str());
     HMODULE d3d11 = LoadLibraryW(L"d3d11.dll");
-    if (!d3d11) {
+    if (!d3d11)
+    {
         LogAlways("d3d11.dll could not be loaded (%lu): no Direct3D 11 capture in this process", GetLastError());
         return 1;
     }
-    if (!InstallEntryPointHooks(d3d11)) return 1;
+    if (!InstallEntryPointHooks(d3d11))
+        return 1;
     LogAlways("hooked D3D11CreateDevice and D3D11CreateDeviceAndSwapChain");
     return 0;
 }
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) DisableThreadLibraryCalls(instance);
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+        DisableThreadLibraryCalls(instance);
     return TRUE;
 }

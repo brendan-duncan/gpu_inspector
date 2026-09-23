@@ -16,7 +16,8 @@
 #include <unordered_map>
 #include <vector>
 
-namespace glesinsp {
+namespace glesinsp
+{
 
 // ------------------------------------------------------------------------------------------------
 // Logging (GLESINSP_LOG=1, GLESINSP_LOG_FILE=<path>)
@@ -30,7 +31,8 @@ void LogAlways(const char* fmt, ...);
 // Objects
 
 /** A framebuffer attachment: what is attached where. */
-struct Attachment {
+struct Attachment
+{
     ObjType kind = ObjType::Texture;   // Texture or Renderbuffer
     GLuint name = 0;
     uint64_t id = 0;
@@ -41,7 +43,8 @@ struct Attachment {
 };
 
 /** One active uniform, attribute or block member of a linked program. */
-struct ProgramVariable {
+struct ProgramVariable
+{
     std::string name;
     GLint location = -1;
     GLenum type = 0;
@@ -53,14 +56,16 @@ struct ProgramVariable {
     bool rowMajor = false;
 };
 
-struct ProgramBlock {
+struct ProgramBlock
+{
     std::string name;
     GLuint index = 0;
     GLint dataSize = 0;
     std::vector<ProgramVariable> members;
 };
 
-struct Object {
+struct Object
+{
     uint64_t id = 0;
     ObjType kind = ObjType::Count;   // Count for the EGL objects (contexts, surfaces)
     std::string type;                // "GLTexture"
@@ -106,11 +111,13 @@ struct Object {
 // ------------------------------------------------------------------------------------------------
 // Contexts
 
-struct ShareGroup {
+struct ShareGroup
+{
     std::unordered_map<GLuint, uint64_t> names[(int)ObjType::Count];
 };
 
-struct Context {
+struct Context
+{
     EGLContext handle = nullptr;
     EGLDisplay display = nullptr;
     uint64_t id = 0;
@@ -174,7 +181,8 @@ struct Context {
     bool es3() const { return major >= 3; }
 };
 
-struct LibraryState {
+struct LibraryState
+{
     std::recursive_mutex mutex;
     std::unordered_map<uint64_t, Object> objects;
     std::unordered_map<EGLContext, std::unique_ptr<Context>> contexts;
@@ -189,7 +197,8 @@ LibraryState& State();
 Context* Current();
 
 /** What the default framebuffer draws into: the surface's object id, its size, and whether it is sRGB. */
-struct Drawable {
+struct Drawable
+{
     uint64_t id = 0;
     int width = 0, height = 0;
     bool srgb = false;

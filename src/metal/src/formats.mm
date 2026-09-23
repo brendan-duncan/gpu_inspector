@@ -2,10 +2,13 @@
 // Regenerate when a new SDK adds formats; nothing here is derived at build time.
 #include "formats.h"
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
-const char *PixelFormatEnumName(MTLPixelFormat format) {
-    switch ((NSUInteger)format) {
+const char* PixelFormatEnumName(MTLPixelFormat format)
+{
+    switch ((NSUInteger)format)
+    {
         case 0: return "MTLPixelFormatInvalid";
         case 1: return "MTLPixelFormatA8Unorm";
         case 10: return "MTLPixelFormatR8Unorm";
@@ -164,8 +167,10 @@ const char *PixelFormatEnumName(MTLPixelFormat format) {
     }
 }
 
-PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
-    switch ((NSUInteger)format) {
+PixelFormatInfo PixelFormatDetails(MTLPixelFormat format)
+{
+    switch ((NSUInteger)format)
+    {
         case 1: return {"VK_FORMAT_A8_UNORM_KHR", 1, 1, 1};
         case 10: return {"VK_FORMAT_R8_UNORM", 1, 1, 1};
         case 11: return {"VK_FORMAT_R8_SRGB", 1, 1, 1};
@@ -330,62 +335,76 @@ PixelFormatInfo PixelFormatDetails(MTLPixelFormat format) {
     }
 }
 
-const char *TextureTypeEnumName(MTLTextureType type) {
-    switch (type) {
-        case MTLTextureType1D:                 return "MTLTextureType1D";
-        case MTLTextureType1DArray:            return "MTLTextureType1DArray";
-        case MTLTextureType2D:                 return "MTLTextureType2D";
-        case MTLTextureType2DArray:            return "MTLTextureType2DArray";
-        case MTLTextureType2DMultisample:      return "MTLTextureType2DMultisample";
+const char* TextureTypeEnumName(MTLTextureType type)
+{
+    switch (type)
+    {
+        case MTLTextureType1D: return "MTLTextureType1D";
+        case MTLTextureType1DArray: return "MTLTextureType1DArray";
+        case MTLTextureType2D: return "MTLTextureType2D";
+        case MTLTextureType2DArray: return "MTLTextureType2DArray";
+        case MTLTextureType2DMultisample: return "MTLTextureType2DMultisample";
         case MTLTextureType2DMultisampleArray: return "MTLTextureType2DMultisampleArray";
-        case MTLTextureTypeCube:               return "MTLTextureTypeCube";
-        case MTLTextureTypeCubeArray:          return "MTLTextureTypeCubeArray";
-        case MTLTextureType3D:                 return "MTLTextureType3D";
-        case MTLTextureTypeTextureBuffer:      return "MTLTextureTypeTextureBuffer";
-        default:                               return "";
+        case MTLTextureTypeCube: return "MTLTextureTypeCube";
+        case MTLTextureTypeCubeArray: return "MTLTextureTypeCubeArray";
+        case MTLTextureType3D: return "MTLTextureType3D";
+        case MTLTextureTypeTextureBuffer: return "MTLTextureTypeTextureBuffer";
+        default: return "";
     }
 }
 
-const char *StorageModeEnumName(MTLStorageMode mode) {
-    switch (mode) {
-        case MTLStorageModeShared:     return "MTLStorageModeShared";
-        case MTLStorageModeManaged:    return "MTLStorageModeManaged";
-        case MTLStorageModePrivate:    return "MTLStorageModePrivate";
+const char* StorageModeEnumName(MTLStorageMode mode)
+{
+    switch (mode)
+    {
+        case MTLStorageModeShared: return "MTLStorageModeShared";
+        case MTLStorageModeManaged: return "MTLStorageModeManaged";
+        case MTLStorageModePrivate: return "MTLStorageModePrivate";
         case MTLStorageModeMemoryless: return "MTLStorageModeMemoryless";
-        default:                       return "";
+        default: return "";
     }
 }
 
-const char *PurgeableStateEnumName(MTLPurgeableState state) {
-    switch (state) {
+const char* PurgeableStateEnumName(MTLPurgeableState state)
+{
+    switch (state)
+    {
         case MTLPurgeableStateKeepCurrent: return "MTLPurgeableStateKeepCurrent";
         case MTLPurgeableStateNonVolatile: return "MTLPurgeableStateNonVolatile";
-        case MTLPurgeableStateVolatile:    return "MTLPurgeableStateVolatile";
-        case MTLPurgeableStateEmpty:       return "MTLPurgeableStateEmpty";
-        default:                           return "";
+        case MTLPurgeableStateVolatile: return "MTLPurgeableStateVolatile";
+        case MTLPurgeableStateEmpty: return "MTLPurgeableStateEmpty";
+        default: return "";
     }
 }
 
-PixelFormatInfo DepthReadbackDetails(MTLPixelFormat format, MTLBlitOption *option) {
-    if (option != nullptr) *option = MTLBlitOptionNone;
-    switch ((NSUInteger)format) {
+PixelFormatInfo DepthReadbackDetails(MTLPixelFormat format, MTLBlitOption* option)
+{
+    if (option != nullptr)
+        *option = MTLBlitOptionNone;
+    switch ((NSUInteger)format)
+    {
         case 250: return {"VK_FORMAT_D16_UNORM", 1, 1, 2};   // Depth16Unorm
         case 252: return {"VK_FORMAT_D32_SFLOAT", 1, 1, 4};  // Depth32Float
         case 255:                                            // Depth24Unorm_Stencil8
-            if (option != nullptr) *option = MTLBlitOptionDepthFromDepthStencil;
+            if (option != nullptr)
+                *option = MTLBlitOptionDepthFromDepthStencil;
             // The depth aspect alone lands in a 32-bit word per pixel; the decoder for the
             // combined format reads the low 24 bits, which is where the depth is.
             return {"VK_FORMAT_D24_UNORM_S8_UINT", 1, 1, 4};
         case 260:                                            // Depth32Float_Stencil8
-            if (option != nullptr) *option = MTLBlitOptionDepthFromDepthStencil;
+            if (option != nullptr)
+                *option = MTLBlitOptionDepthFromDepthStencil;
             return {"VK_FORMAT_D32_SFLOAT", 1, 1, 4};
         default: return {"", 0, 0, 0};
     }
 }
 
-PixelFormatInfo StencilReadbackDetails(MTLPixelFormat format, MTLBlitOption *option) {
-    if (option != nullptr) *option = MTLBlitOptionNone;
-    switch ((NSUInteger)format) {
+PixelFormatInfo StencilReadbackDetails(MTLPixelFormat format, MTLBlitOption* option)
+{
+    if (option != nullptr)
+        *option = MTLBlitOptionNone;
+    switch ((NSUInteger)format)
+    {
         case 253:                                            // Stencil8
         case 261:                                            // X32_Stencil8
         case 262:                                            // X24_Stencil8
@@ -393,31 +412,45 @@ PixelFormatInfo StencilReadbackDetails(MTLPixelFormat format, MTLBlitOption *opt
             return {"VK_FORMAT_S8_UINT", 1, 1, 1};
         case 255:                                            // Depth24Unorm_Stencil8
         case 260:                                            // Depth32Float_Stencil8
-            if (option != nullptr) *option = MTLBlitOptionStencilFromDepthStencil;
+            if (option != nullptr)
+                *option = MTLBlitOptionStencilFromDepthStencil;
             // One byte a texel once the depth is left behind, whatever the combined stride was.
             return {"VK_FORMAT_S8_UINT", 1, 1, 1};
         default: return {"", 0, 0, 0};
     }
 }
 
-bool PixelFormatHasDepth(MTLPixelFormat format) {
-    switch ((NSUInteger)format) {
-        case 250: case 252: case 255: case 260: return true;
+bool PixelFormatHasDepth(MTLPixelFormat format)
+{
+    switch ((NSUInteger)format)
+    {
+        case 250:
+        case 252:
+        case 255:
+        case 260: return true;
         default: return false;
     }
 }
 
-bool PixelFormatHasStencil(MTLPixelFormat format) {
-    switch ((NSUInteger)format) {
-        case 253: case 255: case 260: case 261: case 262: return true;
+bool PixelFormatHasStencil(MTLPixelFormat format)
+{
+    switch ((NSUInteger)format)
+    {
+        case 253:
+        case 255:
+        case 260:
+        case 261:
+        case 262: return true;
         default: return false;
     }
 }
 
 // MTLVertexFormat, from MTLVertexDescriptor.h. Numeric so the table does not depend on which
 // SDK it is compiled against.
-const char *VertexFormatEnumName(MTLVertexFormat format) {
-    switch ((NSUInteger)format) {
+const char* VertexFormatEnumName(MTLVertexFormat format)
+{
+    switch ((NSUInteger)format)
+    {
         case 0: return "MTLVertexFormatInvalid";
         case 1: return "MTLVertexFormatUChar2";
         case 2: return "MTLVertexFormatUChar3";
@@ -476,8 +509,10 @@ const char *VertexFormatEnumName(MTLVertexFormat format) {
     }
 }
 
-const char *VertexFormatCanonicalName(MTLVertexFormat format) {
-    switch ((NSUInteger)format) {
+const char* VertexFormatCanonicalName(MTLVertexFormat format)
+{
+    switch ((NSUInteger)format)
+    {
         case 1: return "VK_FORMAT_R8G8_UINT";
         case 2: return "VK_FORMAT_R8G8B8_UINT";
         case 3: return "VK_FORMAT_R8G8B8A8_UINT";
@@ -535,43 +570,51 @@ const char *VertexFormatCanonicalName(MTLVertexFormat format) {
     }
 }
 
-const char *LoadActionEnumName(MTLLoadAction action) {
-    switch (action) {
+const char* LoadActionEnumName(MTLLoadAction action)
+{
+    switch (action)
+    {
         case MTLLoadActionDontCare: return "MTLLoadActionDontCare";
-        case MTLLoadActionLoad:     return "MTLLoadActionLoad";
-        case MTLLoadActionClear:    return "MTLLoadActionClear";
-        default:                    return "";
+        case MTLLoadActionLoad: return "MTLLoadActionLoad";
+        case MTLLoadActionClear: return "MTLLoadActionClear";
+        default: return "";
     }
 }
 
-const char *StoreActionEnumName(MTLStoreAction action) {
-    switch (action) {
-        case MTLStoreActionDontCare:                   return "MTLStoreActionDontCare";
-        case MTLStoreActionStore:                      return "MTLStoreActionStore";
-        case MTLStoreActionMultisampleResolve:         return "MTLStoreActionMultisampleResolve";
+const char* StoreActionEnumName(MTLStoreAction action)
+{
+    switch (action)
+    {
+        case MTLStoreActionDontCare: return "MTLStoreActionDontCare";
+        case MTLStoreActionStore: return "MTLStoreActionStore";
+        case MTLStoreActionMultisampleResolve: return "MTLStoreActionMultisampleResolve";
         case MTLStoreActionStoreAndMultisampleResolve: return "MTLStoreActionStoreAndMultisampleResolve";
-        case MTLStoreActionUnknown:                    return "MTLStoreActionUnknown";
-        case MTLStoreActionCustomSampleDepthStore:     return "MTLStoreActionCustomSampleDepthStore";
-        default:                                       return "";
+        case MTLStoreActionUnknown: return "MTLStoreActionUnknown";
+        case MTLStoreActionCustomSampleDepthStore: return "MTLStoreActionCustomSampleDepthStore";
+        default: return "";
     }
 }
 
-const char *PrimitiveTypeEnumName(MTLPrimitiveType type) {
-    switch (type) {
-        case MTLPrimitiveTypePoint:         return "MTLPrimitiveTypePoint";
-        case MTLPrimitiveTypeLine:          return "MTLPrimitiveTypeLine";
-        case MTLPrimitiveTypeLineStrip:     return "MTLPrimitiveTypeLineStrip";
-        case MTLPrimitiveTypeTriangle:      return "MTLPrimitiveTypeTriangle";
+const char* PrimitiveTypeEnumName(MTLPrimitiveType type)
+{
+    switch (type)
+    {
+        case MTLPrimitiveTypePoint: return "MTLPrimitiveTypePoint";
+        case MTLPrimitiveTypeLine: return "MTLPrimitiveTypeLine";
+        case MTLPrimitiveTypeLineStrip: return "MTLPrimitiveTypeLineStrip";
+        case MTLPrimitiveTypeTriangle: return "MTLPrimitiveTypeTriangle";
         case MTLPrimitiveTypeTriangleStrip: return "MTLPrimitiveTypeTriangleStrip";
-        default:                            return "";
+        default: return "";
     }
 }
 
-const char *IndexTypeEnumName(MTLIndexType type) {
-    switch (type) {
+const char* IndexTypeEnumName(MTLIndexType type)
+{
+    switch (type)
+    {
         case MTLIndexTypeUInt16: return "MTLIndexTypeUInt16";
         case MTLIndexTypeUInt32: return "MTLIndexTypeUInt32";
-        default:                 return "";
+        default: return "";
     }
 }
 
@@ -582,8 +625,10 @@ const char *IndexTypeEnumName(MTLIndexType type) {
 // curve and matrix layout enums arrived in macOS 15, and the rest between 11 and 14, while the
 // deployment target is 11. The values are fixed by the API.
 
-const char *InstanceDescriptorTypeEnumName(uint64_t type) {
-    switch (type) {
+const char* InstanceDescriptorTypeEnumName(uint64_t type)
+{
+    switch (type)
+    {
         case 0: return "MTLAccelerationStructureInstanceDescriptorTypeDefault";
         case 1: return "MTLAccelerationStructureInstanceDescriptorTypeUserID";
         case 2: return "MTLAccelerationStructureInstanceDescriptorTypeMotion";
@@ -593,32 +638,40 @@ const char *InstanceDescriptorTypeEnumName(uint64_t type) {
     }
 }
 
-const char *MatrixLayoutEnumName(uint64_t layout) {
-    switch (layout) {
+const char* MatrixLayoutEnumName(uint64_t layout)
+{
+    switch (layout)
+    {
         case 0: return "MTLMatrixLayoutColumnMajor";
         case 1: return "MTLMatrixLayoutRowMajor";
         default: return "";
     }
 }
 
-const char *MotionBorderModeEnumName(uint64_t mode) {
-    switch (mode) {
+const char* MotionBorderModeEnumName(uint64_t mode)
+{
+    switch (mode)
+    {
         case 0: return "MTLMotionBorderModeClamp";
         case 1: return "MTLMotionBorderModeVanish";
         default: return "";
     }
 }
 
-const char *CurveTypeEnumName(uint64_t type) {
-    switch (type) {
+const char* CurveTypeEnumName(uint64_t type)
+{
+    switch (type)
+    {
         case 0: return "MTLCurveTypeRound";
         case 1: return "MTLCurveTypeFlat";
         default: return "";
     }
 }
 
-const char *CurveBasisEnumName(uint64_t basis) {
-    switch (basis) {
+const char* CurveBasisEnumName(uint64_t basis)
+{
+    switch (basis)
+    {
         case 0: return "MTLCurveBasisBSpline";
         case 1: return "MTLCurveBasisCatmullRom";
         case 2: return "MTLCurveBasisLinear";
@@ -627,8 +680,10 @@ const char *CurveBasisEnumName(uint64_t basis) {
     }
 }
 
-const char *CurveEndCapsEnumName(uint64_t caps) {
-    switch (caps) {
+const char* CurveEndCapsEnumName(uint64_t caps)
+{
+    switch (caps)
+    {
         case 0: return "MTLCurveEndCapsNone";
         case 1: return "MTLCurveEndCapsDisk";
         case 2: return "MTLCurveEndCapsSphere";
@@ -636,54 +691,64 @@ const char *CurveEndCapsEnumName(uint64_t caps) {
     }
 }
 
-namespace {
+namespace
+{
 /** The short names of the bits set in `value`, joined by `|`; "None" for none. */
-std::string Flags(uint64_t value, const std::initializer_list<std::pair<uint64_t, const char *>> &bits) {
+std::string Flags(uint64_t value, const std::initializer_list<std::pair<uint64_t, const char*>>& bits)
+{
     std::string out;
-    for (const auto &bit : bits) {
-        if ((value & bit.first) == 0) continue;
-        if (!out.empty()) out += '|';
+    for (const auto& bit : bits)
+    {
+        if ((value & bit.first) == 0)
+            continue;
+        if (!out.empty())
+            out += '|';
         out += bit.second;
         value &= ~bit.first;
     }
     // A bit this table does not know, which a newer Metal would add.
-    if (value != 0) {
+    if (value != 0)
+    {
         char hex[24];
         std::snprintf(hex, sizeof(hex), "0x%llx", (unsigned long long)value);
-        if (!out.empty()) out += '|';
+        if (!out.empty())
+            out += '|';
         out += hex;
     }
     return out.empty() ? "None" : out;
 }
 }  // namespace
 
-std::string AccelerationStructureUsageFlags(uint64_t usage) {
-    return Flags(usage, {{1, "Refit"}, {2, "PreferFastBuild"}, {4, "ExtendedLimits"},
-                         {16, "PreferFastIntersection"}, {32, "MinimizeMemory"}});
+std::string AccelerationStructureUsageFlags(uint64_t usage)
+{
+    return Flags(usage, {{1, "Refit"}, {2, "PreferFastBuild"}, {4, "ExtendedLimits"}, {16, "PreferFastIntersection"}, {32, "MinimizeMemory"}});
 }
 
-std::string AccelerationStructureRefitOptionFlags(uint64_t options) {
+std::string AccelerationStructureRefitOptionFlags(uint64_t options)
+{
     return Flags(options, {{1, "VertexData"}, {2, "PerPrimitiveData"}});
 }
 
-std::string IntersectionFunctionSignatureFlags(uint64_t signature) {
-    return Flags(signature, {{1, "Instancing"}, {2, "TriangleData"}, {4, "WorldSpaceData"},
-                             {8, "InstanceMotion"}, {16, "PrimitiveMotion"}, {32, "ExtendedLimits"},
-                             {64, "MaxLevels"}, {128, "CurveData"},
-                             {256, "IntersectionFunctionBuffer"}, {512, "UserData"}});
+std::string IntersectionFunctionSignatureFlags(uint64_t signature)
+{
+    return Flags(signature, {{1, "Instancing"}, {2, "TriangleData"}, {4, "WorldSpaceData"}, {8, "InstanceMotion"}, {16, "PrimitiveMotion"}, {32, "ExtendedLimits"}, {64, "MaxLevels"}, {128, "CurveData"}, {256, "IntersectionFunctionBuffer"}, {512, "UserData"}});
 }
 
-uint64_t PixelFormatImageSize(const PixelFormatInfo &info, uint32_t width, uint32_t height,
-                              uint64_t *bytesPerRow) {
-    if (info.blockBytes == 0 || info.blockWidth == 0 || info.blockHeight == 0) {
-        if (bytesPerRow != nullptr) *bytesPerRow = 0;
+uint64_t PixelFormatImageSize(const PixelFormatInfo& info, uint32_t width, uint32_t height,
+    uint64_t* bytesPerRow)
+{
+    if (info.blockBytes == 0 || info.blockWidth == 0 || info.blockHeight == 0)
+    {
+        if (bytesPerRow != nullptr)
+            *bytesPerRow = 0;
         return 0;
     }
     // Rounded up to whole blocks: a 5x5 BC1 image is two blocks by two, not one and a quarter.
     const uint64_t blocksWide = (width + info.blockWidth - 1) / info.blockWidth;
     const uint64_t blocksHigh = (height + info.blockHeight - 1) / info.blockHeight;
     const uint64_t rowBytes = blocksWide * info.blockBytes;
-    if (bytesPerRow != nullptr) *bytesPerRow = rowBytes;
+    if (bytesPerRow != nullptr)
+        *bytesPerRow = rowBytes;
     return rowBytes * blocksHigh;
 }
 

@@ -7,7 +7,8 @@
 
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * Registers the device with the tracker and hooks its class. Called from the interposed entry
@@ -15,7 +16,7 @@ namespace mtlinsp {
  * preferredDevice, MetalKit, CoreGraphics — since that is the one place every device on screen
  * passes through.
  */
-void TrackDeviceObject(id device, const char *origin);
+void TrackDeviceObject(id device, const char* origin);
 
 /** Hooks CAMetalLayer, by name: it is public, and a drawable's texture comes from nowhere else. */
 void HookDrawableSource(void);

@@ -40,7 +40,8 @@
 
 #import <objc/objc.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * Compiles `source` as Metal Shading Language and makes the pipeline again with `stage`'s function
@@ -51,11 +52,11 @@ namespace mtlinsp {
  * editor shows them against the text the person just typed. On success `replacementId` is the new
  * object's id and `note` says what could not be carried across.
  */
-bool ReplaceShader(uint64_t pipelineId, const std::string &stage, const std::string &source,
-                   std::string &error, uint64_t &replacementId, std::string &note);
+bool ReplaceShader(uint64_t pipelineId, const std::string& stage, const std::string& source,
+    std::string& error, uint64_t& replacementId, std::string& note);
 
 /** Drops the edit of one stage, or of every stage when `stage` is empty. False with `error`. */
-bool RestoreShader(uint64_t pipelineId, const std::string &stage, std::string &error);
+bool RestoreShader(uint64_t pipelineId, const std::string& stage, std::string& error);
 
 /**
  * The state to bind in place of `state`: its replacement when edited, else `state` itself. Called

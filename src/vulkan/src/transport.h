@@ -14,9 +14,11 @@
 #include <string>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-class Transport {
+class Transport
+{
 public:
     static Transport& Get();
 

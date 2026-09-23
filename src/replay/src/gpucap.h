@@ -11,9 +11,11 @@
 
 #include "json.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
-class CaptureFile {
+class CaptureFile
+{
 public:
     bool Load(const std::string& path, std::string& error);
 

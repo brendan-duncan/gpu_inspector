@@ -19,15 +19,26 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 // ---------------------------------------------------------------------------------------------
 // Descriptor heap contents
 
-enum class DescriptorKind : uint8_t { None, CBV, SRV, UAV, Sampler, RTV, DSV };
+enum class DescriptorKind : uint8_t
+{
+    None,
+    CBV,
+    SRV,
+    UAV,
+    Sampler,
+    RTV,
+    DSV
+};
 
 /** One heap slot as the application last wrote it. */
-struct DescriptorRecord {
+struct DescriptorRecord
+{
     DescriptorKind kind = DescriptorKind::None;
     /** The resource the view describes (SRV, UAV, RTV, DSV), not AddRef'd; null for a null view. */
     ID3D12Resource* resource = nullptr;
@@ -48,7 +59,8 @@ struct DescriptorRecord {
 };
 
 /** A descriptor heap as the tracker knows it: where its handles start and how far apart they are. */
-struct HeapInfo {
+struct HeapInfo
+{
     ID3D12DescriptorHeap* heap = nullptr;
     D3D12_DESCRIPTOR_HEAP_DESC desc{};
     D3D12_CPU_DESCRIPTOR_HANDLE cpuStart{};
@@ -56,7 +68,8 @@ struct HeapInfo {
     uint32_t increment = 0;
 };
 
-class DescriptorTracker {
+class DescriptorTracker
+{
 public:
     static DescriptorTracker& Get();
 
@@ -68,7 +81,7 @@ public:
     void Write(D3D12_CPU_DESCRIPTOR_HANDLE handle, const DescriptorRecord& record);
     /** CopyDescriptors: records copied range by range (the ranges' sizes are counted in slots). */
     void Copy(UINT numDestRanges, const D3D12_CPU_DESCRIPTOR_HANDLE* destStarts, const UINT* destSizes,
-              UINT numSrcRanges, const D3D12_CPU_DESCRIPTOR_HANDLE* srcStarts, const UINT* srcSizes);
+        UINT numSrcRanges, const D3D12_CPU_DESCRIPTOR_HANDLE* srcStarts, const UINT* srcSizes);
     void CopySimple(UINT count, D3D12_CPU_DESCRIPTOR_HANDLE dest, D3D12_CPU_DESCRIPTOR_HANDLE src);
 
     /** The heap and slot a handle points into; false when no tracked heap holds it. */
@@ -94,7 +107,8 @@ void WriteDescriptorRecord(JsonWriter& w, const DescriptorRecord& r, uint32_t da
 // ---------------------------------------------------------------------------------------------
 // Root signatures
 
-struct RootRange {
+struct RootRange
+{
     D3D12_DESCRIPTOR_RANGE_TYPE type = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
     uint32_t numDescriptors = 0;     // UINT_MAX: unbounded (the rest of the heap)
     uint32_t baseRegister = 0;
@@ -103,7 +117,8 @@ struct RootRange {
     uint32_t flags = 0;
 };
 
-struct RootParameterInfo {
+struct RootParameterInfo
+{
     D3D12_ROOT_PARAMETER_TYPE type = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
     D3D12_SHADER_VISIBILITY visibility = D3D12_SHADER_VISIBILITY_ALL;
     /** Root constants and root views: the register and space. Root constants: the count. */
@@ -116,7 +131,8 @@ struct RootParameterInfo {
     uint32_t tableSlots = 0;
 };
 
-struct RootSignatureInfo {
+struct RootSignatureInfo
+{
     std::vector<RootParameterInfo> parameters;
     uint32_t staticSamplers = 0;
     D3D12_ROOT_SIGNATURE_FLAGS flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
@@ -130,7 +146,8 @@ struct RootSignatureInfo {
     std::vector<uint8_t> blob;
 };
 
-class RootSignatures {
+class RootSignatures
+{
 public:
     static RootSignatures& Get();
     /**
@@ -158,7 +175,8 @@ private:
 // ---------------------------------------------------------------------------------------------
 // GPU virtual addresses
 
-class AddressMap {
+class AddressMap
+{
 public:
     static AddressMap& Get();
     /** A buffer's range (ID3D12Resource::GetGPUVirtualAddress and its width), from its creation. */

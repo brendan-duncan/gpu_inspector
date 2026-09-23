@@ -9,7 +9,8 @@
 #include "format_info.h"
 #include "util.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 // ---------------------------------------------------------------------------------------------
 // Overdraw
@@ -25,9 +26,11 @@ namespace vkreplay {
 // Limits: fragments a shader discards are counted (the counting shader does not discard),
 // and a multiview pass's pipelines cannot be copied into a single-view pass.
 
-bool Replayer::ArgsResolve(const std::string& method, const JValue& args) {
+bool Replayer::ArgsResolve(const std::string& method, const JValue& args)
+{
     DecodeCheckFn fn = FindArgsDecoder(method);
-    if (!fn) return true;
+    if (!fn)
+        return true;
     const size_t unresolved = _ctx.unresolved;
     const size_t problems = _ctx.problems.size();
     fn(_ctx, args);
@@ -38,7 +41,8 @@ bool Replayer::ArgsResolve(const std::string& method, const JValue& args) {
     return ok;
 }
 
-void Replayer::Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to) {
+void Replayer::Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to)
+{
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.oldLayout = from;
     b.newLayout = to;
@@ -50,7 +54,8 @@ void Replayer::Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresour
     _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-Replayer::TransientImage Replayer::CreateTransientImage(VkFormat format, VkExtent2D extent, VkImageUsageFlags usage, VkSampleCountFlagBits samples) {
+Replayer::TransientImage Replayer::CreateTransientImage(VkFormat format, VkExtent2D extent, VkImageUsageFlags usage, VkSampleCountFlagBits samples)
+{
     TransientImage t;
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
@@ -62,11 +67,14 @@ Replayer::TransientImage Replayer::CreateTransientImage(VkFormat format, VkExten
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = usage;
     info.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (_fns.CreateImage(_device, &info, nullptr, &t.image) != VK_SUCCESS) return TransientImage{};
+    if (_fns.CreateImage(_device, &info, nullptr, &t.image) != VK_SUCCESS)
+        return TransientImage{};
     VkMemoryRequirements req{};
     _fns.GetImageMemoryRequirements(_device, t.image, &req);
-    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, t.memory, false) || _fns.BindImageMemory(_device, t.image, t.memory, 0) != VK_SUCCESS) {
-        if (t.memory) _fns.FreeMemory(_device, t.memory, nullptr);
+    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, t.memory, false) || _fns.BindImageMemory(_device, t.image, t.memory, 0) != VK_SUCCESS)
+    {
+        if (t.memory)
+            _fns.FreeMemory(_device, t.memory, nullptr);
         _fns.DestroyImage(_device, t.image, nullptr);
         return TransientImage{};
     }
@@ -80,21 +88,30 @@ Replayer::TransientImage Replayer::CreateTransientImage(VkFormat format, VkExten
     return t;
 }
 
-void Replayer::ReleaseTransients() {
-    if (!_device) return;
-    for (VkFramebuffer fb : _transientFramebuffers) _fns.DestroyFramebuffer(_device, fb, nullptr);
-    for (TransientImage& t : _transientImages) {
-        if (t.view) _fns.DestroyImageView(_device, t.view, nullptr);
-        if (t.image) _fns.DestroyImage(_device, t.image, nullptr);
-        if (t.memory) _fns.FreeMemory(_device, t.memory, nullptr);
+void Replayer::ReleaseTransients()
+{
+    if (!_device)
+        return;
+    for (VkFramebuffer fb : _transientFramebuffers)
+        _fns.DestroyFramebuffer(_device, fb, nullptr);
+    for (TransientImage& t : _transientImages)
+    {
+        if (t.view)
+            _fns.DestroyImageView(_device, t.view, nullptr);
+        if (t.image)
+            _fns.DestroyImage(_device, t.image, nullptr);
+        if (t.memory)
+            _fns.FreeMemory(_device, t.memory, nullptr);
     }
     _transientFramebuffers.clear();
     _transientImages.clear();
 }
 
-VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat) {
+VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat)
+{
     auto it = _overdrawRenderPasses.find(depthFormat);
-    if (it != _overdrawRenderPasses.end()) return it->second;
+    if (it != _overdrawRenderPasses.end())
+        return it->second;
     VkAttachmentDescription attachments[2] = {};
     attachments[0].format = VK_FORMAT_R16_SFLOAT;
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -119,154 +136,184 @@ VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat) {
     subpass.colorAttachmentCount = 1;
     subpass.pColorAttachments = &color;
     const bool hasDepth = depthFormat != VK_FORMAT_UNDEFINED;
-    if (hasDepth) subpass.pDepthStencilAttachment = &depth;
+    if (hasDepth)
+        subpass.pDepthStencilAttachment = &depth;
     VkRenderPassCreateInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO};
     info.attachmentCount = hasDepth ? 2 : 1;
     info.pAttachments = attachments;
     info.subpassCount = 1;
     info.pSubpasses = &subpass;
     VkRenderPass rp = VK_NULL_HANDLE;
-    if (_fns.CreateRenderPass(_device, &info, nullptr, &rp) == VK_SUCCESS) Track("VkRenderPass", (uint64_t)rp);
+    if (_fns.CreateRenderPass(_device, &info, nullptr, &rp) == VK_SUCCESS)
+        Track("VkRenderPass", (uint64_t)rp);
     _overdrawRenderPasses[depthFormat] = rp;
     return rp;
 }
 
-VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode) {
+VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode)
+{
     const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode);
     auto it = _overdrawPipelines.find(key);
-    if (it != _overdrawPipelines.end()) return it->second;
+    if (it != _overdrawPipelines.end())
+        return it->second;
     _overdrawPipelines[key] = VK_NULL_HANDLE;  // a copy that cannot be made is not tried again
     const bool hasDepth = depthFormat != VK_FORMAT_UNDEFINED;
     const JValue* object = _capture->Object(pipelineId);
-    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, mode == ReissueMode::Count ? "overdraw" : mode == ReissueMode::Xfb ? "mesh" : "overlay", [&](PipelineCopy& p) {
-        if (mode == ReissueMode::Xfb) {
+    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, mode == ReissueMode::Count ? "overdraw" : mode == ReissueMode::Xfb ? "mesh"
+                                                                                                                              : "overlay",
+        [&](PipelineCopy& p) {
+            if (mode == ReissueMode::Xfb)
+            {
             // The vertex shader edited to write its outputs to the feedback buffer, and nothing rasterized.
-            XfbPatch& layout = _xfbLayouts[pipelineId];
-            for (const VkPipelineShaderStageCreateInfo& s : p.stages) {
-                if (s.stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT)) {
-                    layout.error = "the pipeline has tessellation or geometry stages, and only a vertex shader's outputs are captured";
+                XfbPatch& layout = _xfbLayouts[pipelineId];
+                for (const VkPipelineShaderStageCreateInfo& s : p.stages)
+                {
+                    if (s.stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT))
+                    {
+                        layout.error = "the pipeline has tessellation or geometry stages, and only a vertex shader's outputs are captured";
+                        return false;
+                    }
+                }
+                auto vs = std::find_if(p.stages.begin(), p.stages.end(), [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_VERTEX_BIT; });
+                const uint8_t* data = nullptr;
+                size_t size = 0;
+                const std::string entry = vs != p.stages.end() && vs->pName ? vs->pName : "main";
+                if (vs == p.stages.end() || !object || !_capture->Blob(*object, std::string(StageName(VK_SHADER_STAGE_VERTEX_BIT)) + ":" + entry, data, size))
+                {
+                    layout.error = "the capture has no vertex shader code for the pipeline";
                     return false;
                 }
-            }
-            auto vs = std::find_if(p.stages.begin(), p.stages.end(), [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_VERTEX_BIT; });
-            const uint8_t* data = nullptr;
-            size_t size = 0;
-            const std::string entry = vs != p.stages.end() && vs->pName ? vs->pName : "main";
-            if (vs == p.stages.end() || !object || !_capture->Blob(*object, std::string(StageName(VK_SHADER_STAGE_VERTEX_BIT)) + ":" + entry, data, size)) {
-                layout.error = "the capture has no vertex shader code for the pipeline";
-                return false;
-            }
-            std::vector<uint32_t> words(size / 4);
-            std::memcpy(words.data(), data, words.size() * 4);
-            layout = PatchForTransformFeedback(words.data(), words.size(), entry);
-            if (!layout.error.empty()) return false;
-            VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-            m.codeSize = layout.words.size() * 4;
-            m.pCode = layout.words.data();
-            VkShaderModule module = VK_NULL_HANDLE;
-            const VkResult created = _fns.CreateShaderModule(_device, &m, nullptr, &module);
-            layout.words.clear();
-            layout.words.shrink_to_fit();
-            if (created != VK_SUCCESS) {
-                layout.error = "the edited vertex shader was refused (" + std::to_string(created) + ")";
-                return false;
-            }
-            p.temporary.push_back(module);
-            vs->module = module;
-            vs->pNext = nullptr;
-            if (!p.hasRasterization) {
-                p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-                p.rasterization.lineWidth = 1.0f;
-                p.hasRasterization = true;
-            }
-            p.rasterization.rasterizerDiscardEnable = VK_TRUE;
-            p.RemoveDynamic({VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE});
+                std::vector<uint32_t> words(size / 4);
+                std::memcpy(words.data(), data, words.size() * 4);
+                layout = PatchForTransformFeedback(words.data(), words.size(), entry);
+                if (!layout.error.empty())
+                    return false;
+                VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                m.codeSize = layout.words.size() * 4;
+                m.pCode = layout.words.data();
+                VkShaderModule module = VK_NULL_HANDLE;
+                const VkResult created = _fns.CreateShaderModule(_device, &m, nullptr, &module);
+                layout.words.clear();
+                layout.words.shrink_to_fit();
+                if (created != VK_SUCCESS)
+                {
+                    layout.error = "the edited vertex shader was refused (" + std::to_string(created) + ")";
+                    return false;
+                }
+                p.temporary.push_back(module);
+                vs->module = module;
+                vs->pNext = nullptr;
+                if (!p.hasRasterization)
+                {
+                    p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                    p.rasterization.lineWidth = 1.0f;
+                    p.hasRasterization = true;
+                }
+                p.rasterization.rasterizerDiscardEnable = VK_TRUE;
+                p.RemoveDynamic({VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE});
             // Nothing is rasterized, so a fragment stage is not allowed.
-            p.stages.erase(std::remove_if(p.stages.begin(), p.stages.end(),
-                                          [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_FRAGMENT_BIT; }),
-                           p.stages.end());
-        } else if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable) {
-            return false;  // no fragments to count
-        }
-        if (mode == ReissueMode::BackFace) {
+                p.stages.erase(std::remove_if(p.stages.begin(), p.stages.end(),
+                                   [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_FRAGMENT_BIT; }),
+                    p.stages.end());
+            }
+            else if (p.hasRasterization && p.rasterization.rasterizerDiscardEnable)
+            {
+                return false;  // no fragments to count
+            }
+            if (mode == ReissueMode::BackFace)
+            {
             // Its own geometry with nothing culled: what is left is where the faces the draw's cull
             // mode threw away would have landed.
-            if (!p.hasRasterization) {
-                p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
-                p.rasterization.lineWidth = 1.0f;
-                p.hasRasterization = true;
+                if (!p.hasRasterization)
+                {
+                    p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                    p.rasterization.lineWidth = 1.0f;
+                    p.hasRasterization = true;
+                }
+                p.rasterization.cullMode = VK_CULL_MODE_NONE;
+                p.RemoveDynamic({VK_DYNAMIC_STATE_CULL_MODE});
             }
-            p.rasterization.cullMode = VK_CULL_MODE_NONE;
-            p.RemoveDynamic({VK_DYNAMIC_STATE_CULL_MODE});
-        }
-        if (mode == ReissueMode::Wireframe) {
+            if (mode == ReissueMode::Wireframe)
+            {
             // The draw's edges, one pixel wide, whatever the application set.
-            if (!p.hasRasterization) return false;
-            p.rasterization.polygonMode = VK_POLYGON_MODE_LINE;
-            p.rasterization.lineWidth = 1.0f;
-            p.RemoveDynamic({VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_POLYGON_MODE_EXT});
-        }
-        if (mode == ReissueMode::BackFace) p.ReplaceFragment(BackFaceModule());
-        else if (mode != ReissueMode::Xfb) p.ReplaceFragment(CountModule());
-        VkPipelineColorBlendAttachmentState add{};
-        add.blendEnable = VK_TRUE;
-        add.srcColorBlendFactor = add.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
-        add.srcAlphaBlendFactor = add.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
-        add.colorBlendOp = add.alphaBlendOp = VK_BLEND_OP_ADD;
+                if (!p.hasRasterization)
+                    return false;
+                p.rasterization.polygonMode = VK_POLYGON_MODE_LINE;
+                p.rasterization.lineWidth = 1.0f;
+                p.RemoveDynamic({VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_POLYGON_MODE_EXT});
+            }
+            if (mode == ReissueMode::BackFace)
+                p.ReplaceFragment(BackFaceModule());
+            else if (mode != ReissueMode::Xfb)
+                p.ReplaceFragment(CountModule());
+            VkPipelineColorBlendAttachmentState add{};
+            add.blendEnable = VK_TRUE;
+            add.srcColorBlendFactor = add.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+            add.srcAlphaBlendFactor = add.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
+            add.colorBlendOp = add.alphaBlendOp = VK_BLEND_OP_ADD;
         // An overlay's other draws only move the depth and stencil the draw it is for is tested against.
-        add.colorWriteMask = mode == ReissueMode::DepthOnly ? 0 : VK_COLOR_COMPONENT_R_BIT;
-        p.blendAttachments = {add};
-        p.blend = VkPipelineColorBlendStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
-        p.hasBlend = true;
-        p.multisample = VkPipelineMultisampleStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
-        p.multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
-        p.hasMultisample = true;
-        if (!hasDepth) {
-            p.hasDepthStencil = false;
-        } else if (!depthTested || !p.hasDepthStencil) {
-            p.depthStencil = VkPipelineDepthStencilStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
-            p.hasDepthStencil = true;
-        }
-        if (mode == ReissueMode::StencilOnly && p.hasDepthStencil) {
+            add.colorWriteMask = mode == ReissueMode::DepthOnly ? 0 : VK_COLOR_COMPONENT_R_BIT;
+            p.blendAttachments = {add};
+            p.blend = VkPipelineColorBlendStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
+            p.hasBlend = true;
+            p.multisample = VkPipelineMultisampleStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO};
+            p.multisample.rasterizationSamples = VK_SAMPLE_COUNT_1_BIT;
+            p.hasMultisample = true;
+            if (!hasDepth)
+            {
+                p.hasDepthStencil = false;
+            }
+            else if (!depthTested || !p.hasDepthStencil)
+            {
+                p.depthStencil = VkPipelineDepthStencilStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO};
+                p.hasDepthStencil = true;
+            }
+            if (mode == ReissueMode::StencilOnly && p.hasDepthStencil)
+            {
             // The stencil test on its own: the depth test is what the Depth Test overlay answers,
             // and a fragment rejected by both would be reported as the stencil's doing.
-            p.depthStencil.depthTestEnable = VK_FALSE;
-            p.depthStencil.depthWriteEnable = VK_FALSE;
-            p.depthStencil.depthBoundsTestEnable = VK_FALSE;
-            p.RemoveDynamic({VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
-                             VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE});
-        }
+                p.depthStencil.depthTestEnable = VK_FALSE;
+                p.depthStencil.depthWriteEnable = VK_FALSE;
+                p.depthStencil.depthBoundsTestEnable = VK_FALSE;
+                p.RemoveDynamic({VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE,
+                    VK_DYNAMIC_STATE_DEPTH_COMPARE_OP, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE});
+            }
         // Dynamic states that would undo the count, or the tests the untested count leaves out.
-        p.RemoveDynamic(kColorOutputDynamicStates);
-        p.RemoveDynamic(kMultisampleDynamicStates);
-        if (!depthTested || !hasDepth) {
-            p.RemoveDynamic({VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
-                             VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE});
-        }
-        p.info.pNext = StripPNext(p.info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO});
-        p.info.renderPass = OverdrawRenderPass(hasDepth ? depthFormat : VK_FORMAT_UNDEFINED);
-        p.info.subpass = 0;
-        return true;
-    });
+            p.RemoveDynamic(kColorOutputDynamicStates);
+            p.RemoveDynamic(kMultisampleDynamicStates);
+            if (!depthTested || !hasDepth)
+            {
+                p.RemoveDynamic({VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE, VK_DYNAMIC_STATE_DEPTH_WRITE_ENABLE, VK_DYNAMIC_STATE_DEPTH_COMPARE_OP,
+                    VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE});
+            }
+            p.info.pNext = StripPNext(p.info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO});
+            p.info.renderPass = OverdrawRenderPass(hasDepth ? depthFormat : VK_FORMAT_UNDEFINED);
+            p.info.subpass = 0;
+            return true;
+        });
     _overdrawPipelines[key] = pipeline;
     return pipeline;
 }
 
-void Replayer::PrepareOverdraw(VkCommandBuffer cb, PassState& pass) {
-    if (!pass.extent.width || !pass.extent.height) return;
+void Replayer::PrepareOverdraw(VkCommandBuffer cb, PassState& pass)
+{
+    if (!pass.extent.width || !pass.extent.height)
+        return;
     pass.overdraw = true;
-    if (pass.depthFormat == VK_FORMAT_UNDEFINED || !pass.depthImage) return;
+    if (pass.depthFormat == VK_FORMAT_UNDEFINED || !pass.depthImage)
+        return;
     auto sit = _images.find(pass.depthImage);
-    pass.overdrawDepth = sit == _images.end() ? TransientImage{} :
-        CreateTransientImage(pass.depthFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-    if (!pass.overdrawDepth.image) {
+    pass.overdrawDepth = sit == _images.end() ? TransientImage{} : CreateTransientImage(pass.depthFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    if (!pass.overdrawDepth.image)
+    {
         pass.depthFormat = VK_FORMAT_UNDEFINED;
         return;
     }
     const VkImageAspectFlags aspects = vkinsp::FormatAspects(pass.depthFormat);
     const VkImageSubresourceRange full{aspects, 0, 1, 0, 1};
     Barrier(cb, pass.overdrawDepth.image, full, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (pass.depthLoadOp != VK_ATTACHMENT_LOAD_OP_CLEAR && pass.depthLayoutBefore != VK_IMAGE_LAYOUT_UNDEFINED) {
+    if (pass.depthLoadOp != VK_ATTACHMENT_LOAD_OP_CLEAR && pass.depthLayoutBefore != VK_IMAGE_LAYOUT_UNDEFINED)
+    {
         const ImageRecord& src = sit->second;
         const VkImageSubresourceRange srcRange{aspects, pass.depthRange.baseMipLevel, 1, pass.depthRange.baseArrayLayer, 1};
         Barrier(cb, src.image, srcRange, pass.depthLayoutBefore, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -274,64 +321,85 @@ void Replayer::PrepareOverdraw(VkCommandBuffer cb, PassState& pass) {
         copy.srcSubresource = {aspects, pass.depthRange.baseMipLevel, pass.depthRange.baseArrayLayer, 1};
         copy.dstSubresource = {aspects, 0, 0, 1};
         copy.extent = {std::min(pass.extent.width, std::max(1u, src.extent.width >> pass.depthRange.baseMipLevel)),
-                       std::min(pass.extent.height, std::max(1u, src.extent.height >> pass.depthRange.baseMipLevel)), 1};
+            std::min(pass.extent.height, std::max(1u, src.extent.height >> pass.depthRange.baseMipLevel)), 1};
         _fns.CmdCopyImage(cb, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pass.overdrawDepth.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
         Barrier(cb, src.image, srcRange, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pass.depthLayoutBefore);
-    } else {
+    }
+    else
+    {
         _fns.CmdClearDepthStencilImage(cb, pass.overdrawDepth.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, &pass.depthClear, 1, &full);
     }
     Barrier(cb, pass.overdrawDepth.image, full, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
 }
 
-void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTested, VkFormat depthFormat, bool insidePass) {
+void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTested, VkFormat depthFormat, bool insidePass)
+{
     const JValue& c = _capture->Commands()->items[index];
     const std::string m = Str(c.Get("method"));
     const JValue* args = c.Get("args");
-    if (_overlayTarget != UINT32_MAX && _overlayIssued) return;
-    if (args && m == "vkCmdBindShadersEXT") {
+    if (_overlayTarget != UINT32_MAX && _overlayIssued)
+        return;
+    if (args && m == "vkCmdBindShadersEXT")
+    {
         // Shader objects in place of a pipeline. Only the mesh output draws with them, with its own
         // copy of the vertex shader at the target draw; every other reissued draw is left out.
         const JValue* stages = args->Get("pStages");
         const JValue* shaders = args->Get("pShaders");
         bool graphics = false;
-        for (uint32_t k = 0; stages && k < stages->count; ++k) {
+        for (uint32_t k = 0; stages && k < stages->count; ++k)
+        {
             const std::string stage = Str(&stages->items[k]);
-            if (stage == "VK_SHADER_STAGE_COMPUTE_BIT") continue;
+            if (stage == "VK_SHADER_STAGE_COMPUTE_BIT")
+                continue;
             graphics = true;
             const uint64_t id = shaders && shaders->IsArray() && k < shaders->count ? IdOf(&shaders->items[k]) : 0;
-            if (stage == "VK_SHADER_STAGE_VERTEX_BIT") _overlayVertexShader = id;
-            else if (stage.find("TESSELLATION") != std::string::npos || stage == "VK_SHADER_STAGE_GEOMETRY_BIT") _overlayShaderGeometry = _overlayShaderGeometry || id;
+            if (stage == "VK_SHADER_STAGE_VERTEX_BIT")
+                _overlayVertexShader = id;
+            else if (stage.find("TESSELLATION") != std::string::npos || stage == "VK_SHADER_STAGE_GEOMETRY_BIT")
+                _overlayShaderGeometry = _overlayShaderGeometry || id;
         }
-        if (graphics) {
+        if (graphics)
+        {
             _overlayPipeline = 0;
             _overdrawDrawable = false;
         }
         return;
     }
-    if (args && (m == "vkCmdSetPrimitiveTopology" || m == "vkCmdSetPrimitiveTopologyEXT")) _overlayTopology = Str(args->Get("primitiveTopology"));
-    if (!args || (!insidePass && !IsStateCommand(m)) || kOverdrawSkipped.count(m)) return;
-    if ((!depthTested || depthFormat == VK_FORMAT_UNDEFINED) && kDepthState.count(m)) return;
+    if (args && (m == "vkCmdSetPrimitiveTopology" || m == "vkCmdSetPrimitiveTopologyEXT"))
+        _overlayTopology = Str(args->Get("primitiveTopology"));
+    if (!args || (!insidePass && !IsStateCommand(m)) || kOverdrawSkipped.count(m))
+        return;
+    if ((!depthTested || depthFormat == VK_FORMAT_UNDEFINED) && kDepthState.count(m))
+        return;
     const bool overlay = _overlayTarget != UINT32_MAX;
-    if (overlay && _overlayIssued) return;
-    if (m == "vkCmdBindPipeline") {
-        if (Str(args->Get("pipelineBindPoint")) != "VK_PIPELINE_BIND_POINT_GRAPHICS") return;
-        if (overlay) {
+    if (overlay && _overlayIssued)
+        return;
+    if (m == "vkCmdBindPipeline")
+    {
+        if (Str(args->Get("pipelineBindPoint")) != "VK_PIPELINE_BIND_POINT_GRAPHICS")
+            return;
+        if (overlay)
+        {
             // The draw the overlay is for gets its own copy when it comes; the rest draw depth only, or not at all.
             _overlayPipeline = IdOf(args->Get("pipeline"));
             _overlayVertexShader = 0;
             _overlayShaderGeometry = false;
-            if (_overlayOnlyTarget) return;
+            if (_overlayOnlyTarget)
+                return;
             VkPipeline pipeline = OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, ReissueMode::DepthOnly);
             _overdrawDrawable = pipeline != VK_NULL_HANDLE;
-            if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            if (pipeline)
+                _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             return;
         }
         VkPipeline pipeline = OverdrawPipeline(IdOf(args->Get("pipeline")), depthTested, depthFormat);
         _overlayVertexShader = 0;
         _overlayShaderGeometry = false;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
-        if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
-        if (_options.trace) {
+        if (pipeline)
+            _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        if (_options.trace)
+        {
             std::fprintf(stderr, "overdraw %u: bind pipeline %llu -> %s\n", index, (unsigned long long)IdOf(args->Get("pipeline")), pipeline ? "counting copy" : "none");
             std::fflush(stderr);
         }
@@ -340,48 +408,64 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     const bool draw = StartsWith(m, "vkCmdDraw");
     const bool target = overlay && draw && index == _overlayTarget;
     bool feedback = false;
-    if (target && !_overlayPipeline && _overlayVertexShader && _overlayTargetMode == ReissueMode::Xfb) {
+    if (target && !_overlayPipeline && _overlayVertexShader && _overlayTargetMode == ReissueMode::Xfb)
+    {
         // Shader objects: the vertex shader's feedback copy alone, and nothing rasterized.
         VkShaderEXT vs = VK_NULL_HANDLE;
-        if (_overlayShaderGeometry) _xfbLayouts[_overlayVertexShader].error = "tessellation or geometry shader objects are bound, and only a vertex shader's outputs are captured";
-        else vs = FeedbackShader(_overlayVertexShader);
+        if (_overlayShaderGeometry)
+            _xfbLayouts[_overlayVertexShader].error = "tessellation or geometry shader objects are bound, and only a vertex shader's outputs are captured";
+        else
+            vs = FeedbackShader(_overlayVertexShader);
         const auto setDiscard = _fns.CmdSetRasterizerDiscardEnable ? _fns.CmdSetRasterizerDiscardEnable : _fns.CmdSetRasterizerDiscardEnableEXT;
         _overdrawDrawable = vs && setDiscard;
         _overlayIssued = true;  // drawn or not, nothing after it matters
         _overlayDrawnPipeline = _overlayVertexShader;
         _overlayDrawnTopology = _overlayTopology;
-        if (_overdrawDrawable) {
+        if (_overdrawDrawable)
+        {
             const VkShaderStageFlagBits stages[] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
             const VkShaderEXT bound[] = {vs, VK_NULL_HANDLE};
             _fns.CmdBindShadersEXT(cb, 2, stages, bound);
             setDiscard(cb, VK_TRUE);
             feedback = PrepareMeshBuffers();
-            if (!feedback) _overdrawDrawable = false;
+            if (!feedback)
+                _overdrawDrawable = false;
         }
         _overlayDrawn = _overdrawDrawable;
-    } else if (target) {
+    }
+    else if (target)
+    {
         VkPipeline pipeline = _overlayPipeline ? OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, _overlayTargetMode) : VK_NULL_HANDLE;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
-        if (pipeline) _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+        if (pipeline)
+            _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         _overlayIssued = true;  // drawn or not, nothing after it matters
         _overlayDrawnPipeline = _overlayPipeline;
         // The mesh output view: the draw writes its vertices into a buffer instead of rasterizing.
-        if (pipeline && _overlayTargetMode == ReissueMode::Xfb) {
+        if (pipeline && _overlayTargetMode == ReissueMode::Xfb)
+        {
             feedback = PrepareMeshBuffers();
-            if (!feedback) _overdrawDrawable = false;
+            if (!feedback)
+                _overdrawDrawable = false;
         }
         _overlayDrawn = _overdrawDrawable;
-    } else if (overlay && draw && _overlayOnlyTarget) {
+    }
+    else if (overlay && draw && _overlayOnlyTarget)
+    {
         return;
     }
-    if (draw && !_overdrawDrawable) {
+    if (draw && !_overdrawDrawable)
+    {
         ++_overdrawSkippedDraws;
         return;
     }
     ReplayFn fn = FindReplayCommand(m);
-    if (!fn) return;
-    if (draw) ++_overdrawDraws;
-    if (_options.trace) {
+    if (!fn)
+        return;
+    if (draw)
+        ++_overdrawDraws;
+    if (_options.trace)
+    {
         std::fprintf(stderr, "overdraw %u: %s\n", index, m.c_str());
         std::fflush(stderr);
     }
@@ -389,19 +473,22 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     const size_t problems = _ctx.problems.size();
     const size_t unresolved = _ctx.unresolved;
     VkDeviceSize zero = 0;
-    if (feedback) {
+    if (feedback)
+    {
         _fns.CmdBindTransformFeedbackBuffersEXT(cb, 0, 1, &_meshTarget->buffer.buffer, &zero, &_meshTarget->buffer.size);
         _fns.CmdBeginTransformFeedbackEXT(cb, 0, 0, nullptr, nullptr);
     }
     IssueCommand(fn, c, *args, cb);
-    if (feedback) _fns.CmdEndTransformFeedbackEXT(cb, 0, 1, &_meshTarget->counter.buffer, &zero);
+    if (feedback)
+        _fns.CmdEndTransformFeedbackEXT(cb, 0, 1, &_meshTarget->counter.buffer, &zero);
     _ctx.problems.resize(problems);
     _ctx.unresolved = unresolved;
     _arena.Reset();
 }
 
 void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-                           VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color) {
+    VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color)
+{
     const JValue* commands = _capture->Commands();
     // The state the pass inherited from the command buffer, then the pass's own commands.
     _overdrawDrawable = false;
@@ -412,10 +499,12 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
     _overlayShaderGeometry = false;
     _overlayTopology.clear();
     for (uint32_t i = group.first + 1; i < pass.beginIndex; ++i)
-        if (!commands->items[i].Get("secondary")) ReissueCommand(cb, i, depthTested, depthFormat, false);
+        if (!commands->items[i].Get("secondary"))
+            ReissueCommand(cb, i, depthTested, depthFormat, false);
     VkClearValue clear{};
     const bool dynamicRendering = !renderPass;
-    if (dynamicRendering) {
+    if (dynamicRendering)
+    {
         VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         attachment.imageView = color;
         attachment.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
@@ -428,7 +517,9 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
         info.colorAttachmentCount = 1;
         info.pColorAttachments = &attachment;
         _fns.CmdBeginRendering(cb, &info);
-    } else {
+    }
+    else
+    {
         VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         begin.renderPass = renderPass;
         begin.framebuffer = framebuffer;
@@ -437,56 +528,74 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
         begin.pClearValues = &clear;
         _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
     }
-    for (uint32_t i = pass.beginIndex + 1; i < endIndex; ++i) {
+    for (uint32_t i = pass.beginIndex + 1; i < endIndex; ++i)
+    {
         const JValue& c = commands->items[i];
-        if (c.Get("secondary")) continue;
-        if (Str(c.Get("method")) == "vkCmdExecuteCommands") {
+        if (c.Get("secondary"))
+            continue;
+        if (Str(c.Get("method")) == "vkCmdExecuteCommands")
+        {
             // Secondary command buffers' commands are issued inline, in the order they executed.
             const JValue* list = c.Get("args") ? c.Get("args")->Get("pCommandBuffers") : nullptr;
-            for (uint32_t s = 0; list && s < list->count; ++s) {
+            for (uint32_t s = 0; list && s < list->count; ++s)
+            {
                 const uint64_t id = IdOf(&list->items[s]);
                 _overdrawDrawable = false;  // a secondary starts without a pipeline
                 _overlayPipeline = 0;
                 _overlayVertexShader = 0;
                 _overlayShaderGeometry = false;
                 for (uint32_t j = i + 1; j < commands->count && commands->items[j].Get("secondary"); ++j)
-                    if (commands->items[j].Get("secondary")->Uint() == id) ReissueCommand(cb, j, depthTested, depthFormat, true);
+                    if (commands->items[j].Get("secondary")->Uint() == id)
+                        ReissueCommand(cb, j, depthTested, depthFormat, true);
             }
             continue;
         }
         ReissueCommand(cb, i, depthTested, depthFormat, true);
     }
-    if (dynamicRendering) _fns.CmdEndRendering(cb);
-    else _fns.CmdEndRenderPass(cb);
+    if (dynamicRendering)
+        _fns.CmdEndRendering(cb);
+    else
+        _fns.CmdEndRenderPass(cb);
 }
 
-bool Replayer::DrawUsesShaderObjects(const CommandGroup& group, uint32_t target) const {
+bool Replayer::DrawUsesShaderObjects(const CommandGroup& group, uint32_t target) const
+{
     const JValue* commands = _capture->Commands();
     const auto secondaryOf = [&](uint32_t i) -> uint64_t {
         const JValue* s = commands->items[i].Get("secondary");
         return s ? s->Uint() : 0;
     };
     const uint64_t secondary = secondaryOf(target);
-    for (uint32_t i = target; i-- > group.first;) {
-        if (secondaryOf(i) != secondary) continue;
+    for (uint32_t i = target; i-- > group.first;)
+    {
+        if (secondaryOf(i) != secondary)
+            continue;
         const JValue& c = commands->items[i];
         const std::string m = Str(c.Get("method"));
         const JValue* args = c.Get("args");
-        if (!args) continue;
-        if (m == "vkCmdBindPipeline" && Str(args->Get("pipelineBindPoint")) == "VK_PIPELINE_BIND_POINT_GRAPHICS") return false;
-        if (m != "vkCmdBindShadersEXT") continue;
+        if (!args)
+            continue;
+        if (m == "vkCmdBindPipeline" && Str(args->Get("pipelineBindPoint")) == "VK_PIPELINE_BIND_POINT_GRAPHICS")
+            return false;
+        if (m != "vkCmdBindShadersEXT")
+            continue;
         const JValue* stages = args->Get("pStages");
         for (uint32_t k = 0; stages && k < stages->count; ++k)
-            if (Str(&stages->items[k]) == "VK_SHADER_STAGE_VERTEX_BIT") return true;
+            if (Str(&stages->items[k]) == "VK_SHADER_STAGE_VERTEX_BIT")
+                return true;
     }
     return false;
 }
 
-void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending) {
-    if (!pass.overdraw) return;
+void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending)
+{
+    if (!pass.overdraw)
+        return;
     int64_t measured = -1;
-    if (const JValue* timings = _capture->Manifest().Get("passTimings"); timings && timings->IsArray()) {
-        for (uint32_t t = 0; t < timings->count; ++t) {
+    if (const JValue* timings = _capture->Manifest().Get("passTimings"); timings && timings->IsArray())
+    {
+        for (uint32_t t = 0; t < timings->count; ++t)
+        {
             const JValue& p = timings->items[t];
             if (Str(p.Get("kind")) == "compute" || p.Get("commandBuffer")->Uint() != pass.commandBuffer ||
                 p.Get("passIndex")->Uint() != pass.index || (p.Get("frame") ? p.Get("frame")->Uint() : 0) != pass.frame)
@@ -495,7 +604,8 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
                 measured = (int64_t)counters->Get("fragmentInvocations")->Uint();
         }
     }
-    for (int mode = 0; mode < 2; ++mode) {
+    for (int mode = 0; mode < 2; ++mode)
+    {
         const bool tested = mode == 0;
         const VkFormat depthFormat = tested ? pass.depthFormat : VK_FORMAT_UNDEFINED;
         OverdrawResult result;
@@ -506,11 +616,13 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         result.width = pass.extent.width;
         result.height = pass.extent.height;
         result.capturedFragments = measured;
-        if (tested && depthFormat == VK_FORMAT_UNDEFINED) result.note = "the pass has no depth attachment";
+        if (tested && depthFormat == VK_FORMAT_UNDEFINED)
+            result.note = "the pass has no depth attachment";
 
         TransientImage count = CreateTransientImage(VK_FORMAT_R16_SFLOAT, pass.extent, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
         VkRenderPass rp = OverdrawRenderPass(depthFormat);
-        if (!count.image || !rp) {
+        if (!count.image || !rp)
+        {
             result.note = "no memory for the count target";
             _report->overdraw.push_back(std::move(result));
             continue;
@@ -524,7 +636,8 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         fbInfo.height = pass.extent.height;
         fbInfo.layers = 1;
         VkFramebuffer fb = VK_NULL_HANDLE;
-        if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS) {
+        if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS)
+        {
             result.note = "the count target's framebuffer could not be created";
             _report->overdraw.push_back(std::move(result));
             continue;
@@ -537,7 +650,8 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
 
         PendingOverdraw p;
         p.result = _report->overdraw.size();
-        if (!CreateStaging((VkDeviceSize)pass.extent.width * pass.extent.height * 2, p.staging)) {
+        if (!CreateStaging((VkDeviceSize)pass.extent.width * pass.extent.height * 2, p.staging))
+        {
             result.note = "no staging memory for the counts";
             _report->overdraw.push_back(std::move(result));
             continue;
@@ -553,21 +667,28 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
     }
 }
 
-void Replayer::CompleteOverdraw(std::vector<PendingOverdraw>& pending) {
-    for (PendingOverdraw& p : pending) {
+void Replayer::CompleteOverdraw(std::vector<PendingOverdraw>& pending)
+{
+    for (PendingOverdraw& p : pending)
+    {
         OverdrawResult& r = _report->overdraw[p.result];
         const size_t pixels = (size_t)r.width * r.height;
         const auto* bytes = static_cast<const uint8_t*>(p.staging.mapped);
         r.counts.resize(pixels);
-        for (size_t i = 0; i < pixels; ++i) {
+        for (size_t i = 0; i < pixels; ++i)
+        {
             const float value = HalfToFloat((uint16_t)(bytes[i * 2] | (bytes[i * 2 + 1] << 8)));
             const uint32_t n = std::isfinite(value) && value > 0 ? (uint32_t)std::min(65535L, std::lround(value)) : 0;
             r.counts[i] = (uint16_t)n;
-            if (!n) continue;
+            if (!n)
+                continue;
             r.fragments += n;
             r.coveredPixels++;
             r.maxCount = std::max(r.maxCount, n);
-            const int bucket = n <= 4 ? (int)n - 1 : n <= 8 ? 4 : n <= 16 ? 5 : n <= 32 ? 6 : 7;
+            const int bucket = n <= 4 ? (int)n - 1 : n <= 8 ? 4
+                : n <= 16                                   ? 5
+                : n <= 32                                   ? 6
+                                                            : 7;
             r.histogram[bucket]++;
         }
         DestroyStaging(p.staging);

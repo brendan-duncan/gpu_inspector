@@ -28,9 +28,11 @@
 #include "common.h"
 #include "hud_text.h"
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-class Hud {
+class Hud
+{
 public:
     static Hud& Get();
 
@@ -52,7 +54,8 @@ public:
 
 private:
     // Everything tied to one swap chain's back buffers: remade when they are.
-    struct SwapChainResources {
+    struct SwapChainResources
+    {
         ComPtr<ID3D12DescriptorHeap> rtvHeap;
         std::vector<ComPtr<ID3D12Resource>> buffers;
         std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> rtvs;
@@ -64,7 +67,8 @@ private:
     };
 
     // One in-flight overlay. Four of them, so the CPU never waits in practice.
-    struct Frame {
+    struct Frame
+    {
         ComPtr<ID3D12CommandAllocator> allocator;
         ComPtr<ID3D12GraphicsCommandList> list;
         ComPtr<ID3D12Resource> vertices;   // an upload heap, mapped for the process's lifetime
@@ -73,7 +77,8 @@ private:
         uint64_t fenceValue = 0;
     };
 
-    struct DeviceResources {
+    struct DeviceResources
+    {
         ComPtr<ID3D12RootSignature> rootSignature;
         ComPtr<ID3D12Fence> fence;
         HANDLE event = nullptr;

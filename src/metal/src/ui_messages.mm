@@ -25,16 +25,21 @@
 
 #import <Foundation/Foundation.h>
 
-namespace mtlinsp {
-namespace {
+namespace mtlinsp
+{
+namespace
+{
 
 // Tells the UI what the pause state is now, so its button follows a pause the UI did not ask for
 // (a capture resuming the application below) as well as one it did.
-void SendPauseState() {
+void SendPauseState()
+{
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("PauseState");
-    w.Key("paused"); w.Boolean(gpuinsp::FramePause::Get().Paused());
+    w.Key("action");
+    w.String("PauseState");
+    w.Key("paused");
+    w.Boolean(gpuinsp::FramePause::Get().Paused());
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 }
@@ -43,24 +48,34 @@ void SendPauseState() {
  * Base64, for the ReplaceShader payload. A copy of the decoder in src/d3d12/src/ui_messages.cpp
  * rather than a shared one: the two libraries share no source, by design (src/metal/README.md).
  */
-bool DecodeBase64(const std::string &text, std::string &out) {
+bool DecodeBase64(const std::string& text, std::string& out)
+{
     auto value = [](char c) -> int {
-        if (c >= 'A' && c <= 'Z') return c - 'A';
-        if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-        if (c >= '0' && c <= '9') return c - '0' + 52;
-        if (c == '+') return 62;
-        if (c == '/') return 63;
+        if (c >= 'A' && c <= 'Z')
+            return c - 'A';
+        if (c >= 'a' && c <= 'z')
+            return c - 'a' + 26;
+        if (c >= '0' && c <= '9')
+            return c - '0' + 52;
+        if (c == '+')
+            return 62;
+        if (c == '/')
+            return 63;
         return -1;
     };
     uint32_t bits = 0;
     int have = 0;
-    for (char c : text) {
-        if (c == '=' || c == '\n' || c == '\r' || c == ' ' || c == '\t') continue;
+    for (char c : text)
+    {
+        if (c == '=' || c == '\n' || c == '\r' || c == ' ' || c == '\t')
+            continue;
         const int v = value(c);
-        if (v < 0) return false;
+        if (v < 0)
+            return false;
         bits = (bits << 6) | (uint32_t)v;
         have += 6;
-        if (have >= 8) {
+        if (have >= 8)
+        {
             have -= 8;
             out.push_back((char)((bits >> have) & 0xFF));
         }
@@ -68,56 +83,89 @@ bool DecodeBase64(const std::string &text, std::string &out) {
     return true;
 }
 
-void SendShaderReplaced(uint64_t pipeline, const std::string &stage, bool ok,
-                        const std::string &error, const std::string &note, uint64_t replacement) {
+void SendShaderReplaced(uint64_t pipeline, const std::string& stage, bool ok,
+    const std::string& error, const std::string& note, uint64_t replacement)
+{
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("ShaderReplaced");
-    w.Key("pipeline"); w.Uint(pipeline);
-    w.Key("stage"); w.String(stage);
-    w.Key("ok"); w.Boolean(ok);
-    if (!error.empty()) { w.Key("error"); w.String(error); }
-    if (!note.empty()) { w.Key("note"); w.String(note); }
-    if (replacement != 0) { w.Key("replacement"); w.Uint(replacement); }
+    w.Key("action");
+    w.String("ShaderReplaced");
+    w.Key("pipeline");
+    w.Uint(pipeline);
+    w.Key("stage");
+    w.String(stage);
+    w.Key("ok");
+    w.Boolean(ok);
+    if (!error.empty())
+    {
+        w.Key("error");
+        w.String(error);
+    }
+    if (!note.empty())
+    {
+        w.Key("note");
+        w.String(note);
+    }
+    if (replacement != 0)
+    {
+        w.Key("replacement");
+        w.Uint(replacement);
+    }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 }
 
-void HandleMessage(const std::string &text) {
+void HandleMessage(const std::string& text)
+{
     // The receiver is a plain std::thread with no autorelease pool of its own, and the image
     // read-back below autoreleases a command buffer, an encoder and the texture it looked up.
     // Without a pool here every one of those leaked, with a runtime warning each time.
-    @autoreleasepool {
+    @autoreleasepool
+    {
         vkinsp::JsonValue message;
-        if (!vkinsp::JsonParser::Parse(text, message)) {
+        if (!vkinsp::JsonParser::Parse(text, message))
+        {
             Log("bad message from the UI: %s", text.c_str());
             return;
         }
         const std::string action = message.GetString("action");
         Log("ui message: %s", action.c_str());
 
-        if (action == "Ping") {
+        if (action == "Ping")
+        {
             Transport::Get().SendJson("{\"action\":\"Pong\"}");
-        } else if (action == "RequestSnapshot") {
+        }
+        else if (action == "RequestSnapshot")
+        {
             SendSnapshot();
             SendValidationSnapshot();
-        } else if (action == "Hud") {
+        }
+        else if (action == "Hud")
+        {
             // The in-app HUD (hud.h): the application's frame time drawn over its own window.
             Hud::Get().SetEnabled(message.GetBool("enabled", false));
-        } else if (action == "Pause") {
+        }
+        else if (action == "Pause")
+        {
             // Live pause (frame_pause.h): the application is held at its frame boundary. "step"
             // lets that many frames through and stays paused.
-            if (const vkinsp::JsonValue *v = message.Get("step")) {
+            if (const vkinsp::JsonValue* v = message.Get("step"))
+            {
                 gpuinsp::FramePause::Get().Step(v->num >= 1 ? (uint32_t)v->num : 1u);
-            } else {
+            }
+            else
+            {
                 gpuinsp::FramePause::Get().SetPaused(message.GetBool("paused", false));
             }
             SendPauseState();
-        } else if (action == "Capture") {
+        }
+        else if (action == "Capture")
+        {
             // A capture is recorded from frames the application renders, and a paused application
             // renders none: waiting here would simply hang. Resuming is the honest answer, and the
             // UI is told so its pause button follows.
-            if (gpuinsp::FramePause::Get().Paused()) {
+            if (gpuinsp::FramePause::Get().Paused())
+            {
                 Log("capture requested while paused: resuming");
                 gpuinsp::FramePause::Get().SetPaused(false);
                 SendPauseState();
@@ -126,8 +174,10 @@ void HandleMessage(const std::string &text) {
             // honor (sampled images, stack traces) is left at its default.
             CaptureOptions options;
             options.frameCount = (uint32_t)message.GetNumber("frameCount", 1);
-            if (const vkinsp::JsonValue *v = message.Get("atFrame")) {
-                if (v->kind == vkinsp::JsonValue::Number && v->num >= 0) options.atFrame = (uint64_t)v->num;
+            if (const vkinsp::JsonValue* v = message.Get("atFrame"))
+            {
+                if (v->kind == vkinsp::JsonValue::Number && v->num >= 0)
+                    options.atFrame = (uint64_t)v->num;
             }
             options.maxBufferSize = (uint64_t)message.GetNumber("maxBufferSize", (double)options.maxBufferSize);
             options.maxBufferTotal = (uint64_t)message.GetNumber("maxBufferTotal", (double)options.maxBufferTotal);
@@ -141,7 +191,8 @@ void HandleMessage(const std::string &text) {
             options.stacktraces = message.GetBool("stacktraces", false);
             options.overdraw = message.GetBool("overdraw", false);
             // {texture, x, y, mip, layer}: the pixel to follow through the captured frame.
-            if (const vkinsp::JsonValue *h = message.Get("pixelHistory"); h != nullptr && h->kind == vkinsp::JsonValue::Object) {
+            if (const vkinsp::JsonValue* h = message.Get("pixelHistory"); h != nullptr && h->kind == vkinsp::JsonValue::Object)
+            {
                 options.pixelHistory.enabled = true;
                 options.pixelHistory.texture = (uint64_t)h->GetNumber("texture");
                 options.pixelHistory.x = (uint32_t)h->GetNumber("x");
@@ -149,75 +200,111 @@ void HandleMessage(const std::string &text) {
                 options.pixelHistory.level = (uint32_t)h->GetNumber("mip");
                 options.pixelHistory.slice = (uint32_t)h->GetNumber("layer");
             }
-            if (const vkinsp::JsonValue *d = message.Get("drawOverlay")) {
+            if (const vkinsp::JsonValue* d = message.Get("drawOverlay"))
+            {
                 // One draw of one pass, by ordinal: the measurement happens while the next frame
                 // records, and that frame's command indices are its own (draw_overlay.mm).
                 options.drawOverlay.enabled = true;
                 options.drawOverlay.passIndex = (uint32_t)d->GetNumber("passIndex");
                 options.drawOverlay.drawIndex = (uint32_t)d->GetNumber("drawIndex");
             }
-            if (options.maxBufferSize == 0) options.maxBufferSize = 64 * 1024;
+            if (options.maxBufferSize == 0)
+                options.maxBufferSize = 64 * 1024;
             RequestCapture(options);
-        } else if (action == "TimingCapture") {
+        }
+        else if (action == "TimingCapture")
+        {
             // Frame timings over minutes, for finding a hitch rather than a slow frame
             // (cpu_timeline.h). `sampleHz` is accepted and ignored: the call stack sampler is
             // Windows-only.
-            if (message.GetBool("start", false)) BeginTimingCapture((uint32_t)message.GetNumber("sampleHz", 0));
-            else EndTimingCapture();
-        } else if (action == "SaveGpuTrace") {
+            if (message.GetBool("start", false))
+                BeginTimingCapture((uint32_t)message.GetNumber("sampleHz", 0));
+            else
+                EndTimingCapture();
+        }
+        else if (action == "SaveGpuTrace")
+        {
             RequestGpuTrace(message.GetString("path"));
-        } else if (action == "RequestStacktraces") {
+        }
+        else if (action == "RequestStacktraces")
+        {
             std::vector<uint64_t> ids;
-            if (const vkinsp::JsonValue *list = message.Get("ids")) {
-                for (const vkinsp::JsonValue &v : list->arr) {
-                    if (v.kind == vkinsp::JsonValue::Number) ids.push_back((uint64_t)v.num);
+            if (const vkinsp::JsonValue* list = message.Get("ids"))
+            {
+                for (const vkinsp::JsonValue& v : list->arr)
+                {
+                    if (v.kind == vkinsp::JsonValue::Number)
+                        ids.push_back((uint64_t)v.num);
                 }
             }
             SendStacktraces(ids);
-        } else if (action == "RequestSymbols") {
+        }
+        else if (action == "RequestSymbols")
+        {
             // The addresses a capture's commands carry: a frame per address, in request order.
             StackTrace addresses;
-            if (const vkinsp::JsonValue *list = message.Get("addresses")) {
-                for (const vkinsp::JsonValue &v : list->arr) {
-                    if (v.kind == vkinsp::JsonValue::String) addresses.push_back(strtoull(v.str.c_str(), nullptr, 0));
-                    else if (v.kind == vkinsp::JsonValue::Number) addresses.push_back((uint64_t)v.num);
+            if (const vkinsp::JsonValue* list = message.Get("addresses"))
+            {
+                for (const vkinsp::JsonValue& v : list->arr)
+                {
+                    if (v.kind == vkinsp::JsonValue::String)
+                        addresses.push_back(strtoull(v.str.c_str(), nullptr, 0));
+                    else if (v.kind == vkinsp::JsonValue::Number)
+                        addresses.push_back((uint64_t)v.num);
                 }
             }
             vkinsp::JsonWriter w;
             w.BeginObject();
-            w.Key("action"); w.String("Symbols");
-            w.Key("frames"); WriteStackFrames(w, Symbolize(addresses));
+            w.Key("action");
+            w.String("Symbols");
+            w.Key("frames");
+            WriteStackFrames(w, Symbolize(addresses));
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
-        } else if (action == "RequestBlob") {
+        }
+        else if (action == "RequestBlob")
+        {
             SendBlob((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("index"));
-        } else if (action == "RequestImage") {
+        }
+        else if (action == "RequestImage")
+        {
             SendImageData((uint64_t)message.GetNumber("id"), (uint32_t)message.GetNumber("mip"),
-                          (uint32_t)message.GetNumber("layer"));
-        } else if (action == "ReplaceShader") {
+                (uint32_t)message.GetNumber("layer"));
+        }
+        else if (action == "ReplaceShader")
+        {
             // {pipeline, stage, spirv: base64 Metal Shading Language} -- the field keeps its
             // Vulkan name across all three libraries, and carries whatever each one compiles.
             const uint64_t pipeline = (uint64_t)message.GetNumber("pipeline");
             const std::string stage = message.GetString("stage");
             std::string source;
-            if (!DecodeBase64(message.GetString("spirv"), source) || source.empty()) {
+            if (!DecodeBase64(message.GetString("spirv"), source) || source.empty())
+            {
                 SendShaderReplaced(pipeline, stage, false, "malformed source payload (expected base64 Metal Shading Language)", "", 0);
-            } else {
+            }
+            else
+            {
                 std::string error, note;
                 uint64_t replacement = 0;
                 const bool ok = ReplaceShader(pipeline, stage, source, error, replacement, note);
                 SendShaderReplaced(pipeline, stage, ok, ok ? "" : error, note, ok ? replacement : 0);
             }
-        } else if (action == "RestoreShader") {
+        }
+        else if (action == "RestoreShader")
+        {
             const uint64_t pipeline = (uint64_t)message.GetNumber("pipeline");
             const std::string stage = message.GetString("stage");
             std::string error;
             const bool ok = RestoreShader(pipeline, stage, error);
             SendShaderReplaced(pipeline, stage, ok, ok ? "" : error, "", 0);
-        } else if (action == "Settings") {
+        }
+        else if (action == "Settings")
+        {
             // "Record all command buffers" has no Metal counterpart: a command buffer is encoded
             // and submitted once, so there is no earlier recording for a capture to have missed.
-        } else {
+        }
+        else
+        {
             Log("unhandled ui message: %s", action.c_str());
         }
     }
@@ -225,7 +312,8 @@ void HandleMessage(const std::string &text) {
 
 }  // namespace
 
-void StartUiMessages() {
+void StartUiMessages()
+{
     Transport::Get().SetMessageHandler(HandleMessage);
 }
 
@@ -235,27 +323,39 @@ void StartUiMessages() {
 // inserted library. The request goes to the inspector rather than straight to the capture: the
 // capture bar's options are the inspector's to choose, and a tab has to be waiting for what comes
 // back. Same shape as the Vulkan layer's (src/vulkan/src/layer.cpp).
-extern "C" __attribute__((visibility("default"))) int GpuInspectorConnected(void) {
+extern "C" __attribute__((visibility("default"))) int GpuInspectorConnected(void)
+{
     return mtlinsp::Transport::Get().Connected() ? 1 : 0;
 }
 
-extern "C" __attribute__((visibility("default"))) int GpuInspectorCaptureNamed(uint32_t frameCount, const char *label) {
-    if (!mtlinsp::Transport::Get().Connected()) return 0;
+extern "C" __attribute__((visibility("default"))) int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label)
+{
+    if (!mtlinsp::Transport::Get().Connected())
+        return 0;
     // The label is the application's words for the capture (the tab's name); bounded, since a
     // string that is not one would otherwise become a message of any length.
     const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("AppCaptureRequest");
-    w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
-    if (!name.empty()) { w.Key("label"); w.String(name); }
+    w.Key("action");
+    w.String("AppCaptureRequest");
+    w.Key("frameCount");
+    w.Uint(frameCount ? frameCount : 1u);
+    if (!name.empty())
+    {
+        w.Key("label");
+        w.String(name);
+    }
     w.EndObject();
     mtlinsp::Transport::Get().SendJson(std::move(w.str()));
-    if (name.empty()) mtlinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
-    else mtlinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
+    if (name.empty())
+        mtlinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    else
+        mtlinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
     return 1;
 }
 
-extern "C" __attribute__((visibility("default"))) int GpuInspectorCapture(uint32_t frameCount) {
+extern "C" __attribute__((visibility("default"))) int GpuInspectorCapture(uint32_t frameCount)
+{
     return GpuInspectorCaptureNamed(frameCount, nullptr);
 }

@@ -31,9 +31,11 @@
 
 #include "hud_text.h"
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
-class Hud {
+class Hud
+{
 public:
     static Hud& Get();
 
@@ -54,12 +56,14 @@ public:
 private:
     // One in-flight buffer of rectangles. Three of them: the HUD writes the next one while the GPU
     // may still be reading the last, and a drawable is at most triple buffered.
-    struct Frame {
+    struct Frame
+    {
         id buffer = nil;        // id<MTLBuffer>, retained
         uint32_t capacity = 0;  // in rectangles
     };
 
-    struct DeviceResources {
+    struct DeviceResources
+    {
         id library = nil;          // id<MTLLibrary>, retained
         id vertexFunction = nil;   // id<MTLFunction>, retained
         id fragmentFunction = nil; // id<MTLFunction>, retained

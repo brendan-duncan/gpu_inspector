@@ -19,17 +19,23 @@
 
 #include <pthread.h>
 
-namespace mtlinsp {
-namespace {
+namespace mtlinsp
+{
+namespace
+{
 
 using Clock = std::chrono::steady_clock;
 
-const char *const kCpuCategoryNames[(size_t)CpuCategory::Count] = {
-    "submit", "waitFences", "acquire", "pipeline",
+const char* const kCpuCategoryNames[(size_t)CpuCategory::Count] = {
+    "submit",
+    "waitFences",
+    "acquire",
+    "pipeline",
 };
 
 /** One timed call. Kept small: a busy frame records a few hundred of these. */
-struct CpuEvent {
+struct CpuEvent
+{
     uint64_t startNs = 0;      // steady_clock nanoseconds since the capture's origin
     uint32_t durationNs = 0;   // a single call over four seconds is not worth recording exactly
     uint32_t thread = 0;       // index into the timeline's thread list, not an OS id
@@ -53,7 +59,8 @@ size_t g_dropped = 0;
 std::atomic<bool> g_timing{false};
 
 /** One frame of a timing capture. */
-struct FrameTiming {
+struct FrameTiming
+{
     uint32_t frame = 0;
     float durationMs = 0;
     float categoryMs[(size_t)CpuCategory::Count] = {};
@@ -75,11 +82,14 @@ double g_hostMs = 0;           // host time of that instant, relative to the ori
 double g_timestampPeriod = 0;  // nanoseconds per GPU tick
 
 /** The calling thread's index in the report's list; assigned on first sight. Under g_mutex. */
-uint32_t ThreadIndex() {
+uint32_t ThreadIndex()
+{
     uint64_t id = 0;
     pthread_threadid_np(nullptr, &id);
-    for (size_t i = 0; i < g_threadIds.size(); ++i) {
-        if (g_threadIds[i] == id) return (uint32_t)i;
+    for (size_t i = 0; i < g_threadIds.size(); ++i)
+    {
+        if (g_threadIds[i] == id)
+            return (uint32_t)i;
     }
     g_threadIds.push_back(id);
     return (uint32_t)g_threadIds.size() - 1;
@@ -87,31 +97,40 @@ uint32_t ThreadIndex() {
 
 }  // namespace
 
-uint64_t CpuEventBegin() {
+uint64_t CpuEventBegin()
+{
     // Either a frame capture (which keeps every call) or a timing capture (which keeps per-frame
     // totals) needs the clock; neither means two relaxed reads and nothing else.
-    if (!g_recording.load(std::memory_order_relaxed) && !g_timing.load(std::memory_order_relaxed)) return 0;
+    if (!g_recording.load(std::memory_order_relaxed) && !g_timing.load(std::memory_order_relaxed))
+        return 0;
     return (uint64_t)Clock::now().time_since_epoch().count();
 }
 
-void CpuEventEnd(uint64_t started, CpuCategory category) {
-    if (!started) return;
+void CpuEventEnd(uint64_t started, CpuCategory category)
+{
+    if (!started)
+        return;
     const bool recording = g_recording.load(std::memory_order_relaxed);
     const bool timing = g_timing.load(std::memory_order_relaxed);
-    if (!recording && !timing) return;
+    if (!recording && !timing)
+        return;
     const uint64_t now = (uint64_t)Clock::now().time_since_epoch().count();
     // Read before this module's lock: FrameNumber takes frame_stats' own, and taking the two in a
     // fixed order is what keeps them from ever being taken in the opposite one.
     const uint32_t frame = (uint32_t)FrameNumber();
     std::lock_guard<std::mutex> lock(g_mutex);
     // The frame's running total, which is all a timing capture keeps of an individual call.
-    if (timing && (size_t)category < (size_t)CpuCategory::Count) {
+    if (timing && (size_t)category < (size_t)CpuCategory::Count)
+    {
         g_frameCategoryMs[(size_t)category] += (double)(now > started ? now - started : 0) / 1e6;
     }
-    if (!recording || !g_running) return;
+    if (!recording || !g_running)
+        return;
     const uint64_t originNs = (uint64_t)g_origin.time_since_epoch().count();
-    if (started < originNs) return;   // began before the capture did
-    if (g_events.size() >= kMaxEvents) {
+    if (started < originNs)
+        return;   // began before the capture did
+    if (g_events.size() >= kMaxEvents)
+    {
         ++g_dropped;
         return;
     }
@@ -124,7 +143,8 @@ void CpuEventEnd(uint64_t started, CpuCategory category) {
     g_events.push_back(e);
 }
 
-void BeginCpuTimeline() {
+void BeginCpuTimeline()
+{
     std::lock_guard<std::mutex> lock(g_mutex);
     g_events.clear();
     g_threadIds.clear();
@@ -135,12 +155,16 @@ void BeginCpuTimeline() {
     g_recording.store(true, std::memory_order_relaxed);
 }
 
-bool SampleCalibration(id device, double nsPerTick) {
-    if (device == nil || nsPerTick <= 0) return false;
-    if (@available(macOS 10.15, iOS 14.0, *)) {
+bool SampleCalibration(id device, double nsPerTick)
+{
+    if (device == nil || nsPerTick <= 0)
+        return false;
+    if (@available(macOS 10.15, iOS 14.0, *))
+    {
         MTLTimestamp cpuTicks = 0, gpuTicks = 0;
         [(id<MTLDevice>)device sampleTimestamps:&cpuTicks gpuTimestamp:&gpuTicks];
-        if (gpuTicks == 0) return false;
+        if (gpuTicks == 0)
+            return false;
         // The host half of Metal's pair is in its own domain; what the timeline needs is where that
         // instant sits on the same steady_clock the events use, so the clock is read beside it
         // rather than converted. The two reads are microseconds apart, which is the same bracketing
@@ -156,7 +180,8 @@ bool SampleCalibration(id device, double nsPerTick) {
     return false;
 }
 
-void SendCpuTimeline() {
+void SendCpuTimeline()
+{
     std::vector<CpuEvent> events;
     std::vector<uint64_t> threads;
     size_t dropped = 0;
@@ -175,35 +200,54 @@ void SendCpuTimeline() {
         hostMs = g_hostMs;
         period = g_timestampPeriod;
     }
-    if (events.empty()) return;
+    if (events.empty())
+        return;
     // In time order, so a reader can draw them without sorting.
     std::sort(events.begin(), events.end(),
-              [](const CpuEvent &a, const CpuEvent &b) { return a.startNs < b.startNs; });
+        [](const CpuEvent& a, const CpuEvent& b) { return a.startNs < b.startNs; });
 
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("CaptureCpuTimeline");
-    w.Key("threads"); w.BeginArray();
-    for (uint64_t id : threads) w.Uint(id);
+    w.Key("action");
+    w.String("CaptureCpuTimeline");
+    w.Key("threads");
+    w.BeginArray();
+    for (uint64_t id : threads)
+        w.Uint(id);
     w.EndArray();
-    if (dropped) { w.Key("dropped"); w.Uint(dropped); }
+    if (dropped)
+    {
+        w.Key("dropped");
+        w.Uint(dropped);
+    }
     // How to place a GPU timestamp on this axis: hostMs + (ticks - deviceTicks) * period / 1e6.
-    if (calibrated) {
-        w.Key("calibration"); w.BeginObject();
-        w.Key("deviceTicks"); w.Uint(deviceTicks);
-        w.Key("hostMs"); w.Double(hostMs);
-        w.Key("timestampPeriod"); w.Double(period);
+    if (calibrated)
+    {
+        w.Key("calibration");
+        w.BeginObject();
+        w.Key("deviceTicks");
+        w.Uint(deviceTicks);
+        w.Key("hostMs");
+        w.Double(hostMs);
+        w.Key("timestampPeriod");
+        w.Double(period);
         w.EndObject();
     }
-    w.Key("events"); w.BeginArray();
-    for (const CpuEvent &e : events) {
+    w.Key("events");
+    w.BeginArray();
+    for (const CpuEvent& e : events)
+    {
         w.BeginObject();
-        w.Key("thread"); w.Uint(e.thread);
+        w.Key("thread");
+        w.Uint(e.thread);
         w.Key("category");
         w.String(kCpuCategoryNames[e.category < (uint16_t)CpuCategory::Count ? e.category : 0]);
-        w.Key("frame"); w.Uint(e.frame);
-        w.Key("startMs"); w.Double((double)e.startNs / 1e6);
-        w.Key("durationMs"); w.Double((double)e.durationNs / 1e6);
+        w.Key("frame");
+        w.Uint(e.frame);
+        w.Key("startMs");
+        w.Double((double)e.startNs / 1e6);
+        w.Key("durationMs");
+        w.Double((double)e.durationNs / 1e6);
         w.EndObject();
     }
     w.EndArray();
@@ -214,47 +258,57 @@ void SendCpuTimeline() {
 // ---------------------------------------------------------------------------------------------
 // Timing capture
 
-void BeginTimingCapture(uint32_t sampleHz) {
+void BeginTimingCapture(uint32_t sampleHz)
+{
     {
         std::lock_guard<std::mutex> lock(g_mutex);
         g_frames.clear();
         g_framesSent = 0;
-        for (double &v : g_frameCategoryMs) v = 0;
+        for (double& v : g_frameCategoryMs)
+            v = 0;
         g_timing.store(true, std::memory_order_relaxed);
     }
     const bool sampling = sampleHz > 0 && gpuinsp::CpuSampler::Get().Start(sampleHz);
     Log("timing capture: started%s", sampling ? ", sampling call stacks" : "");
 }
 
-void EndTimingCapture() {
+void EndTimingCapture()
+{
     gpuinsp::CpuSampler::Get().Stop();
     std::lock_guard<std::mutex> lock(g_mutex);
     g_timing.store(false, std::memory_order_relaxed);
     Log("timing capture: stopped after %zu frames", g_frames.size());
 }
 
-bool TimingCaptureRunning() {
+bool TimingCaptureRunning()
+{
     return g_timing.load(std::memory_order_relaxed);
 }
 
-void NoteFrameTiming(uint32_t frame, double frameMs) {
-    if (!g_timing.load(std::memory_order_relaxed)) return;
+void NoteFrameTiming(uint32_t frame, double frameMs)
+{
+    if (!g_timing.load(std::memory_order_relaxed))
+        return;
     // The frame that ends here is `frame`; what is sampled from now on is the next one's.
     gpuinsp::CpuSampler::Get().NoteFrame(frame + 1);
     std::lock_guard<std::mutex> lock(g_mutex);
-    if (!g_timing.load(std::memory_order_relaxed)) return;
+    if (!g_timing.load(std::memory_order_relaxed))
+        return;
     FrameTiming t;
     t.frame = frame;
     t.durationMs = (float)frameMs;
-    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) {
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i)
+    {
         t.categoryMs[i] = (float)g_frameCategoryMs[i];
         g_frameCategoryMs[i] = 0;
     }
     // The oldest go when the ring is full: a timing capture left running should not grow without
     // bound, and what matters is the recent minutes.
-    if (g_frames.size() >= kMaxFrames) {
+    if (g_frames.size() >= kMaxFrames)
+    {
         g_frames.erase(g_frames.begin(), g_frames.begin() + (ptrdiff_t)(g_frames.size() - kMaxFrames + 1));
-        if (g_framesSent > g_frames.size()) g_framesSent = 0;
+        if (g_framesSent > g_frames.size())
+            g_framesSent = 0;
     }
     g_frames.push_back(t);
 }
@@ -264,66 +318,103 @@ void NoteFrameTiming(uint32_t frame, double frameMs) {
  * (renderer/timing_samples.ts). The same shape all three libraries send, since the sampler is
  * shared and the view does not care which API the frames came from.
  */
-void SendTimingSamples() {
+void SendTimingSamples()
+{
     gpuinsp::CpuSampler::Batch batch;
-    if (!gpuinsp::CpuSampler::Get().Take(batch)) return;
+    if (!gpuinsp::CpuSampler::Get().Take(batch))
+        return;
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("TimingSamples");
-    w.Key("periodMs"); w.Double(batch.periodMs);
-    w.Key("threads"); w.BeginArray();
-    for (const auto &t : batch.threads) {
+    w.Key("action");
+    w.String("TimingSamples");
+    w.Key("periodMs");
+    w.Double(batch.periodMs);
+    w.Key("threads");
+    w.BeginArray();
+    for (const auto& t : batch.threads)
+    {
         w.BeginObject();
-        w.Key("id"); w.Uint(t.id);
-        if (!t.name.empty()) { w.Key("name"); w.String(t.name); }
+        w.Key("id");
+        w.Uint(t.id);
+        if (!t.name.empty())
+        {
+            w.Key("name");
+            w.String(t.name);
+        }
         w.EndObject();
     }
     w.EndArray();
     // Only the stacks this batch is the first to use: an id means the same stack for the whole capture.
-    w.Key("stacks"); w.BeginArray();
-    for (const auto &s : batch.stacks) {
+    w.Key("stacks");
+    w.BeginArray();
+    for (const auto& s : batch.stacks)
+    {
         w.BeginObject();
-        w.Key("id"); w.Uint(s.id);
-        w.Key("addresses"); w.BeginArray();
-        for (uint64_t address : s.addresses) w.String(HexAddress(address));
+        w.Key("id");
+        w.Uint(s.id);
+        w.Key("addresses");
+        w.BeginArray();
+        for (uint64_t address : s.addresses)
+            w.String(HexAddress(address));
         w.EndArray();
         w.EndObject();
     }
     w.EndArray();
     // [frame, thread (an index into threads), stack id, running (1) or waiting (0), samples]
-    w.Key("samples"); w.BeginArray();
-    for (const auto &s : batch.samples) {
+    w.Key("samples");
+    w.BeginArray();
+    for (const auto& s : batch.samples)
+    {
         w.BeginArray();
-        w.Uint(s.frame); w.Uint(s.thread); w.Uint(s.stack); w.Uint(s.running ? 1 : 0); w.Uint(s.count);
+        w.Uint(s.frame);
+        w.Uint(s.thread);
+        w.Uint(s.stack);
+        w.Uint(s.running ? 1 : 0);
+        w.Uint(s.count);
         w.EndArray();
     }
     w.EndArray();
-    if (batch.dropped != 0) { w.Key("dropped"); w.Uint(batch.dropped); }
+    if (batch.dropped != 0)
+    {
+        w.Key("dropped");
+        w.Uint(batch.dropped);
+    }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 }
 
-void SendTimingFrames() {
+void SendTimingFrames()
+{
     std::vector<FrameTiming> batch;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
-        if (g_framesSent >= g_frames.size()) return;
+        if (g_framesSent >= g_frames.size())
+            return;
         batch.assign(g_frames.begin() + (ptrdiff_t)g_framesSent, g_frames.end());
         g_framesSent = g_frames.size();
     }
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("TimingFrames");
-    w.Key("categories"); w.BeginArray();
-    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.String(kCpuCategoryNames[i]);
+    w.Key("action");
+    w.String("TimingFrames");
+    w.Key("categories");
+    w.BeginArray();
+    for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i)
+        w.String(kCpuCategoryNames[i]);
     w.EndArray();
-    w.Key("frames"); w.BeginArray();
-    for (const FrameTiming &t : batch) {
+    w.Key("frames");
+    w.BeginArray();
+    for (const FrameTiming& t : batch)
+    {
         w.BeginObject();
-        w.Key("frame"); w.Uint(t.frame);
-        w.Key("durationMs"); w.Double(t.durationMs);
-        w.Key("categoryMs"); w.BeginArray();
-        for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i) w.Double(t.categoryMs[i]);
+        w.Key("frame");
+        w.Uint(t.frame);
+        w.Key("durationMs");
+        w.Double(t.durationMs);
+        w.Key("categoryMs");
+        w.BeginArray();
+        for (size_t i = 0; i < (size_t)CpuCategory::Count; ++i)
+            w.Double(t.categoryMs[i]);
         w.EndArray();
         w.EndObject();
     }
@@ -332,23 +423,32 @@ void SendTimingFrames() {
     Transport::Get().SendJson(std::move(w.str()));
 }
 
-void SendMemorySample(id device) {
-    if (device == nil) return;
+void SendMemorySample(id device)
+{
+    if (device == nil)
+        return;
     const uint64_t allocated = ((id<MTLDevice>)device).currentAllocatedSize;
     const uint64_t budget = ((id<MTLDevice>)device).recommendedMaxWorkingSetSize;
 
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("MemorySample");
-    w.Key("frame"); w.Uint(FrameNumber());
-    w.Key("heaps"); w.BeginArray();
+    w.Key("action");
+    w.String("MemorySample");
+    w.Key("frame");
+    w.Uint(FrameNumber());
+    w.Key("heaps");
+    w.BeginArray();
     w.BeginObject();
     // Metal reports what the process holds directly, so there is nothing to total up from the
     // object graph and no separate residency figure to compare it against (cpu_timeline.h).
-    w.Key("allocated"); w.Uint(allocated);
-    if (budget) {
-        w.Key("usage"); w.Uint(allocated);
-        w.Key("budget"); w.Uint(budget);
+    w.Key("allocated");
+    w.Uint(allocated);
+    if (budget)
+    {
+        w.Key("usage");
+        w.Uint(allocated);
+        w.Key("budget");
+        w.Uint(budget);
     }
     w.EndObject();
     w.EndArray();

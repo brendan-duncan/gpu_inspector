@@ -19,9 +19,11 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-class Transport {
+class Transport
+{
 public:
     static Transport& Get();
 

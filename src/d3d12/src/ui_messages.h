@@ -2,7 +2,8 @@
 // ...), parsed and dispatched to the modules that answer them. See ui_messages.cpp.
 #pragma once
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /** Starts the transport with the snapshot, disconnect and message handlers wired. Called once, at initialization. */
 void StartTracking();

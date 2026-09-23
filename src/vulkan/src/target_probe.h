@@ -48,7 +48,8 @@
 #include <unistd.h>
 #endif
 
-namespace gpuinsp {
+namespace gpuinsp
+{
 
 /** The first port a capture library tries, and how many it may step through. */
 static const uint16_t kFirstPort = 47531;
@@ -56,7 +57,8 @@ static const uint16_t kPortCount = 8;
 static const uint16_t kLastPort = kFirstPort + kPortCount - 1;
 
 /** The full path of the running executable, or "" when it cannot be read. */
-inline std::string ExecutablePath() {
+inline std::string ExecutablePath()
+{
 #if defined(_WIN32)
     char buf[MAX_PATH];
     DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD)sizeof(buf));
@@ -64,7 +66,8 @@ inline std::string ExecutablePath() {
 #elif defined(__ANDROID__)
     // No /proc/self/exe worth showing (it is the zygote-forked app_process); the package name
     // from the command line is what the user recognizes.
-    if (FILE* f = fopen("/proc/self/cmdline", "rb")) {
+    if (FILE* f = fopen("/proc/self/cmdline", "rb"))
+    {
         char cmd[256] = {};
         size_t got = fread(cmd, 1, sizeof(cmd) - 1, f);
         fclose(f);
@@ -84,13 +87,15 @@ inline std::string ExecutablePath() {
 }
 
 /** The executable's name without its directory: what the attach list shows. */
-inline std::string ExecutableName() {
+inline std::string ExecutableName()
+{
     const std::string full = ExecutablePath();
     const size_t slash = full.find_last_of("/\\");
     return slash == std::string::npos ? full : full.substr(slash + 1);
 }
 
-inline uint32_t CurrentProcessId() {
+inline uint32_t CurrentProcessId()
+{
 #if defined(_WIN32)
     return (uint32_t)GetCurrentProcessId();
 #else
@@ -118,21 +123,27 @@ inline uint32_t CurrentProcessId() {
  * and these servers take one client at a time, so probing would throw the inspector off its own
  * connection. That is what the Probe handshake at the top of this file is for.
  */
-inline bool PortIsServed(uint16_t port) {
+inline bool PortIsServed(uint16_t port)
+{
 #if defined(_WIN32)
     ULONG size = 0;
-    if (GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != ERROR_INSUFFICIENT_BUFFER) {
+    if (GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != ERROR_INSUFFICIENT_BUFFER)
+    {
         return false;   // Unreadable: bind anyway, which is what this did before.
     }
     std::vector<char> buffer(size);
-    if (GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) return false;
+    if (GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR)
+        return false;
     const MIB_TCPTABLE_OWNER_PID* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
-    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+    for (DWORD i = 0; i < table->dwNumEntries; ++i)
+    {
         const MIB_TCPROW_OWNER_PID& row = table->table[i];
         // The table holds the port in network order in the low half of the field.
-        if ((row.dwLocalPort & 0xFFFF) != (ULONG)htons(port)) continue;
+        if ((row.dwLocalPort & 0xFFFF) != (ULONG)htons(port))
+            continue;
         // Ours binds the loopback address; a wildcard listener covers it too.
-        if (row.dwLocalAddr == (ULONG)htonl(INADDR_LOOPBACK) || row.dwLocalAddr == 0) return true;
+        if (row.dwLocalAddr == (ULONG)htonl(INADDR_LOOPBACK) || row.dwLocalAddr == 0)
+            return true;
     }
     return false;
 #elif defined(__ANDROID__)
@@ -142,7 +153,8 @@ inline bool PortIsServed(uint16_t port) {
     return false;
 #else
     int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) return false;
+    if (s < 0)
+        return false;
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -154,9 +166,11 @@ inline bool PortIsServed(uint16_t port) {
 }
 
 /** Whether a client's first frame is a probe rather than the start of a session. */
-inline bool IsProbeRequest(const std::string& json) {
+inline bool IsProbeRequest(const std::string& json)
+{
     vkinsp::JsonValue msg;
-    if (!vkinsp::JsonParser::Parse(json, msg)) return false;
+    if (!vkinsp::JsonParser::Parse(json, msg))
+        return false;
     return msg.GetString("action") == "Probe";
 }
 
@@ -169,16 +183,24 @@ inline bool IsProbeRequest(const std::string& json) {
  * before the application has created its device. `busy` says an inspector is already attached,
  * which the list shows rather than hides: the connection would be taken from whoever holds it.
  */
-inline std::string ProbeReply(const char* api, const std::string& name, uint16_t port, bool busy) {
+inline std::string ProbeReply(const char* api, const std::string& name, uint16_t port, bool busy)
+{
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("Target");
-    w.Key("api"); w.String(api);
-    w.Key("name"); w.String(name);
-    w.Key("exe"); w.String(ExecutableName());
-    w.Key("pid"); w.Uint(CurrentProcessId());
-    w.Key("port"); w.Uint(port);
-    w.Key("busy"); w.Boolean(busy);
+    w.Key("action");
+    w.String("Target");
+    w.Key("api");
+    w.String(api);
+    w.Key("name");
+    w.String(name);
+    w.Key("exe");
+    w.String(ExecutableName());
+    w.Key("pid");
+    w.Uint(CurrentProcessId());
+    w.Key("port");
+    w.Uint(port);
+    w.Key("busy");
+    w.Boolean(busy);
     w.EndObject();
     return w.str();
 }

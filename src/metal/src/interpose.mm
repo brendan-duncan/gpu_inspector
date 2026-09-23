@@ -21,18 +21,22 @@
 #import <CoreGraphics/CoreGraphics.h>
 #import <Metal/Metal.h>
 
-namespace {
+namespace
+{
 
-id<MTLDevice> Interposed_MTLCreateSystemDefaultDevice(void) {
+id<MTLDevice> Interposed_MTLCreateSystemDefaultDevice(void)
+{
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
     mtlinsp::TrackDeviceObject(device, "MTLCreateSystemDefaultDevice");
     return device;
 }
 
-NSArray<id<MTLDevice>> *Interposed_MTLCopyAllDevices(void) {
-    NSArray<id<MTLDevice>> *devices = MTLCopyAllDevices();
+NSArray<id<MTLDevice>>* Interposed_MTLCopyAllDevices(void)
+{
+    NSArray<id<MTLDevice>>* devices = MTLCopyAllDevices();
     mtlinsp::Log("MTLCopyAllDevices -> %lu device(s)", (unsigned long)devices.count);
-    for (id<MTLDevice> device in devices) mtlinsp::TrackDeviceObject(device, "MTLCopyAllDevices");
+    for (id<MTLDevice> device in devices)
+        mtlinsp::TrackDeviceObject(device, "MTLCopyAllDevices");
     return devices;
 }
 
@@ -42,11 +46,14 @@ NSArray<id<MTLDevice>> *Interposed_MTLCopyAllDevices(void) {
 template <typename F>
 struct ObserverInterposer;
 template <typename R, typename... A>
-struct ObserverInterposer<R (*)(A...)> {
-    static R Call(A... args) {
+struct ObserverInterposer<R (*)(A...)>
+{
+    static R Call(A... args)
+    {
         R devices = MTLCopyAllDevicesWithObserver(args...);
         mtlinsp::Log("MTLCopyAllDevicesWithObserver -> %lu device(s)", (unsigned long)devices.count);
-        for (id<MTLDevice> device in devices) {
+        for (id<MTLDevice> device in devices)
+        {
             mtlinsp::TrackDeviceObject(device, "MTLCopyAllDevicesWithObserver");
         }
         return devices;
@@ -55,28 +62,31 @@ struct ObserverInterposer<R (*)(A...)> {
 constexpr auto Interposed_MTLCopyAllDevicesWithObserver =
     &ObserverInterposer<decltype(&MTLCopyAllDevicesWithObserver)>::Call;
 
-id<MTLDevice> Interposed_CGDirectDisplayCopyCurrentMetalDevice(CGDirectDisplayID display) {
+id<MTLDevice> Interposed_CGDirectDisplayCopyCurrentMetalDevice(CGDirectDisplayID display)
+{
     id<MTLDevice> device = CGDirectDisplayCopyCurrentMetalDevice(display);
     mtlinsp::TrackDeviceObject(device, "CGDirectDisplayCopyCurrentMetalDevice");
     return device;
 }
 
-struct Interpose {
-    const void *replacement;
-    const void *replacee;
+struct Interpose
+{
+    const void* replacement;
+    const void* replacee;
 };
 
 __attribute__((used, section("__DATA,__interpose"))) const Interpose kInterposers[] = {
-    {(const void *)&Interposed_MTLCreateSystemDefaultDevice,
-     (const void *)&MTLCreateSystemDefaultDevice},
-    {(const void *)&Interposed_MTLCopyAllDevices, (const void *)&MTLCopyAllDevices},
-    {(const void *)Interposed_MTLCopyAllDevicesWithObserver,
-     (const void *)&MTLCopyAllDevicesWithObserver},
-    {(const void *)&Interposed_CGDirectDisplayCopyCurrentMetalDevice,
-     (const void *)&CGDirectDisplayCopyCurrentMetalDevice},
+    {(const void*)&Interposed_MTLCreateSystemDefaultDevice,
+        (const void*)&MTLCreateSystemDefaultDevice},
+    {(const void*)&Interposed_MTLCopyAllDevices, (const void*)&MTLCopyAllDevices},
+    {(const void*)Interposed_MTLCopyAllDevicesWithObserver,
+        (const void*)&MTLCopyAllDevicesWithObserver},
+    {(const void*)&Interposed_CGDirectDisplayCopyCurrentMetalDevice,
+        (const void*)&CGDirectDisplayCopyCurrentMetalDevice},
 };
 
-__attribute__((constructor)) void Loaded(void) {
+__attribute__((constructor)) void Loaded(void)
+{
     mtlinsp::Log("loaded into pid %d", getpid());
     // The listener comes up before the application has a device, so the UI can be waiting when
     // the process starts or attach later and get a snapshot either way.
@@ -90,7 +100,8 @@ __attribute__((constructor)) void Loaded(void) {
  * device destruction; a Metal application has nothing to destroy, so process exit is the
  * moment. Flushed synchronously, since the sender thread would not get another turn.
  */
-__attribute__((destructor)) void Unloading(void) {
+__attribute__((destructor)) void Unloading(void)
+{
     mtlinsp::SendLeakReport();
     mtlinsp::Transport::Get().Flush(500);
 }

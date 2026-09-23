@@ -6,7 +6,8 @@
 
 #include "util.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 // ---------------------------------------------------------------------------------------------
 // Mesh output
@@ -19,35 +20,42 @@ namespace vkreplay {
 // every vertex the draw assembled, in the order it assembled them, and the counter says how much of
 // it was written.
 
-namespace {
+namespace
+{
 
 /** Bytes a mesh may take: a draw that writes more is captured up to here, and marked truncated. */
 constexpr uint64_t kMaxMeshBytes = 256ull * 1024 * 1024;
 /** Vertices assumed for an indirect draw, whose counts are in a buffer. */
 constexpr uint64_t kIndirectVertices = 1ull << 20;
 
-uint64_t ArgUint(const JValue* args, const char* name, uint64_t fallback = 0) {
+uint64_t ArgUint(const JValue* args, const char* name, uint64_t fallback = 0)
+{
     const JValue* v = args ? args->Get(name) : nullptr;
     return v ? v->Uint() : fallback;
 }
 
 } // namespace
 
-std::string Replayer::PipelineTopology(uint64_t pipelineId, bool& dynamic) const {
+std::string Replayer::PipelineTopology(uint64_t pipelineId, bool& dynamic) const
+{
     dynamic = false;
     const JValue* object = _capture->Object(pipelineId);
     // Shader objects have no topology of their own: the draw's is the dynamic state it set.
-    if (object && Str(object->Get("type")) == "VkShaderEXT") return _overlayDrawnTopology;
+    if (object && Str(object->Get("type")) == "VkShaderEXT")
+        return _overlayDrawnTopology;
     // A pipeline linked from libraries has its topology in the vertex input library's create info.
     dynamic = PipelineDynamic(pipelineId, "VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY");
     const JValue* assembly = PipelineState(pipelineId, "pInputAssemblyState", "VERTEX_INPUT_INTERFACE");
     return assembly ? Str(assembly->Get("topology")) : "";
 }
 
-void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex) {
+void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex)
+{
     const JValue* commands = _capture->Commands();
-    for (uint32_t target : _options.mesh.commands) {
-        if (target <= pass.beginIndex || target >= endIndex) continue;
+    for (uint32_t target : _options.mesh.commands)
+    {
+        if (target <= pass.beginIndex || target >= endIndex)
+            continue;
         MeshResult result;
         result.command = target;
         result.commandBuffer = pass.commandBuffer;
@@ -55,12 +63,14 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
         result.passIndex = pass.index;
         const JValue& command = commands->items[target];
         result.method = Str(command.Get("method"));
-        if (!StartsWith(result.method, "vkCmdDraw")) {
+        if (!StartsWith(result.method, "vkCmdDraw"))
+        {
             result.note = "command " + std::to_string(target) + " is " + result.method + ", not a draw";
             _report->meshes.push_back(std::move(result));
             continue;
         }
-        if (!_xfbAvailable) {
+        if (!_xfbAvailable)
+        {
             result.note = "this GPU cannot capture vertex shader outputs (no VK_EXT_transform_feedback)";
             _report->meshes.push_back(std::move(result));
             continue;
@@ -71,7 +81,8 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
         PendingMesh p;
         p.result = _report->meshes.size();
         const JValue* args = command.Get("args");
-        if (result.method.find("Indirect") == std::string::npos) {
+        if (result.method.find("Indirect") == std::string::npos)
+        {
             const uint64_t instances = std::max<uint64_t>(1, ArgUint(args, "instanceCount", 1));
             const uint64_t count = result.method.find("Indexed") != std::string::npos ? ArgUint(args, "indexCount") : ArgUint(args, "vertexCount");
             p.estimate = count * instances;
@@ -82,9 +93,12 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
         const bool shaderObjects = DrawUsesShaderObjects(group, target) && _fns.CmdBeginRendering;
         VkRenderPass rp = shaderObjects ? VK_NULL_HANDLE : OverdrawRenderPass(VK_FORMAT_UNDEFINED);
         VkFramebuffer fb = VK_NULL_HANDLE;
-        if (color.image && shaderObjects) {
+        if (color.image && shaderObjects)
+        {
             Barrier(cb, color.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-        } else if (color.image && rp) {
+        }
+        else if (color.image && rp)
+        {
             VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
             fbInfo.renderPass = rp;
             fbInfo.attachmentCount = 1;
@@ -92,10 +106,13 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
             fbInfo.width = pass.extent.width;
             fbInfo.height = pass.extent.height;
             fbInfo.layers = 1;
-            if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) == VK_SUCCESS) _transientFramebuffers.push_back(fb);
-            else fb = VK_NULL_HANDLE;
+            if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) == VK_SUCCESS)
+                _transientFramebuffers.push_back(fb);
+            else
+                fb = VK_NULL_HANDLE;
         }
-        if (shaderObjects ? !color.image : !fb) {
+        if (shaderObjects ? !color.image : !fb)
+        {
             result.note = "no memory for the pass the draw is issued in";
             _report->meshes.push_back(std::move(result));
             continue;
@@ -118,19 +135,22 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
 
         bool dynamic = false;
         result.topology = pipeline ? PipelineTopology(pipeline, dynamic) : "";
-        if (dynamic) result.topology += " (dynamic)";
+        if (dynamic)
+            result.topology += " (dynamic)";
         auto layout = _xfbLayouts.find(pipeline);
-        if (!drawn || layout == _xfbLayouts.end()) {
+        if (!drawn || layout == _xfbLayouts.end())
+        {
             // Buffers a draw was issued with stay until the submission completes; only unused ones go now.
-            if (p.buffer.buffer && _overlayIssued) {
+            if (p.buffer.buffer && _overlayIssued)
+            {
                 result.note = "the draw's vertex shader outputs could not be read";
                 _report->meshes.push_back(std::move(result));
                 _pendingMeshes.push_back(p);
                 continue;
             }
             result.note = layout != _xfbLayouts.end() && !layout->second.error.empty() ? layout->second.error
-                        : !pipeline ? "no pipeline or vertex shader object is bound at the draw"
-                        : "the draw could not be issued again (its pipeline could not be copied, or there was no memory for its vertices)";
+                : !pipeline                                                            ? "no pipeline or vertex shader object is bound at the draw"
+                                                                                       : "the draw could not be issued again (its pipeline could not be copied, or there was no memory for its vertices)";
             DestroyStaging(p.buffer);
             DestroyStaging(p.counter);
             _report->meshes.push_back(std::move(result));
@@ -143,13 +163,16 @@ void Replayer::RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const P
     }
 }
 
-VkShaderEXT Replayer::FeedbackShader(uint64_t shaderId) {
-    if (auto it = _xfbShaders.find(shaderId); it != _xfbShaders.end()) return it->second;
+VkShaderEXT Replayer::FeedbackShader(uint64_t shaderId)
+{
+    if (auto it = _xfbShaders.find(shaderId); it != _xfbShaders.end())
+        return it->second;
     _xfbShaders[shaderId] = VK_NULL_HANDLE;  // a copy that cannot be made is not tried again
     XfbPatch& layout = _xfbLayouts[shaderId];
     const JValue* object = _capture->Object(shaderId);
     const JValue* args = object ? object->Get("args") : nullptr;
-    if (!args || !_fns.CreateShadersEXT || !_fns.CmdBindShadersEXT) {
+    if (!args || !_fns.CreateShadersEXT || !_fns.CmdBindShadersEXT)
+    {
         layout.error = "the vertex shader object could not be made again";
         return VK_NULL_HANDLE;
     }
@@ -157,7 +180,8 @@ VkShaderEXT Replayer::FeedbackShader(uint64_t shaderId) {
     Args_vkCreateShadersEXT a{};
     DecodeArgs(_ctx, *args, a);
     const uint32_t index = object->Get("index") ? (uint32_t)object->Get("index")->Uint() : 0;
-    if (!a.pCreateInfos || index >= a.createInfoCount || _ctx.unresolved != unresolved) {
+    if (!a.pCreateInfos || index >= a.createInfoCount || _ctx.unresolved != unresolved)
+    {
         _ctx.unresolved = unresolved;
         layout.error = "the vertex shader object's create info names objects the replay does not have";
         return VK_NULL_HANDLE;
@@ -166,14 +190,16 @@ VkShaderEXT Replayer::FeedbackShader(uint64_t shaderId) {
     const std::string entry = info.pName ? info.pName : "main";
     const uint8_t* data = nullptr;
     size_t size = 0;
-    if (info.codeType != VK_SHADER_CODE_TYPE_SPIRV_EXT || !_capture->Blob(*object, std::string(StageName(VK_SHADER_STAGE_VERTEX_BIT)) + ":" + entry, data, size)) {
+    if (info.codeType != VK_SHADER_CODE_TYPE_SPIRV_EXT || !_capture->Blob(*object, std::string(StageName(VK_SHADER_STAGE_VERTEX_BIT)) + ":" + entry, data, size))
+    {
         layout.error = "the capture has no SPIR-V for the vertex shader object";
         return VK_NULL_HANDLE;
     }
     std::vector<uint32_t> words(size / 4);
     std::memcpy(words.data(), data, words.size() * 4);
     layout = PatchForTransformFeedback(words.data(), words.size(), entry);
-    if (!layout.error.empty()) return VK_NULL_HANDLE;
+    if (!layout.error.empty())
+        return VK_NULL_HANDLE;
     info.flags &= ~(VkShaderCreateFlagsEXT)VK_SHADER_CREATE_LINK_STAGE_BIT_EXT;
     info.pCode = layout.words.data();
     info.codeSize = layout.words.size() * 4;
@@ -181,7 +207,8 @@ VkShaderEXT Replayer::FeedbackShader(uint64_t shaderId) {
     const VkResult created = _fns.CreateShadersEXT(_device, 1, &info, nullptr, &shader);
     layout.words.clear();
     layout.words.shrink_to_fit();
-    if (created != VK_SUCCESS || !shader) {
+    if (created != VK_SUCCESS || !shader)
+    {
         layout.error = "the edited vertex shader object was refused (" + std::to_string(created) + ")";
         return VK_NULL_HANDLE;
     }
@@ -190,11 +217,14 @@ VkShaderEXT Replayer::FeedbackShader(uint64_t shaderId) {
     return shader;
 }
 
-bool Replayer::PrepareMeshBuffers() {
-    if (!_meshTarget) return false;
+bool Replayer::PrepareMeshBuffers()
+{
+    if (!_meshTarget)
+        return false;
     const uint64_t source = _overlayPipeline ? _overlayPipeline : _overlayVertexShader;
     auto layout = _xfbLayouts.find(source);
-    if (layout == _xfbLayouts.end() || !layout->second.stride) return false;
+    if (layout == _xfbLayouts.end() || !layout->second.stride)
+        return false;
     bool dynamic = false;
     const std::string topology = PipelineTopology(source, dynamic);
     // A strip or fan is captured as a list: up to three vertices a primitive.
@@ -204,7 +234,8 @@ bool Replayer::PrepareMeshBuffers() {
     const uint64_t bytes = std::clamp<uint64_t>(vertices * layout->second.stride, layout->second.stride, kMaxMeshBytes / layout->second.stride * layout->second.stride);
     _meshTarget->pipeline = source;
     if (!CreateStaging(bytes, _meshTarget->buffer, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_BUFFER_BIT_EXT) ||
-        !CreateStaging(sizeof(uint32_t), _meshTarget->counter, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT)) {
+        !CreateStaging(sizeof(uint32_t), _meshTarget->counter, VK_BUFFER_USAGE_TRANSFORM_FEEDBACK_COUNTER_BUFFER_BIT_EXT))
+    {
         DestroyStaging(_meshTarget->buffer);
         DestroyStaging(_meshTarget->counter);
         return false;
@@ -213,12 +244,17 @@ bool Replayer::PrepareMeshBuffers() {
     return true;
 }
 
-void Replayer::CompleteMesh(bool submitted) {
-    for (PendingMesh& p : _pendingMeshes) {
+void Replayer::CompleteMesh(bool submitted)
+{
+    for (PendingMesh& p : _pendingMeshes)
+    {
         MeshResult& r = _report->meshes[p.result];
-        if (!submitted) {
+        if (!submitted)
+        {
             r.note = "the submission holding the draw did not run";
-        } else if (p.buffer.mapped && p.counter.mapped && r.stride) {
+        }
+        else if (p.buffer.mapped && p.counter.mapped && r.stride)
+        {
             // The counter holds the byte offset the next vertex would have been written at.
             uint32_t written = 0;
             std::memcpy(&written, p.counter.mapped, sizeof(written));
@@ -227,7 +263,8 @@ void Replayer::CompleteMesh(bool submitted) {
             r.vertices = (uint32_t)(bytes / r.stride);
             const auto* data = static_cast<const uint8_t*>(p.buffer.mapped);
             r.data.assign(data, data + bytes);
-            if (r.truncated) r.note = "the draw wrote more vertices than were captured";
+            if (r.truncated)
+                r.note = "the draw wrote more vertices than were captured";
         }
         DestroyStaging(p.buffer);
         DestroyStaging(p.counter);

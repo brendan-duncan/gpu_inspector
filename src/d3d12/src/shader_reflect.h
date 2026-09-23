@@ -24,9 +24,11 @@
 #include <utility>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-struct ShaderInfo {
+struct ShaderInfo
+{
     /** The UI's stage name: vertex, fragment, tess_control, tess_eval, geometry, compute, task, mesh, or "library". */
     std::string stage;
     std::string entryPoint;   // "" when the container does not say (DXBC)
@@ -41,7 +43,8 @@ struct ShaderInfo {
  * (D3D12_SO_DECLARATION_ENTRY): the mesh view's VS Out streams a vertex shader's own outputs out of
  * the unmodified bytecode, so nothing but the signature is needed to ask for them.
  */
-struct ShaderOutputParam {
+struct ShaderOutputParam
+{
     std::string semantic;
     uint32_t semanticIndex = 0;
     uint32_t startComponent = 0;
@@ -78,7 +81,8 @@ bool AssembleDxil(const std::string& text, std::vector<uint8_t>& container, std:
  * needs (the shader debugger compiles the HLSL to SPIR-V to step it). Empty where the container
  * or PDB does not say (DXBC from fxc, an old dxc).
  */
-struct ShaderCompileInfo {
+struct ShaderCompileInfo
+{
     /** The file dxc was given, as it was named on the command line. */
     std::string mainFile;
     std::string entryPoint;
@@ -96,7 +100,8 @@ std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* byt
 std::vector<std::pair<std::string, std::string>> EmbeddedSources(const void* bytecode, size_t size, ShaderCompileInfo* compile);
 
 /** Where a container's HLSL was found, and why there is none when there is none. */
-struct ShaderSourceFiles {
+struct ShaderSourceFiles
+{
     std::vector<std::pair<std::string, std::string>> files;
     /** The PDB the files were read out of; "" when they were embedded in the container itself. */
     std::string pdb;
@@ -128,8 +133,8 @@ std::vector<std::pair<std::string, std::string>> PdbSources(const std::wstring& 
  * container carries, then by the hash of every .pdb lying in the directory.
  */
 ShaderSourceFiles FindShaderSources(const void* bytecode, size_t size,
-                                    const std::vector<std::wstring>& pdbFiles,
-                                    const std::vector<std::wstring>& pdbDirs);
+    const std::vector<std::wstring>& pdbFiles,
+    const std::vector<std::wstring>& pdbDirs);
 
 /** A stable hash of the bytecode, for naming and matching. */
 uint64_t ShaderHash(const void* bytecode, size_t size);

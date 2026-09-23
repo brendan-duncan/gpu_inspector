@@ -30,7 +30,8 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 class CommandRecorder;
 struct BoundTarget;
@@ -39,7 +40,8 @@ struct BoundTarget;
  * A measurement's command list, as the recorded calls see it. The calls a measurement changes go
  * through here; the rest are issued exactly as the application made them.
  */
-class PassReplay {
+class PassReplay
+{
 public:
     /** The application bound a pipeline: a measurement binds its own copy of it instead. */
     virtual void SetPipeline(ID3D12GraphicsCommandList* list, ID3D12PipelineState* pipeline) = 0;
@@ -48,17 +50,19 @@ public:
      * out binds its own copy of it instead, since the copy carries the stream-output flag
      * (mesh_output.cpp); every other measurement takes the application's.
      */
-    virtual void SetGraphicsRootSignature(ID3D12GraphicsCommandList* list, ID3D12RootSignature* signature) {
+    virtual void SetGraphicsRootSignature(ID3D12GraphicsCommandList* list, ID3D12RootSignature* signature)
+    {
         list->SetGraphicsRootSignature(signature);
     }
     /** The application set scissor rectangles; the pixel history keeps its one-pixel scissor instead. */
-    virtual void SetScissors(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RECT* rects) {
+    virtual void SetScissors(ID3D12GraphicsCommandList* list, UINT count, const D3D12_RECT* rects)
+    {
         list->RSSetScissorRects(count, rects);
     }
     /** A clear of a bound render target; a measurement clears its own copy of it, or nothing. */
     virtual void ClearTarget(ID3D12GraphicsCommandList*, D3D12_CPU_DESCRIPTOR_HANDLE, const FLOAT[4], UINT, const D3D12_RECT*) {}
     virtual void ClearDepthStencil(ID3D12GraphicsCommandList*, D3D12_CPU_DESCRIPTOR_HANDLE, D3D12_CLEAR_FLAGS, FLOAT, UINT8, UINT,
-                                   const D3D12_RECT*) {}
+        const D3D12_RECT*) {}
     /** A draw, which the measurement issues through `draw` as many times as it needs, or not at all. */
     virtual void IssueDraw(ID3D12GraphicsCommandList* list, const std::function<void(ID3D12GraphicsCommandList*)>& draw) = 0;
     /** A draw that cannot be measured: an ExecuteIndirect, or a bundle whose calls were not recorded. */
@@ -82,9 +86,17 @@ using PassOp = std::function<void(ID3D12GraphicsCommandList* list, PassReplay& r
  *   Range    binds slots location..location+length-1 of `name`, undoing earlier binds of each.
  * The names are string literals, compared by content.
  */
-enum class OpPolicy : uint8_t { Draw, Action, Replace, Slot, Range };
+enum class OpPolicy : uint8_t
+{
+    Draw,
+    Action,
+    Replace,
+    Slot,
+    Range
+};
 
-struct OpKey {
+struct OpKey
+{
     OpPolicy policy = OpPolicy::Replace;
     const char* name = "";
     const char* clears = nullptr;
@@ -99,7 +111,8 @@ struct OpKey {
 };
 
 /** The op families the keys above use, so a typo cannot silently stop an op from being undone. */
-namespace ops {
+namespace ops
+{
 constexpr const char* kPipeline = "pipeline";
 constexpr const char* kGraphicsRootSignature = "graphicsRootSignature";
 constexpr const char* kGraphicsRoot = "graphicsRoot";        // Slot family: one per root parameter index
@@ -148,7 +161,7 @@ void EndMeasuredPass(CommandRecorder* rec, bool insideRenderPass);
 
 /** A capture starts recording: what it measures, with nothing left from the last one. */
 void StartMeasurements(bool overdraw, const PixelHistoryRequest& history, const DrawOverlayRequest& overlay,
-                       const MeshOutputRequest& mesh, uint64_t maxDataSize);
+    const MeshOutputRequest& mesh, uint64_t maxDataSize);
 /** A list ran in a frame: the measurements drawn into it belong to that frame. */
 void AssignMeasurementFrame(ID3D12GraphicsCommandList* list, uint32_t frame);
 /** The capture's command lists have completed: CaptureOverdraw plus a CaptureOverdrawData frame per measurement. */

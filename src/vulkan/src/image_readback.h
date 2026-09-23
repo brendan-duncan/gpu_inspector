@@ -15,11 +15,13 @@
 #include <unordered_map>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 
-class LayoutTracker {
+class LayoutTracker
+{
 public:
     static LayoutTracker& Get();
 
@@ -37,7 +39,8 @@ public:
     void OnDestroyImage(VkImage image);
 
 private:
-    struct Transition {
+    struct Transition
+    {
         VkImage image;
         VkImageLayout layout;
     };
@@ -46,7 +49,8 @@ private:
     std::unordered_map<VkImage, VkImageLayout> _layouts;
 };
 
-class ImageReadback {
+class ImageReadback
+{
 public:
     static ImageReadback& Get();
 
@@ -59,7 +63,8 @@ public:
     void OnPresent(DeviceData* dev, VkQueue queue);
 
 private:
-    struct PendingRequest {
+    struct PendingRequest
+    {
         uint64_t imageId;
         uint32_t mip;
         uint32_t layer;

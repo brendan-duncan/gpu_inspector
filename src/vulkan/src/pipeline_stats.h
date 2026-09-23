@@ -16,7 +16,8 @@
 
 #include <vulkan/vulkan.h>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct InstanceData;
 
@@ -38,7 +39,8 @@ constexpr uint32_t kPipelineStatisticCount = 6;
 /** Their names in the protocol, matching what the Metal library sends for the same quantities. */
 extern const char* const kPipelineStatisticNames[kPipelineStatisticCount];
 
-struct PipelineStatisticsSetup {
+struct PipelineStatisticsSetup
+{
     /** Our copy of the application's features, when it passed them through pEnabledFeatures. */
     VkPhysicalDeviceFeatures features{};
     /** Our copy of its VkPhysicalDeviceFeatures2, when it chained one instead. */
@@ -64,6 +66,6 @@ struct PipelineStatisticsSetup {
  * create info.
  */
 void PlanPipelineStatistics(InstanceData* inst, VkPhysicalDevice physicalDevice,
-                            VkDeviceCreateInfo& info, PipelineStatisticsSetup& setup);
+    VkDeviceCreateInfo& info, PipelineStatisticsSetup& setup);
 
 } // namespace vkinsp

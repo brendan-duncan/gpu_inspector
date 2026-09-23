@@ -22,14 +22,18 @@
 
 typedef void* (*PFNEGLGETNEXTLAYERPROCADDRESSPROC)(void* layerId, const char* name);
 
-namespace glesinsp {
-namespace {
+namespace glesinsp
+{
+namespace
+{
 
 bool g_initialized = false;
 
 /** `next` in the slot `real`, and the hook for it in its place; `next` alone when there is none (the driver lacks the entry point). */
-void* Chain(void* hook, void** real, void* next) {
-    if (!next) return nullptr;
+void* Chain(void* hook, void** real, void* next)
+{
+    if (!next)
+        return nullptr;
     *real = next;
     return hook;
 }
@@ -39,32 +43,43 @@ void* Chain(void* hook, void** real, void* next) {
 
 using namespace glesinsp;
 
-extern "C" __attribute__((visibility("default")))
-void AndroidGLESLayer_Initialize(void* layerId, PFNEGLGETNEXTLAYERPROCADDRESSPROC getNext) {
+extern "C" __attribute__((visibility("default"))) void AndroidGLESLayer_Initialize(void* layerId, PFNEGLGETNEXTLAYERPROCADDRESSPROC getNext)
+{
     (void)layerId;
     (void)getNext;
-    if (g_initialized) return;
+    if (g_initialized)
+        return;
     g_initialized = true;
     LogAlways("loaded into pid %d as an OpenGL ES layer", (int)getpid());
 }
 
-extern "C" __attribute__((visibility("default")))
-void* AndroidGLESLayer_GetProcAddress(const char* name, EGLFuncPtr next) {
-    if (!name) return (void*)next;
-    for (size_t i = 0; i < kHookCount; ++i) {
-        if (strcmp(kHooks[i].name, name) == 0) return Chain(kHooks[i].hook, kHooks[i].real, (void*)next);
+extern "C" __attribute__((visibility("default"))) void* AndroidGLESLayer_GetProcAddress(const char* name, EGLFuncPtr next)
+{
+    if (!name)
+        return (void*)next;
+    for (size_t i = 0; i < kHookCount; ++i)
+    {
+        if (strcmp(kHooks[i].name, name) == 0)
+            return Chain(kHooks[i].hook, kHooks[i].real, (void*)next);
     }
-    for (size_t i = 0; i < kEglHookCount; ++i) {
-        if (strcmp(kEglHooks[i].name, name) == 0) return Chain(kEglHooks[i].hook, kEglHooks[i].real, (void*)next);
+    for (size_t i = 0; i < kEglHookCount; ++i)
+    {
+        if (strcmp(kEglHooks[i].name, name) == 0)
+            return Chain(kEglHooks[i].hook, kEglHooks[i].real, (void*)next);
     }
     // The ones not hooked (glGet* and the other queries) are called directly.
-    for (size_t i = 0; i < kEglImportCount; ++i) {
-        if (strcmp(kEglImports[i].name, name) == 0 && next) *kEglImports[i].slot = (void*)next;
+    for (size_t i = 0; i < kEglImportCount; ++i)
+    {
+        if (strcmp(kEglImports[i].name, name) == 0 && next)
+            *kEglImports[i].slot = (void*)next;
     }
     void** slots = reinterpret_cast<void**>(&g_gl);
-    for (size_t i = 0; i < kCommandCount; ++i) {
-        if (strcmp(kCommandNames[i], name) == 0) {
-            if (next && !slots[i]) slots[i] = (void*)next;
+    for (size_t i = 0; i < kCommandCount; ++i)
+    {
+        if (strcmp(kCommandNames[i], name) == 0)
+        {
+            if (next && !slots[i])
+                slots[i] = (void*)next;
             break;
         }
     }

@@ -9,7 +9,8 @@
 #include <string>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 class JsonWriter;
 
@@ -19,13 +20,15 @@ constexpr size_t kMaxStackFrames = 32;
 using StackTrace = std::vector<uint64_t>;
 
 /** A function an inlined one was inlined into, as far as the debug information names it. */
-struct InlinedCaller {
+struct InlinedCaller
+{
     std::string function;
     std::string file;
     uint32_t line = 0;
 };
 
-struct StackFrame {
+struct StackFrame
+{
     uint64_t address = 0;
     std::string module;     // file name of the module (no directory), empty when unknown
     std::string function;   // demangled / undecorated symbol, empty when unknown

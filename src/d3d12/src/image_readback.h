@@ -11,7 +11,8 @@
 
 #include "common.h"
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /** Serves one request; sends ImageData (with an error when the image cannot be read). */
 void ReadBackImage(uint64_t objectId, uint32_t mip, uint32_t layer);

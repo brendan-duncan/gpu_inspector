@@ -10,39 +10,52 @@
 #include <shared_mutex>
 #include <unordered_map>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-namespace {
+namespace
+{
 
 // The counts a subresource index ranges over, from a description as the runtime reports it.
-uint32_t MipCount(const D3D12_RESOURCE_DESC& desc) {
-    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) return 1;
-    if (desc.MipLevels) return desc.MipLevels;
+uint32_t MipCount(const D3D12_RESOURCE_DESC& desc)
+{
+    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        return 1;
+    if (desc.MipLevels)
+        return desc.MipLevels;
     // 0 asks for the full chain: what the runtime will make of it.
     UINT64 extent = std::max<UINT64>(desc.Width, desc.Height);
-    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) extent = std::max<UINT64>(extent, desc.DepthOrArraySize);
+    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+        extent = std::max<UINT64>(extent, desc.DepthOrArraySize);
     uint32_t mips = 1;
-    while (extent > 1) {
+    while (extent > 1)
+    {
         extent >>= 1;
         ++mips;
     }
     return mips;
 }
 
-uint32_t ArrayCount(const D3D12_RESOURCE_DESC& desc) {
-    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER || desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D) return 1;
+uint32_t ArrayCount(const D3D12_RESOURCE_DESC& desc)
+{
+    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER || desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D)
+        return 1;
     return std::max<uint32_t>(desc.DepthOrArraySize, 1);
 }
 
 }  // namespace
 
-uint32_t SubresourceCount(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc, uint32_t* planes) {
+uint32_t SubresourceCount(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc, uint32_t* planes)
+{
     uint32_t planeCount = 1;
-    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
-        if (planes) *planes = 1;
+    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
+        if (planes)
+            *planes = 1;
         return 1;
     }
-    if (device) {
+    if (device)
+    {
         // The plane count is a property of the format on this device (depth-stencil formats
         // have two, some video formats more); the device's methods are hooked, so this is ours.
         ScopedInternal internal;
@@ -51,11 +64,13 @@ uint32_t SubresourceCount(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc,
         if (SUCCEEDED(device->CheckFeatureSupport(D3D12_FEATURE_FORMAT_INFO, &info, sizeof(info))) && info.PlaneCount)
             planeCount = info.PlaneCount;
     }
-    if (planes) *planes = planeCount;
+    if (planes)
+        *planes = planeCount;
     return MipCount(desc) * ArrayCount(desc) * planeCount;
 }
 
-void SubresourceOf(const D3D12_RESOURCE_DESC& desc, uint32_t subresource, uint32_t& mip, uint32_t& slice, uint32_t& plane) {
+void SubresourceOf(const D3D12_RESOURCE_DESC& desc, uint32_t subresource, uint32_t& mip, uint32_t& slice, uint32_t& plane)
+{
     uint32_t mips = MipCount(desc);
     uint32_t slices = ArrayCount(desc);
     mip = subresource % mips;
@@ -63,8 +78,10 @@ void SubresourceOf(const D3D12_RESOURCE_DESC& desc, uint32_t subresource, uint32
     plane = subresource / (mips * slices);
 }
 
-D3D12_RESOURCE_STATES StateOfLayout(D3D12_BARRIER_LAYOUT layout) {
-    switch (layout) {
+D3D12_RESOURCE_STATES StateOfLayout(D3D12_BARRIER_LAYOUT layout)
+{
+    switch (layout)
+    {
         // COMMON and PRESENT share a value, in the layouts as in the states.
         case D3D12_BARRIER_LAYOUT_COMMON:
         case D3D12_BARRIER_LAYOUT_UNDEFINED:
@@ -123,12 +140,15 @@ D3D12_RESOURCE_STATES StateOfLayout(D3D12_BARRIER_LAYOUT layout) {
 
 // ---------------------------------------------------------------------------------------------
 
-struct ResourceTracker::Impl {
-    struct Entry {
+struct ResourceTracker::Impl
+{
+    struct Entry
+    {
         ResourceInfo info;
         std::vector<D3D12_RESOURCE_STATES> states;   // one per subresource
     };
-    struct Transition {
+    struct Transition
+    {
         ID3D12Resource* resource;
         uint32_t subresource;   // kAll for every subresource
         D3D12_RESOURCE_STATES after;
@@ -140,24 +160,30 @@ struct ResourceTracker::Impl {
     std::unordered_map<ID3D12CommandList*, std::vector<Transition>> logs;
 
     // Caller holds `mutex` exclusively.
-    void Log(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES after) {
+    void Log(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES after)
+    {
         logs[list].push_back({resource, subresource, after});
     }
 };
 
-ResourceTracker& ResourceTracker::Get() {
+ResourceTracker& ResourceTracker::Get()
+{
     static ResourceTracker* instance = new ResourceTracker();
     return *instance;
 }
 
-ResourceTracker::Impl& ResourceTracker::impl() {
-    if (!_impl) _impl = new Impl();
+ResourceTracker::Impl& ResourceTracker::impl()
+{
+    if (!_impl)
+        _impl = new Impl();
     return *_impl;
 }
 
 void ResourceTracker::OnCreated(ID3D12Resource* resource, const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE heapType,
-                                D3D12_RESOURCE_STATES initialState, ID3D12Heap* heap, UINT64 heapOffset, bool swapChainBuffer) {
-    if (!resource) return;
+    D3D12_RESOURCE_STATES initialState, ID3D12Heap* heap, UINT64 heapOffset, bool swapChainBuffer)
+{
+    if (!resource)
+        return;
     Impl::Entry e;
     e.info.resource = resource;
     e.info.desc = desc;
@@ -167,7 +193,8 @@ void ResourceTracker::OnCreated(ID3D12Resource* resource, const D3D12_RESOURCE_D
     e.info.swapChainBuffer = swapChainBuffer;
     e.info.heap = heap;
     e.info.heapOffset = heapOffset;
-    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) {
+    if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+    {
         ScopedInternal internal;
         e.info.address = resource->GetGPUVirtualAddress();
     }
@@ -178,94 +205,123 @@ void ResourceTracker::OnCreated(ID3D12Resource* resource, const D3D12_RESOURCE_D
     i.resources[resource] = std::move(e);
 }
 
-void ResourceTracker::OnReleased(ID3D12Resource* resource) {
+void ResourceTracker::OnReleased(ID3D12Resource* resource)
+{
     Impl& i = impl();
     std::unique_lock lock(i.mutex);
     i.resources.erase(resource);
     // A list still recording may name it; the address will be reused, so the entries must go.
-    for (auto& log : i.logs) {
+    for (auto& log : i.logs)
+    {
         auto& v = log.second;
         v.erase(std::remove_if(v.begin(), v.end(), [resource](const Impl::Transition& t) { return t.resource == resource; }), v.end());
     }
 }
 
-bool ResourceTracker::Get(ID3D12Resource* resource, ResourceInfo& out) {
+bool ResourceTracker::Get(ID3D12Resource* resource, ResourceInfo& out)
+{
     Impl& i = impl();
     std::shared_lock lock(i.mutex);
     auto it = i.resources.find(resource);
-    if (it == i.resources.end()) return false;
+    if (it == i.resources.end())
+        return false;
     out = it->second.info;
     return true;
 }
 
-D3D12_RESOURCE_STATES ResourceTracker::GlobalState(ID3D12Resource* resource, uint32_t subresource) {
+D3D12_RESOURCE_STATES ResourceTracker::GlobalState(ID3D12Resource* resource, uint32_t subresource)
+{
     Impl& i = impl();
     std::shared_lock lock(i.mutex);
     auto it = i.resources.find(resource);
-    if (it == i.resources.end() || it->second.states.empty()) return D3D12_RESOURCE_STATE_COMMON;
+    if (it == i.resources.end() || it->second.states.empty())
+        return D3D12_RESOURCE_STATE_COMMON;
     const auto& states = it->second.states;
-    if (subresource == kAll || subresource >= states.size()) return states[0];
+    if (subresource == kAll || subresource >= states.size())
+        return states[0];
     return states[subresource];
 }
 
-D3D12_RESOURCE_STATES ResourceTracker::StateIn(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, bool* known) {
+D3D12_RESOURCE_STATES ResourceTracker::StateIn(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, bool* known)
+{
     Impl& i = impl();
     std::shared_lock lock(i.mutex);
     auto log = i.logs.find(list);
-    if (log != i.logs.end()) {
+    if (log != i.logs.end())
+    {
         // The last transition the list recorded for this subresource, or for all of them.
         const auto& v = log->second;
-        for (auto it = v.rbegin(); it != v.rend(); ++it) {
-            if (it->resource != resource) continue;
-            if (it->subresource == kAll || subresource == kAll || it->subresource == subresource) {
-                if (known) *known = true;
+        for (auto it = v.rbegin(); it != v.rend(); ++it)
+        {
+            if (it->resource != resource)
+                continue;
+            if (it->subresource == kAll || subresource == kAll || it->subresource == subresource)
+            {
+                if (known)
+                    *known = true;
                 return it->after;
             }
         }
     }
     auto res = i.resources.find(resource);
-    if (res == i.resources.end() || res->second.states.empty()) {
-        if (known) *known = false;
+    if (res == i.resources.end() || res->second.states.empty())
+    {
+        if (known)
+            *known = false;
         return D3D12_RESOURCE_STATE_COMMON;
     }
-    if (known) *known = true;
+    if (known)
+        *known = true;
     const auto& states = res->second.states;
-    if (subresource == kAll || subresource >= states.size()) return states[0];
+    if (subresource == kAll || subresource >= states.size())
+        return states[0];
     return states[subresource];
 }
 
-void ResourceTracker::OnBarriers(ID3D12CommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers) {
-    if (!list || !count || !barriers) return;
+void ResourceTracker::OnBarriers(ID3D12CommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers)
+{
+    if (!list || !count || !barriers)
+        return;
     Impl& i = impl();
     std::unique_lock lock(i.mutex);
-    for (UINT k = 0; k < count; ++k) {
+    for (UINT k = 0; k < count; ++k)
+    {
         const D3D12_RESOURCE_BARRIER& b = barriers[k];
         // Aliasing and UAV barriers change no state.
-        if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !b.Transition.pResource) continue;
+        if (b.Type != D3D12_RESOURCE_BARRIER_TYPE_TRANSITION || !b.Transition.pResource)
+            continue;
         i.Log(list, b.Transition.pResource, b.Transition.Subresource, b.Transition.StateAfter);
     }
 }
 
-void ResourceTracker::OnBarrierGroups(ID3D12CommandList* list, UINT count, const D3D12_BARRIER_GROUP* groups) {
-    if (!list || !count || !groups) return;
+void ResourceTracker::OnBarrierGroups(ID3D12CommandList* list, UINT count, const D3D12_BARRIER_GROUP* groups)
+{
+    if (!list || !count || !groups)
+        return;
     Impl& i = impl();
     std::unique_lock lock(i.mutex);
-    for (UINT g = 0; g < count; ++g) {
+    for (UINT g = 0; g < count; ++g)
+    {
         const D3D12_BARRIER_GROUP& group = groups[g];
         // Only texture barriers carry a layout; buffer and global barriers are about access.
-        if (group.Type != D3D12_BARRIER_TYPE_TEXTURE || !group.pTextureBarriers) continue;
-        for (UINT k = 0; k < group.NumBarriers; ++k) {
+        if (group.Type != D3D12_BARRIER_TYPE_TEXTURE || !group.pTextureBarriers)
+            continue;
+        for (UINT k = 0; k < group.NumBarriers; ++k)
+        {
             const D3D12_TEXTURE_BARRIER& t = group.pTextureBarriers[k];
-            if (!t.pResource) continue;
+            if (!t.pResource)
+                continue;
             D3D12_RESOURCE_STATES after = StateOfLayout(t.LayoutAfter);
             const D3D12_BARRIER_SUBRESOURCE_RANGE& r = t.Subresources;
-            if (r.NumMipLevels == 0) {
+            if (r.NumMipLevels == 0)
+            {
                 // IndexOrFirstMipLevel is a subresource index, 0xffffffff for all of them.
                 i.Log(list, t.pResource, r.IndexOrFirstMipLevel == 0xffffffffu ? kAll : r.IndexOrFirstMipLevel, after);
                 continue;
             }
             auto res = i.resources.find(t.pResource);
-            if (res == i.resources.end()) {
+            if (res == i.resources.end())
+            {
                 // Nothing to index into: the best that can be said is that the whole thing moved.
                 i.Log(list, t.pResource, kAll, after);
                 continue;
@@ -284,33 +340,44 @@ void ResourceTracker::OnBarrierGroups(ID3D12CommandList* list, UINT count, const
     }
 }
 
-void ResourceTracker::OnListReset(ID3D12CommandList* list) {
-    if (!list) return;
+void ResourceTracker::OnListReset(ID3D12CommandList* list)
+{
+    if (!list)
+        return;
     Impl& i = impl();
     std::unique_lock lock(i.mutex);
     auto it = i.logs.find(list);
-    if (it != i.logs.end()) it->second.clear();
+    if (it != i.logs.end())
+        it->second.clear();
 }
 
-void ResourceTracker::OnListExecuted(ID3D12CommandList* list) {
-    if (!list) return;
+void ResourceTracker::OnListExecuted(ID3D12CommandList* list)
+{
+    if (!list)
+        return;
     Impl& i = impl();
     std::unique_lock lock(i.mutex);
     auto it = i.logs.find(list);
-    if (it == i.logs.end()) return;
-    for (const Impl::Transition& t : it->second) {
+    if (it == i.logs.end())
+        return;
+    for (const Impl::Transition& t : it->second)
+    {
         auto res = i.resources.find(t.resource);
-        if (res == i.resources.end()) continue;
+        if (res == i.resources.end())
+            continue;
         auto& states = res->second.states;
-        if (t.subresource == kAll) std::fill(states.begin(), states.end(), t.after);
-        else if (t.subresource < states.size()) states[t.subresource] = t.after;
+        if (t.subresource == kAll)
+            std::fill(states.begin(), states.end(), t.after);
+        else if (t.subresource < states.size())
+            states[t.subresource] = t.after;
     }
     // The transitions are now part of the global state; a list executed twice without a
     // Reset would apply them again, which for transitions changes nothing.
     it->second.clear();
 }
 
-void ResourceTracker::OnListReleased(ID3D12CommandList* list) {
+void ResourceTracker::OnListReleased(ID3D12CommandList* list)
+{
     Impl& i = impl();
     std::unique_lock lock(i.mutex);
     i.logs.erase(list);

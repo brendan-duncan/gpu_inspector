@@ -33,16 +33,20 @@
 #include <mutex>
 #include <string>
 
-namespace glesinsp {
-namespace {
+namespace glesinsp
+{
+namespace
+{
 
-struct UnicodeString {
+struct UnicodeString
+{
     USHORT Length;
     USHORT MaximumLength;
     PWSTR Buffer;
 };
 
-struct DllNotificationData {
+struct DllNotificationData
+{
     ULONG Flags;
     const UnicodeString* FullDllName;
     const UnicodeString* BaseDllName;
@@ -62,20 +66,26 @@ bool g_wglHooked = false;
 bool g_gdiHooked = false;
 bool g_initialized = false;
 
-bool NameIs(const UnicodeString* s, const wchar_t* want) {
-    if (!s || !s->Buffer) return false;
+bool NameIs(const UnicodeString* s, const wchar_t* want)
+{
+    if (!s || !s->Buffer)
+        return false;
     const size_t n = s->Length / sizeof(wchar_t);
     return n == wcslen(want) && _wcsnicmp(s->Buffer, want, n) == 0;
 }
 
 }  // namespace
 
-bool HookExport(HMODULE module, const char* name, void* hook, void** real) {
+bool HookExport(HMODULE module, const char* name, void* hook, void** real)
+{
     void* target = (void*)GetProcAddress(module, name);
-    if (!target) return false;
-    if (*real) return true;   // already hooked, through another library that exports the same function
+    if (!target)
+        return false;
+    if (*real)
+        return true;   // already hooked, through another library that exports the same function
     const MH_STATUS s = MH_CreateHook(target, hook, real);
-    if (s != MH_OK) {
+    if (s != MH_OK)
+    {
         LogAlways("%s could not be hooked (MinHook %d)", name, (int)s);
         *real = target;   // the application's calls go straight through; ours still work
         return false;
@@ -83,34 +93,46 @@ bool HookExport(HMODULE module, const char* name, void* hook, void** real) {
     return true;
 }
 
-void EnableHooks() {
+void EnableHooks()
+{
     MH_EnableHook(MH_ALL_HOOKS);
 }
 
-void HookGlModule(HMODULE module) {
+void HookGlModule(HMODULE module)
+{
     std::lock_guard lock(g_hookMutex);
     size_t hooked = 0;
-    for (size_t i = 0; i < kHookCount; ++i) {
-        if (HookExport(module, kHooks[i].name, kHooks[i].hook, kHooks[i].real)) ++hooked;
+    for (size_t i = 0; i < kHookCount; ++i)
+    {
+        if (HookExport(module, kHooks[i].name, kHooks[i].hook, kHooks[i].real))
+            ++hooked;
     }
     // The ones not hooked (glGet* and the other queries) are called directly.
     void** slots = reinterpret_cast<void**>(&g_gl);
-    for (size_t i = 0; i < kCommandCount; ++i) {
-        if (!slots[i]) slots[i] = (void*)GetProcAddress(module, kCommandNames[i]);
+    for (size_t i = 0; i < kCommandCount; ++i)
+    {
+        if (!slots[i])
+            slots[i] = (void*)GetProcAddress(module, kCommandNames[i]);
     }
     MH_EnableHook(MH_ALL_HOOKS);
     LogAlways("hooked %zu GL entry points", hooked);
 }
 
-namespace {
+namespace
+{
 
-void HookEgl(HMODULE module) {
+void HookEgl(HMODULE module)
+{
     size_t hooked = 0;
-    for (size_t i = 0; i < kEglHookCount; ++i) {
-        if (HookExport(module, kEglHooks[i].name, kEglHooks[i].hook, kEglHooks[i].real)) ++hooked;
+    for (size_t i = 0; i < kEglHookCount; ++i)
+    {
+        if (HookExport(module, kEglHooks[i].name, kEglHooks[i].hook, kEglHooks[i].real))
+            ++hooked;
     }
-    for (size_t i = 0; i < kEglImportCount; ++i) {
-        if (!*kEglImports[i].slot) *kEglImports[i].slot = (void*)GetProcAddress(module, kEglImports[i].name);
+    for (size_t i = 0; i < kEglImportCount; ++i)
+    {
+        if (!*kEglImports[i].slot)
+            *kEglImports[i].slot = (void*)GetProcAddress(module, kEglImports[i].name);
     }
     MH_EnableHook(MH_ALL_HOOKS);
     LogAlways("hooked %zu EGL entry points", hooked);
@@ -121,26 +143,36 @@ void HookEgl(HMODULE module) {
  * may never make an OpenGL ES context, and they are hooked when it does (hooks_wgl.cpp), so a desktop
  * OpenGL application, or ANGLE's own libGLESv2, keeps them.
  */
-void Consider(HMODULE module, const UnicodeString* name, const wchar_t* fallback) {
+void Consider(HMODULE module, const UnicodeString* name, const wchar_t* fallback)
+{
     std::lock_guard lock(g_hookMutex);
     auto is = [&](const wchar_t* want) { return name ? NameIs(name, want) : _wcsicmp(fallback, want) == 0; };
-    if (is(L"libGLESv2.dll") && !g_glHooked) {
+    if (is(L"libGLESv2.dll") && !g_glHooked)
+    {
         g_glHooked = true;
         HookGlModule(module);
-    } else if (is(L"libEGL.dll") && !g_eglHooked) {
+    }
+    else if (is(L"libEGL.dll") && !g_eglHooked)
+    {
         g_eglHooked = true;
         HookEgl(module);
-    } else if (is(L"opengl32.dll") && !g_wglHooked) {
+    }
+    else if (is(L"opengl32.dll") && !g_wglHooked)
+    {
         g_wglHooked = true;
         HookWgl(module);
-    } else if (is(L"gdi32.dll") && !g_gdiHooked) {
+    }
+    else if (is(L"gdi32.dll") && !g_gdiHooked)
+    {
         g_gdiHooked = true;
         HookGdiSwap(module);
     }
 }
 
-VOID CALLBACK OnDllNotification(ULONG reason, const DllNotificationData* data, PVOID) {
-    if (reason != kDllLoaded || !data) return;
+VOID CALLBACK OnDllNotification(ULONG reason, const DllNotificationData* data, PVOID)
+{
+    if (reason != kDllLoaded || !data)
+        return;
     Consider((HMODULE)data->DllBase, data->BaseDllName, nullptr);
 }
 
@@ -149,28 +181,37 @@ VOID CALLBACK OnDllNotification(ULONG reason, const DllNotificationData* data, P
 
 using namespace glesinsp;
 
-extern "C" __declspec(dllexport) DWORD WINAPI GpuInspectorInitialize(LPVOID settings) {
-    if (g_initialized) return 0;
+extern "C" __declspec(dllexport) DWORD WINAPI GpuInspectorInitialize(LPVOID settings)
+{
+    if (g_initialized)
+        return 0;
     g_initialized = true;
     const std::string applied = gpuinsp::sdk::Config::Get().ApplySettingsBlock((const wchar_t*)settings);
     LogAlways("loaded into pid %lu", GetCurrentProcessId());
-    if (!applied.empty()) LogAlways("settings from the launcher: %s", applied.c_str());
+    if (!applied.empty())
+        LogAlways("settings from the launcher: %s", applied.c_str());
     const MH_STATUS status = MH_Initialize();
-    if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED) {
+    if (status != MH_OK && status != MH_ERROR_ALREADY_INITIALIZED)
+    {
         LogAlways("MinHook could not start (%d): no OpenGL ES capture in this process", (int)status);
         return 1;
     }
     // Libraries loaded later are hooked as they load; ones already there, now.
     auto reg = (PFN_LdrRegisterDllNotification)GetProcAddress(GetModuleHandleW(L"ntdll.dll"), "LdrRegisterDllNotification");
     PVOID cookie = nullptr;
-    if (!reg || reg(0, &OnDllNotification, nullptr, &cookie) != 0) LogAlways("LdrRegisterDllNotification is not available: only libraries already loaded are hooked");
-    for (const wchar_t* name : {L"libGLESv2.dll", L"libEGL.dll", L"opengl32.dll", L"gdi32.dll"}) {
-        if (HMODULE m = GetModuleHandleW(name)) Consider(m, nullptr, name);
+    if (!reg || reg(0, &OnDllNotification, nullptr, &cookie) != 0)
+        LogAlways("LdrRegisterDllNotification is not available: only libraries already loaded are hooked");
+    for (const wchar_t* name : {L"libGLESv2.dll", L"libEGL.dll", L"opengl32.dll", L"gdi32.dll"})
+    {
+        if (HMODULE m = GetModuleHandleW(name))
+            Consider(m, nullptr, name);
     }
     return 0;
 }
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) DisableThreadLibraryCalls(instance);
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+        DisableThreadLibraryCalls(instance);
     return TRUE;
 }

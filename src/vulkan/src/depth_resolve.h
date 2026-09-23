@@ -13,13 +13,15 @@
 
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct InstanceData;
 struct DeviceData;
 struct PendingImageCopy;
 
-struct DynamicRenderingSetup {
+struct DynamicRenderingSetup
+{
     std::vector<const char*> extensionNames;
     VkPhysicalDeviceDynamicRenderingFeatures features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
     bool enabled = false;   // usable after creation (added by the layer, or enabled by the application)

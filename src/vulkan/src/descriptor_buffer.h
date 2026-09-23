@@ -29,12 +29,14 @@
 #include "descriptors.h"
 #include "vk_commands.gen.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 
 /** Per-type descriptor sizes, read once from VkPhysicalDeviceDescriptorBufferPropertiesEXT. */
-struct DescriptorSizes {
+struct DescriptorSizes
+{
     bool known = false;
     size_t sampler = 0;
     size_t combinedImageSampler = 0;
@@ -51,7 +53,8 @@ struct DescriptorSizes {
     size_t For(VkDescriptorType type) const;
 };
 
-class DescriptorBufferTracker {
+class DescriptorBufferTracker
+{
 public:
     static DescriptorBufferTracker& Get();
 
@@ -66,7 +69,7 @@ public:
 
     /** `vkCmdSetDescriptorBufferOffsetsEXT`: which of those, and where, each set comes from. */
     void OnSetOffsets(VkCommandBuffer cb, VkPipelineBindPoint point, uint32_t firstSet, uint32_t setCount,
-                      const uint32_t* bufferIndices, const VkDeviceSize* offsets);
+        const uint32_t* bufferIndices, const VkDeviceSize* offsets);
 
     /**
      * Where set `set` currently comes from on this command buffer, as a buffer and an offset into
@@ -74,7 +77,7 @@ public:
      * knows (an application that never asked for the buffer's device address).
      */
     bool SetSource(VkCommandBuffer cb, VkPipelineBindPoint point, uint32_t set, VkBuffer& buffer,
-                   VkDeviceSize& offset) const;
+        VkDeviceSize& offset) const;
 
     /**
      * Builds a set's contents from `bytes`, the descriptor buffer's memory at the set's offset.
@@ -82,7 +85,7 @@ public:
      * unwritten. False when the layout is unknown or the device's descriptor sizes are not.
      */
     bool Decode(DeviceData* dev, VkDescriptorSetLayout layout, const uint8_t* bytes, size_t size,
-                DescriptorSetContents& out) const;
+        DescriptorSetContents& out) const;
 
     /** The bytes a set of this layout occupies, so the right amount is read and captured. */
     bool LayoutSize(DeviceData* dev, VkDescriptorSetLayout layout, VkDeviceSize& out) const;
@@ -94,16 +97,19 @@ private:
     DescriptorBufferTracker() = default;
 
     /** One descriptor buffer bound to a command buffer, already resolved to a buffer. */
-    struct BoundBuffer {
+    struct BoundBuffer
+    {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceSize offset = 0;        // where the binding's address sits in that buffer
     };
-    struct SetOffset {
+    struct SetOffset
+    {
         uint32_t bufferIndex = 0;
         VkDeviceSize offset = 0;
         bool set = false;
     };
-    struct CommandBufferState {
+    struct CommandBufferState
+    {
         std::vector<BoundBuffer> buffers;
         // Per bind point, since a command buffer can have different sets bound for each.
         std::unordered_map<int, std::vector<SetOffset>> sets;

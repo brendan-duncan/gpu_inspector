@@ -11,20 +11,23 @@
 
 #import <Metal/Metal.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /** A pixel followed through a pass (pixel_history.mm). */
 struct HistoryPass;
 
 /** A recorded call: what it does, what state it sets, and the command the capture recorded it as. */
-struct LoggedOp {
+struct LoggedOp
+{
     OverdrawOp op;
     OpKey key;
     uint32_t command = 0;
 };
 
 /** A render pass being measured: where it is, what it starts from, and the calls it made. */
-struct OverdrawPass {
+struct OverdrawPass
+{
     id commandBuffer = nil;   // retained
     uint64_t commandBufferId = 0;
     uint32_t frame = 0;
@@ -59,13 +62,15 @@ struct OverdrawPass {
      * order, for a parallel render encoder. Each is drawn in an encoder of its own, since each
      * started from Metal's default state.
      */
-    struct Segment {
-        const void *encoder = nullptr;
+    struct Segment
+    {
+        const void* encoder = nullptr;
         std::vector<LoggedOp> ops;
     };
     std::vector<Segment> segments;
 
-    ~OverdrawPass() {
+    ~OverdrawPass()
+    {
         [commandBuffer release];
         [depthStart release];
         [stencilStart release];
@@ -78,12 +83,13 @@ struct OverdrawPass {
  * drawn into it are the application's, and a pipeline's sample count has to match its attachment.
  */
 id<MTLTexture> NewRenderTexture(id<MTLDevice> device, MTLPixelFormat format, uint32_t width, uint32_t height,
-                                uint32_t sampleCount = 1);
+    uint32_t sampleCount = 1);
 
 /** A function of Metal Shading Language compiled once per device; nil when it does not compile. Not retained for the caller. */
-id<MTLFunction> LibraryFunction(id<MTLDevice> device, const char *name, NSString *source);
+id<MTLFunction> LibraryFunction(id<MTLDevice> device, const char* name, NSString* source);
 
-enum class PipelineVariant : int {
+enum class PipelineVariant : int
+{
     /** Overdraw: the counting fragment function into one R16Float target blended ONE + ONE, one sample. */
     OverdrawCount = 0,
     /** Pixel history: `fragment` (writes nothing) in place of the fragment function, no color writes, no alpha to coverage. */
@@ -110,7 +116,8 @@ enum class PipelineVariant : int {
     OverlayQuiet = 4,
 };
 
-struct DerivedPipeline {
+struct DerivedPipeline
+{
     id pipeline = nil;        // not retained for the caller: kept by the cache until the pipeline is released
     bool rasterless = false;  // rasterization is off: its draws have no fragments
     std::string error;
@@ -122,9 +129,10 @@ struct DerivedPipeline {
  * stencil formats.
  */
 DerivedPipeline PipelineCopy(id<MTLDevice> device, id state, PipelineVariant variant, id<MTLFunction> fragment,
-                             MTLPixelFormat depthFormat = MTLPixelFormatInvalid, MTLPixelFormat stencilFormat = MTLPixelFormatInvalid);
+    MTLPixelFormat depthFormat = MTLPixelFormatInvalid, MTLPixelFormat stencilFormat = MTLPixelFormatInvalid);
 
-enum class DepthStencilVariant : int {
+enum class DepthStencilVariant : int
+{
     /** Tests nothing and writes nothing: Metal's default state. */
     None = 0,
     /** The state's depth test, writing nothing, without the stencil test. */
@@ -142,7 +150,7 @@ enum class DepthStencilVariant : int {
 id DepthStencilCopy(id<MTLDevice> device, id state, DepthStencilVariant variant);
 
 /** The color attachment of a pass that renders to the pixel the capture follows, or -1. */
-int MatchPixelHistoryAttachment(MTLRenderPassDescriptor *descriptor);
+int MatchPixelHistoryAttachment(MTLRenderPassDescriptor* descriptor);
 
 // ---------------------------------------------------------------------------------------------
 // Draw overlays (draw_overlay.mm), the third consumer of this machinery.
@@ -152,16 +160,16 @@ bool DrawOverlayWanted();
 /** Whether this is the pass the overlay's draw is in, known once the pass has its index. */
 bool MatchDrawOverlayPass(uint32_t passIndex);
 /** After the application's endEncoding: the pass drawn again, five ways, around the requested draw. */
-void MeasureDrawOverlay(OverdrawPass &pass);
+void MeasureDrawOverlay(OverdrawPass& pass);
 /** A capture starts recording: which draw of which pass to draw, if any. */
-void StartDrawOverlayCapture(const DrawOverlayRequest &request);
+void StartDrawOverlayCapture(const DrawOverlayRequest& request);
 /** The capture's command buffers have completed: the overlay is sent as CaptureDrawOverlay. */
 void SendDrawOverlay();
 
 /** Before the pass begins: copies of its attachments at the pixel, for the history to start from. */
-void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDescriptor *descriptor, int attachment);
+void PreparePixelHistory(OverdrawPass& pass, id commandBuffer, MTLRenderPassDescriptor* descriptor, int attachment);
 
 /** After the application's endEncoding: the pass drawn again one draw at a time, measured at the pixel. */
-void FollowPixel(OverdrawPass &pass);
+void FollowPixel(OverdrawPass& pass);
 
 }  // namespace mtlinsp

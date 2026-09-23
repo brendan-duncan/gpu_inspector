@@ -39,13 +39,15 @@ typedef int socket_t;
 static void CloseSocket(socket_t s) { close(s); }
 #endif
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 static const uint16_t kDefaultPort = gpuinsp::kFirstPort;
 /** How long a new connection has to say whether it is a probe or a client (target_probe.h). */
 static const int kHandshakeTimeoutMs = 2000;
 
-struct Transport::Impl {
+struct Transport::Impl
+{
     std::thread listener;
     std::thread sender;
     std::thread receiver;
@@ -69,41 +71,51 @@ struct Transport::Impl {
     std::mutex nameMutex;
     std::string targetName;
 
-    std::string TargetName() {
+    std::string TargetName()
+    {
         std::lock_guard lock(nameMutex);
         return targetName;
     }
 
-    void Enqueue(std::string frame) {
+    void Enqueue(std::string frame)
+    {
         std::lock_guard lock(queueMutex);
         // Drop live-object traffic if nobody is connected (snapshot is sent on connect).
-        if (!connected) return;
+        if (!connected)
+            return;
         queuedBytes += frame.size();
         queue.push_back(std::move(frame));
         queueCv.notify_one();
     }
 
-    static bool SendAll(socket_t s, const char* data, size_t size) {
-        while (size > 0) {
+    static bool SendAll(socket_t s, const char* data, size_t size)
+    {
+        while (size > 0)
+        {
             int n = send(s, data, (int)std::min<size_t>(size, 1 << 20), 0);
-            if (n <= 0) return false;
+            if (n <= 0)
+                return false;
             data += n;
             size -= (size_t)n;
         }
         return true;
     }
 
-    static bool RecvAll(socket_t s, char* data, size_t size) {
-        while (size > 0) {
+    static bool RecvAll(socket_t s, char* data, size_t size)
+    {
+        while (size > 0)
+        {
             int n = recv(s, data, (int)std::min<size_t>(size, 1 << 20), 0);
-            if (n <= 0) return false;
+            if (n <= 0)
+                return false;
             data += n;
             size -= (size_t)n;
         }
         return true;
     }
 
-    static void SetRecvTimeout(socket_t s, int ms) {
+    static void SetRecvTimeout(socket_t s, int ms)
+    {
 #if defined(_WIN32)
         DWORD t = (DWORD)ms;
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&t, sizeof(t));
@@ -116,11 +128,13 @@ struct Transport::Impl {
     }
 
     /** One frame, or false when the peer said nothing in time, closed, or framed it badly. */
-    static bool RecvFrame(socket_t s, std::string& payload, uint8_t& kind, int timeoutMs) {
+    static bool RecvFrame(socket_t s, std::string& payload, uint8_t& kind, int timeoutMs)
+    {
         SetRecvTimeout(s, timeoutMs);
         uint8_t hdr[5];
         bool ok = RecvAll(s, (char*)hdr, 5);
-        if (ok) {
+        if (ok)
+        {
             const uint32_t len = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
             kind = hdr[4];
             payload.assign(len, '\0');
@@ -131,7 +145,8 @@ struct Transport::Impl {
     }
 
     /** A JSON frame written straight to a socket, bypassing the queue: the probe is not a client. */
-    static bool SendJsonTo(socket_t s, const std::string& json) {
+    static bool SendJsonTo(socket_t s, const std::string& json)
+    {
         std::string frame;
         frame.reserve(json.size() + 5);
         const uint32_t len = (uint32_t)json.size();
@@ -144,50 +159,71 @@ struct Transport::Impl {
         return SendAll(s, frame.data(), frame.size());
     }
 
-    void SenderLoop() {
+    void SenderLoop()
+    {
         gpuinsp::CpuSampler::Get().ExcludeCurrentThread();   // the inspector's own, not the application's
-        while (!stop) {
+        while (!stop)
+        {
             std::string frame;
             {
                 std::unique_lock lock(queueMutex);
                 queueCv.wait(lock, [&] { return stop || !queue.empty() || !connected; });
-                if (stop) return;
-                if (!connected) { queue.clear(); queuedBytes = 0; continue; }
+                if (stop)
+                    return;
+                if (!connected)
+                {
+                    queue.clear();
+                    queuedBytes = 0;
+                    continue;
+                }
                 frame = std::move(queue.front());
                 queue.pop_front();
                 queuedBytes -= frame.size();
             }
-            if (!SendAll(client, frame.data(), frame.size())) {
+            if (!SendAll(client, frame.data(), frame.size()))
+            {
                 Log("send failed; disconnecting");
                 Disconnect();
             }
         }
     }
 
-    void ReceiverLoop(socket_t s) {
+    void ReceiverLoop(socket_t s)
+    {
         gpuinsp::CpuSampler::Get().ExcludeCurrentThread();
-        while (!stop && connected && client == s) {
+        while (!stop && connected && client == s)
+        {
             uint8_t hdr[5];
-            if (!RecvAll(s, (char*)hdr, 5)) break;
+            if (!RecvAll(s, (char*)hdr, 5))
+                break;
             uint32_t len = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
             uint8_t kind = hdr[4];
             std::string payload(len, '\0');
-            if (len && !RecvAll(s, payload.data(), len)) break;
-            if (kind == 0) {
+            if (len && !RecvAll(s, payload.data(), len))
+                break;
+            if (kind == 0)
+            {
                 std::function<void(const std::string&)> h;
-                { std::lock_guard lock(handlerMutex); h = handler; }
-                if (h) h(payload);
+                {
+                    std::lock_guard lock(handlerMutex);
+                    h = handler;
+                }
+                if (h)
+                    h(payload);
             }
         }
         Disconnect();
     }
 
-    void Disconnect() {
+    void Disconnect()
+    {
         bool was = connected.exchange(false);
-        if (!was) return;
+        if (!was)
+            return;
         socket_t s = client;
         client = INVALID_SOCK;
-        if (s != INVALID_SOCK) CloseSocket(s);
+        if (s != INVALID_SOCK)
+            CloseSocket(s);
         queueCv.notify_all();
         Tracker::Get().OnDisconnect();
         Log("client disconnected");
@@ -196,11 +232,15 @@ struct Transport::Impl {
     // The address is usually still held by the previous instance of the application, which the
     // launcher stopped a moment ago and which has not finished dying (an abstract socket lives
     // until its last descriptor closes): keep trying for a while rather than never listening.
-    bool BindWithRetry(socket_t s, const sockaddr* addr, socklen_t len, const char* name) {
+    bool BindWithRetry(socket_t s, const sockaddr* addr, socklen_t len, const char* name)
+    {
         int err = 0;
-        for (int attempt = 0; attempt < 120 && !stop; ++attempt) {   // 30 s
-            if (bind(s, addr, len) == 0) {
-                if (attempt) Log("bind(%s) succeeded after %d retries", name, attempt);
+        for (int attempt = 0; attempt < 120 && !stop; ++attempt)
+        {   // 30 s
+            if (bind(s, addr, len) == 0)
+            {
+                if (attempt)
+                    Log("bind(%s) succeeded after %d retries", name, attempt);
                 return true;
             }
 #if defined(_WIN32)
@@ -210,21 +250,28 @@ struct Transport::Impl {
             err = errno;
             const bool inUse = err == EADDRINUSE;
 #endif
-            if (!inUse) break;
-            if (attempt == 0) Log("bind(%s): address in use (the previous instance is still shutting down?); retrying", name);
+            if (!inUse)
+                break;
+            if (attempt == 0)
+                Log("bind(%s): address in use (the previous instance is still shutting down?); retrying", name);
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         Log("bind(%s) failed (%d)", name, err);
         return false;
     }
 
-    void ListenerLoop() {
+    void ListenerLoop()
+    {
         gpuinsp::CpuSampler::Get().ExcludeCurrentThread();
 #if defined(__ANDROID__)
         // An abstract Unix socket: TCP sockets need the INTERNET permission, which most
         // applications lack; `adb forward tcp:<port> localabstract:vkinsp:<port>` reaches this.
         socket_t listenSock = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (listenSock == INVALID_SOCK) { Log("socket() failed (%d)", errno); return; }
+        if (listenSock == INVALID_SOCK)
+        {
+            Log("socket() failed (%d)", errno);
+            return;
+        }
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
         // The name carries the package, so an application launched earlier with the layer and
@@ -232,36 +279,58 @@ struct Transport::Impl {
         // this one's place. /proc/self/cmdline is the package name, or "package:process".
         char name[sizeof(addr.sun_path) - 1];
         int n = snprintf(name, sizeof(name), "vkinsp:%u", port);
-        if (FILE* f = fopen("/proc/self/cmdline", "rb")) {
+        if (FILE* f = fopen("/proc/self/cmdline", "rb"))
+        {
             char cmd[256] = {};
             size_t got = fread(cmd, 1, sizeof(cmd) - 1, f);
             fclose(f);
             cmd[got] = 0;
-            if (char* colon = strchr(cmd, ':')) *colon = 0;
-            if (cmd[0] && n > 0 && (size_t)n < sizeof(name)) snprintf(name + n, sizeof(name) - (size_t)n, ":%s", cmd);
+            if (char* colon = strchr(cmd, ':'))
+                *colon = 0;
+            if (cmd[0] && n > 0 && (size_t)n < sizeof(name))
+                snprintf(name + n, sizeof(name) - (size_t)n, ":%s", cmd);
         }
         memcpy(addr.sun_path + 1, name, strlen(name));   // sun_path[0] == 0: the abstract namespace
         const socklen_t addrLen = (socklen_t)(offsetof(sockaddr_un, sun_path) + 1 + strlen(name));
-        if (!BindWithRetry(listenSock, (sockaddr*)&addr, addrLen, name)) { CloseSocket(listenSock); return; }
-        if (listen(listenSock, 1) != 0) { Log("listen failed"); CloseSocket(listenSock); return; }
+        if (!BindWithRetry(listenSock, (sockaddr*)&addr, addrLen, name))
+        {
+            CloseSocket(listenSock);
+            return;
+        }
+        if (listen(listenSock, 1) != 0)
+        {
+            Log("listen failed");
+            CloseSocket(listenSock);
+            return;
+        }
         Log("listening on the abstract socket @%s", name);
 #else
         // A port the user named is used as given: moving off it would leave whoever chose it
         // waiting on the wrong one. Only the default may step aside, so two applications started
         // by hand are both inspectable and both turn up in the attach list (target_probe.h).
-        if (gpuinsp::PortIsServed(port)) {
-            if (portFromConfig) {
+        if (gpuinsp::PortIsServed(port))
+        {
+            if (portFromConfig)
+            {
                 Log("127.0.0.1:%u is already served by another inspected application; "
-                    "set VKINSP_PORT to a free port for this one", port);
+                    "set VKINSP_PORT to a free port for this one",
+                    port);
                 return;
             }
             uint16_t free = 0;
-            for (uint16_t candidate = (uint16_t)(port + 1); candidate <= gpuinsp::kLastPort; ++candidate) {
-                if (!gpuinsp::PortIsServed(candidate)) { free = candidate; break; }
+            for (uint16_t candidate = (uint16_t)(port + 1); candidate <= gpuinsp::kLastPort; ++candidate)
+            {
+                if (!gpuinsp::PortIsServed(candidate))
+                {
+                    free = candidate;
+                    break;
+                }
             }
-            if (!free) {
+            if (!free)
+            {
                 Log("127.0.0.1:%u and the ports above it are all served by other inspected "
-                    "applications; set VKINSP_PORT to a free port", port);
+                    "applications; set VKINSP_PORT to a free port",
+                    port);
                 return;
             }
             Log("127.0.0.1:%u is already served by another inspected application; listening on %u instead", port, free);
@@ -269,7 +338,11 @@ struct Transport::Impl {
         }
 
         socket_t listenSock = socket(AF_INET, SOCK_STREAM, 0);
-        if (listenSock == INVALID_SOCK) { Log("socket() failed"); return; }
+        if (listenSock == INVALID_SOCK)
+        {
+            Log("socket() failed");
+            return;
+        }
         int one = 1;
         setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, (const char*)&one, sizeof(one));
         sockaddr_in addr{};
@@ -278,14 +351,25 @@ struct Transport::Impl {
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         char name[32];
         snprintf(name, sizeof(name), "127.0.0.1:%u", port);
-        if (!BindWithRetry(listenSock, (sockaddr*)&addr, sizeof(addr), name)) { CloseSocket(listenSock); return; }
-        if (listen(listenSock, 1) != 0) { Log("listen failed"); CloseSocket(listenSock); return; }
+        if (!BindWithRetry(listenSock, (sockaddr*)&addr, sizeof(addr), name))
+        {
+            CloseSocket(listenSock);
+            return;
+        }
+        if (listen(listenSock, 1) != 0)
+        {
+            Log("listen failed");
+            CloseSocket(listenSock);
+            return;
+        }
         Log("listening on 127.0.0.1:%u", port);
 #endif
 
-        while (!stop) {
+        while (!stop)
+        {
             socket_t s = accept(listenSock, nullptr, nullptr);
-            if (s == INVALID_SOCK) continue;
+            if (s == INVALID_SOCK)
+                continue;
             int nodelay = 1;
             setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
 
@@ -295,21 +379,25 @@ struct Transport::Impl {
             // them. Both clients send Ping the moment they connect, so the wait is not felt.
             std::string first;
             uint8_t kind = 0;
-            if (!RecvFrame(s, first, kind, kHandshakeTimeoutMs)) {
+            if (!RecvFrame(s, first, kind, kHandshakeTimeoutMs))
+            {
                 Log("a connection said nothing within %d ms; dropped", kHandshakeTimeoutMs);
                 CloseSocket(s);
                 continue;
             }
-            if (kind == 0 && gpuinsp::IsProbeRequest(first)) {
+            if (kind == 0 && gpuinsp::IsProbeRequest(first))
+            {
                 SendJsonTo(s, gpuinsp::ProbeReply("Vulkan", TargetName(), port, connected));
                 CloseSocket(s);
                 continue;
             }
 
-            if (connected) {
+            if (connected)
+            {
                 // One client at a time; replace the old connection.
                 Disconnect();
-                if (receiver.joinable()) receiver.join();
+                if (receiver.joinable())
+                    receiver.join();
             }
             client = s;
             connected = true;
@@ -320,25 +408,34 @@ struct Transport::Impl {
             ValidationLog::Get().SendSnapshot();
             // The frame that identified it as a client still has to be acted on; it goes after the
             // snapshot, exactly where the receiver thread would have put it.
-            if (kind == 0) {
+            if (kind == 0)
+            {
                 std::function<void(const std::string&)> h;
-                { std::lock_guard lock(handlerMutex); h = handler; }
-                if (h) h(first);
+                {
+                    std::lock_guard lock(handlerMutex);
+                    h = handler;
+                }
+                if (h)
+                    h(first);
             }
-            if (receiver.joinable()) receiver.join();
+            if (receiver.joinable())
+                receiver.join();
             receiver = std::thread([this, s] { ReceiverLoop(s); });
         }
         CloseSocket(listenSock);
     }
 };
 
-Transport& Transport::Get() {
+Transport& Transport::Get()
+{
     static Transport* instance = new Transport();
     return *instance;
 }
 
-void Transport::Start() {
-    if (_impl) return;
+void Transport::Start()
+{
+    if (_impl)
+        return;
     _impl = new Impl();
 #if defined(_WIN32)
     WSADATA wsa;
@@ -346,7 +443,8 @@ void Transport::Start() {
 #endif
     {
         int v = atoi(ConfigValue("VKINSP_PORT").c_str());
-        if (v > 0 && v < 65536) {
+        if (v > 0 && v < 65536)
+        {
             _impl->port = (uint16_t)v;
             _impl->portFromConfig = true;
         }
@@ -357,11 +455,13 @@ void Transport::Start() {
     _impl->listener.detach();
 }
 
-bool Transport::Connected() const {
+bool Transport::Connected() const
+{
     return _impl && _impl->connected;
 }
 
-static void AppendHeader(std::string& frame, uint32_t len, uint8_t kind) {
+static void AppendHeader(std::string& frame, uint32_t len, uint8_t kind)
+{
     frame.push_back((char)(len & 0xff));
     frame.push_back((char)((len >> 8) & 0xff));
     frame.push_back((char)((len >> 16) & 0xff));
@@ -369,8 +469,10 @@ static void AppendHeader(std::string& frame, uint32_t len, uint8_t kind) {
     frame.push_back((char)kind);
 }
 
-void Transport::SendJson(std::string json) {
-    if (!_impl || !_impl->connected) return;
+void Transport::SendJson(std::string json)
+{
+    if (!_impl || !_impl->connected)
+        return;
     std::string frame;
     frame.reserve(json.size() + 5);
     AppendHeader(frame, (uint32_t)json.size(), 0);
@@ -378,8 +480,10 @@ void Transport::SendJson(std::string json) {
     _impl->Enqueue(std::move(frame));
 }
 
-void Transport::SendBinary(std::string headerJson, const void* data, size_t size) {
-    if (!_impl || !_impl->connected) return;
+void Transport::SendBinary(std::string headerJson, const void* data, size_t size)
+{
+    if (!_impl || !_impl->connected)
+        return;
     std::string frame;
     frame.reserve(headerJson.size() + size + 9);
     AppendHeader(frame, (uint32_t)(4 + headerJson.size() + size), 1);
@@ -393,14 +497,18 @@ void Transport::SendBinary(std::string headerJson, const void* data, size_t size
     _impl->Enqueue(std::move(frame));
 }
 
-void Transport::SetTargetName(std::string name) {
-    if (!_impl) Start();
+void Transport::SetTargetName(std::string name)
+{
+    if (!_impl)
+        Start();
     std::lock_guard lock(_impl->nameMutex);
     _impl->targetName = std::move(name);
 }
 
-void Transport::SetMessageHandler(std::function<void(const std::string&)> handler) {
-    if (!_impl) Start();
+void Transport::SetMessageHandler(std::function<void(const std::string&)> handler)
+{
+    if (!_impl)
+        Start();
     std::lock_guard lock(_impl->handlerMutex);
     _impl->handler = std::move(handler);
 }

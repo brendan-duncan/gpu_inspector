@@ -61,22 +61,35 @@
 
 #include "gpu_inspector.h"   // --capture-at: the application asking for the capture itself
 
-namespace {
+namespace
+{
 
 // Position (x, y) and color (r, g, b) per vertex, in the order the vertex descriptor expects.
 const float kVertices[] = {
-     0.0f,  0.6f,   1.0f, 0.2f, 0.2f,
-    -0.6f, -0.4f,   0.2f, 1.0f, 0.2f,
-     0.6f, -0.4f,   0.2f, 0.2f, 1.0f,
+    0.0f,
+    0.6f,
+    1.0f,
+    0.2f,
+    0.2f,
+    -0.6f,
+    -0.4f,
+    0.2f,
+    1.0f,
+    0.2f,
+    0.6f,
+    -0.4f,
+    0.2f,
+    0.2f,
+    1.0f,
 };
-const uint16_t kIndices[] = { 0, 1, 2 };
+const uint16_t kIndices[] = {0, 1, 2};
 /** --inside-out: the same triangle with its winding reversed, so culling removes it. */
-const uint16_t kIndicesReversed[] = { 0, 2, 1 };
+const uint16_t kIndicesReversed[] = {0, 2, 1};
 
 // Both stages in one library, plus a compute kernel, so the run keeps a compute pass in it, and
 // the pass that copies the resolved triangle to the drawable: a full-screen triangle from the
 // vertex id, sampling the resolve with a tint bound as inline bytes.
-NSString *const kShaderSource = @R"MSL(
+NSString* const kShaderSource = @R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -137,7 +150,7 @@ kernel void wave_main(device float *values [[buffer(0)]],
 // --compile-hitch compiles this, with the frame number substituted in, once per frame. The source
 // has to differ every time: Metal keeps a compiler cache, and recompiling identical source would
 // be answered from it in microseconds, which is the opposite of the stall being staged.
-NSString *const kHitchSourceFormat = @R"MSL(
+NSString* const kHitchSourceFormat = @R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 
@@ -156,7 +169,7 @@ kernel void hitch_main(device float *values [[buffer(0)]],
 // parallel rays down -Z. Each thread writes what it hit: the instance's user index, the triangle's
 // barycentrics, and the distance — enough that the output says whether the transforms were read the
 // way Metal stores them, since an untransposed transform puts the triangles somewhere else.
-NSString *const kRayTracingSource = @R"MSL(
+NSString* const kRayTracingSource = @R"MSL(
 #include <metal_stdlib>
 #include <metal_raytracing>
 using namespace metal;
@@ -190,7 +203,8 @@ kernel void trace_main(texture2d<float, access::write> out [[texture(0)]],
 }
 )MSL";
 
-struct Uniforms {
+struct Uniforms
+{
     float angle;
     float scale;
     float depth;
@@ -202,11 +216,17 @@ constexpr NSUInteger kWaveCount = 256;
 // draw's vertices are position (float2) and color (float3) interleaved at a stride of 20, which is
 // not a layout a build can read as a position.
 const float kRayVertices[] = {
-     0.0f,  0.6f, 0.0f,
-    -0.6f, -0.4f, 0.0f,
-     0.6f, -0.4f, 0.0f,
+    0.0f,
+    0.6f,
+    0.0f,
+    -0.6f,
+    -0.4f,
+    0.0f,
+    0.6f,
+    -0.4f,
+    0.0f,
 };
-const uint16_t kRayIndices[] = { 0, 1, 2 };
+const uint16_t kRayIndices[] = {0, 1, 2};
 
 /** How many instances the top level places the triangle at, and where. */
 constexpr NSUInteger kInstanceCount = 2;
@@ -226,8 +246,10 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @interface Renderer : NSObject
 /** `occluded` is an initializer argument rather than a property: it decides the pipeline's depth
  *  attachment format, which is fixed when the pipeline is built. */
-- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
-                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas insideOut:(BOOL)insideOut;
+- (instancetype)initWithLayer:(CAMetalLayer*)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
+                   rayTracing:(BOOL)rayTracing
+                   staticBlas:(BOOL)staticBlas
+                    insideOut:(BOOL)insideOut;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
 /** --occluded: the triangle drawn twice, the second behind the first, with a depth test. */
@@ -250,8 +272,9 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic, readonly) BOOL staticBlas;
 @end
 
-@implementation Renderer {
-    CAMetalLayer *_layer;
+@implementation Renderer
+{
+    CAMetalLayer* _layer;
     id<MTLDevice> _device;
     id<MTLCommandQueue> _queue;
     id<MTLRenderPipelineState> _pipeline;
@@ -280,7 +303,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // Resources allocated while running rather than at start-up, so that a capture library has
     // something to stream to a UI that is already connected — the snapshot path and the live path
     // are different code and only one of them is exercised by start-up allocations.
-    NSMutableArray *_later;
+    NSMutableArray* _later;
     NSUInteger _frameCount;
     // --ray-tracing: a triangle bottom level, a top level placing it twice, and the kernel that
     // traces them. The scratch is one buffer both builds take their stretch of, the way an engine
@@ -288,9 +311,9 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     id<MTLComputePipelineState> _trace;
     id<MTLBuffer> _rayVertices;
     id<MTLBuffer> _rayIndices;
-    MTLPrimitiveAccelerationStructureDescriptor *_blasDescriptor;
+    MTLPrimitiveAccelerationStructureDescriptor* _blasDescriptor;
     id<MTLAccelerationStructure> _blas;
-    MTLInstanceAccelerationStructureDescriptor *_tlasDescriptor;
+    MTLInstanceAccelerationStructureDescriptor* _tlasDescriptor;
     id<MTLAccelerationStructure> _tlas;
     id<MTLBuffer> _instances;
     id<MTLBuffer> _scratch;
@@ -298,9 +321,13 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     id<MTLTexture> _traceTarget;
 }
 
-- (instancetype)initWithLayer:(CAMetalLayer *)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
-                  rayTracing:(BOOL)rayTracing staticBlas:(BOOL)staticBlas insideOut:(BOOL)insideOut {
-    if (!(self = [super init])) return nil;
+- (instancetype)initWithLayer:(CAMetalLayer*)layer occluded:(BOOL)occluded stencil:(BOOL)stencil
+                   rayTracing:(BOOL)rayTracing
+                   staticBlas:(BOOL)staticBlas
+                    insideOut:(BOOL)insideOut
+{
+    if (!(self = [super init]))
+        return nil;
     _insideOut = insideOut;
     _occluded = occluded;
     _stencil = stencil;
@@ -311,15 +338,16 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     _queue = [_device newCommandQueue];
     _queue.label = @"triangle queue";
 
-    NSError *error = nil;
+    NSError* error = nil;
     id<MTLLibrary> library = [_device newLibraryWithSource:kShaderSource options:nil error:&error];
-    if (!library) {
+    if (!library)
+    {
         NSLog(@"shader compilation failed: %@", error);
         exit(1);
     }
     library.label = @"triangle shaders";
 
-    MTLVertexDescriptor *vertexDescriptor = [[MTLVertexDescriptor alloc] init];
+    MTLVertexDescriptor* vertexDescriptor = [[MTLVertexDescriptor alloc] init];
     vertexDescriptor.attributes[0].format = MTLVertexFormatFloat2;
     vertexDescriptor.attributes[0].offset = 0;
     vertexDescriptor.attributes[0].bufferIndex = 0;
@@ -328,21 +356,22 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     vertexDescriptor.attributes[1].bufferIndex = 0;
     vertexDescriptor.layouts[0].stride = sizeof(float) * 5;
 
-    MTLRenderPipelineDescriptor *pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+    MTLRenderPipelineDescriptor* pipelineDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
     pipelineDescriptor.label = @"triangle pipeline";
     pipelineDescriptor.vertexFunction = [library newFunctionWithName:@"vertex_main"];
     // Specialized: kTintMode selects the branch, kTintAmount is what it mixes by. Nothing reads
     // these back out of Metal, so the capture library watches the setters (src/metal/src/function_constants.h).
-    MTLFunctionConstantValues *constants = [[MTLFunctionConstantValues alloc] init];
+    MTLFunctionConstantValues* constants = [[MTLFunctionConstantValues alloc] init];
     const int tintMode = 1;
     const float tintAmount = 0.25f;
     [constants setConstantValue:&tintMode type:MTLDataTypeInt atIndex:0];
     [constants setConstantValue:&tintAmount type:MTLDataTypeFloat atIndex:1];
-    NSError *functionError = nil;
+    NSError* functionError = nil;
     pipelineDescriptor.fragmentFunction = [library newFunctionWithName:@"fragment_main"
-                                                       constantValues:constants
-                                                                error:&functionError];
-    if (pipelineDescriptor.fragmentFunction == nil) {
+                                                        constantValues:constants
+                                                                 error:&functionError];
+    if (pipelineDescriptor.fragmentFunction == nil)
+    {
         NSLog(@"specializing fragment_main failed: %@", functionError);
         exit(1);
     }
@@ -353,19 +382,22 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // target it can actually blit from.
     const BOOL depthPass = occluded || stencil;
     pipelineDescriptor.rasterSampleCount = depthPass ? 1 : 4;
-    if (depthPass) {
+    if (depthPass)
+    {
         pipelineDescriptor.depthAttachmentPixelFormat =
             stencil ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
-        if (stencil) pipelineDescriptor.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
+        if (stencil)
+            pipelineDescriptor.stencilAttachmentPixelFormat = MTLPixelFormatDepth32Float_Stencil8;
     }
     _pipeline = [_device newRenderPipelineStateWithDescriptor:pipelineDescriptor error:&error];
-    if (!_pipeline) {
+    if (!_pipeline)
+    {
         NSLog(@"pipeline creation failed: %@", error);
         exit(1);
     }
 
     // The drawable pass, made through the form an engine uses: options and reflection.
-    MTLRenderPipelineDescriptor *blitDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
+    MTLRenderPipelineDescriptor* blitDescriptor = [[MTLRenderPipelineDescriptor alloc] init];
     blitDescriptor.label = @"blit pipeline";
     blitDescriptor.vertexFunction = [library newFunctionWithName:@"blit_vertex"];
     blitDescriptor.fragmentFunction = [library newFunctionWithName:@"blit_fragment"];
@@ -375,12 +407,13 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                                                   options:MTLPipelineOptionNone
                                                reflection:&reflection
                                                     error:&error];
-    if (!_blit) {
+    if (!_blit)
+    {
         NSLog(@"blit pipeline creation failed: %@", error);
         exit(1);
     }
 
-    MTLSamplerDescriptor *samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
+    MTLSamplerDescriptor* samplerDescriptor = [[MTLSamplerDescriptor alloc] init];
     samplerDescriptor.label = @"linear clamp";
     samplerDescriptor.minFilter = MTLSamplerMinMagFilterLinear;
     samplerDescriptor.magFilter = MTLSamplerMinMagFilterLinear;
@@ -389,7 +422,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     _sampler = [_device newSamplerStateWithDescriptor:samplerDescriptor];
 
     const CGSize size = layer.drawableSize;
-    MTLTextureDescriptor *msaa = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:layer.pixelFormat
+    MTLTextureDescriptor* msaa = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:layer.pixelFormat
                                                                                     width:(NSUInteger)size.width
                                                                                    height:(NSUInteger)size.height
                                                                                 mipmapped:NO];
@@ -399,7 +432,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     msaa.storageMode = MTLStorageModePrivate;
     _msaaTarget = [_device newTextureWithDescriptor:msaa];
     _msaaTarget.label = @"triangle msaa";
-    MTLTextureDescriptor *resolved = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:layer.pixelFormat
+    MTLTextureDescriptor* resolved = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:layer.pixelFormat
                                                                                         width:(NSUInteger)size.width
                                                                                        height:(NSUInteger)size.height
                                                                                     mipmapped:NO];
@@ -410,12 +443,14 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
     _wave = [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"wave_main"]
                                                    error:&error];
-    if (!_wave) {
+    if (!_wave)
+    {
         NSLog(@"compute pipeline creation failed: %@", error);
         exit(1);
     }
 
-    _vertices = [_device newBufferWithBytes:kVertices length:sizeof(kVertices)
+    _vertices = [_device newBufferWithBytes:kVertices
+                                     length:sizeof(kVertices)
                                     options:MTLResourceStorageModeShared];
     _vertices.label = @"vertices";
     // Private storage, filled by a blit the way an engine uploads its meshes: the vertices the
@@ -428,8 +463,11 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         upload.label = @"upload";
         id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
         blit.label = @"vertex upload";
-        [blit copyFromBuffer:_vertices sourceOffset:0 toBuffer:_verticesPrivate destinationOffset:0
-                        size:sizeof(kVertices)];
+        [blit copyFromBuffer:_vertices
+                 sourceOffset:0
+                     toBuffer:_verticesPrivate
+            destinationOffset:0
+                         size:sizeof(kVertices)];
         [blit endEncoding];
         [upload commit];
         [upload waitUntilCompleted];
@@ -448,15 +486,16 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // pass through the device, so they reach the library through the heap's own hooks
     // (src/metal/src/hooks_device.mm, H_newBufferWithLength and friends) and each one moves the
     // heap's reported usage.
-    MTLHeapDescriptor *heapDescriptor = [[MTLHeapDescriptor alloc] init];
+    MTLHeapDescriptor* heapDescriptor = [[MTLHeapDescriptor alloc] init];
     heapDescriptor.size = kHeapSize;
     heapDescriptor.storageMode = MTLStorageModePrivate;
     _heap = [_device newHeapWithDescriptor:heapDescriptor];
-    if (_heap) {
+    if (_heap)
+    {
         _heap.label = @"scratch heap";
         _heapBuffer = [_heap newBufferWithLength:64 * 1024 options:MTLResourceStorageModePrivate];
         _heapBuffer.label = @"heap scratch";
-        MTLTextureDescriptor *heapTexture =
+        MTLTextureDescriptor* heapTexture =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA8Unorm
                                                                width:128
                                                               height:128
@@ -467,13 +506,14 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         _heapTexture.label = @"heap lightmap";
     }
 
-    if (self.occluded || self.stencil) {
+    if (self.occluded || self.stencil)
+    {
         // A depth attachment for the triangle pass and a state that tests and writes it: without
         // the write the second draw could not be rejected by the first. Under --stencil the format
         // is combined, so the one texture carries both aspects.
         const MTLPixelFormat depthFormat =
             self.stencil ? MTLPixelFormatDepth32Float_Stencil8 : MTLPixelFormatDepth32Float;
-        MTLTextureDescriptor *depth =
+        MTLTextureDescriptor* depth =
             [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:depthFormat
                                                                width:(NSUInteger)size.width
                                                               height:(NSUInteger)size.height
@@ -482,15 +522,16 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         depth.storageMode = MTLStorageModePrivate;
         _depthTarget = [_device newTextureWithDescriptor:depth];
         _depthTarget.label = self.stencil ? @"triangle depth+stencil" : @"triangle depth";
-        MTLDepthStencilDescriptor *depthState = [[MTLDepthStencilDescriptor alloc] init];
+        MTLDepthStencilDescriptor* depthState = [[MTLDepthStencilDescriptor alloc] init];
         depthState.label = self.stencil ? @"less, writing, stencil 1" : @"less, writing";
         depthState.depthCompareFunction = MTLCompareFunctionLess;
         depthState.depthWriteEnabled = YES;
-        if (self.stencil) {
+        if (self.stencil)
+        {
             // Always passes and replaces with the reference (set to 1 on the encoder), so the
             // stencil read-back holds 1 wherever the triangles landed and 0 everywhere else —
             // which is what makes a wrong aspect or a missing store visible rather than plausible.
-            MTLStencilDescriptor *always = [[MTLStencilDescriptor alloc] init];
+            MTLStencilDescriptor* always = [[MTLStencilDescriptor alloc] init];
             always.stencilCompareFunction = MTLCompareFunctionAlways;
             always.depthStencilPassOperation = MTLStencilOperationReplace;
             always.writeMask = 0xFF;
@@ -515,23 +556,28 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
  * not the identity — an identity transform is its own transpose and would say nothing about whether
  * MTLPackedFloat4x3 was read the right way round.
  */
-- (void)setUpRayTracing {
-    if (!self.rayTracing) return;
-    if (!_device.supportsRaytracing) {
+- (void)setUpRayTracing
+{
+    if (!self.rayTracing)
+        return;
+    if (!_device.supportsRaytracing)
+    {
         NSLog(@"--ray-tracing: this device has no ray tracing");
         exit(1);
     }
 
-    NSError *error = nil;
+    NSError* error = nil;
     id<MTLLibrary> library = [_device newLibraryWithSource:kRayTracingSource options:nil error:&error];
-    if (!library) {
+    if (!library)
+    {
         NSLog(@"ray tracing shader compilation failed: %@", error);
         exit(1);
     }
     library.label = @"ray tracing shaders";
     _trace = [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"trace_main"]
                                                     error:&error];
-    if (!_trace) {
+    if (!_trace)
+    {
         NSLog(@"trace pipeline creation failed: %@", error);
         exit(1);
     }
@@ -543,25 +589,34 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     _rayIndices = [_device newBufferWithLength:sizeof(kRayIndices) options:MTLResourceStorageModePrivate];
     _rayIndices.label = @"ray tracing indices";
     {
-        id<MTLBuffer> stagingVertices = [_device newBufferWithBytes:kRayVertices length:sizeof(kRayVertices)
+        id<MTLBuffer> stagingVertices = [_device newBufferWithBytes:kRayVertices
+                                                             length:sizeof(kRayVertices)
+                                                            options:MTLResourceStorageModeShared];
+        id<MTLBuffer> stagingIndices = [_device newBufferWithBytes:kRayIndices
+                                                            length:sizeof(kRayIndices)
                                                            options:MTLResourceStorageModeShared];
-        id<MTLBuffer> stagingIndices = [_device newBufferWithBytes:kRayIndices length:sizeof(kRayIndices)
-                                                          options:MTLResourceStorageModeShared];
         id<MTLCommandBuffer> upload = [_queue commandBuffer];
         upload.label = @"ray tracing upload";
         id<MTLBlitCommandEncoder> blit = [upload blitCommandEncoder];
-        [blit copyFromBuffer:stagingVertices sourceOffset:0 toBuffer:_rayVertices destinationOffset:0
-                        size:sizeof(kRayVertices)];
-        [blit copyFromBuffer:stagingIndices sourceOffset:0 toBuffer:_rayIndices destinationOffset:0
-                        size:sizeof(kRayIndices)];
+        [blit copyFromBuffer:stagingVertices
+                 sourceOffset:0
+                     toBuffer:_rayVertices
+            destinationOffset:0
+                         size:sizeof(kRayVertices)];
+        [blit copyFromBuffer:stagingIndices
+                 sourceOffset:0
+                     toBuffer:_rayIndices
+            destinationOffset:0
+                         size:sizeof(kRayIndices)];
         [blit endEncoding];
         [upload commit];
         [upload waitUntilCompleted];
     }
 
-    MTLAccelerationStructureTriangleGeometryDescriptor *geometry =
+    MTLAccelerationStructureTriangleGeometryDescriptor* geometry =
         [MTLAccelerationStructureTriangleGeometryDescriptor descriptor];
-    if (@available(macOS 12.0, *)) geometry.label = @"triangle";
+    if (@available(macOS 12.0, *))
+        geometry.label = @"triangle";
     geometry.vertexBuffer = _rayVertices;
     geometry.vertexBufferOffset = 0;
     geometry.vertexStride = sizeof(float) * 3;
@@ -582,16 +637,20 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // Two instances: one moved left, one moved right and turned a quarter turn about Z. The
     // transform is an MTLPackedFloat4x3, four columns of three, so columns[3] is the translation.
     _instances = [_device newBufferWithLength:kInstanceCount * sizeof(MTLAccelerationStructureInstanceDescriptor)
-                                     options:MTLResourceStorageModeShared];
+                                      options:MTLResourceStorageModeShared];
     _instances.label = @"scene instances";
-    auto *records = (MTLAccelerationStructureInstanceDescriptor *)_instances.contents;
-    for (NSUInteger n = 0; n < kInstanceCount; ++n) {
-        MTLAccelerationStructureInstanceDescriptor &r = records[n];
+    auto* records = (MTLAccelerationStructureInstanceDescriptor*)_instances.contents;
+    for (NSUInteger n = 0; n < kInstanceCount; ++n)
+    {
+        MTLAccelerationStructureInstanceDescriptor& r = records[n];
         memset(&r, 0, sizeof(r));
-        if (n == 0) {
+        if (n == 0)
+        {
             r.transformationMatrix.columns[0] = MTLPackedFloat3(1.0f, 0.0f, 0.0f);
             r.transformationMatrix.columns[1] = MTLPackedFloat3(0.0f, 1.0f, 0.0f);
-        } else {
+        }
+        else
+        {
             // A quarter turn about Z: x' = -y, y' = x. Column-major, so this is the transpose of
             // how it reads on paper — which is the whole point of having it here.
             r.transformationMatrix.columns[0] = MTLPackedFloat3(0.0f, 1.0f, 0.0f);
@@ -623,10 +682,10 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                                     options:MTLResourceStorageModePrivate];
     _scratch.label = @"build scratch";
 
-    MTLTextureDescriptor *traced = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
-                                                                                     width:kTraceSize
-                                                                                    height:kTraceSize
-                                                                                 mipmapped:NO];
+    MTLTextureDescriptor* traced = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+                                                                                      width:kTraceSize
+                                                                                     height:kTraceSize
+                                                                                  mipmapped:NO];
     traced.usage = MTLTextureUsageShaderWrite | MTLTextureUsageShaderRead;
     traced.storageMode = MTLStorageModePrivate;
     _traceTarget = [_device newTextureWithDescriptor:traced];
@@ -634,17 +693,21 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 
     // --static-blas: built once, here, so a frame captured later holds no build of it and what is
     // in it can only come from the capture library's read-back at the start of the capture.
-    if (self.staticBlas) {
+    if (self.staticBlas)
+    {
         id<MTLCommandBuffer> commands = [_queue commandBuffer];
         commands.label = @"build bottom level";
         id<MTLAccelerationStructureCommandEncoder> encoder = [commands accelerationStructureCommandEncoder];
         encoder.label = @"build bottom level";
-        [encoder buildAccelerationStructure:_blas descriptor:_blasDescriptor
-                             scratchBuffer:_scratch scratchBufferOffset:0];
+        [encoder buildAccelerationStructure:_blas
+                                 descriptor:_blasDescriptor
+                              scratchBuffer:_scratch
+                        scratchBufferOffset:0];
         [encoder endEncoding];
         [commands commit];
         [commands waitUntilCompleted];
-        if (commands.error) {
+        if (commands.error)
+        {
             NSLog(@"building the bottom level failed: %@", commands.error);
             exit(1);
         }
@@ -658,19 +721,26 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
  * bottom level with it unless --static-blas. Both in one encoder, so the pass holds two builds and
  * the top level reads what the same encoder wrote just before it.
  */
-- (void)encodeRayTracing:(id<MTLCommandBuffer>)commandBuffer {
-    if (!self.rayTracing) return;
+- (void)encodeRayTracing:(id<MTLCommandBuffer>)commandBuffer
+{
+    if (!self.rayTracing)
+        return;
     id<MTLAccelerationStructureCommandEncoder> builds = [commandBuffer accelerationStructureCommandEncoder];
     builds.label = @"build scene";
-    if (!self.staticBlas) {
-        [builds buildAccelerationStructure:_blas descriptor:_blasDescriptor
-                             scratchBuffer:_scratch scratchBufferOffset:0];
+    if (!self.staticBlas)
+    {
+        [builds buildAccelerationStructure:_blas
+                                descriptor:_blasDescriptor
+                             scratchBuffer:_scratch
+                       scratchBufferOffset:0];
     }
-    [builds buildAccelerationStructure:_tlas descriptor:_tlasDescriptor
-                         scratchBuffer:_scratch scratchBufferOffset:_tlasScratchOffset];
+    [builds buildAccelerationStructure:_tlas
+                            descriptor:_tlasDescriptor
+                         scratchBuffer:_scratch
+                   scratchBufferOffset:_tlasScratchOffset];
     [builds endEncoding];
 
-    Uniforms uniforms = { .angle = (float)_frameCount * 0.02f, .scale = 0.8f, .depth = 0.0f };
+    Uniforms uniforms = {.angle = (float)_frameCount * 0.02f, .scale = 0.8f, .depth = 0.0f};
     id<MTLComputeCommandEncoder> trace = [commandBuffer computeCommandEncoder];
     trace.label = @"trace scene";
     [trace setComputePipelineState:_trace];
@@ -681,7 +751,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // and nothing else in the encoder mentions them.
     [trace useResource:_blas usage:MTLResourceUsageRead];
     [trace dispatchThreads:MTLSizeMake(kTraceSize, kTraceSize, 1)
-     threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
+        threadsPerThreadgroup:MTLSizeMake(8, 8, 1)];
     [trace endEncoding];
 }
 
@@ -692,12 +762,15 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
  * the timeline should show the frame stopping for it (**Where the CPU went**, "Creating
  * pipelines"), and nothing the inspector itself compiles should join it there.
  */
-- (void)runCompileHitch {
-    if (!self.compileHitch) return;
-    NSString *source = [NSString stringWithFormat:kHitchSourceFormat, (double)_frameCount];
-    NSError *error = nil;
+- (void)runCompileHitch
+{
+    if (!self.compileHitch)
+        return;
+    NSString* source = [NSString stringWithFormat:kHitchSourceFormat, (double)_frameCount];
+    NSError* error = nil;
     id<MTLLibrary> library = [_device newLibraryWithSource:source options:nil error:&error];
-    if (!library) {
+    if (!library)
+    {
         NSLog(@"hitch compilation failed: %@", error);
         return;
     }
@@ -705,18 +778,21 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     id<MTLComputePipelineState> pipeline =
         [_device newComputePipelineStateWithFunction:[library newFunctionWithName:@"hitch_main"]
                                                error:&error];
-    if (!pipeline) NSLog(@"hitch pipeline creation failed: %@", error);
+    if (!pipeline)
+        NSLog(@"hitch pipeline creation failed: %@", error);
 }
 
-- (void)renderFrame {
+- (void)renderFrame
+{
     [self runCompileHitch];
     // --hitch-every: the application's own work stalling the frame, one frame in N.
-    if (self.hitchEvery > 0 && _frameCount > 0 && _frameCount % self.hitchEvery == 0) usleep(100000);
+    if (self.hitchEvery > 0 && _frameCount > 0 && _frameCount % self.hitchEvery == 0)
+        usleep(100000);
     id<CAMetalDrawable> drawable = [_layer nextDrawable];
-    if (!drawable) return;
+    if (!drawable)
+        return;
 
-    Uniforms uniforms = { .angle = (float)_frameCount * 0.02f, .scale = 0.8f,
-                          .depth = self.occluded ? 0.4f : 0.0f };
+    Uniforms uniforms = {.angle = (float)_frameCount * 0.02f, .scale = 0.8f, .depth = self.occluded ? 0.4f : 0.0f};
     memcpy(_uniforms.contents, &uniforms, sizeof(uniforms));
 
     id<MTLCommandBuffer> commandBuffer = [_queue commandBuffer];
@@ -733,34 +809,39 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [compute setBuffer:_waveOut offset:0 atIndex:0];
     [compute setBuffer:_uniforms offset:0 atIndex:1];
     [compute dispatchThreads:MTLSizeMake(kWaveCount, 1, 1)
-       threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
+        threadsPerThreadgroup:MTLSizeMake(64, 1, 1)];
     [compute endEncoding];
 
     // The triangle, into the multisampled target, resolved: a capture reads the resolve, since a
     // multisample texture cannot be copied to a buffer. Through a parallel encoder, whose
     // sub-encoder does the drawing, the way a multithreaded engine records a pass.
-    MTLRenderPassDescriptor *trianglePass = [MTLRenderPassDescriptor renderPassDescriptor];
+    MTLRenderPassDescriptor* trianglePass = [MTLRenderPassDescriptor renderPassDescriptor];
     trianglePass.colorAttachments[0].loadAction = MTLLoadActionClear;
     trianglePass.colorAttachments[0].clearColor = MTLClearColorMake(0.08, 0.09, 0.11, 1.0);
     const BOOL depthPass = self.occluded || self.stencil;
-    if (depthPass) {
+    if (depthPass)
+    {
         // Single-sampled under --occluded: a multisampled pass's depth is deliberately not copied
         // for the overdraw measurement (src/metal/src/overdraw.mm), which is the one thing this
         // mode exists to exercise, so it renders straight into the resolve target instead.
         trianglePass.colorAttachments[0].texture = _resolved;
         trianglePass.colorAttachments[0].storeAction = MTLStoreActionStore;
-    } else {
+    }
+    else
+    {
         trianglePass.colorAttachments[0].texture = _msaaTarget;
         trianglePass.colorAttachments[0].resolveTexture = _resolved;
         trianglePass.colorAttachments[0].storeAction = MTLStoreActionMultisampleResolve;
     }
-    if (depthPass) {
+    if (depthPass)
+    {
         trianglePass.depthAttachment.texture = _depthTarget;
         trianglePass.depthAttachment.loadAction = MTLLoadActionClear;
         trianglePass.depthAttachment.clearDepth = 1.0;
         trianglePass.depthAttachment.storeAction = MTLStoreActionDontCare;
     }
-    if (self.stencil) {
+    if (self.stencil)
+    {
         // The same texture as the depth attachment, which is how a combined format is bound, and
         // DontCare on purpose: an application that only tests stencil sets exactly this, and the
         // capture library has to force the store for its read-back (ForceStore in
@@ -779,7 +860,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [encoder pushDebugGroup:@"triangles"];
     [encoder setRenderPipelineState:_pipeline];
     // --inside-out: the draw that culls away to nothing.
-    if (self.insideOut) {
+    if (self.insideOut)
+    {
         // The triangle's own winding, declared as the front face, with the index buffer feeding the
         // other one: back faces culled is the ordinary setting, and the mesh is what is wrong. Both
         // of these are encoder state in Metal rather than pipeline state, which is why one pipeline
@@ -787,8 +869,10 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
         [encoder setFrontFacingWinding:MTLWindingCounterClockwise];
         [encoder setCullMode:MTLCullModeBack];
     }
-    if (depthPass) [encoder setDepthStencilState:_depthState];
-    if (self.stencil) [encoder setStencilReferenceValue:1];
+    if (depthPass)
+        [encoder setDepthStencilState:_depthState];
+    if (self.stencil)
+        [encoder setStencilReferenceValue:1];
     [encoder setVertexBuffer:_verticesPrivate offset:0 atIndex:0];
     [encoder setVertexBuffer:_uniforms offset:0 atIndex:1];
     [encoder drawIndexedPrimitives:MTLPrimitiveTypeTriangle
@@ -797,7 +881,8 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                        indexBuffer:_indices
                  indexBufferOffset:0
                      instanceCount:3];
-    if (self.occluded) {
+    if (self.occluded)
+    {
         // The same triangles again, behind the ones just drawn: every fragment is rasterized and
         // every one of them fails the depth test, so a measurement that counts fragments with the
         // pass's depth test must come out half of the one that counts without it.
@@ -818,7 +903,7 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     // The resolve onto the drawable, tinted through inline constants. Store, so a capture that
     // reads the attachment back sees the result. A pass that did not store would be the Metal
     // counterpart of Vulkan's storeOp DONT_CARE problem.
-    MTLRenderPassDescriptor *pass = [MTLRenderPassDescriptor renderPassDescriptor];
+    MTLRenderPassDescriptor* pass = [MTLRenderPassDescriptor renderPassDescriptor];
     pass.colorAttachments[0].texture = drawable.texture;
     pass.colorAttachments[0].loadAction = MTLLoadActionDontCare;
     pass.colorAttachments[0].storeAction = MTLStoreActionStore;
@@ -828,24 +913,30 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [blit setRenderPipelineState:_blit];
     [blit setFragmentTexture:_resolved atIndex:0];
     [blit setFragmentSamplerState:_sampler atIndex:0];
-    const float tint[4] = { 1.0f, 1.0f, 1.0f, 1.0f };
+    const float tint[4] = {1.0f, 1.0f, 1.0f, 1.0f};
     [blit setFragmentBytes:tint length:sizeof(tint) atIndex:0];
     [blit drawPrimitives:MTLPrimitiveTypeTriangle vertexStart:0 vertexCount:3];
     [blit endEncoding];
 
-    if (self.presentDirect) {
+    if (self.presentDirect)
+    {
         // What Unity's macOS player does: present the drawable itself from a scheduled handler
         // rather than through [MTLCommandBuffer presentDrawable:]. The frame boundary then
         // arrives on Metal's callback thread, after the command buffer is already committed.
-        [commandBuffer addScheduledHandler:^(id<MTLCommandBuffer> _) { [drawable present]; }];
-    } else {
+        [commandBuffer addScheduledHandler:^(id<MTLCommandBuffer> _) {
+            [drawable present];
+        }];
+    }
+    else
+    {
         [commandBuffer presentDrawable:drawable];
     }
     [commandBuffer commit];
     _frameCount++;
 
     // One more resource every second, held so it stays alive.
-    if (_frameCount % 60 == 0) {
+    if (_frameCount % 60 == 0)
+    {
         id<MTLBuffer> buffer = [_device newBufferWithLength:4096
                                                     options:MTLResourceStorageModeShared];
         buffer.label = [NSString stringWithFormat:@"streamed %lu", (unsigned long)_frameCount / 60];
@@ -871,15 +962,18 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
 @property(nonatomic) BOOL insideOut;
 @end
 
-@implementation AppDelegate {
-    NSWindow *_window;
-    Renderer *_renderer;
-    NSTimer *_timer;
+@implementation AppDelegate
+{
+    NSWindow* _window;
+    Renderer* _renderer;
+    NSTimer* _timer;
 }
 
-- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+- (void)applicationDidFinishLaunching:(NSNotification*)notification
+{
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    if (!device) {
+    if (!device)
+    {
         NSLog(@"no Metal device");
         exit(1);
     }
@@ -892,13 +986,13 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
                                               defer:NO];
     _window.title = @"Metal Triangle";
 
-    CAMetalLayer *layer = [CAMetalLayer layer];
+    CAMetalLayer* layer = [CAMetalLayer layer];
     layer.device = device;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     layer.framebufferOnly = NO;  // a capture reads the drawable back
     layer.drawableSize = CGSizeMake(frame.size.width * 2, frame.size.height * 2);
 
-    NSView *view = [[NSView alloc] initWithFrame:frame];
+    NSView* view = [[NSView alloc] initWithFrame:frame];
     view.wantsLayer = YES;
     view.layer = layer;
     _window.contentView = view;
@@ -906,38 +1000,45 @@ constexpr NSUInteger kHeapSize = 4 * 1024 * 1024;
     [_window makeKeyAndOrderFront:nil];
     [NSApp activateIgnoringOtherApps:YES];
 
-    _renderer = [[Renderer alloc] initWithLayer:layer occluded:self.occluded stencil:self.stencilPass
-                                     rayTracing:self.rayTracing staticBlas:self.staticBlas
+    _renderer = [[Renderer alloc] initWithLayer:layer
+                                       occluded:self.occluded
+                                        stencil:self.stencilPass
+                                     rayTracing:self.rayTracing
+                                     staticBlas:self.staticBlas
                                       insideOut:self.insideOut];
     _renderer.presentDirect = self.presentDirect;
     _renderer.compileHitch = self.compileHitch;
     _renderer.hitchEvery = self.hitchEvery;
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                              repeats:YES
-                                               block:^(NSTimer *t) {
-        [self->_renderer renderFrame];
+                                               block:^(NSTimer* t) {
+                                                   [self->_renderer renderFrame];
         // Asked again each frame until somebody is there to hear it: the inspector connects a
         // few frames after the device is made.
-        if (self.captureAt > 0 && self->_renderer.frameCount >= self.captureAt && !self.captureAsked) {
-            char label[48];
-            snprintf(label, sizeof label, "asked at frame %lu", (unsigned long)self.captureAt);   // the tab's name
-            self.captureAsked = gpu_inspector_capture_named(1, label) != 0;
-        }
-        if (self.frameLimit > 0 && self->_renderer.frameCount >= self.frameLimit) {
-            NSLog(@"rendered %lu frames", (unsigned long)self->_renderer.frameCount);
-            [t invalidate];
-            [NSApp terminate:nil];
-        }
-    }];
+                                                   if (self.captureAt > 0 && self->_renderer.frameCount >= self.captureAt && !self.captureAsked)
+                                                   {
+                                                       char label[48];
+                                                       snprintf(label, sizeof label, "asked at frame %lu", (unsigned long)self.captureAt);   // the tab's name
+                                                       self.captureAsked = gpu_inspector_capture_named(1, label) != 0;
+                                                   }
+                                                   if (self.frameLimit > 0 && self->_renderer.frameCount >= self.frameLimit)
+                                                   {
+                                                       NSLog(@"rendered %lu frames", (unsigned long)self->_renderer.frameCount);
+                                                       [t invalidate];
+                                                       [NSApp terminate:nil];
+                                                   }
+                                               }];
 }
 
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)app
+{
     return YES;
 }
 
 @end
 
-int main(int argc, const char *argv[]) {
+int main(int argc, const char* argv[])
+{
     NSUInteger frameLimit = 0;
     NSUInteger captureAt = 0;
     BOOL presentDirect = NO;
@@ -948,24 +1049,37 @@ int main(int argc, const char *argv[]) {
     BOOL staticBlas = NO;
     BOOL stencil = NO;
     BOOL insideOut = NO;
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc) frameLimit = (NSUInteger)atoi(argv[++i]);
-        else if (strcmp(argv[i], "--capture-at") == 0 && i + 1 < argc) captureAt = (NSUInteger)atoi(argv[++i]);
-        else if (strcmp(argv[i], "--present-direct") == 0) presentDirect = YES;
-        else if (strcmp(argv[i], "--compile-hitch") == 0) compileHitch = YES;
-        else if (strcmp(argv[i], "--hitch-every") == 0 && i + 1 < argc) hitchEvery = (NSUInteger)atoi(argv[++i]);
-        else if (strcmp(argv[i], "--occluded") == 0) occluded = YES;
-        else if (strcmp(argv[i], "--stencil") == 0) stencil = YES;
-        else if (strcmp(argv[i], "--inside-out") == 0) insideOut = YES;
-        else if (strcmp(argv[i], "--ray-tracing") == 0) rayTracing = YES;
-        else if (strcmp(argv[i], "--static-blas") == 0) staticBlas = YES;
+    for (int i = 1; i < argc; i++)
+    {
+        if (strcmp(argv[i], "--frames") == 0 && i + 1 < argc)
+            frameLimit = (NSUInteger)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--capture-at") == 0 && i + 1 < argc)
+            captureAt = (NSUInteger)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--present-direct") == 0)
+            presentDirect = YES;
+        else if (strcmp(argv[i], "--compile-hitch") == 0)
+            compileHitch = YES;
+        else if (strcmp(argv[i], "--hitch-every") == 0 && i + 1 < argc)
+            hitchEvery = (NSUInteger)atoi(argv[++i]);
+        else if (strcmp(argv[i], "--occluded") == 0)
+            occluded = YES;
+        else if (strcmp(argv[i], "--stencil") == 0)
+            stencil = YES;
+        else if (strcmp(argv[i], "--inside-out") == 0)
+            insideOut = YES;
+        else if (strcmp(argv[i], "--ray-tracing") == 0)
+            rayTracing = YES;
+        else if (strcmp(argv[i], "--static-blas") == 0)
+            staticBlas = YES;
     }
     // --static-blas only means anything with a scene to build.
-    if (staticBlas) rayTracing = YES;
-    @autoreleasepool {
-        NSApplication *app = [NSApplication sharedApplication];
+    if (staticBlas)
+        rayTracing = YES;
+    @autoreleasepool
+    {
+        NSApplication* app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
-        AppDelegate *delegate = [[AppDelegate alloc] init];
+        AppDelegate* delegate = [[AppDelegate alloc] init];
         delegate.frameLimit = frameLimit;
         delegate.captureAt = captureAt;
         delegate.presentDirect = presentDirect;

@@ -9,31 +9,44 @@
 #include <cstring>
 #include <string>
 
-namespace glesinsp {
+namespace glesinsp
+{
 
 using gpuinsp::sdk::Config;
 using gpuinsp::sdk::JsonValue;
 using gpuinsp::sdk::Server;
 
-namespace {
+namespace
+{
 
-void OnMessage(const std::string& json) {
+void OnMessage(const std::string& json)
+{
     JsonValue msg;
-    if (!gpuinsp::sdk::ParseJson(json, msg)) {
+    if (!gpuinsp::sdk::ParseJson(json, msg))
+    {
         Log("a message from the inspector does not parse: %.200s", json.c_str());
         return;
     }
     const std::string action = msg.GetString("action");
-    if (action == "Ping") {
+    if (action == "Ping")
+    {
         Server::Get().SendJson("{\"action\":\"Pong\"}");
-    } else if (action == "RequestSnapshot") {
+    }
+    else if (action == "RequestSnapshot")
+    {
         SendSnapshot();
-    } else if (action == "Capture") {
+    }
+    else if (action == "Capture")
+    {
         RequestCapture(msg);
-    } else if (action == "RequestStacktraces") {
+    }
+    else if (action == "RequestStacktraces")
+    {
         // The library collects no creation stacks; saying so lets whoever asked stop waiting.
         Server::Get().SendJson("{\"action\":\"Stacktraces\",\"available\":false,\"stacks\":[]}");
-    } else {
+    }
+    else
+    {
         // Settings, RequestBlob, RequestImage and the rest: nothing this library answers yet.
         Log("ignored %s", action.c_str());
     }
@@ -41,9 +54,11 @@ void OnMessage(const std::string& json) {
 
 }  // namespace
 
-void StartServer() {
+void StartServer()
+{
     static bool started = false;
-    if (started) return;
+    if (started)
+        return;
     started = true;
     gpuinsp::sdk::ServerOptions o;
     o.api = "OpenGL ES";
@@ -70,27 +85,39 @@ void StartServer() {
 #define GLESINSP_API extern "C" __attribute__((visibility("default")))
 #endif
 
-GLESINSP_API int GpuInspectorConnected(void) {
+GLESINSP_API int GpuInspectorConnected(void)
+{
     return gpuinsp::sdk::Server::Get().Connected() ? 1 : 0;
 }
 
-GLESINSP_API int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label) {
-    if (!gpuinsp::sdk::Server::Get().Connected()) return 0;
+GLESINSP_API int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label)
+{
+    if (!gpuinsp::sdk::Server::Get().Connected())
+        return 0;
     // The label is the application's words for the capture (the tab's name); bounded, since a
     // string that is not one would otherwise become a message of any length.
     const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
     gpuinsp::sdk::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("AppCaptureRequest");
-    w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
-    if (!name.empty()) { w.Key("label"); w.String(name); }
+    w.Key("action");
+    w.String("AppCaptureRequest");
+    w.Key("frameCount");
+    w.Uint(frameCount ? frameCount : 1u);
+    if (!name.empty())
+    {
+        w.Key("label");
+        w.String(name);
+    }
     w.EndObject();
     gpuinsp::sdk::Server::Get().SendJson(w.str());
-    if (name.empty()) glesinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
-    else glesinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
+    if (name.empty())
+        glesinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    else
+        glesinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
     return 1;
 }
 
-GLESINSP_API int GpuInspectorCapture(uint32_t frameCount) {
+GLESINSP_API int GpuInspectorCapture(uint32_t frameCount)
+{
     return GpuInspectorCaptureNamed(frameCount, nullptr);
 }

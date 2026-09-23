@@ -7,7 +7,8 @@
 #include "format_info.h"
 #include "util.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 // ---------------------------------------------------------------------------------------------
 // Draw-call overlays
@@ -25,18 +26,24 @@ namespace vkreplay {
 //   * wireframe: the draw alone with line polygons (the fillModeNonSolid feature).
 // The three are folded into one byte per pixel (OverlayResult::mask).
 
-bool Replayer::PassHoldsAny(uint32_t beginIndex, const std::vector<uint32_t>& wanted) const {
-    if (wanted.empty()) return false;
+bool Replayer::PassHoldsAny(uint32_t beginIndex, const std::vector<uint32_t>& wanted) const
+{
+    if (wanted.empty())
+        return false;
     const JValue* commands = _capture->Commands();
     uint32_t end = beginIndex + 1;
-    while (end < commands->count && (commands->items[end].Get("secondary") || !IsEndPass(Str(commands->items[end].Get("method"))))) ++end;
+    while (end < commands->count && (commands->items[end].Get("secondary") || !IsEndPass(Str(commands->items[end].Get("method")))))
+        ++end;
     return std::any_of(wanted.begin(), wanted.end(), [&](uint32_t c) { return c > beginIndex && c < end; });
 }
 
-void Replayer::RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex) {
+void Replayer::RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex)
+{
     const JValue* commands = _capture->Commands();
-    for (uint32_t target : _options.overlay.commands) {
-        if (target <= pass.beginIndex || target >= endIndex) continue;
+    for (uint32_t target : _options.overlay.commands)
+    {
+        if (target <= pass.beginIndex || target >= endIndex)
+            continue;
         OverlayResult result;
         result.command = target;
         result.commandBuffer = pass.commandBuffer;
@@ -45,34 +52,44 @@ void Replayer::RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, cons
         result.method = Str(commands->items[target].Get("method"));
         result.width = pass.extent.width;
         result.height = pass.extent.height;
-        if (!StartsWith(result.method, "vkCmdDraw")) {
+        if (!StartsWith(result.method, "vkCmdDraw"))
+        {
             result.note = "command " + std::to_string(target) + " is " + result.method + ", not a draw";
             _report->overlays.push_back(std::move(result));
             continue;
         }
         PendingOverlay p;
         p.result = _report->overlays.size();
-        if (!DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::Count, false, p.rasterized)) {
+        if (!DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::Count, false, p.rasterized))
+        {
             result.note = "the draw could not be drawn again (its pipeline could not be copied, or there was no memory for the overlay)";
             DestroyStaging(p.rasterized);
             _report->overlays.push_back(std::move(result));
             continue;
         }
-        if (pass.depthFormat == VK_FORMAT_UNDEFINED || !pass.overdrawDepth.image) {
+        if (pass.depthFormat == VK_FORMAT_UNDEFINED || !pass.overdrawDepth.image)
+        {
             result.note = "the pass has no depth attachment, so nothing the draw rasterized was rejected";
-        } else {
-            result.depthTested = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::Count, true, p.passed);
-            if (!result.depthTested) result.note = "the draw's depth and stencil tests could not be replayed";
         }
-        if (_options.overlay.wireframe) {
-            if (!_wireframeAvailable) result.note = "this GPU cannot draw wireframes (no fillModeNonSolid)";
-            else result.wireframe = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::Wireframe, false, p.wireframe);
+        else
+        {
+            result.depthTested = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::Count, true, p.passed);
+            if (!result.depthTested)
+                result.note = "the draw's depth and stencil tests could not be replayed";
+        }
+        if (_options.overlay.wireframe)
+        {
+            if (!_wireframeAvailable)
+                result.note = "this GPU cannot draw wireframes (no fillModeNonSolid)";
+            else
+                result.wireframe = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::Wireframe, false, p.wireframe);
         }
         // The stencil test on its own, where the pass has a stencil to test against: the Depth Test
         // overlay answers for both tests together, so a fragment the stencil alone rejected looks
         // there exactly like one the depth killed.
         if (pass.depthFormat != VK_FORMAT_UNDEFINED && pass.overdrawDepth.image &&
-            (vkinsp::FormatAspects(pass.depthFormat) & VK_IMAGE_ASPECT_STENCIL_BIT)) {
+            (vkinsp::FormatAspects(pass.depthFormat) & VK_IMAGE_ASPECT_STENCIL_BIT))
+        {
             result.stencilTested = DrawOverlayVariant(cb, group, pass, endIndex, target, ReissueMode::StencilOnly, true, p.stencilPassed);
         }
         // The faces the draw's own cull mode threw away: it is issued again with nothing culled and
@@ -84,17 +101,21 @@ void Replayer::RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, cons
 }
 
 bool Replayer::DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, uint32_t target,
-                                  ReissueMode mode, bool depthTested, Staging& out) {
+    ReissueMode mode, bool depthTested, Staging& out)
+{
     const VkFormat depthFormat = depthTested ? pass.depthFormat : VK_FORMAT_UNDEFINED;
     TransientImage count = CreateTransientImage(VK_FORMAT_R16_SFLOAT, pass.extent, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
     VkRenderPass rp = OverdrawRenderPass(depthFormat);
-    if (!count.image || !rp) return false;
+    if (!count.image || !rp)
+        return false;
 
     TransientImage depth;
-    if (depthTested) {
+    if (depthTested)
+    {
         // Every depth-tested variant starts from the depth the pass began with, which the pass's own copy keeps.
         depth = CreateTransientImage(pass.depthFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT);
-        if (!depth.image) return false;
+        if (!depth.image)
+            return false;
         const VkImageAspectFlags aspects = vkinsp::FormatAspects(pass.depthFormat);
         const VkImageSubresourceRange full{aspects, 0, 1, 0, 1};
         Barrier(cb, pass.overdrawDepth.image, full, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -117,7 +138,8 @@ bool Replayer::DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group,
     fbInfo.height = pass.extent.height;
     fbInfo.layers = 1;
     VkFramebuffer fb = VK_NULL_HANDLE;
-    if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS) return false;
+    if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS)
+        return false;
     _transientFramebuffers.push_back(fb);
 
     _overlayTarget = target;
@@ -129,7 +151,8 @@ bool Replayer::DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group,
     const bool drawn = _overlayIssued && _overlayDrawn;
     _overlayTarget = UINT32_MAX;
     _overlayOnlyTarget = false;
-    if (!drawn || !CreateStaging((VkDeviceSize)pass.extent.width * pass.extent.height * 2, out)) return false;
+    if (!drawn || !CreateStaging((VkDeviceSize)pass.extent.width * pass.extent.height * 2, out))
+        return false;
 
     const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
     Barrier(cb, count.image, range, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
@@ -140,23 +163,32 @@ bool Replayer::DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group,
     return true;
 }
 
-void Replayer::CompleteOverlay(bool submitted) {
-    for (PendingOverlay& p : _pendingOverlays) {
+void Replayer::CompleteOverlay(bool submitted)
+{
+    for (PendingOverlay& p : _pendingOverlays)
+    {
         OverlayResult& r = _report->overlays[p.result];
         const size_t pixels = (size_t)r.width * r.height;
-        if (!submitted) {
+        if (!submitted)
+        {
             r.note = "the submission holding the draw did not run";
-        } else {
+        }
+        else
+        {
             r.mask.assign(pixels, 0);
             // Folds one variant's counts into a bit of the mask; the rasterized variant also gives the fragments.
             auto fold = [&](const Staging& s, uint8_t bit, bool fragments) {
-                if (!s.mapped) return;
+                if (!s.mapped)
+                    return;
                 const auto* bytes = static_cast<const uint8_t*>(s.mapped);
-                for (size_t i = 0; i < pixels; ++i) {
+                for (size_t i = 0; i < pixels; ++i)
+                {
                     const float value = HalfToFloat((uint16_t)(bytes[i * 2] | (bytes[i * 2 + 1] << 8)));
-                    if (!std::isfinite(value) || value <= 0) continue;
+                    if (!std::isfinite(value) || value <= 0)
+                        continue;
                     r.mask[i] |= bit;
-                    if (fragments) r.fragments += (uint64_t)std::lround(value);
+                    if (fragments)
+                        r.fragments += (uint64_t)std::lround(value);
                 }
             };
             fold(p.rasterized, 1, true);
@@ -164,21 +196,30 @@ void Replayer::CompleteOverlay(bool submitted) {
             fold(p.wireframe, 4, false);
             fold(p.stencilPassed, 8, false);
             fold(p.backFacing, 16, false);
-            for (uint8_t& m : r.mask) {
-                if (!r.depthTested && (m & 1)) m |= 2;  // no tests, nothing rejected
+            for (uint8_t& m : r.mask)
+            {
+                if (!r.depthTested && (m & 1))
+                    m |= 2;  // no tests, nothing rejected
                 // A pass with no stencil rejects nothing by it: every rasterized pixel passed.
-                if (!r.stencilTested && (m & 1)) m |= 8;
+                if (!r.stencilTested && (m & 1))
+                    m |= 8;
                 // The back-facing bit is the draw with its culling off. Every pixel of a closed
                 // mesh has a back face behind it, so the bit on its own says nothing; what the
                 // overlay is for is the pixel where culling left *nothing* -- a back face landed
                 // and no front one did, which is the draw that renders inside out.
-                if ((m & 16) && !(m & 1)) ++r.pixelsBackFacing;
-                else if (m & 16) m &= (uint8_t)~16;
-                if (!(m & 1)) continue;
+                if ((m & 16) && !(m & 1))
+                    ++r.pixelsBackFacing;
+                else if (m & 16)
+                    m &= (uint8_t)~16;
+                if (!(m & 1))
+                    continue;
                 ++r.pixelsCovered;
-                if (m & 2) ++r.pixelsPassed;
-                else ++r.pixelsRejected;
-                if (r.stencilTested && !(m & 8)) ++r.pixelsStencilRejected;
+                if (m & 2)
+                    ++r.pixelsPassed;
+                else
+                    ++r.pixelsRejected;
+                if (r.stencilTested && !(m & 8))
+                    ++r.pixelsStencilRejected;
             }
         }
         DestroyStaging(p.rasterized);

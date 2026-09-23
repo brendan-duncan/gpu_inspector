@@ -35,9 +35,11 @@
 #include <string>
 #include <vector>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
-struct CaptureOptions {
+struct CaptureOptions
+{
     uint32_t frameCount = 1;
     /** The present count to start at; -1 for the next frame. */
     int64_t atFrame = -1;
@@ -61,7 +63,8 @@ void Record(Context* c, const char* method, std::string args, std::string state 
 void RecordSynthetic(Context* c, const char* method, std::string args);
 
 /** What a draw call draws, for the snapshot's read-backs. */
-struct DrawParams {
+struct DrawParams
+{
     bool indexed = false;
     UINT count = 0;          // vertices or indices
     UINT start = 0;          // the first vertex or index

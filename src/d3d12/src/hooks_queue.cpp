@@ -28,22 +28,28 @@
 #include <utility>
 #include <vector>
 
-namespace dxinsp {
-namespace {
+namespace dxinsp
+{
+namespace
+{
 
 inline CaptureManager& Cap() { return CaptureManager::Get(); }
 
 /** The slot count of the highest interface version the object answers a QueryInterface for. */
-struct VersionCount {
+struct VersionCount
+{
     const IID* iid;
     uint32_t count;
 };
 
-uint32_t VtableCount(IUnknown* object, const VersionCount* versions, size_t n, uint32_t fallback) {
+uint32_t VtableCount(IUnknown* object, const VersionCount* versions, size_t n, uint32_t fallback)
+{
     ScopedInternal internal;
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i)
+    {
         IUnknown* p = nullptr;
-        if (SUCCEEDED(object->QueryInterface(*versions[i].iid, (void**)&p)) && p) {
+        if (SUCCEEDED(object->QueryInterface(*versions[i].iid, (void**)&p)) && p)
+        {
             p->Release();
             return versions[i].count;
         }
@@ -60,17 +66,21 @@ uint32_t VtableCount(IUnknown* object, const VersionCount* versions, size_t n, u
 std::mutex g_backBufferMutex;
 std::unordered_map<IDXGISwapChain*, std::vector<ID3D12Resource*>> g_backBuffers;
 
-bool KnownBackBuffer(IDXGISwapChain* swapChain, ID3D12Resource* buffer) {
+bool KnownBackBuffer(IDXGISwapChain* swapChain, ID3D12Resource* buffer)
+{
     std::lock_guard<std::mutex> lock(g_backBufferMutex);
     auto it = g_backBuffers.find(swapChain);
-    if (it == g_backBuffers.end()) return false;
+    if (it == g_backBuffers.end())
+        return false;
     for (ID3D12Resource* b : it->second)
-        if (b == buffer) return true;
+        if (b == buffer)
+            return true;
     return false;
 }
 
 /** Hooks and tracks one back buffer under the swap chain, and notes it in the side table. */
-void TrackBackBuffer(IDXGISwapChain* swapChain, UINT index, ID3D12Resource* buffer) {
+void TrackBackBuffer(IDXGISwapChain* swapChain, UINT index, ID3D12Resource* buffer)
+{
     HookResource(buffer);
     D3D12_RESOURCE_DESC desc;
     {
@@ -87,55 +97,68 @@ void TrackBackBuffer(IDXGISwapChain* swapChain, UINT index, ID3D12Resource* buff
 }
 
 /** Every buffer of the swap chain (a bitblt-model chain answers only for index 0; the rest are skipped). */
-void TrackBackBuffers(IDXGISwapChain* swapChain) {
+void TrackBackBuffers(IDXGISwapChain* swapChain)
+{
     DXGI_SWAP_CHAIN_DESC desc{};
     {
         ScopedInternal internal;
-        if (FAILED(swapChain->GetDesc(&desc))) return;
+        if (FAILED(swapChain->GetDesc(&desc)))
+            return;
     }
-    for (UINT i = 0; i < desc.BufferCount; ++i) {
+    for (UINT i = 0; i < desc.BufferCount; ++i)
+    {
         ID3D12Resource* buffer = nullptr;
         {
             ScopedInternal internal;
-            if (FAILED(swapChain->GetBuffer(i, IID_PPV_ARGS(&buffer))) || !buffer) continue;
+            if (FAILED(swapChain->GetBuffer(i, IID_PPV_ARGS(&buffer))) || !buffer)
+                continue;
         }
-        if (!KnownBackBuffer(swapChain, buffer)) TrackBackBuffer(swapChain, i, buffer);
+        if (!KnownBackBuffer(swapChain, buffer))
+            TrackBackBuffer(swapChain, i, buffer);
         ScopedInternal internal;
         buffer->Release();
     }
 }
 
 /** Before ResizeBuffers: the old buffers are about to be destroyed by the swap chain. */
-void UntrackBackBuffers(IDXGISwapChain* swapChain) {
+void UntrackBackBuffers(IDXGISwapChain* swapChain)
+{
     std::vector<ID3D12Resource*> buffers;
     {
         std::lock_guard<std::mutex> lock(g_backBufferMutex);
         auto it = g_backBuffers.find(swapChain);
-        if (it == g_backBuffers.end()) return;
+        if (it == g_backBuffers.end())
+            return;
         buffers.swap(it->second);
     }
-    for (ID3D12Resource* buffer : buffers) {
+    for (ID3D12Resource* buffer : buffers)
+    {
         ResourceTracker::Get().OnReleased(buffer);
         Tracker::Get().Untrack(buffer);
     }
 }
 
 /** The D3D12 queue a swap chain is created on (pDevice is the queue), or null when it is not a D3D12 swap chain. */
-ID3D12CommandQueue* QueueOf(IUnknown* device) {
-    if (!device) return nullptr;
+ID3D12CommandQueue* QueueOf(IUnknown* device)
+{
+    if (!device)
+        return nullptr;
     ScopedInternal internal;
     ID3D12CommandQueue* queue = nullptr;
-    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&queue))) || !queue) return nullptr;
+    if (FAILED(device->QueryInterface(IID_PPV_ARGS(&queue))) || !queue)
+        return nullptr;
     queue->Release();
     return queue;
 }
 
 /** A swap chain that came out of one of the factory's creation methods on a D3D12 queue. */
-void RegisterSwapChain(IUnknown* created, ID3D12CommandQueue* queue, const char* method, std::string args) {
+void RegisterSwapChain(IUnknown* created, ID3D12CommandQueue* queue, const char* method, std::string args)
+{
     IDXGISwapChain* swapChain = nullptr;
     {
         ScopedInternal internal;
-        if (FAILED(created->QueryInterface(IID_PPV_ARGS(&swapChain))) || !swapChain) return;
+        if (FAILED(created->QueryInterface(IID_PPV_ARGS(&swapChain))) || !swapChain)
+            return;
         swapChain->Release();
     }
     HookSwapChain(swapChain);
@@ -150,10 +173,13 @@ void RegisterSwapChain(IUnknown* created, ID3D12CommandQueue* queue, const char*
 
 double g_qpcToMs = 0;
 
-void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists) {
+void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT NumCommandLists, ID3D12CommandList* const* ppCommandLists)
+{
     auto orig = Orig<PFN_ID3D12CommandQueue_ExecuteCommandLists>(This, slot::ID3D12CommandQueue_ExecuteCommandLists);
-    if (Internal()) return orig(This, NumCommandLists, ppCommandLists);
-    if (g_qpcToMs == 0) {
+    if (Internal())
+        return orig(This, NumCommandLists, ppCommandLists);
+    if (g_qpcToMs == 0)
+    {
         LARGE_INTEGER f;
         QueryPerformanceFrequency(&f);
         g_qpcToMs = 1000.0 / (double)f.QuadPart;
@@ -167,30 +193,36 @@ void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT N
     double ms = (double)(t1.QuadPart - t0.QuadPart) * g_qpcToMs;
     Log("queue %p ExecuteCommandLists(%u) %.3f ms", (void*)This, NumCommandLists, ms);
     for (UINT i = 0; ppCommandLists && i < NumCommandLists; ++i)
-        if (ppCommandLists[i]) ResourceTracker::Get().OnListExecuted(ppCommandLists[i]);
+        if (ppCommandLists[i])
+            ResourceTracker::Get().OnListExecuted(ppCommandLists[i]);
     ID3D12Device* device = DeviceOf(This);
     AddSubmitTime(device, ms);
     // For a device that never presents, this submission may be its frame boundary; then the
     // per-frame chores a present would do run here instead (frame timing, validation, retired
     // shader edits). See CaptureManager::OnExecuteCommandLists.
-    if (Cap().OnExecuteCommandLists(This, NumCommandLists, ppCommandLists, ms)) {
+    if (Cap().OnExecuteCommandLists(This, NumCommandLists, ppCommandLists, ms))
+    {
         OnFrameNoPresent(device);
         ValidationLog::Get().Poll(Cap().FrameCounter());
         ShaderEditor::Get().OnPresent();
     }
 }
 
-HRESULT STDMETHODCALLTYPE Hook_Signal(ID3D12CommandQueue* This, ID3D12Fence* pFence, UINT64 Value) {
+HRESULT STDMETHODCALLTYPE Hook_Signal(ID3D12CommandQueue* This, ID3D12Fence* pFence, UINT64 Value)
+{
     auto orig = Orig<PFN_ID3D12CommandQueue_Signal>(This, slot::ID3D12CommandQueue_Signal);
     HRESULT hr = orig(This, pFence, Value);
-    if (!Internal()) Log("queue %p Signal(fence %p, %llu) -> %s", (void*)This, (void*)pFence, (unsigned long long)Value, HrText(hr).c_str());
+    if (!Internal())
+        Log("queue %p Signal(fence %p, %llu) -> %s", (void*)This, (void*)pFence, (unsigned long long)Value, HrText(hr).c_str());
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_Wait(ID3D12CommandQueue* This, ID3D12Fence* pFence, UINT64 Value) {
+HRESULT STDMETHODCALLTYPE Hook_Wait(ID3D12CommandQueue* This, ID3D12Fence* pFence, UINT64 Value)
+{
     auto orig = Orig<PFN_ID3D12CommandQueue_Wait>(This, slot::ID3D12CommandQueue_Wait);
     HRESULT hr = orig(This, pFence, Value);
-    if (!Internal()) Log("queue %p Wait(fence %p, %llu) -> %s", (void*)This, (void*)pFence, (unsigned long long)Value, HrText(hr).c_str());
+    if (!Internal())
+        Log("queue %p Wait(fence %p, %llu) -> %s", (void*)This, (void*)pFence, (unsigned long long)Value, HrText(hr).c_str());
     return hr;
 }
 
@@ -198,19 +230,23 @@ HRESULT STDMETHODCALLTYPE Hook_Wait(ID3D12CommandQueue* This, ID3D12Fence* pFenc
 // IDXGISwapChain: the frame boundary, and the back buffers
 
 /** After a present of a D3D12 swap chain: the frame counters, the capture, validation polling, retired shader edits. */
-void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT hr, LONGLONG calledAtQpc) {
+void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT hr, LONGLONG calledAtQpc)
+{
     ID3D12CommandQueue* queue = Cap().PresentQueue(swapChain);
     ID3D12Device* device = queue ? DeviceOf(queue) : nullptr;
     // Present is where a removal is usually noticed, long after the command that caused it, so this
     // runs before anything else and even for a test present: what the GPU was doing is in DRED and
     // only DRED, and nothing further in the frame will work anyway (device_removed.h).
-    if (IsDeviceRemoved(hr) || SimulateDeviceRemoved()) {
+    if (IsDeviceRemoved(hr) || SimulateDeviceRemoved())
+    {
         OnDeviceRemoved(device, "IDXGISwapChain::Present");
         return;
     }
     // A DXGI_PRESENT_TEST asks whether presenting would work; nothing was shown.
-    if (flags & DXGI_PRESENT_TEST) return;
-    if (!queue) return;
+    if (flags & DXGI_PRESENT_TEST)
+        return;
+    if (!queue)
+        return;
     OnFramePresented(device, swapChain, syncInterval, flags, hr, calledAtQpc);
     Cap().OnPresent(device, swapChain, queue);
     ValidationLog::Get().Poll(Cap().FrameCounter());
@@ -221,17 +257,24 @@ void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRES
  * Before a present: the HUD over the back buffer about to be shown (hud.h). Executed on the queue
  * the swap chain presents from, which is what orders it before the present itself.
  */
-void BeforePresent(IDXGISwapChain* swapChain, UINT flags) {
-    if (!Hud::Get().Enabled()) return;
-    if (flags & DXGI_PRESENT_TEST) return;   // nothing will be shown
+void BeforePresent(IDXGISwapChain* swapChain, UINT flags)
+{
+    if (!Hud::Get().Enabled())
+        return;
+    if (flags & DXGI_PRESENT_TEST)
+        return;   // nothing will be shown
     ID3D12CommandQueue* queue = Cap().PresentQueue(swapChain);
-    if (!queue) return;
-    if (ID3D12Device* device = DeviceOf(queue)) Hud::Get().Draw(device, swapChain, queue);
+    if (!queue)
+        return;
+    if (ID3D12Device* device = DeviceOf(queue))
+        Hud::Get().Draw(device, swapChain, queue);
 }
 
-HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain4* This, UINT SyncInterval, UINT Flags) {
+HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain4* This, UINT SyncInterval, UINT Flags)
+{
     auto orig = Orig<PFN_IDXGISwapChain4_Present>(This, slot::IDXGISwapChain4_Present);
-    if (Internal()) return orig(This, SyncInterval, Flags);
+    if (Internal())
+        return orig(This, SyncInterval, Flags);
     BeforePresent(This, Flags);
     // When the application handed the frame over, for the present latency (device_info.cpp):
     // before the call, since with vsync on the call itself blocks until the display takes it.
@@ -248,9 +291,11 @@ HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain4* This, UINT SyncInterval,
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain4* This, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters) {
+HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain4* This, UINT SyncInterval, UINT PresentFlags, const DXGI_PRESENT_PARAMETERS* pPresentParameters)
+{
     auto orig = Orig<PFN_IDXGISwapChain4_Present1>(This, slot::IDXGISwapChain4_Present1);
-    if (Internal()) return orig(This, SyncInterval, PresentFlags, pPresentParameters);
+    if (Internal())
+        return orig(This, SyncInterval, PresentFlags, pPresentParameters);
     BeforePresent(This, PresentFlags);
     LARGE_INTEGER calledAt;
     QueryPerformanceCounter(&calledAt);
@@ -266,172 +311,238 @@ HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain4* This, UINT SyncInterval
  * The handle an application waits on to pace itself with the presenter — D3D12's counterpart of
  * vkAcquireNextImageKHR blocking. Noted so a wait on it is timed as one (cpu_timeline.h).
  */
-HANDLE STDMETHODCALLTYPE Hook_GetFrameLatencyWaitableObject(IDXGISwapChain4* This) {
+HANDLE STDMETHODCALLTYPE Hook_GetFrameLatencyWaitableObject(IDXGISwapChain4* This)
+{
     auto orig = Orig<PFN_IDXGISwapChain4_GetFrameLatencyWaitableObject>(This, slot::IDXGISwapChain4_GetFrameLatencyWaitableObject);
     HANDLE handle = orig(This);
-    if (handle && !Internal()) NoteFrameLatencyEvent(handle);
+    if (handle && !Internal())
+        NoteFrameLatencyEvent(handle);
     return handle;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers(IDXGISwapChain4* This, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags) {
+HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers(IDXGISwapChain4* This, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT NewFormat, UINT SwapChainFlags)
+{
     auto orig = Orig<PFN_IDXGISwapChain4_ResizeBuffers>(This, slot::IDXGISwapChain4_ResizeBuffers);
-    if (Internal()) return orig(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
+    if (Internal())
+        return orig(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     bool known = Tracker::Get().IdOf(This) != 0;
-    if (known) UntrackBackBuffers(This);
+    if (known)
+        UntrackBackBuffers(This);
     Hud::Get().OnResizeBuffers(This);
     HRESULT hr = orig(This, BufferCount, Width, Height, NewFormat, SwapChainFlags);
     Log("swap chain %p ResizeBuffers(%u, %ux%u) -> %s", (void*)This, BufferCount, Width, Height, HrText(hr).c_str());
     // Whatever GetBuffer answers now is the current set, the new one or the old on failure.
-    if (known) TrackBackBuffers(This);
+    if (known)
+        TrackBackBuffers(This);
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers1(IDXGISwapChain4* This, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue) {
+HRESULT STDMETHODCALLTYPE Hook_ResizeBuffers1(IDXGISwapChain4* This, UINT BufferCount, UINT Width, UINT Height, DXGI_FORMAT Format, UINT SwapChainFlags, const UINT* pCreationNodeMask, IUnknown* const* ppPresentQueue)
+{
     auto orig = Orig<PFN_IDXGISwapChain4_ResizeBuffers1>(This, slot::IDXGISwapChain4_ResizeBuffers1);
-    if (Internal()) return orig(This, BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
+    if (Internal())
+        return orig(This, BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     bool known = Tracker::Get().IdOf(This) != 0;
-    if (known) UntrackBackBuffers(This);
+    if (known)
+        UntrackBackBuffers(This);
     HRESULT hr = orig(This, BufferCount, Width, Height, Format, SwapChainFlags, pCreationNodeMask, ppPresentQueue);
     Log("swap chain %p ResizeBuffers1(%u, %ux%u) -> %s", (void*)This, BufferCount, Width, Height, HrText(hr).c_str());
-    if (known) TrackBackBuffers(This);
+    if (known)
+        TrackBackBuffers(This);
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_GetBuffer(IDXGISwapChain4* This, UINT Buffer, REFIID riid, void** ppSurface) {
+HRESULT STDMETHODCALLTYPE Hook_GetBuffer(IDXGISwapChain4* This, UINT Buffer, REFIID riid, void** ppSurface)
+{
     auto orig = Orig<PFN_IDXGISwapChain4_GetBuffer>(This, slot::IDXGISwapChain4_GetBuffer);
-    if (Internal()) return orig(This, Buffer, riid, ppSurface);
+    if (Internal())
+        return orig(This, Buffer, riid, ppSurface);
     HRESULT hr = orig(This, Buffer, riid, ppSurface);
-    if (FAILED(hr) || !ppSurface || !*ppSurface || !Tracker::Get().IdOf(This)) return hr;
+    if (FAILED(hr) || !ppSurface || !*ppSurface || !Tracker::Get().IdOf(This))
+        return hr;
     // A buffer the creation could not retrieve is tracked the first time the application gets it.
     ID3D12Resource* buffer = nullptr;
     {
         ScopedInternal internal;
-        if (FAILED(((IUnknown*)*ppSurface)->QueryInterface(IID_PPV_ARGS(&buffer))) || !buffer) return hr;
+        if (FAILED(((IUnknown*)*ppSurface)->QueryInterface(IID_PPV_ARGS(&buffer))) || !buffer)
+            return hr;
         buffer->Release();
     }
-    if (!KnownBackBuffer(This, buffer)) TrackBackBuffer(This, Buffer, buffer);
+    if (!KnownBackBuffer(This, buffer))
+        TrackBackBuffer(This, Buffer, buffer);
     return hr;
 }
 
 // ---------------------------------------------------------------------------------------------
 // IDXGIFactory: swap chains and adapters
 
-HRESULT STDMETHODCALLTYPE Hook_CreateSwapChain(IDXGIFactory7* This, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain) {
+HRESULT STDMETHODCALLTYPE Hook_CreateSwapChain(IDXGIFactory7* This, IUnknown* pDevice, DXGI_SWAP_CHAIN_DESC* pDesc, IDXGISwapChain** ppSwapChain)
+{
     auto orig = Orig<PFN_IDXGIFactory7_CreateSwapChain>(This, slot::IDXGIFactory7_CreateSwapChain);
-    if (Internal()) return orig(This, pDevice, pDesc, ppSwapChain);
+    if (Internal())
+        return orig(This, pDevice, pDesc, ppSwapChain);
     HRESULT hr = orig(This, pDevice, pDesc, ppSwapChain);
-    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain) return hr;
+    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain)
+        return hr;
     ID3D12CommandQueue* queue = QueueOf(pDevice);
-    if (!queue) return hr;
+    if (!queue)
+        return hr;
     Args args;
     args.ref("pDevice", queue, "ID3D12CommandQueue");
-    if (pDesc) Write(args.key("pDesc"), *pDesc); else args.null("pDesc");
+    if (pDesc)
+        Write(args.key("pDesc"), *pDesc);
+    else
+        args.null("pDesc");
     RegisterSwapChain(*ppSwapChain, queue, "CreateSwapChain", args.str());
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForHwnd(IDXGIFactory7* This, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
+HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForHwnd(IDXGIFactory7* This, IUnknown* pDevice, HWND hWnd, const DXGI_SWAP_CHAIN_DESC1* pDesc, const DXGI_SWAP_CHAIN_FULLSCREEN_DESC* pFullscreenDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
+{
     auto orig = Orig<PFN_IDXGIFactory7_CreateSwapChainForHwnd>(This, slot::IDXGIFactory7_CreateSwapChainForHwnd);
-    if (Internal()) return orig(This, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
+    if (Internal())
+        return orig(This, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
     HRESULT hr = orig(This, pDevice, hWnd, pDesc, pFullscreenDesc, pRestrictToOutput, ppSwapChain);
-    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain) return hr;
+    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain)
+        return hr;
     ID3D12CommandQueue* queue = QueueOf(pDevice);
-    if (!queue) return hr;
+    if (!queue)
+        return hr;
     Args args;
     args.ref("pDevice", queue, "ID3D12CommandQueue").ptr("hWnd", hWnd);
-    if (pDesc) Write(args.key("pDesc"), *pDesc); else args.null("pDesc");
-    if (pFullscreenDesc) Write(args.key("pFullscreenDesc"), *pFullscreenDesc); else args.null("pFullscreenDesc");
+    if (pDesc)
+        Write(args.key("pDesc"), *pDesc);
+    else
+        args.null("pDesc");
+    if (pFullscreenDesc)
+        Write(args.key("pFullscreenDesc"), *pFullscreenDesc);
+    else
+        args.null("pFullscreenDesc");
     args.ptr("pRestrictToOutput", pRestrictToOutput);
     RegisterSwapChain(*ppSwapChain, queue, "CreateSwapChainForHwnd", args.str());
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForCoreWindow(IDXGIFactory7* This, IUnknown* pDevice, IUnknown* pWindow, const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
+HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForCoreWindow(IDXGIFactory7* This, IUnknown* pDevice, IUnknown* pWindow, const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
+{
     auto orig = Orig<PFN_IDXGIFactory7_CreateSwapChainForCoreWindow>(This, slot::IDXGIFactory7_CreateSwapChainForCoreWindow);
-    if (Internal()) return orig(This, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
+    if (Internal())
+        return orig(This, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
     HRESULT hr = orig(This, pDevice, pWindow, pDesc, pRestrictToOutput, ppSwapChain);
-    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain) return hr;
+    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain)
+        return hr;
     ID3D12CommandQueue* queue = QueueOf(pDevice);
-    if (!queue) return hr;
+    if (!queue)
+        return hr;
     Args args;
     args.ref("pDevice", queue, "ID3D12CommandQueue").ptr("pWindow", pWindow);
-    if (pDesc) Write(args.key("pDesc"), *pDesc); else args.null("pDesc");
+    if (pDesc)
+        Write(args.key("pDesc"), *pDesc);
+    else
+        args.null("pDesc");
     args.ptr("pRestrictToOutput", pRestrictToOutput);
     RegisterSwapChain(*ppSwapChain, queue, "CreateSwapChainForCoreWindow", args.str());
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForComposition(IDXGIFactory7* This, IUnknown* pDevice, const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain) {
+HRESULT STDMETHODCALLTYPE Hook_CreateSwapChainForComposition(IDXGIFactory7* This, IUnknown* pDevice, const DXGI_SWAP_CHAIN_DESC1* pDesc, IDXGIOutput* pRestrictToOutput, IDXGISwapChain1** ppSwapChain)
+{
     auto orig = Orig<PFN_IDXGIFactory7_CreateSwapChainForComposition>(This, slot::IDXGIFactory7_CreateSwapChainForComposition);
-    if (Internal()) return orig(This, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
+    if (Internal())
+        return orig(This, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
     HRESULT hr = orig(This, pDevice, pDesc, pRestrictToOutput, ppSwapChain);
-    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain) return hr;
+    if (FAILED(hr) || !ppSwapChain || !*ppSwapChain)
+        return hr;
     ID3D12CommandQueue* queue = QueueOf(pDevice);
-    if (!queue) return hr;
+    if (!queue)
+        return hr;
     Args args;
     args.ref("pDevice", queue, "ID3D12CommandQueue");
-    if (pDesc) Write(args.key("pDesc"), *pDesc); else args.null("pDesc");
+    if (pDesc)
+        Write(args.key("pDesc"), *pDesc);
+    else
+        args.null("pDesc");
     args.ptr("pRestrictToOutput", pRestrictToOutput);
     RegisterSwapChain(*ppSwapChain, queue, "CreateSwapChainForComposition", args.str());
     return hr;
 }
 
 /** An adapter returned through a REFIID/void** pair: hooked through the IDXGIAdapter it also is. */
-void HookAdapterUnknown(void* object) {
-    if (!object) return;
+void HookAdapterUnknown(void* object)
+{
+    if (!object)
+        return;
     IDXGIAdapter* adapter = nullptr;
     {
         ScopedInternal internal;
-        if (FAILED(((IUnknown*)object)->QueryInterface(IID_PPV_ARGS(&adapter))) || !adapter) return;
+        if (FAILED(((IUnknown*)object)->QueryInterface(IID_PPV_ARGS(&adapter))) || !adapter)
+            return;
         adapter->Release();
     }
     HookAdapter(adapter);
 }
 
-HRESULT STDMETHODCALLTYPE Hook_EnumAdapters(IDXGIFactory7* This, UINT Adapter, IDXGIAdapter** ppAdapter) {
+HRESULT STDMETHODCALLTYPE Hook_EnumAdapters(IDXGIFactory7* This, UINT Adapter, IDXGIAdapter** ppAdapter)
+{
     auto orig = Orig<PFN_IDXGIFactory7_EnumAdapters>(This, slot::IDXGIFactory7_EnumAdapters);
-    if (Internal()) return orig(This, Adapter, ppAdapter);
+    if (Internal())
+        return orig(This, Adapter, ppAdapter);
     HRESULT hr = orig(This, Adapter, ppAdapter);
-    if (SUCCEEDED(hr) && ppAdapter && *ppAdapter) HookAdapter(*ppAdapter);
+    if (SUCCEEDED(hr) && ppAdapter && *ppAdapter)
+        HookAdapter(*ppAdapter);
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_EnumAdapters1(IDXGIFactory7* This, UINT Adapter, IDXGIAdapter1** ppAdapter) {
+HRESULT STDMETHODCALLTYPE Hook_EnumAdapters1(IDXGIFactory7* This, UINT Adapter, IDXGIAdapter1** ppAdapter)
+{
     auto orig = Orig<PFN_IDXGIFactory7_EnumAdapters1>(This, slot::IDXGIFactory7_EnumAdapters1);
-    if (Internal()) return orig(This, Adapter, ppAdapter);
+    if (Internal())
+        return orig(This, Adapter, ppAdapter);
     HRESULT hr = orig(This, Adapter, ppAdapter);
-    if (SUCCEEDED(hr) && ppAdapter && *ppAdapter) HookAdapter(*ppAdapter);
+    if (SUCCEEDED(hr) && ppAdapter && *ppAdapter)
+        HookAdapter(*ppAdapter);
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_EnumAdapterByLuid(IDXGIFactory7* This, LUID AdapterLuid, REFIID riid, void** ppvAdapter) {
+HRESULT STDMETHODCALLTYPE Hook_EnumAdapterByLuid(IDXGIFactory7* This, LUID AdapterLuid, REFIID riid, void** ppvAdapter)
+{
     auto orig = Orig<PFN_IDXGIFactory7_EnumAdapterByLuid>(This, slot::IDXGIFactory7_EnumAdapterByLuid);
-    if (Internal()) return orig(This, AdapterLuid, riid, ppvAdapter);
+    if (Internal())
+        return orig(This, AdapterLuid, riid, ppvAdapter);
     HRESULT hr = orig(This, AdapterLuid, riid, ppvAdapter);
-    if (SUCCEEDED(hr) && ppvAdapter) HookAdapterUnknown(*ppvAdapter);
+    if (SUCCEEDED(hr) && ppvAdapter)
+        HookAdapterUnknown(*ppvAdapter);
     return hr;
 }
 
-HRESULT STDMETHODCALLTYPE Hook_EnumAdapterByGpuPreference(IDXGIFactory7* This, UINT Adapter, DXGI_GPU_PREFERENCE GpuPreference, REFIID riid, void** ppvAdapter) {
+HRESULT STDMETHODCALLTYPE Hook_EnumAdapterByGpuPreference(IDXGIFactory7* This, UINT Adapter, DXGI_GPU_PREFERENCE GpuPreference, REFIID riid, void** ppvAdapter)
+{
     auto orig = Orig<PFN_IDXGIFactory7_EnumAdapterByGpuPreference>(This, slot::IDXGIFactory7_EnumAdapterByGpuPreference);
-    if (Internal()) return orig(This, Adapter, GpuPreference, riid, ppvAdapter);
+    if (Internal())
+        return orig(This, Adapter, GpuPreference, riid, ppvAdapter);
     HRESULT hr = orig(This, Adapter, GpuPreference, riid, ppvAdapter);
-    if (SUCCEEDED(hr) && ppvAdapter) HookAdapterUnknown(*ppvAdapter);
+    if (SUCCEEDED(hr) && ppvAdapter)
+        HookAdapterUnknown(*ppvAdapter);
     return hr;
 }
 
 }  // namespace
 
-void HookCommandQueue(ID3D12CommandQueue* queue) {
+void HookCommandQueue(ID3D12CommandQueue* queue)
+{
+    // clang-format off
     HookD3D12Object(queue, "ID3D12CommandQueue", slot::ID3D12CommandQueue_Count, {
         {slot::ID3D12CommandQueue_ExecuteCommandLists, (void*)&Hook_ExecuteCommandLists},
         {slot::ID3D12CommandQueue_Signal, (void*)&Hook_Signal},
         {slot::ID3D12CommandQueue_Wait, (void*)&Hook_Wait},
     });
+    // clang-format on
 }
 
-void HookSwapChain(IDXGISwapChain* swapChain) {
-    if (!swapChain || VtableHooked(swapChain)) return;
+void HookSwapChain(IDXGISwapChain* swapChain)
+{
+    if (!swapChain || VtableHooked(swapChain))
+        return;
     // IDXGISwapChain: 18 slots; 1: 24; 2: 36; 3: 40; 4: 41.
     static const VersionCount versions[] = {
         {&__uuidof(IDXGISwapChain4), slot::IDXGISwapChain4_Count},
@@ -440,6 +551,7 @@ void HookSwapChain(IDXGISwapChain* swapChain) {
         {&__uuidof(IDXGISwapChain1), slot::IDXGISwapChain4_IsTemporaryMonoSupported + 1},
     };
     uint32_t count = VtableCount(swapChain, versions, 4, slot::IDXGISwapChain4_GetLastPresentCount + 1);
+    // clang-format off
     HookDxgiObject(swapChain, "IDXGISwapChain", count, {
         {slot::IDXGISwapChain4_Present, (void*)&Hook_Present},
         {slot::IDXGISwapChain4_Present1, (void*)&Hook_Present1},
@@ -448,10 +560,13 @@ void HookSwapChain(IDXGISwapChain* swapChain) {
         {slot::IDXGISwapChain4_GetBuffer, (void*)&Hook_GetBuffer},
         {slot::IDXGISwapChain4_GetFrameLatencyWaitableObject, (void*)&Hook_GetFrameLatencyWaitableObject},
     });
+    // clang-format on
 }
 
-void HookFactory(IDXGIFactory* factory) {
-    if (!factory || VtableHooked(factory)) return;
+void HookFactory(IDXGIFactory* factory)
+{
+    if (!factory || VtableHooked(factory))
+        return;
     // IDXGIFactory: 13 slots; 1: 14; 2: 25; 3: 26; 4: 28; 5: 29; 6: 30; 7: 32.
     static const VersionCount versions[] = {
         {&__uuidof(IDXGIFactory7), slot::IDXGIFactory7_Count},
@@ -463,6 +578,7 @@ void HookFactory(IDXGIFactory* factory) {
         {&__uuidof(IDXGIFactory1), slot::IDXGIFactory7_IsCurrent + 1},
     };
     uint32_t count = VtableCount(factory, versions, 7, slot::IDXGIFactory7_EnumAdapters1 + 1);
+    // clang-format off
     HookDxgiObject(factory, "IDXGIFactory", count, {
         {slot::IDXGIFactory7_CreateSwapChain, (void*)&Hook_CreateSwapChain},
         {slot::IDXGIFactory7_CreateSwapChainForHwnd, (void*)&Hook_CreateSwapChainForHwnd},
@@ -473,10 +589,13 @@ void HookFactory(IDXGIFactory* factory) {
         {slot::IDXGIFactory7_EnumAdapterByLuid, (void*)&Hook_EnumAdapterByLuid},
         {slot::IDXGIFactory7_EnumAdapterByGpuPreference, (void*)&Hook_EnumAdapterByGpuPreference},
     });
+    // clang-format on
 }
 
-void HookAdapter(IDXGIAdapter* adapter) {
-    if (!adapter || VtableHooked(adapter)) return;
+void HookAdapter(IDXGIAdapter* adapter)
+{
+    if (!adapter || VtableHooked(adapter))
+        return;
     // IDXGIAdapter: 10 slots; 1: 11; 2: 12; 3: 18; 4: 19.
     static const VersionCount versions[] = {
         {&__uuidof(IDXGIAdapter4), slot::IDXGIAdapter4_Count},

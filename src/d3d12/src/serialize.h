@@ -11,7 +11,8 @@
 
 #include "common.h"
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /**
  * An enum as the value the generated name tables hold: every D3D12/DXGI enum is 32 bits, and the
@@ -19,7 +20,10 @@ namespace dxinsp {
  * int-backed enum reads -1. Use it for `w.Enum(ToString_X(EnumValue(v)), EnumValue(v))`.
  */
 template <typename T>
-inline int64_t EnumValue(T v) { return (int64_t)(uint32_t)(int64_t)v; }
+inline int64_t EnumValue(T v)
+{
+    return (int64_t)(uint32_t)(int64_t)v;
+}
 
 // DXGI
 void Write(JsonWriter& w, const DXGI_SAMPLE_DESC& v);

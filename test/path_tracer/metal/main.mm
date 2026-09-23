@@ -37,11 +37,12 @@
 
 #include "../scene.h"
 
-namespace {
+namespace
+{
 
 // The layouts match test/path_tracer/scene.h: packed_float3 is the 12-byte float3 the other
 // APIs have, where MSL's float3 is 16 bytes.
-NSString *const kShaderSource = @R"MSL(
+NSString* const kShaderSource = @R"MSL(
 #include <metal_stdlib>
 using namespace metal;
 using namespace raytracing;
@@ -270,12 +271,14 @@ kernel void pathTrace(uint2 pixel [[thread_position_in_grid]],
 }
 )MSL";
 
-struct InstanceInfo {
+struct InstanceInfo
+{
     uint32_t firstSphere;
     uint32_t material;
 };
 
-struct Options {
+struct Options
+{
     NSUInteger frameLimit = 0;   // 0: run until the window is closed
     CGFloat width = 960, height = 540;
     uint32_t samplesPerFrame = 1;
@@ -286,7 +289,8 @@ struct Options {
 
 constexpr uint32_t M = rtiow::kMaterialCount;
 
-[[noreturn]] void Fail(NSString *what, NSError *error) {
+[[noreturn]] void Fail(NSString* what, NSError* error)
+{
     NSLog(@"%@: %@", what, error);
     exit(1);
 }
@@ -296,14 +300,15 @@ constexpr uint32_t M = rtiow::kMaterialCount;
 // ------------------------------------------------------------------------------------------
 
 @interface Renderer : NSObject
-- (instancetype)initWithLayer:(CAMetalLayer *)layer options:(const Options &)options;
+- (instancetype)initWithLayer:(CAMetalLayer*)layer options:(const Options&)options;
 - (void)renderFrame;
 @property(nonatomic, readonly) NSUInteger frameCount;
 @end
 
-@implementation Renderer {
+@implementation Renderer
+{
     Options _options;
-    CAMetalLayer *_layer;
+    CAMetalLayer* _layer;
     id<MTLDevice> _device;
     id<MTLCommandQueue> _queue;
     id<MTLComputePipelineState> _pipeline;
@@ -313,11 +318,11 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     id<MTLBuffer> _spheres;
     id<MTLBuffer> _instanceInfo;
     id<MTLBuffer> _aabbs[M];
-    MTLPrimitiveAccelerationStructureDescriptor *_blasDescriptors[M];
+    MTLPrimitiveAccelerationStructureDescriptor* _blasDescriptors[M];
     id<MTLAccelerationStructure> _blas[M];
     NSUInteger _blasScratchOffset[M];
     id<MTLBuffer> _instances;
-    MTLInstanceAccelerationStructureDescriptor *_tlasDescriptor;
+    MTLInstanceAccelerationStructureDescriptor* _tlasDescriptor;
     id<MTLAccelerationStructure> _tlas;
     id<MTLBuffer> _scratch;
 
@@ -328,8 +333,10 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     uint32_t _accumulated;   // frames in the running mean
 }
 
-- (instancetype)initWithLayer:(CAMetalLayer *)layer options:(const Options &)options {
-    if (!(self = [super init])) return nil;
+- (instancetype)initWithLayer:(CAMetalLayer*)layer options:(const Options&)options
+{
+    if (!(self = [super init]))
+        return nil;
     _options = options;
     _layer = layer;
     _device = layer.device;
@@ -342,18 +349,20 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     return self;
 }
 
-- (void)createPipeline {
-    NSError *error = nil;
+- (void)createPipeline
+{
+    NSError* error = nil;
     id<MTLLibrary> library = [_device newLibraryWithSource:kShaderSource options:nil error:&error];
-    if (!library) Fail(@"shader compilation failed", error);
+    if (!library)
+        Fail(@"shader compilation failed", error);
     library.label = @"path tracer shaders";
 
     // The intersection function is linked into the kernel's pipeline, which then hands out the
     // handle the function table holds.
     id<MTLFunction> intersection = [library newFunctionWithName:@"sphereIntersection"];
-    MTLLinkedFunctions *linked = [MTLLinkedFunctions linkedFunctions];
+    MTLLinkedFunctions* linked = [MTLLinkedFunctions linkedFunctions];
     linked.functions = @[ intersection ];
-    MTLComputePipelineDescriptor *descriptor = [[MTLComputePipelineDescriptor alloc] init];
+    MTLComputePipelineDescriptor* descriptor = [[MTLComputePipelineDescriptor alloc] init];
     descriptor.label = @"path tracer pipeline";
     descriptor.computeFunction = [library newFunctionWithName:@"pathTrace"];
     descriptor.linkedFunctions = linked;
@@ -361,26 +370,29 @@ constexpr uint32_t M = rtiow::kMaterialCount;
                                                        options:MTLPipelineOptionNone
                                                     reflection:nil
                                                          error:&error];
-    if (!_pipeline) Fail(@"pipeline creation failed", error);
+    if (!_pipeline)
+        Fail(@"pipeline creation failed", error);
 
-    MTLIntersectionFunctionTableDescriptor *tableDescriptor = [[MTLIntersectionFunctionTableDescriptor alloc] init];
+    MTLIntersectionFunctionTableDescriptor* tableDescriptor = [[MTLIntersectionFunctionTableDescriptor alloc] init];
     tableDescriptor.functionCount = 1;
     _functions = [_pipeline newIntersectionFunctionTableWithDescriptor:tableDescriptor];
     _functions.label = @"sphere intersection table";
     [_functions setFunction:[_pipeline functionHandleWithFunction:intersection] atIndex:0];
 }
 
-- (void)createScene {
+- (void)createScene
+{
     _scene = rtiow::MakeScene();
     NSLog(@"scene: %zu spheres (%u Lambertian, %u metal, %u dielectric)", _scene.spheres.size(),
-          _scene.count[rtiow::kLambertian], _scene.count[rtiow::kMetal], _scene.count[rtiow::kDielectric]);
+        _scene.count[rtiow::kLambertian], _scene.count[rtiow::kMetal], _scene.count[rtiow::kDielectric]);
 
     _spheres = [_device newBufferWithBytes:_scene.spheres.data()
                                     length:_scene.spheres.size() * sizeof(rtiow::Sphere)
                                    options:MTLResourceStorageModeShared];
     _spheres.label = @"spheres";
     InstanceInfo info[M];
-    for (uint32_t m = 0; m < M; ++m) info[m] = {_scene.first[m], m};
+    for (uint32_t m = 0; m < M; ++m)
+        info[m] = {_scene.first[m], m};
     _instanceInfo = [_device newBufferWithBytes:info length:sizeof(info) options:MTLResourceStorageModeShared];
     _instanceInfo.label = @"instance materials";
     // The intersection function reads both through the table's own bindings.
@@ -391,16 +403,17 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     // stretch of the scratch buffer.
     static_assert(sizeof(rtiow::Aabb) == sizeof(MTLAxisAlignedBoundingBox));
     NSUInteger blasScratch = 0;
-    NSMutableArray<id<MTLAccelerationStructure>> *instanced = [NSMutableArray array];
-    for (uint32_t m = 0; m < M; ++m) {
+    NSMutableArray<id<MTLAccelerationStructure>>* instanced = [NSMutableArray array];
+    for (uint32_t m = 0; m < M; ++m)
+    {
         std::vector<rtiow::Aabb> boxes = rtiow::Bounds(_scene, (rtiow::Material)m);
-        NSString *material = [NSString stringWithUTF8String:rtiow::MaterialName(m)];
+        NSString* material = [NSString stringWithUTF8String:rtiow::MaterialName(m)];
         _aabbs[m] = [_device newBufferWithBytes:boxes.data()
                                          length:boxes.size() * sizeof(rtiow::Aabb)
                                         options:MTLResourceStorageModeShared];
         _aabbs[m].label = [material stringByAppendingString:@" AABBs"];
 
-        MTLAccelerationStructureBoundingBoxGeometryDescriptor *geometry =
+        MTLAccelerationStructureBoundingBoxGeometryDescriptor* geometry =
             [MTLAccelerationStructureBoundingBoxGeometryDescriptor descriptor];
         geometry.boundingBoxBuffer = _aabbs[m];
         geometry.boundingBoxBufferOffset = 0;
@@ -424,11 +437,13 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     _instances = [_device newBufferWithLength:M * sizeof(MTLAccelerationStructureInstanceDescriptor)
                                       options:MTLResourceStorageModeShared];
     _instances.label = @"scene instances";
-    auto *records = (MTLAccelerationStructureInstanceDescriptor *)_instances.contents;
-    for (uint32_t m = 0; m < M; ++m) {
-        MTLAccelerationStructureInstanceDescriptor &r = records[m];
+    auto* records = (MTLAccelerationStructureInstanceDescriptor*)_instances.contents;
+    for (uint32_t m = 0; m < M; ++m)
+    {
+        MTLAccelerationStructureInstanceDescriptor& r = records[m];
         memset(&r, 0, sizeof(r));
-        for (int i = 0; i < 3; ++i) r.transformationMatrix.columns[i].elements[i] = 1.0f;
+        for (int i = 0; i < 3; ++i)
+            r.transformationMatrix.columns[i].elements[i] = 1.0f;
         r.options = MTLAccelerationStructureInstanceOptionOpaque;
         r.mask = 0xFF;
         r.intersectionFunctionTableOffset = 0;
@@ -449,22 +464,26 @@ constexpr uint32_t M = rtiow::kMaterialCount;
                                     options:MTLResourceStorageModePrivate];
     _scratch.label = @"build scratch";
 
-    if (!_options.rebuild) {
+    if (!_options.rebuild)
+    {
         id<MTLCommandBuffer> commands = [_queue commandBuffer];
         commands.label = @"build";
         [self encodeBuilds:commands];
         [commands commit];
         [commands waitUntilCompleted];
-        if (commands.error) Fail(@"building the acceleration structures failed", commands.error);
+        if (commands.error)
+            Fail(@"building the acceleration structures failed", commands.error);
     }
 }
 
 // The three bottom levels in one encoder, then the top level over them in a second: the encoders
 // run in order, since the top level reads what the first one writes.
-- (void)encodeBuilds:(id<MTLCommandBuffer>)commands {
+- (void)encodeBuilds:(id<MTLCommandBuffer>)commands
+{
     id<MTLAccelerationStructureCommandEncoder> bottom = [commands accelerationStructureCommandEncoder];
     bottom.label = @"build bottom levels";
-    for (uint32_t m = 0; m < M; ++m) {
+    for (uint32_t m = 0; m < M; ++m)
+    {
         [bottom buildAccelerationStructure:_blas[m]
                                 descriptor:_blasDescriptors[m]
                              scratchBuffer:_scratch
@@ -479,11 +498,12 @@ constexpr uint32_t M = rtiow::kMaterialCount;
 }
 
 // The running mean and the output at the drawable's size.
-- (void)createTextures {
+- (void)createTextures
+{
     const CGSize size = _layer.drawableSize;
     const NSUInteger width = (NSUInteger)size.width, height = (NSUInteger)size.height;
 
-    MTLTextureDescriptor *accumulation = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
+    MTLTextureDescriptor* accumulation = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatRGBA32Float
                                                                                             width:width
                                                                                            height:height
                                                                                         mipmapped:NO];
@@ -493,7 +513,7 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     _accumulation.label = @"path tracer accumulation";
 
     // The drawable's format, so the blit is a plain copy.
-    MTLTextureDescriptor *output = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:_layer.pixelFormat
+    MTLTextureDescriptor* output = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:_layer.pixelFormat
                                                                                       width:width
                                                                                      height:height
                                                                                   mipmapped:NO];
@@ -506,16 +526,19 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     _accumulated = 0;
 }
 
-- (void)renderFrame {
+- (void)renderFrame
+{
     id<CAMetalDrawable> drawable = [_layer nextDrawable];
-    if (!drawable) return;
+    if (!drawable)
+        return;
 
     id<MTLCommandBuffer> commands = [_queue commandBuffer];
     commands.label = @"frame";
-    if (_options.rebuild) [self encodeBuilds:commands];
+    if (_options.rebuild)
+        [self encodeBuilds:commands];
 
     rtiow::FrameParams params{_options.accumulate ? _accumulated : (uint32_t)_frameCount, _options.samplesPerFrame,
-                              _options.maxDepth, _options.accumulate ? 1u : 0u};
+        _options.maxDepth, _options.accumulate ? 1u : 0u};
     id<MTLComputeCommandEncoder> trace = [commands computeCommandEncoder];
     trace.label = @"path trace";
     [trace setComputePipelineState:_pipeline];
@@ -528,7 +551,8 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     [trace setTexture:_accumulation atIndex:0];
     [trace setTexture:_output atIndex:1];
     // What the kernel reaches only through the top level: the encoder does not see it otherwise.
-    for (uint32_t m = 0; m < M; ++m) [trace useResource:_blas[m] usage:MTLResourceUsageRead];
+    for (uint32_t m = 0; m < M; ++m)
+        [trace useResource:_blas[m] usage:MTLResourceUsageRead];
     const NSUInteger w = _pipeline.threadExecutionWidth;
     const NSUInteger h = std::max<NSUInteger>(1, _pipeline.maxTotalThreadsPerThreadgroup / w);
     [trace dispatchThreads:MTLSizeMake(_output.width, _output.height, 1) threadsPerThreadgroup:MTLSizeMake(w, h, 1)];
@@ -545,7 +569,7 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     _accumulated++;
     if (_frameCount % 100 == 0)
         NSLog(@"frame %lu: %u samples per pixel", (unsigned long)_frameCount,
-              (_options.accumulate ? _accumulated : 1) * _options.samplesPerFrame);
+            (_options.accumulate ? _accumulated : 1) * _options.samplesPerFrame);
 }
 
 @end
@@ -556,19 +580,23 @@ constexpr uint32_t M = rtiow::kMaterialCount;
 @property(nonatomic) Options options;
 @end
 
-@implementation AppDelegate {
-    NSWindow *_window;
-    Renderer *_renderer;
-    NSTimer *_timer;
+@implementation AppDelegate
+{
+    NSWindow* _window;
+    Renderer* _renderer;
+    NSTimer* _timer;
 }
 
-- (void)applicationDidFinishLaunching:(NSNotification *)notification {
+- (void)applicationDidFinishLaunching:(NSNotification*)notification
+{
     id<MTLDevice> device = MTLCreateSystemDefaultDevice();
-    if (!device) {
+    if (!device)
+    {
         NSLog(@"no Metal device");
         exit(1);
     }
-    if (!device.supportsRaytracing) {
+    if (!device.supportsRaytracing)
+    {
         NSLog(@"%@ has no ray tracing", device.name);
         exit(1);
     }
@@ -582,7 +610,7 @@ constexpr uint32_t M = rtiow::kMaterialCount;
                                               defer:NO];
     _window.title = @"GPU Inspector test: Metal path tracer";
 
-    CAMetalLayer *layer = [CAMetalLayer layer];
+    CAMetalLayer* layer = [CAMetalLayer layer];
     layer.device = device;
     layer.pixelFormat = MTLPixelFormatBGRA8Unorm;   // UNORM: the kernel applies the book's gamma itself
     layer.framebufferOnly = NO;                     // the blit writes to it, and a capture reads it back
@@ -590,7 +618,7 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     layer.contentsScale = scale;
     layer.drawableSize = CGSizeMake(frame.size.width * scale, frame.size.height * scale);
 
-    NSView *view = [[NSView alloc] initWithFrame:frame];
+    NSView* view = [[NSView alloc] initWithFrame:frame];
     view.wantsLayer = YES;
     view.layer = layer;
     _window.contentView = view;
@@ -601,41 +629,54 @@ constexpr uint32_t M = rtiow::kMaterialCount;
     _renderer = [[Renderer alloc] initWithLayer:layer options:options];
     _timer = [NSTimer scheduledTimerWithTimeInterval:1.0 / 60.0
                                              repeats:YES
-                                               block:^(NSTimer *t) {
-        [self->_renderer renderFrame];
-        if (options.frameLimit > 0 && self->_renderer.frameCount >= options.frameLimit) {
-            NSLog(@"rendered %lu frames", (unsigned long)self->_renderer.frameCount);
-            [t invalidate];
-            [NSApp terminate:nil];
-        }
-    }];
+                                               block:^(NSTimer* t) {
+                                                   [self->_renderer renderFrame];
+                                                   if (options.frameLimit > 0 && self->_renderer.frameCount >= options.frameLimit)
+                                                   {
+                                                       NSLog(@"rendered %lu frames", (unsigned long)self->_renderer.frameCount);
+                                                       [t invalidate];
+                                                       [NSApp terminate:nil];
+                                                   }
+                                               }];
 }
 
-- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication *)app {
+- (BOOL)applicationShouldTerminateAfterLastWindowClosed:(NSApplication*)app
+{
     return YES;
 }
 
 @end
 
-int main(int argc, const char *argv[]) {
+int main(int argc, const char* argv[])
+{
     Options options;
-    for (int i = 1; i < argc; i++) {
-        if (!strcmp(argv[i], "--frames") && i + 1 < argc) options.frameLimit = (NSUInteger)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--width") && i + 1 < argc) options.width = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--height") && i + 1 < argc) options.height = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--spp") && i + 1 < argc) options.samplesPerFrame = (uint32_t)std::max(1, atoi(argv[++i]));
-        else if (!strcmp(argv[i], "--depth") && i + 1 < argc) options.maxDepth = (uint32_t)std::max(1, atoi(argv[++i]));
-        else if (!strcmp(argv[i], "--no-accumulate")) options.accumulate = false;
-        else if (!strcmp(argv[i], "--rebuild")) options.rebuild = true;
-        else {
+    for (int i = 1; i < argc; i++)
+    {
+        if (!strcmp(argv[i], "--frames") && i + 1 < argc)
+            options.frameLimit = (NSUInteger)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--width") && i + 1 < argc)
+            options.width = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--height") && i + 1 < argc)
+            options.height = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--spp") && i + 1 < argc)
+            options.samplesPerFrame = (uint32_t)std::max(1, atoi(argv[++i]));
+        else if (!strcmp(argv[i], "--depth") && i + 1 < argc)
+            options.maxDepth = (uint32_t)std::max(1, atoi(argv[++i]));
+        else if (!strcmp(argv[i], "--no-accumulate"))
+            options.accumulate = false;
+        else if (!strcmp(argv[i], "--rebuild"))
+            options.rebuild = true;
+        else
+        {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return 1;
         }
     }
-    @autoreleasepool {
-        NSApplication *app = [NSApplication sharedApplication];
+    @autoreleasepool
+    {
+        NSApplication* app = [NSApplication sharedApplication];
         [app setActivationPolicy:NSApplicationActivationPolicyRegular];
-        AppDelegate *delegate = [[AppDelegate alloc] init];
+        AppDelegate* delegate = [[AppDelegate alloc] init];
         delegate.options = options;
         app.delegate = delegate;
         [app run];

@@ -27,7 +27,8 @@
 
 #include "mtl_decode.h"
 
-namespace mtlreplay {
+namespace mtlreplay
+{
 
 /**
  * The descriptor a build recorded, rebuilt. Nil with `error` set when the capture's JSON names a

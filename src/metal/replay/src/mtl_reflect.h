@@ -27,8 +27,10 @@
 
 #include "mtl_source.h"
 
-namespace mtlreplay {
+namespace mtlreplay
+{
 
+// clang-format off
 #define MTL_TABLE(T) ::mtlreplay::EnumTable{ ::mtlinsp::kEnum_##T, std::size(::mtlinsp::kEnum_##T), #T }
 
 #define R_UINT(f)     v.Uint(#f, (uint64_t)o.f, (uint64_t)d.f, ^(uint64_t x) { o.f = (__typeof__(o.f))x; })
@@ -39,13 +41,16 @@ namespace mtlreplay {
 #define R_FLAGS(f, T) v.Flags(#f, (uint64_t)o.f, (uint64_t)d.f, MTL_TABLE(T), ^(uint64_t x) { o.f = (__typeof__(o.f))x; })
 #define R_OBJECT(f, C) v.Object(#f, o.f, ^(id x) { o.f = (C)x; })
 #define R_LABEL()     v.Label(o.label, ^(NSString* x) { o.label = x; })
+// clang-format on
 
 // ---------------------------------------------------------------------------------------------
 // Resources
 
 /** TextureDescriptorArgs / TextureObjectArgs. A texture read back off the device reports the same
  *  property names its descriptor was built from, so one description serves both. */
-template <typename V> void Reflect(V& v, MTLTextureDescriptor* o, MTLTextureDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLTextureDescriptor* o, MTLTextureDescriptor* d)
+{
     R_ENUM(textureType, MTLTextureType);
     R_ENUM(pixelFormat, MTLPixelFormat);
     R_UINT(width);
@@ -62,7 +67,9 @@ template <typename V> void Reflect(V& v, MTLTextureDescriptor* o, MTLTextureDesc
 }
 
 /** HeapArgs. `allocatedSize` and the rest are the heap's own figures, not the descriptor's. */
-template <typename V> void Reflect(V& v, MTLHeapDescriptor* o, MTLHeapDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLHeapDescriptor* o, MTLHeapDescriptor* d)
+{
     R_UINT(size);
     R_ENUM(storageMode, MTLStorageMode);
     R_ENUM(cpuCacheMode, MTLCPUCacheMode);
@@ -71,7 +78,9 @@ template <typename V> void Reflect(V& v, MTLHeapDescriptor* o, MTLHeapDescriptor
 }
 
 /** SamplerArgs. Every member is written unconditionally, most of them as bare numbers. */
-template <typename V> void Reflect(V& v, MTLSamplerDescriptor* o, MTLSamplerDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLSamplerDescriptor* o, MTLSamplerDescriptor* d)
+{
     R_LABEL();
     R_ENUM(minFilter, MTLSamplerMinMagFilter);
     R_ENUM(magFilter, MTLSamplerMinMagFilter);
@@ -91,7 +100,9 @@ template <typename V> void Reflect(V& v, MTLSamplerDescriptor* o, MTLSamplerDesc
 // ---------------------------------------------------------------------------------------------
 // Pipeline state
 
-template <typename V> void Reflect(V& v, MTLStencilDescriptor* o, MTLStencilDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLStencilDescriptor* o, MTLStencilDescriptor* d)
+{
     R_ENUM(stencilCompareFunction, MTLCompareFunction);
     R_ENUM(stencilFailureOperation, MTLStencilOperation);
     R_ENUM(depthFailureOperation, MTLStencilOperation);
@@ -101,7 +112,9 @@ template <typename V> void Reflect(V& v, MTLStencilDescriptor* o, MTLStencilDesc
 }
 
 /** DepthStencilArgs. The two stencil faces are objects of their own, handled by the caller. */
-template <typename V> void Reflect(V& v, MTLDepthStencilDescriptor* o, MTLDepthStencilDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLDepthStencilDescriptor* o, MTLDepthStencilDescriptor* d)
+{
     R_LABEL();
     R_ENUM(depthCompareFunction, MTLCompareFunction);
     R_BOOL(depthWriteEnabled);
@@ -109,7 +122,8 @@ template <typename V> void Reflect(V& v, MTLDepthStencilDescriptor* o, MTLDepthS
 
 /** One entry of RenderPipelineArgs' `colorAttachments`, without its `index`. */
 template <typename V>
-void Reflect(V& v, MTLRenderPipelineColorAttachmentDescriptor* o, MTLRenderPipelineColorAttachmentDescriptor* d) {
+void Reflect(V& v, MTLRenderPipelineColorAttachmentDescriptor* o, MTLRenderPipelineColorAttachmentDescriptor* d)
+{
     R_ENUM(pixelFormat, MTLPixelFormat);
     R_BOOL(blendingEnabled);
     R_ENUM(sourceRGBBlendFactor, MTLBlendFactor);
@@ -121,20 +135,26 @@ void Reflect(V& v, MTLRenderPipelineColorAttachmentDescriptor* o, MTLRenderPipel
     R_FLAGS(writeMask, MTLColorWriteMask);
 }
 
-template <typename V> void Reflect(V& v, MTLVertexBufferLayoutDescriptor* o, MTLVertexBufferLayoutDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLVertexBufferLayoutDescriptor* o, MTLVertexBufferLayoutDescriptor* d)
+{
     R_UINT(stride);
     R_ENUM(stepFunction, MTLVertexStepFunction);
     R_UINT(stepRate);
 }
 
-template <typename V> void Reflect(V& v, MTLVertexAttributeDescriptor* o, MTLVertexAttributeDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLVertexAttributeDescriptor* o, MTLVertexAttributeDescriptor* d)
+{
     R_ENUM(format, MTLVertexFormat);
     R_UINT(offset);
     R_UINT(bufferIndex);
 }
 
 /** RenderPipelineArgs' scalars; the functions, vertex descriptor and attachments are the caller's. */
-template <typename V> void Reflect(V& v, MTLRenderPipelineDescriptor* o, MTLRenderPipelineDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLRenderPipelineDescriptor* o, MTLRenderPipelineDescriptor* d)
+{
     R_LABEL();
     R_UINT(rasterSampleCount);
     R_BOOL(alphaToCoverageEnabled);
@@ -149,7 +169,9 @@ template <typename V> void Reflect(V& v, MTLRenderPipelineDescriptor* o, MTLRend
 }
 
 /** ComputePipelineArgs' scalars; the function is the caller's. */
-template <typename V> void Reflect(V& v, MTLComputePipelineDescriptor* o, MTLComputePipelineDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLComputePipelineDescriptor* o, MTLComputePipelineDescriptor* d)
+{
     R_LABEL();
     R_BOOL(threadGroupSizeIsMultipleOfThreadExecutionWidth);
     R_UINT(maxTotalThreadsPerThreadgroup);
@@ -157,7 +179,9 @@ template <typename V> void Reflect(V& v, MTLComputePipelineDescriptor* o, MTLCom
 }
 
 /** TileRenderPipelineArgs' scalars. */
-template <typename V> void Reflect(V& v, MTLTileRenderPipelineDescriptor* o, MTLTileRenderPipelineDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLTileRenderPipelineDescriptor* o, MTLTileRenderPipelineDescriptor* d)
+{
     R_LABEL();
     R_UINT(rasterSampleCount);
     R_BOOL(threadgroupSizeMatchesTileSize);
@@ -166,7 +190,8 @@ template <typename V> void Reflect(V& v, MTLTileRenderPipelineDescriptor* o, MTL
 
 /** IndirectCommandBufferArgs. */
 template <typename V>
-void Reflect(V& v, MTLIndirectCommandBufferDescriptor* o, MTLIndirectCommandBufferDescriptor* d) {
+void Reflect(V& v, MTLIndirectCommandBufferDescriptor* o, MTLIndirectCommandBufferDescriptor* d)
+{
     R_FLAGS(commandTypes, MTLIndirectCommandType);
     R_BOOL(inheritPipelineState);
     R_BOOL(inheritBuffers);
@@ -180,7 +205,9 @@ void Reflect(V& v, MTLIndirectCommandBufferDescriptor* o, MTLIndirectCommandBuff
 
 /** WritePassAttachment's shared members; `clearColor` / `clearDepth` / `clearStencil` and the
  *  attachment's `index` are the caller's, since they differ by aspect. */
-template <typename V> void Reflect(V& v, MTLRenderPassAttachmentDescriptor* o, MTLRenderPassAttachmentDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLRenderPassAttachmentDescriptor* o, MTLRenderPassAttachmentDescriptor* d)
+{
     R_OBJECT(texture, id<MTLTexture>);
     R_UINT(level);
     R_UINT(slice);
@@ -194,7 +221,9 @@ template <typename V> void Reflect(V& v, MTLRenderPassAttachmentDescriptor* o, M
 }
 
 /** RenderPassArgs' scalars; the attachments are the caller's. */
-template <typename V> void Reflect(V& v, MTLRenderPassDescriptor* o, MTLRenderPassDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLRenderPassDescriptor* o, MTLRenderPassDescriptor* d)
+{
     R_OBJECT(visibilityResultBuffer, id<MTLBuffer>);
     R_UINT(renderTargetArrayLength);
     R_UINT(renderTargetWidth);
@@ -206,7 +235,9 @@ template <typename V> void Reflect(V& v, MTLRenderPassDescriptor* o, MTLRenderPa
     R_UINT(tileHeight);
 }
 
-template <typename V> void Reflect(V& v, MTLComputePassDescriptor* o, MTLComputePassDescriptor* d) {
+template <typename V>
+void Reflect(V& v, MTLComputePassDescriptor* o, MTLComputePassDescriptor* d)
+{
     R_ENUM(dispatchType, MTLDispatchType);
 }
 

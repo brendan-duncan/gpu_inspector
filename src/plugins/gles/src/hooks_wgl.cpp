@@ -21,8 +21,10 @@
 
 #include <cstring>
 
-namespace glesinsp {
-namespace {
+namespace glesinsp
+{
+namespace
+{
 
 constexpr int kContextMajorVersion = 0x2091;       // WGL_CONTEXT_MAJOR_VERSION_ARB
 constexpr int kContextMinorVersion = 0x2092;       // WGL_CONTEXT_MINOR_VERSION_ARB
@@ -39,7 +41,8 @@ using PFN_wglSwapLayerBuffers = BOOL(WINAPI*)(HDC, UINT);
 using PFN_SwapBuffers = BOOL(WINAPI*)(HDC);
 using PFN_wglGetCurrentDC = HDC(WINAPI*)();
 
-struct WglDispatch {
+struct WglDispatch
+{
     PFN_wglGetProcAddress wglGetProcAddress;
     PFN_wglCreateContextAttribsARB wglCreateContextAttribsARB;
     PFN_wglMakeCurrent wglMakeCurrent;
@@ -58,10 +61,14 @@ bool g_procsResolved = false;
 /** A swap in progress on this thread: gdi32's SwapBuffers may reach wglSwapBuffers, which must not count again. */
 thread_local int t_swapDepth = 0;
 
-int Attrib(const int* list, int key, int def) {
-    if (!list) return def;
-    for (const int* p = list; *p; p += 2) {
-        if (p[0] == key) return p[1];
+int Attrib(const int* list, int key, int def)
+{
+    if (!list)
+        return def;
+    for (const int* p = list; *p; p += 2)
+    {
+        if (p[0] == key)
+            return p[1];
     }
     return def;
 }
@@ -70,24 +77,32 @@ int Attrib(const int* list, int key, int def) {
  * Every GL entry point the application has not asked for yet, while an OpenGL ES context is current
  * (wglGetProcAddress answers only then): the read-backs call ones the application may never use.
  */
-void ResolveProcs() {
-    if (g_procsResolved || !g_wgl.wglGetProcAddress) return;
+void ResolveProcs()
+{
+    if (g_procsResolved || !g_wgl.wglGetProcAddress)
+        return;
     g_procsResolved = true;
     void** slots = reinterpret_cast<void**>(&g_gl);
-    for (size_t i = 0; i < kCommandCount; ++i) {
-        if (slots[i]) continue;
+    for (size_t i = 0; i < kCommandCount; ++i)
+    {
+        if (slots[i])
+            continue;
         PROC p = g_wgl.wglGetProcAddress(kCommandNames[i]);
         // Some drivers answer 1, 2, 3 or -1 for a name they do not have.
-        if ((uintptr_t)p > 3 && (intptr_t)p != -1) slots[i] = (void*)p;
+        if ((uintptr_t)p > 3 && (intptr_t)p != -1)
+            slots[i] = (void*)p;
     }
 }
 
 /** A surface object for the device context the context draws into (its window's). */
-void EnsureSurface(HDC dc) {
-    if (!dc || SurfaceId(dc)) return;
+void EnsureSurface(HDC dc)
+{
+    if (!dc || SurfaceId(dc))
+        return;
     HWND window = WindowFromDC(dc);
     RECT r{};
-    if (window) GetClientRect(window, &r);
+    if (window)
+        GetClientRect(window, &r);
     Object& o = NewObject("GLSurface", ObjType::Count, 0, "wglMakeCurrent");
     char buf[32];
     snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)(uintptr_t)dc);
@@ -104,11 +119,14 @@ void EnsureSurface(HDC dc) {
     Announce(o);
 }
 
-HGLRC WINAPI Hook_wglCreateContextAttribsARB(HDC dc, HGLRC share, const int* attribs) {
+HGLRC WINAPI Hook_wglCreateContextAttribsARB(HDC dc, HGLRC share, const int* attribs)
+{
     HGLRC result = g_wgl.wglCreateContextAttribsARB(dc, share, attribs);
-    if (!result || !(Attrib(attribs, kContextProfileMask, 0) & kContextEs2ProfileBit)) return result;
+    if (!result || !(Attrib(attribs, kContextProfileMask, 0) & kContextEs2ProfileBit))
+        return result;
     // An OpenGL ES context: from here the process is one this library captures.
-    if (!g_glExportsHooked && g_opengl32) {
+    if (!g_glExportsHooked && g_opengl32)
+    {
         g_glExportsHooked = true;
         HookGlModule(g_opengl32);
     }
@@ -125,7 +143,8 @@ HGLRC WINAPI Hook_wglCreateContextAttribsARB(HDC dc, HGLRC share, const int* att
     snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)(uintptr_t)result);
     o.handle = buf;
     o.args.push_back({"clientVersion", JsonInt(c->major)});
-    if (c->minor) o.args.push_back({"minorVersion", JsonInt(c->minor)});
+    if (c->minor)
+        o.args.push_back({"minorVersion", JsonInt(c->minor)});
     o.args.push_back({"shareContext", JsonRef(shared ? shared->id : 0, "GLContext")});
     o.args.push_back({"windowSystem", JsonString("WGL")});
     c->id = o.id;
@@ -138,13 +157,16 @@ HGLRC WINAPI Hook_wglCreateContextAttribsARB(HDC dc, HGLRC share, const int* att
     return result;
 }
 
-BOOL WINAPI Hook_wglMakeCurrent(HDC dc, HGLRC rc) {
+BOOL WINAPI Hook_wglMakeCurrent(HDC dc, HGLRC rc)
+{
     const BOOL result = g_wgl.wglMakeCurrent(dc, rc);
-    if (!result) return result;
+    if (!result)
+        return result;
     Context* c = rc ? ContextOf(rc) : nullptr;
     // Current() would take an unknown context on; a WGL one this library did not see made is desktop OpenGL.
     SetCurrent(c);
-    if (c) {
+    if (c)
+    {
         c->drawSurface = dc;
         ResolveProcs();
         EnsureSurface(dc);
@@ -152,66 +174,87 @@ BOOL WINAPI Hook_wglMakeCurrent(HDC dc, HGLRC rc) {
     return result;
 }
 
-BOOL WINAPI Hook_wglDeleteContext(HGLRC rc) {
+BOOL WINAPI Hook_wglDeleteContext(HGLRC rc)
+{
     const BOOL result = g_wgl.wglDeleteContext(rc);
-    if (!result) return result;
+    if (!result)
+        return result;
     uint64_t id = 0;
     {
         std::lock_guard lock(State().mutex);
         auto it = State().contexts.find(rc);
-        if (it != State().contexts.end()) {
+        if (it != State().contexts.end())
+        {
             id = it->second->id;
-            if (CurrentKnown() == it->second.get()) SetCurrent(nullptr);
+            if (CurrentKnown() == it->second.get())
+                SetCurrent(nullptr);
             State().contexts.erase(it);
         }
     }
-    if (id) Forget(id);
+    if (id)
+        Forget(id);
     return result;
 }
 
-BOOL WINAPI Hook_wglShareLists(HGLRC a, HGLRC b) {
+BOOL WINAPI Hook_wglShareLists(HGLRC a, HGLRC b)
+{
     const BOOL result = g_wgl.wglShareLists(a, b);
     Context* from = ContextOf(a);
     Context* to = ContextOf(b);
-    if (result && from && to) to->share = from->share;
+    if (result && from && to)
+        to->share = from->share;
     return result;
 }
 
 /** A frame's end: the current OpenGL ES context's pass ends and the capture moves on a frame. */
-BOOL Swap(HDC dc, const char* method, BOOL (*call)(HDC, void*), void* arg) {
+BOOL Swap(HDC dc, const char* method, BOOL (*call)(HDC, void*), void* arg)
+{
     Context* c = t_swapDepth ? nullptr : CurrentKnown();
-    if (c && !c->wgl) c = nullptr;
+    if (c && !c->wgl)
+        c = nullptr;
     ++t_swapDepth;
-    if (c) BeforeSwap(c, nullptr, dc, method);
+    if (c)
+        BeforeSwap(c, nullptr, dc, method);
     const BOOL result = call(dc, arg);
-    if (c) AfterSwap(c);
+    if (c)
+        AfterSwap(c);
     --t_swapDepth;
     return result;
 }
 
-BOOL WINAPI Hook_SwapBuffers(HDC dc) {
+BOOL WINAPI Hook_SwapBuffers(HDC dc)
+{
     return Swap(dc, "SwapBuffers", [](HDC d, void*) { return g_wgl.SwapBuffers(d); }, nullptr);
 }
 
-BOOL WINAPI Hook_wglSwapBuffers(HDC dc) {
+BOOL WINAPI Hook_wglSwapBuffers(HDC dc)
+{
     return Swap(dc, "wglSwapBuffers", [](HDC d, void*) { return g_wgl.wglSwapBuffers(d); }, nullptr);
 }
 
-BOOL WINAPI Hook_wglSwapLayerBuffers(HDC dc, UINT planes) {
+BOOL WINAPI Hook_wglSwapLayerBuffers(HDC dc, UINT planes)
+{
     return Swap(dc, "wglSwapLayerBuffers", [](HDC d, void* p) { return g_wgl.wglSwapLayerBuffers(d, (UINT)(uintptr_t)p); }, (void*)(uintptr_t)planes);
 }
 
-PROC WINAPI Hook_wglGetProcAddress(LPCSTR name) {
+PROC WINAPI Hook_wglGetProcAddress(LPCSTR name)
+{
     PROC real = g_wgl.wglGetProcAddress(name);
-    if (!name || (uintptr_t)real <= 3 || (intptr_t)real == -1) return real;
-    if (strcmp(name, "wglCreateContextAttribsARB") == 0) {
-        if (!g_wgl.wglCreateContextAttribsARB) g_wgl.wglCreateContextAttribsARB = (PFN_wglCreateContextAttribsARB)real;
+    if (!name || (uintptr_t)real <= 3 || (intptr_t)real == -1)
+        return real;
+    if (strcmp(name, "wglCreateContextAttribsARB") == 0)
+    {
+        if (!g_wgl.wglCreateContextAttribsARB)
+            g_wgl.wglCreateContextAttribsARB = (PFN_wglCreateContextAttribsARB)real;
         return (PROC)&Hook_wglCreateContextAttribsARB;
     }
     // A GL entry point: our hook stands in for the driver's, which is what the hook calls.
-    for (size_t i = 0; i < kHookCount; ++i) {
-        if (strcmp(kHooks[i].name, name) != 0) continue;
-        if (!*kHooks[i].real) *kHooks[i].real = (void*)real;
+    for (size_t i = 0; i < kHookCount; ++i)
+    {
+        if (strcmp(kHooks[i].name, name) != 0)
+            continue;
+        if (!*kHooks[i].real)
+            *kHooks[i].real = (void*)real;
         return (PROC)kHooks[i].hook;
     }
     return real;
@@ -219,7 +262,8 @@ PROC WINAPI Hook_wglGetProcAddress(LPCSTR name) {
 
 }  // namespace
 
-void HookWgl(HMODULE opengl32) {
+void HookWgl(HMODULE opengl32)
+{
     g_opengl32 = opengl32;
     g_wgl.wglGetCurrentDC = (PFN_wglGetCurrentDC)GetProcAddress(opengl32, "wglGetCurrentDC");
     size_t hooked = 0;
@@ -233,22 +277,28 @@ void HookWgl(HMODULE opengl32) {
     LogAlways("hooked %zu WGL entry points", hooked);
 }
 
-void HookGdiSwap(HMODULE gdi32) {
-    if (HookExport(gdi32, "SwapBuffers", (void*)&Hook_SwapBuffers, (void**)&g_wgl.SwapBuffers)) EnableHooks();
+void HookGdiSwap(HMODULE gdi32)
+{
+    if (HookExport(gdi32, "SwapBuffers", (void*)&Hook_SwapBuffers, (void**)&g_wgl.SwapBuffers))
+        EnableHooks();
 }
 
-void* WglLookupProc(const char* name) {
+void* WglLookupProc(const char* name)
+{
     PROC p = g_wgl.wglGetProcAddress ? g_wgl.wglGetProcAddress(name) : nullptr;
     return (uintptr_t)p > 3 && (intptr_t)p != -1 ? (void*)p : nullptr;
 }
 
-Drawable WglDrawable(Context* c) {
+Drawable WglDrawable(Context* c)
+{
     Drawable d;
     HDC dc = g_wgl.wglGetCurrentDC ? g_wgl.wglGetCurrentDC() : (HDC)c->drawSurface;
-    if (!dc) dc = (HDC)c->drawSurface;
+    if (!dc)
+        dc = (HDC)c->drawSurface;
     HWND window = dc ? WindowFromDC(dc) : nullptr;
     RECT r{};
-    if (window) GetClientRect(window, &r);
+    if (window)
+        GetClientRect(window, &r);
     d.id = SurfaceId(dc);
     d.width = r.right - r.left;
     d.height = r.bottom - r.top;

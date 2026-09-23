@@ -17,10 +17,12 @@
 
 #include <initializer_list>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
 /** One replacement: the vtable slot and the function to put in it. */
-struct SlotHook {
+struct SlotHook
+{
     uint32_t slot;
     void* replacement;
 };
@@ -41,7 +43,8 @@ void* OriginalEntry(const void* object, uint32_t slot);
 
 /** OriginalEntry as a typed function pointer: `Orig<PFN_ID3D11DeviceContext4_Draw>(This, slot)`. */
 template <typename Fn>
-inline Fn Orig(const void* object, uint32_t slot) {
+inline Fn Orig(const void* object, uint32_t slot)
+{
     return reinterpret_cast<Fn>(OriginalEntry(object, slot));
 }
 
@@ -50,7 +53,8 @@ inline Fn Orig(const void* object, uint32_t slot) {
  * answers QueryInterface for, else `base`. A runtime implementing an older interface has a shorter
  * vtable, and writing past its end would patch whatever follows it.
  */
-struct VersionCount {
+struct VersionCount
+{
     const IID* iid;
     uint32_t count;
 };

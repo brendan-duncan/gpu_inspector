@@ -11,10 +11,12 @@
 #include <string>
 #include <vector>
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 /** One output the edited shader writes to the buffer, at `offset` in each vertex's record. */
-struct XfbOutput {
+struct XfbOutput
+{
     std::string name;
     uint32_t offset = 0;
     /** Scalars in it (a vec4 is 4, a mat3 is 9), each four bytes. */
@@ -26,7 +28,8 @@ struct XfbOutput {
     int32_t location = -1;
 };
 
-struct XfbPatch {
+struct XfbPatch
+{
     std::vector<uint32_t> words;
     /** Bytes per vertex in the buffer. */
     uint32_t stride = 0;

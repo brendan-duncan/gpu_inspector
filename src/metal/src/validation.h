@@ -18,16 +18,17 @@
 
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * Records a message and sends it, or its new count when the same text was seen before.
  * `severity` is "error", "warning" or "info"; `type` "validation", "performance" or "general";
  * `object` the Metal object it concerns, or nil.
  */
-void ReportValidation(const char *severity, const char *type, const std::string &idName,
-                      int64_t idNumber, const std::string &message, id object,
-                      const char *objectClass);
+void ReportValidation(const char* severity, const char* type, const std::string& idName,
+    int64_t idNumber, const std::string& message, id object,
+    const char* objectClass);
 
 /**
  * Asks to be told when a command buffer completes, to read its error and its shader logs. Only

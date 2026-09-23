@@ -10,14 +10,16 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /**
  * What a measurement changes in its copy of a graphics pipeline (overdraw.h). Everything else --
  * the vertex, hull, domain, geometry and mesh stages, the input layout, the rasterizer state, the
  * root signature -- is the application's, so the copy rasterizes exactly what the original did.
  */
-struct PipelineVariant {
+struct PipelineVariant
+{
     /** Replaces the pixel shader when `pixelShaderSize` is not zero. */
     const void* pixelShader = nullptr;
     size_t pixelShaderSize = 0;
@@ -47,7 +49,8 @@ struct PipelineVariant {
     bool singleSample = false;         // one sample, no alpha to coverage
 };
 
-class ShaderEditor {
+class ShaderEditor
+{
 public:
     static ShaderEditor& Get();
 
@@ -62,7 +65,7 @@ public:
      * `replacementId` is the new object's id and `note` says what could not be kept (a cached PSO).
      */
     bool Replace(uint64_t pipelineId, const std::string& stage, const std::vector<uint8_t>& bytecode,
-                 std::string& error, uint64_t& replacementId, std::string& note);
+        std::string& error, uint64_t& replacementId, std::string& note);
     /** Drops the edit of one stage (or of every stage when `stage` is empty). */
     bool Restore(uint64_t pipelineId, const std::string& stage, std::string& error);
 
@@ -81,7 +84,7 @@ public:
      * library does not know).
      */
     bool VariantPipeline(ID3D12PipelineState* pipeline, uint64_t key, const PipelineVariant& variant,
-                         ID3D12PipelineState** out, std::string& error);
+        ID3D12PipelineState** out, std::string& error);
     /** Whether the pipeline's vertex (or mesh) bytecode is a DXIL container: its copy needs a DXIL pixel shader. */
     bool PipelineIsDxil(ID3D12PipelineState* pipeline);
     /**

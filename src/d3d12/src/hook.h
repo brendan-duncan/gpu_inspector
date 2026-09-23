@@ -18,10 +18,12 @@
 #include <initializer_list>
 #include <utility>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /** One replacement: the vtable slot and the function to put in it. */
-struct SlotHook {
+struct SlotHook
+{
     uint32_t slot;
     void* replacement;
 };
@@ -42,7 +44,8 @@ void* OriginalEntry(const void* object, uint32_t slot);
 
 /** OriginalEntry as a typed function pointer: `Orig<PFN_ID3D12GraphicsCommandList10_DrawInstanced>(This, slot)`. */
 template <typename Fn>
-inline Fn Orig(const void* object, uint32_t slot) {
+inline Fn Orig(const void* object, uint32_t slot)
+{
     return reinterpret_cast<Fn>(OriginalEntry(object, slot));
 }
 

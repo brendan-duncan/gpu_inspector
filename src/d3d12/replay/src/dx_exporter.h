@@ -33,15 +33,23 @@
 
 #include "dx_source.h"
 
-namespace dxreplay {
+namespace dxreplay
+{
 
 struct DxReplayReport;
 struct DxExportReport;
 
-class DxExporter {
+class DxExporter
+{
 public:
     /** Restore: what puts the frame's resources back so that it can run again (the exported program shows it in a loop). */
-    enum Section { Create, Contents, Frame, Restore };
+    enum Section
+    {
+        Create,
+        Contents,
+        Frame,
+        Restore
+    };
 
     DxExporter(std::string directory, const vkreplay::CaptureFile& capture);
     ~DxExporter();
@@ -84,15 +92,32 @@ public:
     bool Finish(const DxReplayReport& report, DxExportReport& out);
 
 private:
-    struct Part {
+    struct Part
+    {
         std::string file;
         std::string function;
         Source writer;
         std::vector<std::string> parts;
     };
-    struct Blob { uint64_t offset; uint64_t size; };
-    struct HeapRange { std::string name; SIZE_T cpu; UINT64 gpu; uint32_t increment; uint32_t count; };
-    struct BufferRange { std::string name; D3D12_GPU_VIRTUAL_ADDRESS address; uint64_t size; };
+    struct Blob
+    {
+        uint64_t offset;
+        uint64_t size;
+    };
+    struct HeapRange
+    {
+        std::string name;
+        SIZE_T cpu;
+        UINT64 gpu;
+        uint32_t increment;
+        uint32_t count;
+    };
+    struct BufferRange
+    {
+        std::string name;
+        D3D12_GPU_VIRTUAL_ADDRESS address;
+        uint64_t size;
+    };
 
     void Configure(Source& w);
     Part& PartOf(Section section);

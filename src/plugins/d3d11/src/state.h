@@ -21,20 +21,40 @@
 #include <unordered_map>
 #include <vector>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
 // ------------------------------------------------------------------------------------------------
 // Objects
 
-enum class ObjKind : uint8_t {
-    Other, Device, Context, SwapChain, Buffer, Texture1D, Texture2D, Texture3D,
-    ShaderResourceView, RenderTargetView, DepthStencilView, UnorderedAccessView,
-    Shader, InputLayout, SamplerState, RasterizerState, BlendState, DepthStencilState,
-    Query, CommandList, ClassLinkage,
+enum class ObjKind : uint8_t
+{
+    Other,
+    Device,
+    Context,
+    SwapChain,
+    Buffer,
+    Texture1D,
+    Texture2D,
+    Texture3D,
+    ShaderResourceView,
+    RenderTargetView,
+    DepthStencilView,
+    UnorderedAccessView,
+    Shader,
+    InputLayout,
+    SamplerState,
+    RasterizerState,
+    BlendState,
+    DepthStencilState,
+    Query,
+    CommandList,
+    ClassLinkage,
 };
 
 /** One element of an input layout, with its offset resolved (D3D11_APPEND_ALIGNED_ELEMENT). */
-struct InputElement {
+struct InputElement
+{
     std::string semanticName;
     UINT semanticIndex = 0;
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;
@@ -45,7 +65,8 @@ struct InputElement {
     UINT stepRate = 0;
 };
 
-struct Object {
+struct Object
+{
     uint64_t id = 0;
     IUnknown* ptr = nullptr;
     ObjKind kind = ObjKind::Other;
@@ -109,27 +130,39 @@ struct Object {
 // ------------------------------------------------------------------------------------------------
 // Contexts
 
-enum Stage { VS = 0, HS, DS, GS, PS, CS, kStageCount };
+enum Stage
+{
+    VS = 0,
+    HS,
+    DS,
+    GS,
+    PS,
+    CS,
+    kStageCount
+};
 
 /** The inspector's stage names, in Stage order ("vertex", "tess_control", ...). */
 const char* StageName(int stage);
 /** "VS", "HS", ... as the method prefixes spell them. */
 const char* StagePrefix(int stage);
 
-struct ConstantBufferBinding {
+struct ConstantBufferBinding
+{
     ID3D11Buffer* buffer = nullptr;
     UINT first = 0;   // in 16-byte constants (VSSetConstantBuffers1)
     UINT count = 0;   // 0: the whole buffer
 };
 
-struct StageBindings {
+struct StageBindings
+{
     IUnknown* shader = nullptr;
     std::array<ConstantBufferBinding, D3D11_COMMONSHADER_CONSTANT_BUFFER_API_SLOT_COUNT> constantBuffers{};
     std::array<ID3D11ShaderResourceView*, D3D11_COMMONSHADER_INPUT_RESOURCE_SLOT_COUNT> resources{};
     std::array<ID3D11SamplerState*, D3D11_COMMONSHADER_SAMPLER_SLOT_COUNT> samplers{};
 };
 
-struct VertexBufferBinding {
+struct VertexBufferBinding
+{
     ID3D11Buffer* buffer = nullptr;
     UINT stride = 0;
     UINT offset = 0;
@@ -140,7 +173,8 @@ struct VertexBufferBinding {
  * command list when the application did not ask for the state to be kept, and on a deferred
  * context by FinishCommandList.
  */
-struct PipelineState {
+struct PipelineState
+{
     std::array<StageBindings, kStageCount> stages{};
     std::array<ID3D11UnorderedAccessView*, D3D11_1_UAV_SLOT_COUNT> csUavs{};
     std::array<ID3D11UnorderedAccessView*, D3D11_1_UAV_SLOT_COUNT> psUavs{};
@@ -169,7 +203,8 @@ struct PipelineState {
 };
 
 /** A render pass the library has open on a context (capture.cpp). */
-struct OpenPass {
+struct OpenPass
+{
     bool open = false;
     bool compute = false;
     uint32_t index = 0;
@@ -194,7 +229,8 @@ struct OpenPass {
 struct CommandRecorder;
 class ContextProxy;
 
-struct Context {
+struct Context
+{
     /** The real context, which the library's own calls go to; the application has `proxy`. */
     ID3D11DeviceContext* ptr = nullptr;
     ID3D11DeviceContext* proxy = nullptr;
@@ -215,7 +251,8 @@ struct Context {
     ID3D11Query* disjointQuery = nullptr;
 };
 
-struct LibraryState {
+struct LibraryState
+{
     std::recursive_mutex mutex;
     std::unordered_map<uint64_t, std::unique_ptr<Object>> objects;
     std::unordered_map<const void*, uint64_t> byPointer;

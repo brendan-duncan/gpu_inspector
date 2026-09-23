@@ -42,34 +42,37 @@
 #include "gpucap.h"
 #include "source_writer.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 struct ReplayReport;
 struct ExportReport;
 
 // The create infos a plain vkCreate*(device, &info, nullptr, &handle) is exported from.
-#define VKINSP_EXPORT_CREATE_INFOS(X) \
-    X(VkImageViewCreateInfo)          \
-    X(VkBufferViewCreateInfo)         \
-    X(VkSamplerCreateInfo)            \
+#define VKINSP_EXPORT_CREATE_INFOS(X)  \
+    X(VkImageViewCreateInfo)           \
+    X(VkBufferViewCreateInfo)          \
+    X(VkSamplerCreateInfo)             \
     X(VkDescriptorSetLayoutCreateInfo) \
-    X(VkPipelineLayoutCreateInfo)     \
-    X(VkDescriptorPoolCreateInfo)     \
-    X(VkCommandPoolCreateInfo)        \
-    X(VkFenceCreateInfo)              \
-    X(VkSemaphoreCreateInfo)          \
-    X(VkEventCreateInfo)              \
-    X(VkQueryPoolCreateInfo)          \
-    X(VkRenderPassCreateInfo)         \
-    X(VkRenderPassCreateInfo2)        \
-    X(VkFramebufferCreateInfo)        \
-    X(VkShaderModuleCreateInfo)       \
+    X(VkPipelineLayoutCreateInfo)      \
+    X(VkDescriptorPoolCreateInfo)      \
+    X(VkCommandPoolCreateInfo)         \
+    X(VkFenceCreateInfo)               \
+    X(VkSemaphoreCreateInfo)           \
+    X(VkEventCreateInfo)               \
+    X(VkQueryPoolCreateInfo)           \
+    X(VkRenderPassCreateInfo)          \
+    X(VkRenderPassCreateInfo2)         \
+    X(VkFramebufferCreateInfo)         \
+    X(VkShaderModuleCreateInfo)        \
     X(VkAccelerationStructureCreateInfoKHR)
 
-class Exporter {
+class Exporter
+{
 public:
     /** A shader module the replay made from a pipeline's own payload, for the stage named. */
-    struct StageModule {
+    struct StageModule
+    {
         VkShaderModule module = VK_NULL_HANDLE;
         std::string stage;             // "vertex", "fragment"... (StageName)
         const void* code = nullptr;
@@ -103,8 +106,8 @@ public:
     void CreateBuffer(uint64_t id, VkBuffer buffer, const VkBufferCreateInfo& info);
     /** One of the three create infos is set; `modules` are the stage modules the replay made for it, destroyed after. */
     void CreatePipeline(uint64_t id, VkPipeline pipeline, const std::string& function, const VkGraphicsPipelineCreateInfo* graphics,
-                        const VkComputePipelineCreateInfo* compute, const VkRayTracingPipelineCreateInfoKHR* rayTracing,
-                        const std::vector<StageModule>& modules);
+        const VkComputePipelineCreateInfo* compute, const VkRayTracingPipelineCreateInfoKHR* rayTracing,
+        const std::vector<StageModule>& modules);
     void CreateShaderObject(uint64_t id, VkShaderEXT shader, const VkShaderCreateInfoEXT& info);
     void AllocateCommandBuffer(uint64_t id, VkCommandBuffer cb, const VkCommandBufferAllocateInfo& info);
     void AllocateDescriptorSet(uint64_t id, VkDescriptorSet set, const VkDescriptorSetAllocateInfo& info);
@@ -138,7 +141,7 @@ public:
     void CmdBeginRendering(uint32_t index, const VkRenderingInfo& info);
     /** A push through an update template, pushed as the writes the replay built from the snapshot. */
     void PushDescriptors(uint32_t index, VkPipelineBindPoint bindPoint, VkPipelineLayout layout, uint32_t set,
-                         const std::vector<VkWriteDescriptorSet>& writes, bool khr);
+        const std::vector<VkWriteDescriptorSet>& writes, bool khr);
     void LeftOut(uint32_t index, const std::string& method, const std::string& why);
     /**
      * A command the replay issued but the source cannot spell yet (a ray tracing build or trace). What
@@ -152,8 +155,8 @@ public:
      * buffer) for comparison with the capture's copy, which goes into the data file.
      */
     void Readback(VkImage image, const std::string& name, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer, uint32_t layers,
-                  VkExtent2D extent, VkImageLayout layout, VkSampleCountFlagBits samples, VkFormat format, const uint8_t* captured, size_t size,
-                  bool shaderWritten = false);
+        VkExtent2D extent, VkImageLayout layout, VkSampleCountFlagBits samples, VkFormat format, const uint8_t* captured, size_t size,
+        bool shaderWritten = false);
     void Submit(VkQueue queue, const std::vector<VkCommandBuffer>& cbs);
 
     /** Writes every file and fills `out`; false, with out.error, when one could not be written. */
@@ -161,13 +164,15 @@ public:
 
 private:
     /** One generated function, written as parts over one or more files. */
-    struct Section {
+    struct Section
+    {
         std::string file;        // "frame_objects"
         std::string function;    // "CreateObjects"
         SourceWriter writer;
         std::vector<std::string> parts;
     };
-    struct Blob {
+    struct Blob
+    {
         uint64_t offset;
         uint64_t size;
     };
@@ -185,7 +190,7 @@ private:
     void FrameStatement(const std::string& label, const std::function<void(SourceWriter&)>& body);
     template <typename Info>
     void CreateFrom(const std::string& type, uint64_t id, uint64_t handle, const char* function, const char* infoType, const Info& info,
-                    const std::string& comment);
+        const std::string& comment);
     bool WriteText(const std::string& name, const std::string& text, std::string& error);
     bool WriteSection(Section& s, std::vector<std::string>& files, std::string& error);
     std::string FunctionsHeader(const std::set<std::string>& functions) const;

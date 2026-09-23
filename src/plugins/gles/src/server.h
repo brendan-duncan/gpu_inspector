@@ -2,7 +2,8 @@
 // with the first EGL context, and what the inspector's requests do.
 #pragma once
 
-namespace glesinsp {
+namespace glesinsp
+{
 
 /** Listens for the inspector, on GLESINSP_PORT or the shared range. Only the first call does anything. */
 void StartServer();

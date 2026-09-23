@@ -31,9 +31,11 @@
 #include <tuple>
 #include <unordered_map>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-namespace {
+namespace
+{
 
 constexpr uint32_t kTimestampQueries = 32768;
 constexpr uint32_t kStatsQueries = 8192;
@@ -75,13 +77,16 @@ constexpr size_t kCommandBatch = 500;
 inline uint64_t Align(uint64_t v, uint64_t a) { return (v + a - 1) / a * a; }
 
 /** Whether a copy from a resource in `state` needs a transition: COMMON promotes, and any state with the COPY_SOURCE bit will do. */
-inline bool NeedsCopyBarrier(D3D12_RESOURCE_STATES state) {
+inline bool NeedsCopyBarrier(D3D12_RESOURCE_STATES state)
+{
     return state != D3D12_RESOURCE_STATE_COMMON && !(state & D3D12_RESOURCE_STATE_COPY_SOURCE);
 }
 
 void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource,
-                D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
-    if (from == to) return;
+    D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+{
+    if (from == to)
+        return;
     D3D12_RESOURCE_BARRIER b{};
     b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
     b.Transition.pResource = resource;
@@ -101,25 +106,30 @@ void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint3
  * Every creation path registers with the tracker and Release removes it (hooks_device.cpp,
  * resources.h), so a resource it does not have is one that is gone.
  */
-bool DescOf(ID3D12Resource* resource, D3D12_RESOURCE_DESC& desc, ResourceInfo* info = nullptr) {
+bool DescOf(ID3D12Resource* resource, D3D12_RESOURCE_DESC& desc, ResourceInfo* info = nullptr)
+{
     ResourceInfo local;
-    if (resource && ResourceTracker::Get().Get(resource, local)) {
+    if (resource && ResourceTracker::Get().Get(resource, local))
+    {
         desc = local.desc;
         // The tracker keeps the creation description, where MipLevels 0 asked for a full chain;
         // the read-back needs the count the runtime chose.
-        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER && desc.MipLevels == 0 && resource) {
+        if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER && desc.MipLevels == 0 && resource)
+        {
             ScopedInternal internal;
             desc = resource->GetDesc();
             local.desc = desc;
         }
-        if (info) *info = local;
+        if (info)
+            *info = local;
         return true;
     }
     return false;
 }
 
 /** The protocol format a target or texture of `format` is sent under, and whether it travels as the depth aspect. */
-struct ProtocolFormat {
+struct ProtocolFormat
+{
     const char* name = nullptr;
     bool depth = false;
     uint32_t texelBytes = 0;     // bytes of one texel (or block) in the tightly packed data
@@ -127,7 +137,8 @@ struct ProtocolFormat {
     uint32_t blockHeight = 1;
 };
 
-ProtocolFormat ProtocolFormatOf(DXGI_FORMAT format, bool asDepth) {
+ProtocolFormat ProtocolFormatOf(DXGI_FORMAT format, bool asDepth)
+{
     ProtocolFormat p;
     const DXGI_FORMAT typed = TypedFormat(format, asDepth);
     const FormatInfo info = FormatOf(typed);
@@ -138,19 +149,24 @@ ProtocolFormat ProtocolFormatOf(DXGI_FORMAT format, bool asDepth) {
     // The depth plane of a depth-stencil texture copies as its depth format alone: 32 bits for
     // D32 and D24 (with 8 bits of padding), 16 for D16, which is how the UI sizes the depth aspect
     // of VK_FORMAT_D24_UNORM_S8_UINT and VK_FORMAT_D32_SFLOAT_S8_UINT (texture_decode.ts).
-    if (p.depth) p.texelBytes = typed == DXGI_FORMAT_D16_UNORM ? 2 : 4;
-    else p.texelBytes = info.bytes;
+    if (p.depth)
+        p.texelBytes = typed == DXGI_FORMAT_D16_UNORM ? 2 : 4;
+    else
+        p.texelBytes = info.bytes;
     return p;
 }
 
-uint64_t TightRowBytes(const ProtocolFormat& p, uint32_t width) {
+uint64_t TightRowBytes(const ProtocolFormat& p, uint32_t width)
+{
     return (uint64_t)((width + p.blockWidth - 1) / p.blockWidth) * p.texelBytes;
 }
-uint32_t TightRows(const ProtocolFormat& p, uint32_t height) {
+uint32_t TightRows(const ProtocolFormat& p, uint32_t height)
+{
     return (height + p.blockHeight - 1) / p.blockHeight;
 }
 
-uint32_t MipDim(uint64_t dim, uint32_t mip) {
+uint32_t MipDim(uint64_t dim, uint32_t mip)
+{
     const uint64_t v = dim >> mip;
     return v ? (uint32_t)v : 1u;
 }
@@ -158,7 +174,8 @@ uint32_t MipDim(uint64_t dim, uint32_t mip) {
 // ---------------------------------------------------------------------------------------------
 // The command in flight on this thread (validation.h attaches messages to it)
 
-struct ScopeState {
+struct ScopeState
+{
     CommandRecorder* rec = nullptr;
     uint32_t slot = 0;
 };
@@ -171,19 +188,26 @@ thread_local uint32_t t_scopeDepth = 0;
 
 }  // namespace
 
-CommandScope::CommandScope(CommandRecorder* rec) {
-    if (t_scopeDepth < kMaxScopeDepth) t_scopes[t_scopeDepth] = {rec, rec ? (uint32_t)rec->commandCount() : 0};
+CommandScope::CommandScope(CommandRecorder* rec)
+{
+    if (t_scopeDepth < kMaxScopeDepth)
+        t_scopes[t_scopeDepth] = {rec, rec ? (uint32_t)rec->commandCount() : 0};
     t_scopeDepth++;
 }
 
-CommandScope::~CommandScope() {
-    if (t_scopeDepth) t_scopeDepth--;
+CommandScope::~CommandScope()
+{
+    if (t_scopeDepth)
+        t_scopeDepth--;
 }
 
-bool CommandScope::Current(uint64_t& listId, uint32_t& slot) {
-    if (!t_scopeDepth || t_scopeDepth > kMaxScopeDepth) return false;
+bool CommandScope::Current(uint64_t& listId, uint32_t& slot)
+{
+    if (!t_scopeDepth || t_scopeDepth > kMaxScopeDepth)
+        return false;
     const ScopeState& s = t_scopes[t_scopeDepth - 1];
-    if (!s.rec) return false;
+    if (!s.rec)
+        return false;
     listId = Tracker::Get().IdOf(s.rec->list());
     slot = s.slot;
     return listId != 0;
@@ -192,9 +216,11 @@ bool CommandScope::Current(uint64_t& listId, uint32_t& slot) {
 // ---------------------------------------------------------------------------------------------
 // What a capture holds
 
-namespace {
+namespace
+{
 
-struct StagingChunk {
+struct StagingChunk
+{
     ComPtr<ID3D12Resource> buffer;
     uint64_t size = 0;
     uint64_t used = 0;
@@ -202,7 +228,8 @@ struct StagingChunk {
 };
 
 /** A staged copy of one subresource: where its rows are in the chunk and how to pack them tightly. */
-struct StagedRegion {
+struct StagedRegion
+{
     uint64_t offset = 0;      // from the chunk's start
     uint32_t rowPitch = 0;    // as copied (256-aligned)
     uint32_t rows = 0;        // rows (block rows) per slice
@@ -210,7 +237,8 @@ struct StagedRegion {
     uint32_t slices = 1;      // depth slices of a 3D subresource, each rows x rowPitch
 };
 
-struct TextureEntry {
+struct TextureEntry
+{
     uint64_t resourceId = 0;
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;   // whose execution gives the frame
@@ -241,7 +269,8 @@ struct TextureEntry {
     std::vector<StagedRegion> regions;   // in the order of the tight data
 };
 
-struct BufferEntry {
+struct BufferEntry
+{
     uint32_t id = 0;
     uint64_t bufferId = 0;
     uint32_t frame = UINT32_MAX;
@@ -272,21 +301,28 @@ struct BufferEntry {
  * otherwise give them the frame of a recording they do not belong to.
  */
 template <typename Entry>
-void OrphanEntries(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list) {
-    for (Entry& e : entries) {
-        if (e.frame != UINT32_MAX) continue;
-        if (e.list == list) e.list = nullptr;
+void OrphanEntries(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list)
+{
+    for (Entry& e : entries)
+    {
+        if (e.frame != UINT32_MAX)
+            continue;
+        if (e.list == list)
+            e.list = nullptr;
         e.sharedBy.erase(std::remove(e.sharedBy.begin(), e.sharedBy.end(), list), e.sharedBy.end());
     }
 }
 
 /** An entry answered to another list than the one that queued it (Entry::sharedBy). */
 template <typename Entry>
-void ShareEntry(Entry& e, ID3D12GraphicsCommandList* list) {
-    if (e.list != list && e.frame == UINT32_MAX && (e.sharedBy.empty() || e.sharedBy.back() != list)) e.sharedBy.push_back(list);
+void ShareEntry(Entry& e, ID3D12GraphicsCommandList* list)
+{
+    if (e.list != list && e.frame == UINT32_MAX && (e.sharedBy.empty() || e.sharedBy.back() != list))
+        e.sharedBy.push_back(list);
 }
 
-struct TimingEntry {
+struct TimingEntry
+{
     ID3D12Device* device = nullptr;
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;
@@ -303,7 +339,8 @@ struct TimingEntry {
  * index is the draw's in the capture's own command list, which is what the measurements are keyed
  * by in the UI (draw_stats.ts).
  */
-struct DrawEntry {
+struct DrawEntry
+{
     ID3D12Device* device = nullptr;
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;
@@ -316,13 +353,15 @@ struct DrawEntry {
     bool hasOcclusion = false;
 };
 
-struct SubmittedList {
+struct SubmittedList
+{
     uint64_t listId = 0;
     std::shared_ptr<const CommandList> commands;   // null: recorded before the capture
 };
 
 /** An ExecuteCommandLists, or the Present that ended a frame, in the order they happened. */
-struct Submission {
+struct Submission
+{
     bool present = false;
     uint64_t objectId = 0;      // the queue, or the swap chain
     uint32_t frame = 0;
@@ -330,17 +369,20 @@ struct Submission {
     std::vector<SubmittedList> lists;
 };
 
-struct ResolveKey {
+struct ResolveKey
+{
     ID3D12GraphicsCommandList* list;
     DXGI_FORMAT format;
     uint32_t width, height, layers;
-    bool operator<(const ResolveKey& o) const {
+    bool operator<(const ResolveKey& o) const
+    {
         return std::tie(list, format, width, height, layers) < std::tie(o.list, o.format, o.width, o.height, o.layers);
     }
 };
 
 /** A capture's objects on one device: query heaps, the slots their results resolve into, staging, resolves, the fence. */
-struct DeviceCapture {
+struct DeviceCapture
+{
     ID3D12Device* device = nullptr;
     std::mutex mutex;   // staging, resolves, queues
     ComPtr<ID3D12QueryHeap> timestampHeap;
@@ -385,16 +427,23 @@ struct DeviceCapture {
     std::vector<ComPtr<ID3D12GraphicsCommandList>> ownLists;
     uint64_t frequency = 0;                    // ticks per second of the first direct queue seen
 
-    ~DeviceCapture() {
-        if (queryMapped && queryReadback) { ScopedInternal internal; queryReadback->Unmap(0, nullptr); }
-        if (event) CloseHandle(event);
+    ~DeviceCapture()
+    {
+        if (queryMapped && queryReadback)
+        {
+            ScopedInternal internal;
+            queryReadback->Unmap(0, nullptr);
+        }
+        if (event)
+            CloseHandle(event);
     }
 };
 
 /** A read-back copy held back, recorded later into the list it is given (the primary, for a bundle's). */
 using DeferredCopy = std::function<void(ID3D12GraphicsCommandList*)>;
 
-struct RecorderSlot {
+struct RecorderSlot
+{
     std::unique_ptr<CommandRecorder> rec;
     /** Copies queued inside a BeginRenderPass region, recorded when it ends (a copy may not interrupt a render pass). */
     std::vector<DeferredCopy> deferred;
@@ -417,8 +466,14 @@ struct RecorderSlot {
 // one that goes a long run of submissions without ever presenting ends them at every
 // ExecuteCommandLists, the way the Vulkan layer falls back for an OpenXR application that never
 // presents. DXINSP_FRAME_BOUNDARY forces one or the other.
-struct DeviceFrame {
-    enum class Boundary { Auto, Present, Submit };
+struct DeviceFrame
+{
+    enum class Boundary
+    {
+        Auto,
+        Present,
+        Submit
+    };
     Boundary boundary = Boundary::Auto;
     bool presentSeen = false;
     uint64_t frameIndex = 0;             // this device's own frame count (its presents, or its submit boundaries)
@@ -430,10 +485,21 @@ struct DeviceFrame {
 // threshold the Vulkan layer uses (layer.cpp, OnSubmitForFrames).
 constexpr uint32_t kSubmitsWithoutPresent = 60;
 
-enum class BoundaryOverride { Auto, Present, Submit };
+enum class BoundaryOverride
+{
+    Auto,
+    Present,
+    Submit
+};
 
-struct CaptureManager::Impl {
-    enum class State { Idle, Armed, Capturing };
+struct CaptureManager::Impl
+{
+    enum class State
+    {
+        Idle,
+        Armed,
+        Capturing
+    };
 
     std::mutex mutex;   // the state machine, the options and the capture's entries
     State state = State::Idle;
@@ -471,13 +537,17 @@ struct CaptureManager::Impl {
     BoundaryOverride boundaryOverride = BoundaryOverride::Auto;
     bool boundaryOverrideRead = false;
     DeviceFrame& FrameFor(ID3D12Device* device) { return deviceFrames[device]; }   // caller holds frameMutex
-    BoundaryOverride Override() {
+    BoundaryOverride Override()
+    {
         std::lock_guard lock(frameMutex);
-        if (!boundaryOverrideRead) {
+        if (!boundaryOverrideRead)
+        {
             boundaryOverrideRead = true;
             const std::string v = ConfigValue("DXINSP_FRAME_BOUNDARY");
-            if (v == "submit") boundaryOverride = BoundaryOverride::Submit;
-            else if (v == "present") boundaryOverride = BoundaryOverride::Present;
+            if (v == "submit")
+                boundaryOverride = BoundaryOverride::Submit;
+            else if (v == "present")
+                boundaryOverride = BoundaryOverride::Present;
         }
         return boundaryOverride;
     }
@@ -534,9 +604,11 @@ struct CaptureManager::Impl {
     void Finish(CaptureManager& cm, ID3D12Device* device);
 };
 
-namespace {
+namespace
+{
 
-bool CreateReadbackBuffer(ID3D12Device* device, uint64_t size, ID3D12Resource** out) {
+bool CreateReadbackBuffer(ID3D12Device* device, uint64_t size, ID3D12Resource** out)
+{
     D3D12_HEAP_PROPERTIES heap{};
     heap.Type = D3D12_HEAP_TYPE_READBACK;
     D3D12_RESOURCE_DESC desc{};
@@ -550,37 +622,44 @@ bool CreateReadbackBuffer(ID3D12Device* device, uint64_t size, ID3D12Resource** 
     desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
     ScopedInternal internal;
     HRESULT hr = device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                                 IID_PPV_ARGS(out));
-    if (FAILED(hr)) {
+        IID_PPV_ARGS(out));
+    if (FAILED(hr))
+    {
         LogAlways("capture: readback buffer of %llu bytes failed (%s)", (unsigned long long)size, HrText(hr).c_str());
         return false;
     }
     return true;
 }
 
-bool CreateQueryHeap(ID3D12Device* device, D3D12_QUERY_HEAP_TYPE type, uint32_t count, ID3D12QueryHeap** out) {
+bool CreateQueryHeap(ID3D12Device* device, D3D12_QUERY_HEAP_TYPE type, uint32_t count, ID3D12QueryHeap** out)
+{
     D3D12_QUERY_HEAP_DESC desc{};
     desc.Type = type;
     desc.Count = count;
     ScopedInternal internal;
     HRESULT hr = device->CreateQueryHeap(&desc, IID_PPV_ARGS(out));
-    if (FAILED(hr)) Log("capture: query heap type %d failed (%s)", (int)type, HrText(hr).c_str());
+    if (FAILED(hr))
+        Log("capture: query heap type %d failed (%s)", (int)type, HrText(hr).c_str());
     return SUCCEEDED(hr);
 }
 
 }  // namespace
 
-DeviceCapture* CaptureManager::Impl::FindCapture(ID3D12Device* device) {
+DeviceCapture* CaptureManager::Impl::FindCapture(ID3D12Device* device)
+{
     std::lock_guard lock(deviceMutex);
     auto it = devices.find(device);
     return it == devices.end() ? nullptr : it->second.get();
 }
 
-DeviceCapture* CaptureManager::Impl::CaptureFor(ID3D12Device* device) {
-    if (!device) return nullptr;
+DeviceCapture* CaptureManager::Impl::CaptureFor(ID3D12Device* device)
+{
+    if (!device)
+        return nullptr;
     std::lock_guard lock(deviceMutex);
     auto it = devices.find(device);
-    if (it != devices.end()) return it->second.get();
+    if (it != devices.end())
+        return it->second.get();
     auto dc = std::make_unique<DeviceCapture>();
     dc->device = device;
     // The query heaps and their readback buffer live as long as the device: a capture's passes
@@ -588,16 +667,19 @@ DeviceCapture* CaptureManager::Impl::CaptureFor(ID3D12Device* device) {
     CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kTimestampQueries, dc->timestampHeap.put());
     CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, kStatsQueries, dc->statsHeap.put());
     CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_OCCLUSION, kOcclusionQueries, dc->occlusionHeap.put());
-    if (CreateReadbackBuffer(device, kSlotBytes * kPassSlots, dc->queryReadback.put())) {
+    if (CreateReadbackBuffer(device, kSlotBytes * kPassSlots, dc->queryReadback.put()))
+    {
         // Kept mapped: a readback buffer may stay mapped while the GPU writes it, and the results
         // are only read once the fence says the last list has run.
         ScopedInternal internal;
         D3D12_RANGE none{0, 0};
-        if (FAILED(dc->queryReadback->Map(0, &none, &dc->queryMapped))) dc->queryMapped = nullptr;
+        if (FAILED(dc->queryReadback->Map(0, &none, &dc->queryMapped)))
+            dc->queryMapped = nullptr;
     }
     {
         ScopedInternal internal;
-        if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(dc->fence.put())))) dc->fence.reset();
+        if (FAILED(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(dc->fence.put()))))
+            dc->fence.reset();
     }
     dc->event = CreateEventW(nullptr, FALSE, FALSE, nullptr);
     DeviceCapture* raw = dc.get();
@@ -606,27 +688,33 @@ DeviceCapture* CaptureManager::Impl::CaptureFor(ID3D12Device* device) {
     return raw;
 }
 
-bool CaptureManager::Impl::AllocateStaging(DeviceCapture& dc, uint64_t size, uint32_t& chunk, uint64_t& offset, ID3D12Resource** buffer) {
+bool CaptureManager::Impl::AllocateStaging(DeviceCapture& dc, uint64_t size, uint32_t& chunk, uint64_t& offset, ID3D12Resource** buffer)
+{
     std::lock_guard lock(dc.mutex);
     size = Align(std::max<uint64_t>(size, 1), kStagingAlignment);
-    if (dc.staging.empty() || dc.staging.back().used + size > dc.staging.back().size) {
+    if (dc.staging.empty() || dc.staging.back().used + size > dc.staging.back().size)
+    {
         StagingChunk c;
         c.size = std::max(size, kStagingChunkBytes);
-        if (!CreateReadbackBuffer(dc.device, c.size, c.buffer.put())) return false;
+        if (!CreateReadbackBuffer(dc.device, c.size, c.buffer.put()))
+            return false;
         dc.staging.push_back(std::move(c));
     }
     StagingChunk& c = dc.staging.back();
     chunk = (uint32_t)dc.staging.size() - 1;
     offset = c.used;
     c.used += size;
-    if (buffer) *buffer = c.buffer.get();
+    if (buffer)
+        *buffer = c.buffer.get();
     return true;
 }
 
-ID3D12Resource* CaptureManager::Impl::ResolveTextureFor(DeviceCapture& dc, const ResolveKey& key) {
+ID3D12Resource* CaptureManager::Impl::ResolveTextureFor(DeviceCapture& dc, const ResolveKey& key)
+{
     std::lock_guard lock(dc.mutex);
     auto it = dc.resolves.find(key);
-    if (it != dc.resolves.end()) return it->second.get();
+    if (it != dc.resolves.end())
+        return it->second.get();
     D3D12_HEAP_PROPERTIES heap{};
     heap.Type = D3D12_HEAP_TYPE_DEFAULT;
     D3D12_RESOURCE_DESC desc{};
@@ -642,8 +730,9 @@ ID3D12Resource* CaptureManager::Impl::ResolveTextureFor(DeviceCapture& dc, const
     {
         ScopedInternal internal;
         HRESULT hr = dc.device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_RESOLVE_DEST, nullptr,
-                                                        IID_PPV_ARGS(texture.put()));
-        if (FAILED(hr)) {
+            IID_PPV_ARGS(texture.put()));
+        if (FAILED(hr))
+        {
             Log("capture: resolve texture %ux%u %s failed (%s)", key.width, key.height, FormatName(key.format), HrText(hr).c_str());
             return nullptr;
         }
@@ -653,29 +742,37 @@ ID3D12Resource* CaptureManager::Impl::ResolveTextureFor(DeviceCapture& dc, const
     return raw;
 }
 
-std::vector<DeferredCopy>* CaptureManager::Impl::DeferredOf(CommandRecorder* rec) {
+std::vector<DeferredCopy>* CaptureManager::Impl::DeferredOf(CommandRecorder* rec)
+{
     std::shared_lock lock(recorderMutex);
     auto it = recorders.find(rec->list());
-    if (it == recorders.end() || it->second.rec.get() != rec) return nullptr;
+    if (it == recorders.end() || it->second.rec.get() != rec)
+        return nullptr;
     // The vector stays where it is until the list's entry goes, which only happens when the
     // application releases the list (nobody records into it then) or at Finish.
     return &it->second.deferred;
 }
 
-uint32_t CaptureManager::Impl::CurrentFrame() {
+uint32_t CaptureManager::Impl::CurrentFrame()
+{
     return framesDone;
 }
 
-void CaptureManager::Impl::ReleaseCaptureObjects(DeviceCapture& dc) {
+void CaptureManager::Impl::ReleaseCaptureObjects(DeviceCapture& dc)
+{
     std::lock_guard lock(dc.mutex);
     ScopedInternal internal;
-    for (StagingChunk& c : dc.staging) {
-        if (c.mapped && c.buffer) c.buffer->Unmap(0, nullptr);
+    for (StagingChunk& c : dc.staging)
+    {
+        if (c.mapped && c.buffer)
+            c.buffer->Unmap(0, nullptr);
         c.mapped = nullptr;
     }
     // Unmapped and out of use here, but not freed: see DeviceCapture::retiredStaging.
-    for (StagingChunk& c : dc.staging) dc.retiredStaging.push_back(std::move(c));
-    for (auto& [key, texture] : dc.resolves) dc.retiredResolves.push_back(std::move(texture));
+    for (StagingChunk& c : dc.staging)
+        dc.retiredStaging.push_back(std::move(c));
+    for (auto& [key, texture] : dc.resolves)
+        dc.retiredResolves.push_back(std::move(texture));
     dc.staging.clear();
     dc.resolves.clear();
     dc.queues.clear();
@@ -686,20 +783,25 @@ void CaptureManager::Impl::ReleaseCaptureObjects(DeviceCapture& dc) {
 // ---------------------------------------------------------------------------------------------
 // The manager
 
-CaptureManager& CaptureManager::Get() {
+CaptureManager& CaptureManager::Get()
+{
     static CaptureManager* instance = new CaptureManager();
     return *instance;
 }
 
-CaptureManager::Impl& CaptureManager::impl() {
-    if (!_impl) _impl = new Impl();
+CaptureManager::Impl& CaptureManager::impl()
+{
+    if (!_impl)
+        _impl = new Impl();
     return *_impl;
 }
 
-void CaptureManager::RequestCapture(const CaptureOptions& options) {
+void CaptureManager::RequestCapture(const CaptureOptions& options)
+{
     Impl& i = impl();
     std::lock_guard lock(i.mutex);
-    if (i.state == Impl::State::Capturing) {
+    if (i.state == Impl::State::Capturing)
+    {
         Log("capture: request ignored, a capture is in progress");
         return;
     }
@@ -723,7 +825,8 @@ void CaptureManager::RequestCapture(const CaptureOptions& options) {
     i.bufferIds.clear();
     i.textureIds.clear();
     i.bufferBytes = i.imageBytes = 0;
-    if (options.atFrame == UINT64_MAX) {
+    if (options.atFrame == UINT64_MAX)
+    {
         _recordActive.store(true, std::memory_order_relaxed);
         i.warmupBoundaries = 1;
         i.warmingUp = true;
@@ -731,18 +834,22 @@ void CaptureManager::RequestCapture(const CaptureOptions& options) {
     Log("capture armed: %u frame(s)%s", i.frameCount, options.atFrame == UINT64_MAX ? "" : " at a given frame");
 }
 
-bool CaptureManager::RecordAlways() const {
+bool CaptureManager::RecordAlways() const
+{
     Impl& i = const_cast<CaptureManager*>(this)->impl();
     std::lock_guard lock(i.mutex);
-    if (!i.recordAlwaysRead) {
+    if (!i.recordAlwaysRead)
+    {
         i.recordAlwaysRead = true;
         i.recordAlways = ConfigFlag("DXINSP_RECORD_ALWAYS");
-        if (i.recordAlways) const_cast<CaptureManager*>(this)->_recordActive.store(true, std::memory_order_relaxed);
+        if (i.recordAlways)
+            const_cast<CaptureManager*>(this)->_recordActive.store(true, std::memory_order_relaxed);
     }
     return i.recordAlways;
 }
 
-void CaptureManager::SetRecordAlways(bool on) {
+void CaptureManager::SetRecordAlways(bool on)
+{
     Impl& i = impl();
     RecordAlways();   // the environment's setting is read before the UI's replaces it
     std::lock_guard lock(i.mutex);
@@ -751,16 +858,20 @@ void CaptureManager::SetRecordAlways(bool on) {
     Log("record always: %s", on ? "on" : "off");
 }
 
-CommandRecorder* CaptureManager::LookupRecorder(ID3D12GraphicsCommandList* list) {
-    if (!_recorderCount.load(std::memory_order_relaxed)) return nullptr;   // the common case: nothing recorded
+CommandRecorder* CaptureManager::LookupRecorder(ID3D12GraphicsCommandList* list)
+{
+    if (!_recorderCount.load(std::memory_order_relaxed))
+        return nullptr;   // the common case: nothing recorded
     Impl& i = impl();
     std::shared_lock lock(i.recorderMutex);
     auto it = i.recorders.find(list);
     return it == i.recorders.end() ? nullptr : it->second.rec.get();
 }
 
-CommandRecorder* CaptureManager::Adopt(ID3D12GraphicsCommandList* list) {
-    if (!list) return nullptr;
+CommandRecorder* CaptureManager::Adopt(ID3D12GraphicsCommandList* list)
+{
+    if (!list)
+        return nullptr;
     Impl& i = impl();
     bool stacks;
     {
@@ -768,11 +879,13 @@ CommandRecorder* CaptureManager::Adopt(ID3D12GraphicsCommandList* list) {
         stacks = i.options.stacktraces && i.state != Impl::State::Idle;
     }
     ID3D12Device* device = DeviceOf(list);
-    if (!device) return nullptr;
+    if (!device)
+        return nullptr;
     const D3D12_COMMAND_LIST_TYPE type = list->GetType();
     std::unique_lock lock(i.recorderMutex);
     RecorderSlot& slot = i.recorders[list];
-    if (!slot.rec) {
+    if (!slot.rec)
+    {
         slot.rec = std::make_unique<CommandRecorder>(device, list, type, type == D3D12_COMMAND_LIST_TYPE_BUNDLE);
         slot.rec->MarkAdopted();
         slot.rec->SetCaptureStacks(stacks);
@@ -783,17 +896,21 @@ CommandRecorder* CaptureManager::Adopt(ID3D12GraphicsCommandList* list) {
 }
 
 void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList* list, D3D12_COMMAND_LIST_TYPE type, bool bundle,
-                                 ID3D12PipelineState* initialState) {
+    ID3D12PipelineState* initialState)
+{
     // DXINSP_RECORD_ALWAYS is read here rather than at the first capture: a bundle an engine
     // records at start-up needs its recorder before anything asks for a capture.
     RecordAlways();
-    if (!list) return;
+    if (!list)
+        return;
     OnMeasuredListReset(list);   // nothing kept of the list is still in effect
-    if (!ShouldRecord()) return;
+    if (!ShouldRecord())
+        return;
     Impl& i = impl();
     {
         std::lock_guard lock(i.mutex);
-        if (i.TakesContents()) {
+        if (i.TakesContents())
+        {
             OrphanEntries(i.textures, list);
             OrphanEntries(i.buffers, list);
         }
@@ -808,42 +925,52 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
     {
         std::unique_lock lock(i.recorderMutex);
         RecorderSlot& slot = i.recorders[list];
-        if (!slot.rec) slot.rec = std::make_unique<CommandRecorder>(device, list, type, bundle);
-        else slot.rec->Reset();
+        if (!slot.rec)
+            slot.rec = std::make_unique<CommandRecorder>(device, list, type, bundle);
+        else
+            slot.rec->Reset();
         slot.deferred.clear();
         slot.afterSubmit.clear();
         rec = slot.rec.get();
         _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
     }
     rec->SetCaptureStacks(stacks);
-    if (initialState) rec->state().pipeline = initialState;
+    if (initialState)
+        rec->state().pipeline = initialState;
 }
 
-void CaptureManager::OnListReleased(ID3D12GraphicsCommandList* list) {
+void CaptureManager::OnListReleased(ID3D12GraphicsCommandList* list)
+{
     OnMeasuredListReleased(list);
-    if (!_impl) return;
+    if (!_impl)
+        return;
     Impl& i = impl();
     std::unique_lock lock(i.recorderMutex);
     i.recorders.erase(list);
     _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
 }
 
-ID3D12CommandQueue* CaptureManager::PresentQueue(IDXGISwapChain* swapChain) {
+ID3D12CommandQueue* CaptureManager::PresentQueue(IDXGISwapChain* swapChain)
+{
     Impl& i = impl();
     std::lock_guard lock(i.swapChainMutex);
     auto it = i.swapChains.find(swapChain);
     return it == i.swapChains.end() ? nullptr : it->second;
 }
 
-void CaptureManager::OnSwapChainCreated(IDXGISwapChain* swapChain, ID3D12CommandQueue* queue) {
-    if (!swapChain) return;
+void CaptureManager::OnSwapChainCreated(IDXGISwapChain* swapChain, ID3D12CommandQueue* queue)
+{
+    if (!swapChain)
+        return;
     Impl& i = impl();
     std::lock_guard lock(i.swapChainMutex);
     i.swapChains[swapChain] = queue;
 }
 
-void CaptureManager::OnSwapChainReleased(IDXGISwapChain* swapChain) {
-    if (!_impl) return;
+void CaptureManager::OnSwapChainReleased(IDXGISwapChain* swapChain)
+{
+    if (!_impl)
+        return;
     Impl& i = impl();
     {
         std::lock_guard lock(i.swapChainMutex);
@@ -852,20 +979,25 @@ void CaptureManager::OnSwapChainReleased(IDXGISwapChain* swapChain) {
     ID3D12Device* finishOn = nullptr;
     {
         std::lock_guard lock(i.mutex);
-        if (i.homeSwapChain == swapChain) {
+        if (i.homeSwapChain == swapChain)
+        {
             // The swap chain whose presents delimit the capture is going away. Mid-capture that
             // would leave nothing to end the remaining frames on (the home device presents, so its
             // submits are not boundaries), so send what was captured; when only armed, drop it and
             // let the next boundary re-arm.
-            if (i.state == Impl::State::Capturing) finishOn = i.homeDevice;
+            if (i.state == Impl::State::Capturing)
+                finishOn = i.homeDevice;
             i.homeSwapChain = nullptr;
         }
     }
-    if (finishOn) i.Finish(*this, finishOn);
+    if (finishOn)
+        i.Finish(*this, finishOn);
 }
 
-void CaptureManager::OnDeviceReleased(ID3D12Device* device) {
-    if (!_impl) return;
+void CaptureManager::OnDeviceReleased(ID3D12Device* device)
+{
+    if (!_impl)
+        return;
     Impl& i = impl();
     // Its per-device frame state goes whether or not it ever took part in a capture.
     {
@@ -876,7 +1008,8 @@ void CaptureManager::OnDeviceReleased(ID3D12Device* device) {
     {
         std::lock_guard lock(i.deviceMutex);
         auto it = i.devices.find(device);
-        if (it == i.devices.end()) return;
+        if (it == i.devices.end())
+            return;
         dc = std::move(it->second);
         i.devices.erase(it);
     }
@@ -884,22 +1017,36 @@ void CaptureManager::OnDeviceReleased(ID3D12Device* device) {
     // be read any more.
     {
         std::unique_lock lock(i.recorderMutex);
-        for (auto it = i.recorders.begin(); it != i.recorders.end();) {
-            if (it->second.rec && it->second.rec->device() == device) it = i.recorders.erase(it);
-            else ++it;
+        for (auto it = i.recorders.begin(); it != i.recorders.end();)
+        {
+            if (it->second.rec && it->second.rec->device() == device)
+                it = i.recorders.erase(it);
+            else
+                ++it;
         }
         _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
     }
     {
         std::lock_guard lock(i.mutex);
-        for (TextureEntry& t : i.textures) {
-            if (t.device == device && !t.failed) { t.failed = true; t.note = "device was released during the capture"; }
+        for (TextureEntry& t : i.textures)
+        {
+            if (t.device == device && !t.failed)
+            {
+                t.failed = true;
+                t.note = "device was released during the capture";
+            }
         }
-        for (BufferEntry& b : i.buffers) {
-            if (b.device == device && !b.failed) { b.failed = true; b.note = "device was released during the capture"; }
+        for (BufferEntry& b : i.buffers)
+        {
+            if (b.device == device && !b.failed)
+            {
+                b.failed = true;
+                b.note = "device was released during the capture";
+            }
         }
         for (TimingEntry& t : i.timings)
-            if (t.device == device) t.frame = UINT32_MAX;
+            if (t.device == device)
+                t.frame = UINT32_MAX;
     }
     i.ReleaseCaptureObjects(*dc);
     OnMeasurementDeviceReleased(device);
@@ -910,12 +1057,15 @@ void CaptureManager::OnDeviceReleased(ID3D12Device* device) {
 // ---------------------------------------------------------------------------------------------
 // Passes
 
-namespace {
+namespace
+{
 
 /** `count` consecutive queries from a heap's counter, or UINT32_MAX when the heap is full. */
-uint32_t ReserveQueries(std::atomic<uint32_t>& used, uint32_t count, uint32_t limit) {
+uint32_t ReserveQueries(std::atomic<uint32_t>& used, uint32_t count, uint32_t limit)
+{
     const uint32_t first = used.fetch_add(count, std::memory_order_relaxed);
-    if (first + count > limit) return UINT32_MAX;
+    if (first + count > limit)
+        return UINT32_MAX;
     return first;
 }
 
@@ -924,31 +1074,39 @@ uint32_t ReserveQueries(std::atomic<uint32_t>& used, uint32_t count, uint32_t li
  * is measured. False when the device would not make them, which turns the measurement off rather
  * than failing the capture.
  */
-bool EnsureDrawQueries(DeviceCapture& dc, ID3D12Device* device) {
-    if (dc.drawQueriesMade.load(std::memory_order_acquire)) return dc.drawTimestampHeap && dc.drawMapped;
+bool EnsureDrawQueries(DeviceCapture& dc, ID3D12Device* device)
+{
+    if (dc.drawQueriesMade.load(std::memory_order_acquire))
+        return dc.drawTimestampHeap && dc.drawMapped;
     std::lock_guard lock(dc.mutex);
-    if (dc.drawQueriesMade.load(std::memory_order_relaxed)) return dc.drawTimestampHeap && dc.drawMapped;
+    if (dc.drawQueriesMade.load(std::memory_order_relaxed))
+        return dc.drawTimestampHeap && dc.drawMapped;
     ScopedInternal internal;
     CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_TIMESTAMP, kDrawSlots * 2, dc.drawTimestampHeap.put());
     CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_PIPELINE_STATISTICS, kDrawSlots, dc.drawStatsHeap.put());
     CreateQueryHeap(device, D3D12_QUERY_HEAP_TYPE_OCCLUSION, kDrawSlots, dc.drawOcclusionHeap.put());
-    if (CreateReadbackBuffer(device, kDrawReadbackBytes, dc.drawReadback.put())) {
+    if (CreateReadbackBuffer(device, kDrawReadbackBytes, dc.drawReadback.put()))
+    {
         D3D12_RANGE none{0, 0};
-        if (FAILED(dc.drawReadback->Map(0, &none, &dc.drawMapped))) dc.drawMapped = nullptr;
+        if (FAILED(dc.drawReadback->Map(0, &none, &dc.drawMapped)))
+            dc.drawMapped = nullptr;
     }
     dc.drawQueriesMade.store(true, std::memory_order_release);
     return dc.drawTimestampHeap && dc.drawMapped;
 }
 
 /** Whether a list of this type can carry the capture's timestamp queries (a copy list needs a heap of another type). */
-bool TimestampsAllowed(D3D12_COMMAND_LIST_TYPE type) {
+bool TimestampsAllowed(D3D12_COMMAND_LIST_TYPE type)
+{
     return type == D3D12_COMMAND_LIST_TYPE_DIRECT || type == D3D12_COMMAND_LIST_TYPE_COMPUTE;
 }
 
 }  // namespace
 
-uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget> targets, bool renderPassApi, bool split) {
-    if (!rec) return 0;
+uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget> targets, bool renderPassApi, bool split)
+{
+    if (!rec)
+        return 0;
     Impl& i = impl();
     ActivePass& pass = rec->pass();
     pass = ActivePass{};
@@ -959,10 +1117,12 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     pass.targets = std::move(targets);
     pass.passIndex = rec->NextPassIndex();
     pass.beginCommand = rec->commandCount() ? (uint32_t)rec->commandCount() - 1 : 0;
-    if (!pass.targets.empty()) {
+    if (!pass.targets.empty())
+    {
         D3D12_RESOURCE_DESC desc;
         const BoundTarget& t = pass.targets.front();
-        if (t.resource && DescOf(t.resource, desc)) {
+        if (t.resource && DescOf(t.resource, desc))
+        {
             pass.width = MipDim(desc.Width, t.mip);
             pass.height = MipDim(desc.Height, t.mip);
         }
@@ -975,11 +1135,14 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
         std::lock_guard lock(i.mutex);
         profile = i.state == Impl::State::Capturing && i.options.profilePasses;
     }
-    if (!profile || rec->bundle() || pass.split || !TimestampsAllowed(rec->type())) return pass.passIndex;
+    if (!profile || rec->bundle() || pass.split || !TimestampsAllowed(rec->type()))
+        return pass.passIndex;
     DeviceCapture* dc = i.CaptureFor(rec->device());
-    if (!dc || !dc->timestampHeap || !dc->queryMapped) return pass.passIndex;
+    if (!dc || !dc->timestampHeap || !dc->queryMapped)
+        return pass.passIndex;
     const uint32_t slot = dc->slotsUsed.fetch_add(1, std::memory_order_relaxed);
-    if (slot >= kPassSlots) return pass.passIndex;   // the counter keeps climbing; only the first kPassSlots passes are timed
+    if (slot >= kPassSlots)
+        return pass.passIndex;   // the counter keeps climbing; only the first kPassSlots passes are timed
     pass.timestampQuery = slot * 2;
     ScopedInternal internal;
     ID3D12GraphicsCommandList* list = rec->list();
@@ -987,43 +1150,58 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     // Statistics and occlusion need graphics; neither is begun inside a BeginRenderPass region
     // (the resolve at pass end would have to wait for EndRenderPass, and BeginQuery there is not
     // something every driver accepts), nor while the application has a query of its own open.
-    if (rec->type() != D3D12_COMMAND_LIST_TYPE_DIRECT || renderPassApi) return pass.passIndex;
-    if (dc->statsHeap) {
+    if (rec->type() != D3D12_COMMAND_LIST_TYPE_DIRECT || renderPassApi)
+        return pass.passIndex;
+    if (dc->statsHeap)
+    {
         pass.statsQuery = ReserveQueries(dc->statsUsed, 1, kStatsQueries);
-        if (pass.statsQuery != UINT32_MAX) list->BeginQuery(dc->statsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, pass.statsQuery);
+        if (pass.statsQuery != UINT32_MAX)
+            list->BeginQuery(dc->statsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, pass.statsQuery);
     }
-    if (dc->occlusionHeap && rec->state().appQueryDepth == 0) {
+    if (dc->occlusionHeap && rec->state().appQueryDepth == 0)
+    {
         pass.occlusionQuery = ReserveQueries(dc->occlusionUsed, 1, kOcclusionQueries);
-        if (pass.occlusionQuery != UINT32_MAX) list->BeginQuery(dc->occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, pass.occlusionQuery);
+        if (pass.occlusionQuery != UINT32_MAX)
+            list->BeginQuery(dc->occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, pass.occlusionQuery);
     }
     return pass.passIndex;
 }
 
-void CaptureManager::EndOpenPass(ID3D12GraphicsCommandList* list, bool synthetic) {
+void CaptureManager::EndOpenPass(ID3D12GraphicsCommandList* list, bool synthetic)
+{
     CommandRecorder* rec = LookupRecorder(list);
-    if (!rec) return;
+    if (!rec)
+        return;
     EndPass(rec, synthetic);
     OnComputePassEnd(rec);
 }
 
-void CaptureManager::OnDraw(CommandRecorder* rec) {
-    if (rec && rec->pass().active) rec->pass().drawCount++;
+void CaptureManager::OnDraw(CommandRecorder* rec)
+{
+    if (rec && rec->pass().active)
+        rec->pass().drawCount++;
 }
 
-uint32_t CaptureManager::BeginDrawQueries(CommandRecorder* rec) {
-    if (!rec || rec->bundle() || !TimestampsAllowed(rec->type())) return UINT32_MAX;
+uint32_t CaptureManager::BeginDrawQueries(CommandRecorder* rec)
+{
+    if (!rec || rec->bundle() || !TimestampsAllowed(rec->type()))
+        return UINT32_MAX;
     Impl& i = impl();
     {
         std::lock_guard lock(i.mutex);
-        if (i.state != Impl::State::Capturing || !i.options.drawTimings) return UINT32_MAX;
+        if (i.state != Impl::State::Capturing || !i.options.drawTimings)
+            return UINT32_MAX;
     }
     // A pass suspended across command lists takes nothing, here as in BeginPass: a query begun in
     // one part and ended in another closes the list with E_FAIL.
-    if (rec->pass().active && rec->pass().split) return UINT32_MAX;
+    if (rec->pass().active && rec->pass().split)
+        return UINT32_MAX;
     DeviceCapture* dc = i.CaptureFor(rec->device());
-    if (!dc || !EnsureDrawQueries(*dc, rec->device())) return UINT32_MAX;
+    if (!dc || !EnsureDrawQueries(*dc, rec->device()))
+        return UINT32_MAX;
     const uint32_t slot = dc->drawSlotsUsed.fetch_add(1, std::memory_order_relaxed);
-    if (slot >= kDrawSlots) return UINT32_MAX;   // the counter keeps climbing; only the first kDrawSlots draws are measured
+    if (slot >= kDrawSlots)
+        return UINT32_MAX;   // the counter keeps climbing; only the first kDrawSlots draws are measured
     ScopedInternal internal;
     ID3D12GraphicsCommandList* list = rec->list();
     list->EndQuery(dc->drawTimestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2);
@@ -1032,30 +1210,37 @@ uint32_t CaptureManager::BeginDrawQueries(CommandRecorder* rec) {
     // for EndRenderPass, which is where a pass's own queries stop for the same reason (BeginPass).
     uint32_t packed = slot;
     const bool graphics = rec->type() == D3D12_COMMAND_LIST_TYPE_DIRECT && !(rec->pass().active && rec->pass().renderPassApi);
-    if (graphics && dc->drawStatsHeap) {
+    if (graphics && dc->drawStatsHeap)
+    {
         list->BeginQuery(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
         packed |= kDrawStatsBit;
     }
-    if (graphics && dc->drawOcclusionHeap && rec->state().appQueryDepth == 0) {
+    if (graphics && dc->drawOcclusionHeap && rec->state().appQueryDepth == 0)
+    {
         list->BeginQuery(dc->drawOcclusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, slot);
         packed |= kDrawOcclusionBit;
     }
     return packed;
 }
 
-void CaptureManager::EndDrawQueries(CommandRecorder* rec, uint32_t packed, bool dispatch) {
-    if (!rec || packed == UINT32_MAX) return;
+void CaptureManager::EndDrawQueries(CommandRecorder* rec, uint32_t packed, bool dispatch)
+{
+    if (!rec || packed == UINT32_MAX)
+        return;
     Impl& i = impl();
     DeviceCapture* dc = i.FindCapture(rec->device());
-    if (!dc || !dc->drawTimestampHeap) return;
+    if (!dc || !dc->drawTimestampHeap)
+        return;
     const uint32_t slot = packed & kDrawSlotMask;
     DrawEntry de;
     de.hasStats = (packed & kDrawStatsBit) != 0;
     de.hasOcclusion = (packed & kDrawOcclusionBit) != 0;
     ScopedInternal internal;
     ID3D12GraphicsCommandList* list = rec->list();
-    if (de.hasStats) list->EndQuery(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
-    if (de.hasOcclusion) list->EndQuery(dc->drawOcclusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, slot);
+    if (de.hasStats)
+        list->EndQuery(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
+    if (de.hasOcclusion)
+        list->EndQuery(dc->drawOcclusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, slot);
     list->EndQuery(dc->drawTimestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, slot * 2 + 1);
     de.device = rec->device();
     de.list = list;
@@ -1070,21 +1255,26 @@ void CaptureManager::EndDrawQueries(CommandRecorder* rec, uint32_t packed, bool 
     i.pendingDrawSlots[list].push_back(packed);
 }
 
-void CaptureManager::ResolveDrawQueries(CommandRecorder* rec) {
-    if (!rec) return;
+void CaptureManager::ResolveDrawQueries(CommandRecorder* rec)
+{
+    if (!rec)
+        return;
     Impl& i = impl();
     ID3D12GraphicsCommandList* list = rec->list();
     std::vector<uint32_t> slots;
     {
         std::lock_guard lock(i.mutex);
         auto it = i.pendingDrawSlots.find(list);
-        if (it == i.pendingDrawSlots.end()) return;
+        if (it == i.pendingDrawSlots.end())
+            return;
         slots.swap(it->second);
         i.pendingDrawSlots.erase(it);
     }
-    if (slots.empty()) return;
+    if (slots.empty())
+        return;
     DeviceCapture* dc = i.FindCapture(rec->device());
-    if (!dc || !dc->drawReadback) return;
+    if (!dc || !dc->drawReadback)
+        return;
     std::sort(slots.begin(), slots.end(), [](uint32_t a, uint32_t b) { return (a & kDrawSlotMask) < (b & kDrawSlotMask); });
     ScopedInternal internal;
     /**
@@ -1095,40 +1285,50 @@ void CaptureManager::ResolveDrawQueries(CommandRecorder* rec) {
      */
     auto resolve = [&](ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, uint32_t bit, uint32_t perSlot, uint64_t base,
                        uint64_t bytes) {
-        if (!heap) return;
-        for (size_t first = 0; first < slots.size();) {
-            if (bit && !(slots[first] & bit)) { first++; continue; }
+        if (!heap)
+            return;
+        for (size_t first = 0; first < slots.size();)
+        {
+            if (bit && !(slots[first] & bit))
+            {
+                first++;
+                continue;
+            }
             size_t last = first;
             while (last + 1 < slots.size() && (slots[last + 1] & kDrawSlotMask) == (slots[last] & kDrawSlotMask) + 1 &&
-                   (!bit || (slots[last + 1] & bit)))
+                (!bit || (slots[last + 1] & bit)))
                 last++;
             const uint32_t start = slots[first] & kDrawSlotMask;
             const uint32_t count = (uint32_t)(last - first + 1);
             list->ResolveQueryData(heap, type, start * perSlot, count * perSlot, dc->drawReadback.get(),
-                                   base + (uint64_t)start * bytes);
+                base + (uint64_t)start * bytes);
             first = last + 1;
         }
     };
     resolve(dc->drawTimestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, 0, 2, kDrawTimestampBase, kDrawTimestampBytes);
     resolve(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, kDrawStatsBit, 1, kDrawStatsBase, kDrawStatsBytes);
     resolve(dc->drawOcclusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, kDrawOcclusionBit, 1, kDrawOcclusionBase,
-            kDrawOcclusionBytes);
+        kDrawOcclusionBytes);
 }
 
-namespace {
+namespace
+{
 
 /** The queries of a pass or compute pass ended and resolved into the pass's slot of the readback buffer. */
 void EndPassQueries(DeviceCapture& dc, ID3D12GraphicsCommandList* list, uint32_t timestampQuery, uint32_t statsQuery,
-                    uint32_t occlusionQuery) {
+    uint32_t occlusionQuery)
+{
     ScopedInternal internal;
     const uint32_t slot = timestampQuery / 2;
     const uint64_t base = (uint64_t)slot * kSlotBytes;
     ID3D12Resource* readback = dc.queryReadback.get();
-    if (statsQuery != UINT32_MAX) {
+    if (statsQuery != UINT32_MAX)
+    {
         list->EndQuery(dc.statsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, statsQuery);
         list->ResolveQueryData(dc.statsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, statsQuery, 1, readback, base + kStatsOffset);
     }
-    if (occlusionQuery != UINT32_MAX) {
+    if (occlusionQuery != UINT32_MAX)
+    {
         list->EndQuery(dc.occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, occlusionQuery);
         list->ResolveQueryData(dc.occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, occlusionQuery, 1, readback, base + kOcclusionOffset);
     }
@@ -1138,10 +1338,12 @@ void EndPassQueries(DeviceCapture& dc, ID3D12GraphicsCommandList* list, uint32_t
 
 /** Records the copy of one subresource into a placed footprint of the staging buffer, with the barriers its state needs. */
 void CopySubresource(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES state,
-                     ID3D12Resource* staging, const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint) {
+    ID3D12Resource* staging, const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint)
+{
     ScopedInternal internal;
     const bool barrier = NeedsCopyBarrier(state);
-    if (barrier) Transition(list, resource, subresource, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+    if (barrier)
+        Transition(list, resource, subresource, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION dst{};
     dst.pResource = staging;
     dst.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
@@ -1151,20 +1353,26 @@ void CopySubresource(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, 
     src.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
     src.SubresourceIndex = subresource;
     list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
-    if (barrier) Transition(list, resource, subresource, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+    if (barrier)
+        Transition(list, resource, subresource, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
 }
 
 }  // namespace
 
-void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
-    if (!rec) return;
+void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
+{
+    if (!rec)
+        return;
     Impl& i = impl();
     ActivePass& pass = rec->pass();
-    if (!pass.active) return;
+    if (!pass.active)
+        return;
     // A pass suspended across command lists takes nothing (ActivePass::split): its commands are
     // recorded, and a query, a barrier or a copy here would close the list with E_FAIL.
-    if (pass.split) {
-        if (synthetic) rec->Record("EndRenderTargets", std::string());
+    if (pass.split)
+    {
+        if (synthetic)
+            rec->Record("EndRenderTargets", std::string());
         pass.active = false;
         std::lock_guard lock(i.mutex);
         ++i.splitPasses;
@@ -1192,9 +1400,11 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
     // capture ends at a frame boundary and those lists are in the middle of a pass. A command list
     // closed with a query still open fails with E_FAIL, and the application reads that as a lost
     // device. The timing is only worth keeping while the capture is still collecting them.
-    if (dc && pass.timestampQuery != UINT32_MAX) {
+    if (dc && pass.timestampQuery != UINT32_MAX)
+    {
         EndPassQueries(*dc, list, pass.timestampQuery, pass.statsQuery, pass.occlusionQuery);
-        if (capturing) {
+        if (capturing)
+        {
             TimingEntry te;
             te.device = rec->device();
             te.list = list;
@@ -1214,7 +1424,8 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
     // Then every target, slice by slice, into staging. A depth-stencil target is read back twice:
     // its depth plane, then its stencil plane (`asStencil`: plane 1, one byte per texel), each an
     // entry of its own under the same attachment index.
-    if (dc && capturing && captureTextures && !rec->bundle()) {
+    if (dc && capturing && captureTextures && !rec->bundle())
+    {
         auto readBack = [&](const BoundTarget& t, bool asStencil) {
             TextureEntry e;
             e.resourceId = Tracker::Get().IdOf(t.resource);
@@ -1232,10 +1443,12 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
                 std::lock_guard lock(i.mutex);
                 i.textures.push_back(e);
             };
-            if (!DescOf(t.resource, desc, &info)) return fail("resource is not tracked");
+            if (!DescOf(t.resource, desc, &info))
+                return fail("resource is not tracked");
             const bool volume = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
             ProtocolFormat pf = ProtocolFormatOf(t.format, t.depth);
-            if (asStencil) pf.texelBytes = 1;
+            if (asStencil)
+                pf.texelBytes = 1;
             e.width = MipDim(desc.Width, t.mip);
             e.height = MipDim(desc.Height, t.mip);
             e.samples = desc.SampleDesc.Count;
@@ -1244,18 +1457,21 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             // A 3D render target: its slices are the depth slices of the mip, copied whole.
             const uint32_t slices = volume ? MipDim(desc.DepthOrArraySize, t.mip) : std::min(std::max(1u, t.sliceCount), kMaxAttachmentSlices);
             e.layers = slices;
-            if (!pf.name) return fail(std::string("format ") + FormatName(t.format) + " cannot be decoded");
+            if (!pf.name)
+                return fail(std::string("format ") + FormatName(t.format) + " cannot be decoded");
             e.format = pf.name;
             const uint64_t rowBytes = TightRowBytes(pf, e.width);
             const uint32_t rows = TightRows(pf, e.height);
             e.size = rowBytes * rows * slices;
-            if (e.size > maxTextureSize) return fail("exceeds max texture size");
+            if (e.size > maxTextureSize)
+                return fail("exceeds max texture size");
             // The budget for the frame's targets together. Past it the copies stop: they are work
             // the capture adds to the application's own lists, and a frame with thousands of passes
             // asks for more of it than the frame itself does.
             {
                 std::lock_guard lock(i.mutex);
-                if (i.targetBytes + e.size > maxTargetTotal) {
+                if (i.targetBytes + e.size > maxTargetTotal)
+                {
                     e.failed = true;
                     e.note = "render target capture budget exceeded";
                     i.textures.push_back(e);
@@ -1263,8 +1479,10 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
                 }
                 i.targetBytes += e.size;
             }
-            if (t.depth && e.samples > 1) return fail(asStencil ? "multisampled stencil is not read back" : "multisampled depth is not read back");
-            if (t.mip >= desc.MipLevels) return fail("mip level out of range");
+            if (t.depth && e.samples > 1)
+                return fail(asStencil ? "multisampled stencil is not read back" : "multisampled depth is not read back");
+            if (t.mip >= desc.MipLevels)
+                return fail("mip level out of range");
             // The stencil plane's subresources follow every mip of every slice of the depth plane.
             const uint32_t planeOffset = asStencil ? desc.MipLevels * (uint32_t)desc.DepthOrArraySize : 0;
 
@@ -1274,10 +1492,12 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             D3D12_RESOURCE_DESC sourceDesc = desc;
             ID3D12Resource* resolve = nullptr;
             const DXGI_FORMAT typed = TypedFormat(t.format, t.depth);
-            if (e.samples > 1) {
+            if (e.samples > 1)
+            {
                 ResolveKey key{list, typed, e.width, e.height, slices};
                 resolve = i.ResolveTextureFor(*dc, key);
-                if (!resolve) return fail("resolve texture could not be created");
+                if (!resolve)
+                    return fail("resolve texture could not be created");
                 source = resolve;
                 {
                     ScopedInternal internal;
@@ -1291,7 +1511,8 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             uint64_t total = 0;
             {
                 ScopedInternal internal;
-                for (uint32_t s = 0; s < slices; ++s) {
+                for (uint32_t s = 0; s < slices; ++s)
+                {
                     const uint32_t slice = volume ? 0 : t.firstSlice + s;
                     const uint32_t sub = resolve ? s : (volume ? t.mip : t.mip + slice * desc.MipLevels) + planeOffset;
                     sourceSubresources[s] = sub;
@@ -1300,26 +1521,31 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
                     rec->device()->GetCopyableFootprints(&sourceDesc, sub, 1, total, &footprints[s], &numRows, &rowSize, &bytes);
                     footprints[s].Offset = total;   // relative to the span; rebased once it is allocated
                     total += Align(bytes, kStagingAlignment);
-                    if (volume) break;   // one subresource holds every depth slice
+                    if (volume)
+                        break;   // one subresource holds every depth slice
                 }
             }
             uint64_t spanOffset = 0;
             ID3D12Resource* staging = nullptr;
-            if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging)) return fail("staging allocation failed");
+            if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging))
+                return fail("staging allocation failed");
 
             const uint32_t copies = volume ? 1 : slices;
-            for (uint32_t s = 0; s < copies; ++s) {
+            for (uint32_t s = 0; s < copies; ++s)
+            {
                 const uint32_t slice = volume ? 0 : t.firstSlice + s;
                 const uint32_t origSub = (volume ? t.mip : t.mip + slice * desc.MipLevels) + planeOffset;
                 bool known = false;
                 D3D12_RESOURCE_STATES state = ResourceTracker::Get().StateIn(list, t.resource, origSub, &known);
-                if (!known) {
+                if (!known)
+                {
                     state = t.depth ? (t.readOnlyDepth ? D3D12_RESOURCE_STATE_DEPTH_READ : D3D12_RESOURCE_STATE_DEPTH_WRITE)
                                     : D3D12_RESOURCE_STATE_RENDER_TARGET;
                 }
                 D3D12_PLACED_SUBRESOURCE_FOOTPRINT fp = footprints[s];
                 fp.Offset += spanOffset;
-                if (resolve) {
+                if (resolve)
+                {
                     ScopedInternal internal;
                     Transition(list, t.resource, origSub, state, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
                     list->ResolveSubresource(resolve, s, t.resource, origSub, typed);
@@ -1327,7 +1553,9 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
                     Transition(list, resolve, s, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_COPY_SOURCE);
                     CopySubresource(list, resolve, s, D3D12_RESOURCE_STATE_COPY_SOURCE, staging, fp);
                     Transition(list, resolve, s, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RESOLVE_DEST);
-                } else {
+                }
+                else
+                {
                     CopySubresource(list, t.resource, origSub, state, staging, fp);
                 }
                 StagedRegion r;
@@ -1341,31 +1569,40 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic) {
             std::lock_guard lock(i.mutex);
             i.textures.push_back(std::move(e));
         };
-        for (const BoundTarget& t : pass.targets) {
-            if (!t.resource) continue;
+        for (const BoundTarget& t : pass.targets)
+        {
+            if (!t.resource)
+                continue;
             readBack(t, false);
-            if (t.depth && FormatOf(TypedFormat(t.format, true)).stencil) readBack(t, true);
+            if (t.depth && FormatOf(TypedFormat(t.format, true)).stencil)
+                readBack(t, true);
         }
     }
 
     // Copies queued inside a BeginRenderPass region were held for its end.
-    if (std::vector<DeferredCopy>* deferred = i.DeferredOf(rec)) {
+    if (std::vector<DeferredCopy>* deferred = i.DeferredOf(rec))
+    {
         std::vector<DeferredCopy> pending;
         pending.swap(*deferred);
-        for (auto& fn : pending) fn(rec->list());
+        for (auto& fn : pending)
+            fn(rec->list());
     }
     // The measurements the capture asked for, drawn into the same list now that the pass's own
     // work and its read-back are in it (overdraw.h). A real render pass the application never
     // ended leaves the list inside its region, where a measurement can bind nothing.
     EndMeasuredPass(rec, pass.renderPassApi && synthetic);
-    if (synthetic) rec->Record("EndRenderTargets", std::string());
+    if (synthetic)
+        rec->Record("EndRenderTargets", std::string());
     pass.active = false;
 }
 
-void CaptureManager::OnBeforeDispatch(CommandRecorder* rec) {
-    if (!rec) return;
+void CaptureManager::OnBeforeDispatch(CommandRecorder* rec)
+{
+    if (!rec)
+        return;
     ActiveComputePass& compute = rec->compute();
-    if (rec->pass().active || compute.active) return;   // inside a render pass the dispatch stays there
+    if (rec->pass().active || compute.active)
+        return;   // inside a render pass the dispatch stays there
     compute = ActiveComputePass{};
     compute.active = true;
     compute.index = rec->NextComputeIndex();
@@ -1375,25 +1612,33 @@ void CaptureManager::OnBeforeDispatch(CommandRecorder* rec) {
         std::lock_guard lock(i.mutex);
         profile = i.state == Impl::State::Capturing && i.options.profilePasses;
     }
-    if (!profile || rec->bundle() || rec->adopted() || !TimestampsAllowed(rec->type())) return;
+    if (!profile || rec->bundle() || rec->adopted() || !TimestampsAllowed(rec->type()))
+        return;
     DeviceCapture* dc = i.CaptureFor(rec->device());
-    if (!dc || !dc->timestampHeap || !dc->queryMapped) return;
+    if (!dc || !dc->timestampHeap || !dc->queryMapped)
+        return;
     const uint32_t slot = dc->slotsUsed.fetch_add(1, std::memory_order_relaxed);
-    if (slot >= kPassSlots) return;
+    if (slot >= kPassSlots)
+        return;
     compute.timestampQuery = slot * 2;
     ScopedInternal internal;
     rec->list()->EndQuery(dc->timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, compute.timestampQuery);
 }
 
-void CaptureManager::OnComputePassEnd(CommandRecorder* rec) {
-    if (!rec) return;
+void CaptureManager::OnComputePassEnd(CommandRecorder* rec)
+{
+    if (!rec)
+        return;
     ActiveComputePass& compute = rec->compute();
-    if (!compute.active) return;
+    if (!compute.active)
+        return;
     compute.active = false;
-    if (compute.timestampQuery == UINT32_MAX) return;
+    if (compute.timestampQuery == UINT32_MAX)
+        return;
     Impl& i = impl();
     DeviceCapture* dc = i.FindCapture(rec->device());
-    if (!dc) return;
+    if (!dc)
+        return;
     EndPassQueries(*dc, rec->list(), compute.timestampQuery, UINT32_MAX, UINT32_MAX);
     TimingEntry te;
     te.device = rec->device();
@@ -1406,26 +1651,31 @@ void CaptureManager::OnComputePassEnd(CommandRecorder* rec) {
     i.timings.push_back(te);
 }
 
-void CaptureManager::OnBeforeClose(ID3D12GraphicsCommandList* list) {
+void CaptureManager::OnBeforeClose(ID3D12GraphicsCommandList* list)
+{
     // LookupRecorder, not RecorderFor: a list left open when the capture finished keeps its
     // recorder exactly so that this runs, whether or not anything is recording now (EndOpenPass).
     CommandRecorder* rec = LookupRecorder(list);
-    if (!rec) return;
+    if (!rec)
+        return;
     EndPass(rec, true);
     OnComputePassEnd(rec);
     // Whatever was measured outside a pass (a dispatch between them) is resolved here instead.
     ResolveDrawQueries(rec);
     // A BeginRenderPass region left open at Close is the application's error; its deferred copies
     // still have to land somewhere, and the list is about to close.
-    if (std::vector<DeferredCopy>* deferred = impl().DeferredOf(rec)) {
+    if (std::vector<DeferredCopy>* deferred = impl().DeferredOf(rec))
+    {
         std::vector<DeferredCopy> pending;
         pending.swap(*deferred);
-        for (auto& fn : pending) fn(rec->list());
+        for (auto& fn : pending)
+            fn(rec->list());
     }
     rec->MarkClosed();
     // The list is closed and nothing records any more: this recorder was only kept for the pass
     // just ended (Impl::Finish), so it goes now rather than waiting for the list to be released.
-    if (!ShouldRecord()) {
+    if (!ShouldRecord())
+    {
         Impl& i = impl();
         std::unique_lock lock(i.recorderMutex);
         i.recorders.erase(list);
@@ -1436,12 +1686,16 @@ void CaptureManager::OnBeforeClose(ID3D12GraphicsCommandList* list) {
 // ---------------------------------------------------------------------------------------------
 // Bindings: the descriptor snapshot on a root table or root view, and the read-back it queues
 
-namespace {
+namespace
+{
 
 /** The bytes of one element of a buffer view: its structure stride, 4 for a raw view, else the format's texel. */
-uint32_t ElementStride(uint32_t structureByteStride, bool raw, DXGI_FORMAT format) {
-    if (structureByteStride) return structureByteStride;
-    if (raw) return 4;
+uint32_t ElementStride(uint32_t structureByteStride, bool raw, DXGI_FORMAT format)
+{
+    if (structureByteStride)
+        return structureByteStride;
+    if (raw)
+        return 4;
     const uint32_t bytes = FormatOf(format).bytes;
     return bytes ? bytes : 4;
 }
@@ -1449,26 +1703,35 @@ uint32_t ElementStride(uint32_t structureByteStride, bool raw, DXGI_FORMAT forma
 }  // namespace
 
 uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole,
-                                            bool afterSubmit) {
-    if (!rec || !buffer) return 0;
+    bool afterSubmit)
+{
+    if (!rec || !buffer)
+        return 0;
     Impl& i = impl();
     ResourceInfo info;
-    if (!ResourceTracker::Get().Get(buffer, info) || info.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return 0;
-    if (offset >= info.desc.Width) return 0;
+    if (!ResourceTracker::Get().Get(buffer, info) || info.desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+        return 0;
+    if (offset >= info.desc.Width)
+        return 0;
     size = std::min<UINT64>(size, info.desc.Width - offset);
-    if (!size) return 0;
+    if (!size)
+        return 0;
     DeviceCapture* dc = nullptr;
     {
         std::lock_guard lock(i.mutex);
-        if (!i.TakesContents() || !i.options.captureBuffers) return 0;
+        if (!i.TakesContents() || !i.options.captureBuffers)
+            return 0;
         auto it = i.bufferIds.find({buffer, offset, size});
-        if (it != i.bufferIds.end()) {
-            if (it->second && it->second <= i.buffers.size()) ShareEntry(i.buffers[it->second - 1], rec->list());
+        if (it != i.bufferIds.end())
+        {
+            if (it->second && it->second <= i.buffers.size())
+                ShareEntry(i.buffers[it->second - 1], rec->list());
             return it->second;
         }
     }
     dc = i.CaptureFor(rec->device());
-    if (!dc) return 0;
+    if (!dc)
+        return 0;
     ID3D12GraphicsCommandList* list = rec->list();
 
     BufferEntry e;
@@ -1481,36 +1744,50 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
     ID3D12Resource* staging = nullptr;
     {
         std::lock_guard lock(i.mutex);
-        if (!i.TakesContents()) return 0;
+        if (!i.TakesContents())
+            return 0;
         e.warmup = i.state != Impl::State::Capturing;
         e.id = (uint32_t)i.buffers.size() + 1;
         i.bufferIds[{buffer, offset, size}] = e.id;
-        if (info.heapType == D3D12_HEAP_TYPE_READBACK) {
+        if (info.heapType == D3D12_HEAP_TYPE_READBACK)
+        {
             e.failed = true;
             e.note = "a buffer in a readback heap cannot be a copy source";
-        } else if (HoldsAccelerationStructure(buffer)) {
+        }
+        else if (HoldsAccelerationStructure(buffer))
+        {
             // Not a size or a budget: it cannot be copied at all (raytracing.h).
             e.failed = true;
-            e.note = "a buffer holding a ray tracing acceleration structure cannot be read back: its layout is the "
-                     "driver's, and a resource in RAYTRACING_ACCELERATION_STRUCTURE may not be transitioned to be copied";
-        } else {
-            if (e.size > i.options.maxBufferSize && !whole) {
+            e.note =
+                "a buffer holding a ray tracing acceleration structure cannot be read back: its layout is the "
+                "driver's, and a resource in RAYTRACING_ACCELERATION_STRUCTURE may not be transitioned to be copied";
+        }
+        else
+        {
+            if (e.size > i.options.maxBufferSize && !whole)
+            {
                 e.originalSize = e.size;
                 e.size = i.options.maxBufferSize;
             }
-            if (i.bufferBytes + e.size > i.options.maxBufferTotal) {
+            if (i.bufferBytes + e.size > i.options.maxBufferTotal)
+            {
                 e.failed = true;
                 e.note = "buffer capture budget exceeded";
-            } else if (!i.AllocateStaging(*dc, e.size, e.chunk, e.stagingOffset, &staging)) {
+            }
+            else if (!i.AllocateStaging(*dc, e.size, e.chunk, e.stagingOffset, &staging))
+            {
                 e.failed = true;
                 e.note = "staging allocation failed";
-            } else {
+            }
+            else
+            {
                 i.bufferBytes += e.size;
             }
         }
         i.buffers.push_back(e);
     }
-    if (e.failed) return e.id;
+    if (e.failed)
+        return e.id;
 
     // The copy, with the barriers the buffer's state needs. An upload-heap buffer is always
     // GENERIC_READ; one nothing transitioned is COMMON, which a copy promotes.
@@ -1519,33 +1796,41 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
     auto copy = [buffer, staging, copyOffset, copySize, stagingOffset, heapType](ID3D12GraphicsCommandList* list) {
         ScopedInternal internal;
         D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_GENERIC_READ;
-        if (heapType != D3D12_HEAP_TYPE_UPLOAD) {
+        if (heapType != D3D12_HEAP_TYPE_UPLOAD)
+        {
             bool known = false;
             state = ResourceTracker::Get().StateIn(list, buffer, 0, &known);
-            if (!known) state = D3D12_RESOURCE_STATE_COMMON;
+            if (!known)
+                state = D3D12_RESOURCE_STATE_COMMON;
         }
         // The backstop for a structure the library never saw built -- an application attached to
         // after it had built them. A barrier out of this state is rejected and closes the list.
-        if (state == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE) return;
+        if (state == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
+            return;
         const bool barrier = NeedsCopyBarrier(state);
-        if (barrier) Transition(list, buffer, 0, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        if (barrier)
+            Transition(list, buffer, 0, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
         list->CopyBufferRegion(staging, stagingOffset, buffer, copyOffset, copySize);
-        if (barrier) Transition(list, buffer, 0, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+        if (barrier)
+            Transition(list, buffer, 0, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
     };
     // Asked for after the submission: the list is closed, so the copy goes in the library's own list
     // behind it (RunAfterSubmitCopies).
-    if (afterSubmit) {
+    if (afterSubmit)
+    {
         {
             std::shared_lock lock(i.recorderMutex);
             auto it = i.recorders.find(list);
-            if (it != i.recorders.end() && it->second.rec.get() == rec) {
+            if (it != i.recorders.end() && it->second.rec.get() == rec)
+            {
                 it->second.afterSubmit.push_back(std::move(copy));
                 return e.id;
             }
         }
         // Nothing will make the copy, so nothing may pretend it was made.
         std::lock_guard lock(i.mutex);
-        if (e.id && e.id <= i.buffers.size()) {
+        if (e.id && e.id <= i.buffers.size())
+        {
             i.buffers[e.id - 1].failed = true;
             i.buffers[e.id - 1].note = "the list it was to follow has no recorder";
         }
@@ -1554,44 +1839,59 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
     // A bundle cannot copy: its copies go into the list that executes it. Inside a BeginRenderPass
     // region they wait for its end.
     // A suspended pass takes nothing at all, so there they wait for the submission (HeldCopiesOf).
-    if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec)) held->push_back(std::move(copy));
-    else if (!rec->bundle()) copy(list);
+    if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec))
+        held->push_back(std::move(copy));
+    else if (!rec->bundle())
+        copy(list);
     return e.id;
 }
 
-uint32_t CaptureManager::QueueAddressCaptureAfterSubmit(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size) {
-    if (!rec || !address || rec->bundle()) return 0;
+uint32_t CaptureManager::QueueAddressCaptureAfterSubmit(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size)
+{
+    if (!rec || !address || rec->bundle())
+        return 0;
     ID3D12Resource* buffer = nullptr;
     UINT64 offset = 0, remaining = 0;
-    if (!AddressMap::Get().Resolve(address, buffer, offset, remaining)) return 0;
+    if (!AddressMap::Get().Resolve(address, buffer, offset, remaining))
+        return 0;
     return QueueBufferCapture(rec, buffer, offset, size ? std::min<UINT64>(size, remaining) : remaining, true, true);
 }
 
-uint32_t CaptureManager::QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size, bool whole) {
-    if (!rec || !address) return 0;
+uint32_t CaptureManager::QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size, bool whole)
+{
+    if (!rec || !address)
+        return 0;
     ID3D12Resource* buffer = nullptr;
     UINT64 offset = 0, remaining = 0;
-    if (!AddressMap::Get().Resolve(address, buffer, offset, remaining)) return 0;
+    if (!AddressMap::Get().Resolve(address, buffer, offset, remaining))
+        return 0;
     return QueueBufferCapture(rec, buffer, offset, size ? std::min<UINT64>(size, remaining) : remaining, whole && size);
 }
 
-uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture) {
-    if (!rec || !texture) return 0;
+uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture)
+{
+    if (!rec || !texture)
+        return 0;
     Impl& i = impl();
     {
         std::lock_guard lock(i.mutex);
-        if (!i.TakesContents() || !i.options.captureImages) return 0;
+        if (!i.TakesContents() || !i.options.captureImages)
+            return 0;
         auto it = i.textureIds.find(texture);
-        if (it != i.textureIds.end()) {
-            if (it->second && it->second <= i.textures.size()) ShareEntry(i.textures[it->second - 1], rec->list());
+        if (it != i.textureIds.end())
+        {
+            if (it->second && it->second <= i.textures.size())
+                ShareEntry(i.textures[it->second - 1], rec->list());
             return it->second;
         }
     }
     D3D12_RESOURCE_DESC desc{};
     ResourceInfo info;
-    if (!DescOf(texture, desc, &info) || desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER) return 0;
+    if (!DescOf(texture, desc, &info) || desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+        return 0;
     DeviceCapture* dc = i.CaptureFor(rec->device());
-    if (!dc) return 0;
+    if (!dc)
+        return 0;
     ID3D12GraphicsCommandList* list = rec->list();
     const bool volume = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
 
@@ -1612,40 +1912,53 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     e.device = rec->device();
     const ProtocolFormat pf = ProtocolFormatOf(desc.Format, FormatOf(desc.Format).depth);
     e.depthAspect = pf.depth;
-    if (pf.name) e.format = pf.name;
+    if (pf.name)
+        e.format = pf.name;
 
     // Every mip with all its layers (a volume's depth slices), tightly packed, back to back.
     uint64_t tight = 0;
-    for (uint32_t m = 0; m < e.mips; ++m) {
+    for (uint32_t m = 0; m < e.mips; ++m)
+    {
         const uint32_t slices = volume ? MipDim(desc.DepthOrArraySize, m) : e.layers;
         tight += TightRowBytes(pf, MipDim(desc.Width, m)) * TightRows(pf, MipDim(desc.Height, m)) * slices;
     }
     e.size = tight;
 
     auto finish = [&](const char* why) {
-        if (why) { e.failed = true; e.note = why; }
+        if (why)
+        {
+            e.failed = true;
+            e.note = why;
+        }
         std::lock_guard lock(i.mutex);
-        if (!i.TakesContents()) return 0u;
+        if (!i.TakesContents())
+            return 0u;
         e.warmup = i.state != Impl::State::Capturing;
         e.captureId = (uint32_t)i.textures.size() + 1;
         i.textureIds[texture] = e.captureId;
-        if (!e.failed) i.imageBytes += e.size;
+        if (!e.failed)
+            i.imageBytes += e.size;
         i.textures.push_back(e);
         return e.captureId;
     };
-    if (e.samples > 1) return finish("multisampled textures bound as shader resources are not read back");
-    if (!pf.name) return finish("format cannot be decoded");
+    if (e.samples > 1)
+        return finish("multisampled textures bound as shader resources are not read back");
+    if (!pf.name)
+        return finish("format cannot be decoded");
     bool tooLarge, overBudget;
     {
         std::lock_guard lock(i.mutex);
         tooLarge = e.size > i.options.maxTextureSize;
         overBudget = i.imageBytes + e.size > i.options.maxImageTotal;
     }
-    if (tooLarge) return finish("exceeds max texture size");
-    if (overBudget) return finish("image capture budget exceeded");
+    if (tooLarge)
+        return finish("exceeds max texture size");
+    if (overBudget)
+        return finish("image capture budget exceeded");
 
     // Footprints of every subresource copied, in the order of the data, then one staging span.
-    struct Copy {
+    struct Copy
+    {
         uint32_t subresource;
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint;
     };
@@ -1653,9 +1966,11 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     uint64_t total = 0;
     {
         ScopedInternal internal;
-        for (uint32_t m = 0; m < e.mips; ++m) {
+        for (uint32_t m = 0; m < e.mips; ++m)
+        {
             const uint32_t perMip = volume ? 1 : e.layers;
-            for (uint32_t l = 0; l < perMip; ++l) {
+            for (uint32_t l = 0; l < perMip; ++l)
+            {
                 Copy c;
                 c.subresource = m + l * desc.MipLevels;
                 UINT numRows = 0;
@@ -1669,8 +1984,10 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     }
     uint64_t spanOffset = 0;
     ID3D12Resource* staging = nullptr;
-    if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging)) return finish("staging allocation failed");
-    for (Copy& c : copies) {
+    if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging))
+        return finish("staging allocation failed");
+    for (Copy& c : copies)
+    {
         c.footprint.Offset += spanOffset;
         uint32_t m = 0, slice = 0, plane = 0;
         SubresourceOf(desc, c.subresource, m, slice, plane);
@@ -1683,47 +2000,63 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
         e.regions.push_back(r);
     }
     const uint32_t id = finish(nullptr);
-    if (!id) return 0;
+    if (!id)
+        return 0;
 
     auto copy = [texture, staging, copies](ID3D12GraphicsCommandList* list) {
-        for (const Copy& c : copies) {
+        for (const Copy& c : copies)
+        {
             bool known = false;
             D3D12_RESOURCE_STATES state = ResourceTracker::Get().StateIn(list, texture, c.subresource, &known);
-            if (!known) state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            if (!known)
+                state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
             CopySubresource(list, texture, c.subresource, state, staging, c.footprint);
         }
     };
     // A suspended pass takes nothing at all, so there they wait for the submission (HeldCopiesOf).
-    if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec)) held->push_back(std::move(copy));
-    else if (!rec->bundle()) copy(list);
+    if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec))
+        held->push_back(std::move(copy));
+    else if (!rec->bundle())
+        copy(list);
     return id;
 }
 
-namespace {
+namespace
+{
 
 /** The read-back a descriptor record names, queued; the capture id its `data` carries (0 for none). */
-uint32_t QueueRecordData(CaptureManager& cm, CommandRecorder* rec, const DescriptorRecord& r) {
-    switch (r.kind) {
+uint32_t QueueRecordData(CaptureManager& cm, CommandRecorder* rec, const DescriptorRecord& r)
+{
+    switch (r.kind)
+    {
         case DescriptorKind::CBV:
             return r.address ? cm.QueueAddressCapture(rec, r.address, r.size) : 0;
         case DescriptorKind::SRV:
-        case DescriptorKind::UAV: {
-            if (r.accelerationStructure || !r.resource) return 0;
+        case DescriptorKind::UAV:
+        {
+            if (r.accelerationStructure || !r.resource)
+                return 0;
             // The pointer a descriptor holds is not known to name anything: DescOf refuses the
             // ones the tracker has let go, which is what keeps this off a released resource.
             D3D12_RESOURCE_DESC desc{};
-            if (!DescOf(r.resource, desc)) return 0;
-            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER) return cm.QueueTextureCapture(rec, r.resource);
-            if (!r.hasDesc) return cm.QueueBufferCapture(rec, r.resource, 0, desc.Width);
-            if (r.kind == DescriptorKind::SRV) {
-                if (r.srv.ViewDimension != D3D12_SRV_DIMENSION_BUFFER) return 0;
+            if (!DescOf(r.resource, desc))
+                return 0;
+            if (desc.Dimension != D3D12_RESOURCE_DIMENSION_BUFFER)
+                return cm.QueueTextureCapture(rec, r.resource);
+            if (!r.hasDesc)
+                return cm.QueueBufferCapture(rec, r.resource, 0, desc.Width);
+            if (r.kind == DescriptorKind::SRV)
+            {
+                if (r.srv.ViewDimension != D3D12_SRV_DIMENSION_BUFFER)
+                    return 0;
                 const uint32_t stride = ElementStride(r.srv.Buffer.StructureByteStride,
-                                                      (r.srv.Buffer.Flags & D3D12_BUFFER_SRV_FLAG_RAW) != 0, r.srv.Format);
+                    (r.srv.Buffer.Flags & D3D12_BUFFER_SRV_FLAG_RAW) != 0, r.srv.Format);
                 return cm.QueueBufferCapture(rec, r.resource, r.srv.Buffer.FirstElement * stride, (UINT64)r.srv.Buffer.NumElements * stride);
             }
-            if (r.uav.ViewDimension != D3D12_UAV_DIMENSION_BUFFER) return 0;
+            if (r.uav.ViewDimension != D3D12_UAV_DIMENSION_BUFFER)
+                return 0;
             const uint32_t stride = ElementStride(r.uav.Buffer.StructureByteStride,
-                                                  (r.uav.Buffer.Flags & D3D12_BUFFER_UAV_FLAG_RAW) != 0, r.uav.Format);
+                (r.uav.Buffer.Flags & D3D12_BUFFER_UAV_FLAG_RAW) != 0, r.uav.Format);
             return cm.QueueBufferCapture(rec, r.resource, r.uav.Buffer.FirstElement * stride, (UINT64)r.uav.Buffer.NumElements * stride);
         }
         default:
@@ -1731,18 +2064,26 @@ uint32_t QueueRecordData(CaptureManager& cm, CommandRecorder* rec, const Descrip
     }
 }
 
-void BeginSnapshot(JsonWriter& w, bool compute, uint32_t parameterIndex, ID3D12DescriptorHeap* heap, ID3D12RootSignature* signature) {
+void BeginSnapshot(JsonWriter& w, bool compute, uint32_t parameterIndex, ID3D12DescriptorHeap* heap, ID3D12RootSignature* signature)
+{
     w.BeginObject();
-    w.Key("bindPoint"); w.String(compute ? "compute" : "graphics");
-    w.Key("sets"); w.BeginArray();
+    w.Key("bindPoint");
+    w.String(compute ? "compute" : "graphics");
+    w.Key("sets");
+    w.BeginArray();
     w.BeginObject();
-    w.Key("set"); w.Uint(parameterIndex);
-    w.Key("descriptorSet"); WriteRef(w, heap, "ID3D12DescriptorHeap");
-    w.Key("layout"); WriteRef(w, signature, "ID3D12RootSignature");
-    w.Key("bindings"); w.BeginArray();
+    w.Key("set");
+    w.Uint(parameterIndex);
+    w.Key("descriptorSet");
+    WriteRef(w, heap, "ID3D12DescriptorHeap");
+    w.Key("layout");
+    WriteRef(w, signature, "ID3D12RootSignature");
+    w.Key("bindings");
+    w.BeginArray();
 }
 
-void EndSnapshot(JsonWriter& w) {
+void EndSnapshot(JsonWriter& w)
+{
     w.EndArray();    // bindings
     w.EndObject();   // set
     w.EndArray();    // sets
@@ -1751,147 +2092,202 @@ void EndSnapshot(JsonWriter& w) {
 
 }  // namespace
 
-void CaptureManager::SnapshotRootTable(CommandRecorder* rec, bool compute, uint32_t parameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE base) {
-    if (!rec) return;
+void CaptureManager::SnapshotRootTable(CommandRecorder* rec, bool compute, uint32_t parameterIndex, D3D12_GPU_DESCRIPTOR_HANDLE base)
+{
+    if (!rec)
+        return;
     // A bundle that sets no root signature inherits the executing list's.
     const std::shared_ptr<const RootSignatureInfo> ownLayout = compute ? rec->state().computeLayout : rec->state().graphicsLayout;
     ID3D12RootSignature* ownSignature = compute ? rec->state().computeRootSignature : rec->state().graphicsRootSignature;
     rec->DeferSnapshot(compute, [this, compute, parameterIndex, base, ownLayout, ownSignature](CommandRecorder* rec) {
-    ListState& state = rec->state();
-    const std::shared_ptr<const RootSignatureInfo> layout = ownLayout ? ownLayout : compute ? state.computeLayout : state.graphicsLayout;
-    ID3D12RootSignature* signature = ownLayout ? ownSignature : compute ? state.computeRootSignature : state.graphicsRootSignature;
-    HeapInfo heap;
-    uint32_t index = 0;
-    const bool located = DescriptorTracker::Get().Locate(base, heap, index);
+        ListState& state = rec->state();
+        const std::shared_ptr<const RootSignatureInfo> layout = ownLayout ? ownLayout : compute ? state.computeLayout
+                                                                                                : state.graphicsLayout;
+        ID3D12RootSignature* signature = ownLayout ? ownSignature : compute ? state.computeRootSignature
+                                                                            : state.graphicsRootSignature;
+        HeapInfo heap;
+        uint32_t index = 0;
+        const bool located = DescriptorTracker::Get().Locate(base, heap, index);
 
-    JsonWriter w(&Tracker::Get());
-    BeginSnapshot(w, compute, parameterIndex, located ? heap.heap : nullptr, signature);
-    const RootParameterInfo* param = layout && parameterIndex < layout->parameters.size() ? &layout->parameters[parameterIndex] : nullptr;
-    if (param && param->type == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE && located) {
-        for (size_t k = 0; k < param->ranges.size(); ++k) {
-            const RootRange& range = param->ranges[k];
-            const uint32_t first = index + range.offsetInTable;
-            uint32_t count = range.numDescriptors;
-            if (count == UINT_MAX) {
+        JsonWriter w(&Tracker::Get());
+        BeginSnapshot(w, compute, parameterIndex, located ? heap.heap : nullptr, signature);
+        const RootParameterInfo* param = layout && parameterIndex < layout->parameters.size() ? &layout->parameters[parameterIndex] : nullptr;
+        if (param && param->type == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE && located)
+        {
+            for (size_t k = 0; k < param->ranges.size(); ++k)
+            {
+                const RootRange& range = param->ranges[k];
+                const uint32_t first = index + range.offsetInTable;
+                uint32_t count = range.numDescriptors;
+                if (count == UINT_MAX)
+                {
                 // Unbounded: the rest of the heap, within reason.
-                count = first < heap.desc.NumDescriptors ? std::min(heap.desc.NumDescriptors - first, 1024u) : 0;
+                    count = first < heap.desc.NumDescriptors ? std::min(heap.desc.NumDescriptors - first, 1024u) : 0;
+                }
+                std::vector<DescriptorRecord> records = DescriptorTracker::Get().Slots(heap.heap, first, count);
+                w.BeginObject();
+                w.Key("binding");
+                w.Uint(k);
+                w.Key("type");
+                w.Enum(ToString_D3D12_DESCRIPTOR_RANGE_TYPE((int64_t)range.type), (int64_t)range.type);
+                w.Key("register");
+                w.Uint(range.baseRegister);
+                w.Key("space");
+                w.Uint(range.space);
+                w.Key("stages");
+                w.Enum(ToString_D3D12_SHADER_VISIBILITY((int64_t)param->visibility), (int64_t)param->visibility);
+                w.Key("descriptors");
+                w.BeginArray();
+                for (const DescriptorRecord& r : records)
+                {
+                    const uint32_t dataId = range.type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER ? 0 : QueueRecordData(*this, rec, r);
+                    WriteDescriptorRecord(w, r, dataId);
+                }
+                w.EndArray();
+                w.EndObject();
             }
-            std::vector<DescriptorRecord> records = DescriptorTracker::Get().Slots(heap.heap, first, count);
-            w.BeginObject();
-            w.Key("binding"); w.Uint(k);
-            w.Key("type"); w.Enum(ToString_D3D12_DESCRIPTOR_RANGE_TYPE((int64_t)range.type), (int64_t)range.type);
-            w.Key("register"); w.Uint(range.baseRegister);
-            w.Key("space"); w.Uint(range.space);
-            w.Key("stages"); w.Enum(ToString_D3D12_SHADER_VISIBILITY((int64_t)param->visibility), (int64_t)param->visibility);
-            w.Key("descriptors"); w.BeginArray();
-            for (const DescriptorRecord& r : records) {
-                const uint32_t dataId = range.type == D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER ? 0 : QueueRecordData(*this, rec, r);
-                WriteDescriptorRecord(w, r, dataId);
-            }
-            w.EndArray();
-            w.EndObject();
         }
-    }
-    EndSnapshot(w);
-    return ",\"descriptors\":" + w.str();
+        EndSnapshot(w);
+        return ",\"descriptors\":" + w.str();
     });
 }
 
-void CaptureManager::SnapshotRootView(CommandRecorder* rec, bool compute, uint32_t parameterIndex, D3D12_GPU_VIRTUAL_ADDRESS address) {
-    if (!rec) return;
+void CaptureManager::SnapshotRootView(CommandRecorder* rec, bool compute, uint32_t parameterIndex, D3D12_GPU_VIRTUAL_ADDRESS address)
+{
+    if (!rec)
+        return;
     const std::shared_ptr<const RootSignatureInfo> ownLayout = compute ? rec->state().computeLayout : rec->state().graphicsLayout;
     ID3D12RootSignature* ownSignature = compute ? rec->state().computeRootSignature : rec->state().graphicsRootSignature;
     rec->SetSnapshotOnLast([this, compute, parameterIndex, address, ownLayout, ownSignature](CommandRecorder* rec) {
-    ListState& state = rec->state();
-    const std::shared_ptr<const RootSignatureInfo> layout = ownLayout ? ownLayout : compute ? state.computeLayout : state.graphicsLayout;
-    ID3D12RootSignature* signature = ownLayout ? ownSignature : compute ? state.computeRootSignature : state.graphicsRootSignature;
-    const RootParameterInfo* param = layout && parameterIndex < layout->parameters.size() ? &layout->parameters[parameterIndex] : nullptr;
+        ListState& state = rec->state();
+        const std::shared_ptr<const RootSignatureInfo> layout = ownLayout ? ownLayout : compute ? state.computeLayout
+                                                                                                : state.graphicsLayout;
+        ID3D12RootSignature* signature = ownLayout ? ownSignature : compute ? state.computeRootSignature
+                                                                            : state.graphicsRootSignature;
+        const RootParameterInfo* param = layout && parameterIndex < layout->parameters.size() ? &layout->parameters[parameterIndex] : nullptr;
 
-    JsonWriter w(&Tracker::Get());
-    BeginSnapshot(w, compute, parameterIndex, nullptr, signature);
-    w.BeginObject();
-    w.Key("binding"); w.Uint(0);
-    w.Key("type");
-    if (param) w.Enum(ToString_D3D12_ROOT_PARAMETER_TYPE((int64_t)param->type), (int64_t)param->type);
-    else w.Null();
-    w.Key("register"); w.Uint(param ? param->shaderRegister : 0);
-    w.Key("space"); w.Uint(param ? param->space : 0);
-    w.Key("stages");
-    if (param) w.Enum(ToString_D3D12_SHADER_VISIBILITY((int64_t)param->visibility), (int64_t)param->visibility);
-    else w.String("D3D12_SHADER_VISIBILITY_ALL");
-    w.Key("descriptors"); w.BeginArray();
-    ID3D12Resource* buffer = nullptr;
-    UINT64 offset = 0, remaining = 0;
-    if (address && AddressMap::Get().Resolve(address, buffer, offset, remaining)) {
-        const uint32_t dataId = QueueBufferCapture(rec, buffer, offset, remaining);
+        JsonWriter w(&Tracker::Get());
+        BeginSnapshot(w, compute, parameterIndex, nullptr, signature);
         w.BeginObject();
-        w.Key("buffer"); WriteRef(w, buffer, "ID3D12Resource");
-        w.Key("offset"); w.Uint(offset);
-        w.Key("range"); w.Uint(remaining);
-        w.Key("data"); w.Uint(dataId);
+        w.Key("binding");
+        w.Uint(0);
+        w.Key("type");
+        if (param)
+            w.Enum(ToString_D3D12_ROOT_PARAMETER_TYPE((int64_t)param->type), (int64_t)param->type);
+        else
+            w.Null();
+        w.Key("register");
+        w.Uint(param ? param->shaderRegister : 0);
+        w.Key("space");
+        w.Uint(param ? param->space : 0);
+        w.Key("stages");
+        if (param)
+            w.Enum(ToString_D3D12_SHADER_VISIBILITY((int64_t)param->visibility), (int64_t)param->visibility);
+        else
+            w.String("D3D12_SHADER_VISIBILITY_ALL");
+        w.Key("descriptors");
+        w.BeginArray();
+        ID3D12Resource* buffer = nullptr;
+        UINT64 offset = 0, remaining = 0;
+        if (address && AddressMap::Get().Resolve(address, buffer, offset, remaining))
+        {
+            const uint32_t dataId = QueueBufferCapture(rec, buffer, offset, remaining);
+            w.BeginObject();
+            w.Key("buffer");
+            WriteRef(w, buffer, "ID3D12Resource");
+            w.Key("offset");
+            w.Uint(offset);
+            w.Key("range");
+            w.Uint(remaining);
+            w.Key("data");
+            w.Uint(dataId);
+            w.EndObject();
+        }
+        else
+        {
+            w.BeginObject();
+            w.Key("buffer");
+            w.Null();
+            w.Key("address");
+            w.String(Hex(address));
+            w.EndObject();
+        }
+        w.EndArray();
         w.EndObject();
-    } else {
-        w.BeginObject();
-        w.Key("buffer"); w.Null();
-        w.Key("address"); w.String(Hex(address));
-        w.EndObject();
-    }
-    w.EndArray();
-    w.EndObject();
-    EndSnapshot(w);
-    return ",\"descriptors\":" + w.str();
+        EndSnapshot(w);
+        return ",\"descriptors\":" + w.str();
     });
 }
 
 // ---------------------------------------------------------------------------------------------
 // Queues and frames
 
-namespace {
+namespace
+{
 
 /** Whether an entry was also given to `list` (Entry::sharedBy); false for the entries that are never shared (a pass's timings). */
 template <typename Entry>
-auto SharedWith(const Entry& e, ID3D12GraphicsCommandList* list, int) -> decltype(e.sharedBy, bool()) {
+auto SharedWith(const Entry& e, ID3D12GraphicsCommandList* list, int) -> decltype(e.sharedBy, bool())
+{
     return std::find(e.sharedBy.begin(), e.sharedBy.end(), list) != e.sharedBy.end();
 }
 template <typename Entry>
-bool SharedWith(const Entry&, ID3D12GraphicsCommandList*, long) { return false; }
+bool SharedWith(const Entry&, ID3D12GraphicsCommandList*, long)
+{
+    return false;
+}
 
 /** Every capture entry recorded into `list` that has no frame yet ran in `frame`. */
 template <typename Entry>
-void AssignFrame(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list, uint32_t frame) {
+void AssignFrame(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list, uint32_t frame)
+{
     for (Entry& e : entries)
-        if (e.frame == UINT32_MAX && (e.list == list || SharedWith(e, list, 0))) e.frame = frame;
+        if (e.frame == UINT32_MAX && (e.list == list || SharedWith(e, list, 0)))
+            e.frame = frame;
 }
 
 template <typename Entry>
-void RekeyList(std::vector<Entry>& entries, ID3D12GraphicsCommandList* from, ID3D12GraphicsCommandList* to) {
+void RekeyList(std::vector<Entry>& entries, ID3D12GraphicsCommandList* from, ID3D12GraphicsCommandList* to)
+{
     for (Entry& e : entries)
-        if (e.list == from && e.frame == UINT32_MAX) e.list = to;
+        if (e.list == from && e.frame == UINT32_MAX)
+            e.list = to;
 }
 
 /** The entries a list queued but whose copies were never recorded, marked so the data is not read as if it were there. */
 template <typename Entry>
-void FailList(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list, const char* why) {
+void FailList(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list, const char* why)
+{
     for (Entry& e : entries)
-        if (e.list == list && e.frame == UINT32_MAX && !e.failed) { e.failed = true; e.note = why; }
+        if (e.list == list && e.frame == UINT32_MAX && !e.failed)
+        {
+            e.failed = true;
+            e.note = why;
+        }
 }
 
-void NoteQueue(DeviceCapture& dc, ID3D12CommandQueue* queue) {
-    if (!queue) return;
+void NoteQueue(DeviceCapture& dc, ID3D12CommandQueue* queue)
+{
+    if (!queue)
+        return;
     std::lock_guard lock(dc.mutex);
-    if (std::find(dc.queues.begin(), dc.queues.end(), queue) != dc.queues.end()) return;
+    if (std::find(dc.queues.begin(), dc.queues.end(), queue) != dc.queues.end())
+        return;
     dc.queues.push_back(queue);
-    if (!dc.frequency) {
+    if (!dc.frequency)
+    {
         ScopedInternal internal;
         D3D12_COMMAND_QUEUE_DESC desc = queue->GetDesc();
         UINT64 frequency = 0;
-        if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT && SUCCEEDED(queue->GetTimestampFrequency(&frequency))) dc.frequency = frequency;
+        if (desc.Type == D3D12_COMMAND_LIST_TYPE_DIRECT && SUCCEEDED(queue->GetTimestampFrequency(&frequency)))
+            dc.frequency = frequency;
     }
 }
 
 }  // namespace
 
-std::vector<DeferredCopy>* CaptureManager::Impl::HeldCopiesOf(CommandRecorder* rec) {
+std::vector<DeferredCopy>* CaptureManager::Impl::HeldCopiesOf(CommandRecorder* rec)
+{
     const ActivePass& pass = rec->pass();
     // Closed to any work of the capture's: inside a suspended or resumed pass, and after one that
     // ended suspended (the pass is kept as it was once it ends). A pass that resumes and ends for
@@ -1901,26 +2297,32 @@ std::vector<DeferredCopy>* CaptureManager::Impl::HeldCopiesOf(CommandRecorder* r
     // texture the frame reads and then overwrites (temporal anti-aliasing's history), which is
     // read back as it was written.
     const bool closed = rec->adopted() || (pass.split && (pass.active || pass.suspending));
-    if (!rec->bundle() && !closed && !(pass.active && pass.renderPassApi)) return nullptr;
+    if (!rec->bundle() && !closed && !(pass.active && pass.renderPassApi))
+        return nullptr;
     std::shared_lock lock(recorderMutex);
     auto it = recorders.find(rec->list());
-    if (it == recorders.end() || it->second.rec.get() != rec) return nullptr;
+    if (it == recorders.end() || it->second.rec.get() != rec)
+        return nullptr;
     // A bundle's copies go to the list that executes it, which decides then (OnExecuteBundle).
     return !rec->bundle() && closed ? &it->second.afterSubmit : &it->second.deferred;
 }
 
-void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists) {
+void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
+{
     std::vector<DeferredCopy> copies;
     {
         std::shared_lock lock(recorderMutex);
-        for (UINT k = 0; k < count; ++k) {
+        for (UINT k = 0; k < count; ++k)
+        {
             auto it = lists && lists[k] ? recorders.find(static_cast<ID3D12GraphicsCommandList*>(lists[k])) : recorders.end();
-            if (it == recorders.end() || it->second.afterSubmit.empty()) continue;
+            if (it == recorders.end() || it->second.afterSubmit.empty())
+                continue;
             copies.insert(copies.end(), std::make_move_iterator(it->second.afterSubmit.begin()), std::make_move_iterator(it->second.afterSubmit.end()));
             it->second.afterSubmit.clear();
         }
     }
-    if (copies.empty() || !device) return;
+    if (copies.empty() || !device)
+        return;
     DeviceCapture* dc = CaptureFor(device);
     // The copies move a resource to COPY_SOURCE and back, which only a direct queue may do from
     // the states a draw leaves it in.
@@ -1929,11 +2331,14 @@ void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12Comm
     ScopedInternal internal;
     if (!dc || queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT ||
         FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(allocator.put()))) ||
-        FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr, IID_PPV_ARGS(list.put())))) {
+        FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr, IID_PPV_ARGS(list.put()))))
+    {
         std::lock_guard lock(mutex);
-        for (UINT k = 0; k < count; ++k) {
+        for (UINT k = 0; k < count; ++k)
+        {
             auto* l = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
-            if (!l) continue;
+            if (!l)
+                continue;
             FailList(textures, l, "inside a suspended render pass");
             FailList(buffers, l, "inside a suspended render pass");
         }
@@ -1941,11 +2346,15 @@ void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12Comm
     }
     // The list is not one of the application's, so a resource's state in it is the state the
     // submission left it in (ResourceTracker::StateIn falls back to the global state).
-    for (DeferredCopy& copy : copies) copy(list.get());
-    if (SUCCEEDED(list->Close())) {
+    for (DeferredCopy& copy : copies)
+        copy(list.get());
+    if (SUCCEEDED(list->Close()))
+    {
         ID3D12CommandList* const submit[] = {list.get()};
         queue->ExecuteCommandLists(1, submit);
-    } else {
+    }
+    else
+    {
         Log("capture: the list of copies taken after a submission did not close");
     }
     std::lock_guard lock(dc->mutex);
@@ -1953,31 +2362,40 @@ void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12Comm
     dc->ownLists.push_back(std::move(list));
 }
 
-bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs) {
+bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs)
+{
     (void)cpuMs;
-    if (!queue) return false;
+    if (!queue)
+        return false;
     Impl& i = impl();
     // The device this submission belongs to: every list on one queue shares it. Found from a
     // recorded list, else from the queue itself.
     ID3D12Device* device = nullptr;
-    for (UINT k = 0; k < count && !device; ++k) {
+    for (UINT k = 0; k < count && !device; ++k)
+    {
         auto* list = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
-        if (!list) continue;
+        if (!list)
+            continue;
         CommandRecorder* rec = LookupRecorder(list);
         device = rec ? rec->device() : DeviceOf(list);
     }
-    if (!device) device = DeviceOf(queue);
+    if (!device)
+        device = DeviceOf(queue);
 
     // Record the submission (only while capturing), into the frame the home boundary is on.
-    if (IsCapturing()) {
+    if (IsCapturing())
+    {
         // The acceleration structures built before the capture began: their inputs are read back
         // behind the first submission of it, so a structure an engine built at load can still be
         // drawn (raytracing.h). Before the submission is noted below, so the reads count as its.
-        if (queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT) {
-            for (UINT k = 0; k < count; ++k) {
+        if (queue->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT)
+        {
+            for (UINT k = 0; k < count; ++k)
+            {
                 auto* list = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
                 CommandRecorder* rec = list ? LookupRecorder(list) : nullptr;
-                if (!rec || rec->bundle()) continue;
+                if (!rec || rec->bundle())
+                    continue;
                 ReadBackEarlierStructures(rec, CaptureSerial());
                 break;
             }
@@ -1989,31 +2407,38 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
             a.u("NumCommandLists", count);
             JsonWriter& w = a.key("ppCommandLists");
             w.BeginArray();
-            for (UINT k = 0; k < count; ++k) WriteRef(w, lists ? lists[k] : nullptr, "ID3D12GraphicsCommandList");
+            for (UINT k = 0; k < count; ++k)
+                WriteRef(w, lists ? lists[k] : nullptr, "ID3D12GraphicsCommandList");
             w.EndArray();
             s.args = a.str();
         }
         std::vector<ID3D12GraphicsCommandList*> executed;
         uint64_t commands = 0;
-        for (UINT k = 0; k < count; ++k) {
+        for (UINT k = 0; k < count; ++k)
+        {
             ID3D12GraphicsCommandList* list = lists ? static_cast<ID3D12GraphicsCommandList*>(lists[k]) : nullptr;
-            if (!list) continue;
+            if (!list)
+                continue;
             CommandRecorder* rec = LookupRecorder(list);
             SubmittedList sl;
             sl.listId = Tracker::Get().IdOf(list);
-            if (rec) sl.commands = rec->Snapshot();
+            if (rec)
+                sl.commands = rec->Snapshot();
             commands += sl.commands ? sl.commands->size() : 1;
             s.lists.push_back(std::move(sl));
             executed.push_back(list);
             // The queue is waited for at the finish, through the fence of the device its lists belong to.
             ID3D12Device* listDevice = rec ? rec->device() : DeviceOf(list);
-            if (DeviceCapture* dc = i.CaptureFor(listDevice)) NoteQueue(*dc, queue);
+            if (DeviceCapture* dc = i.CaptureFor(listDevice))
+                NoteQueue(*dc, queue);
         }
         std::lock_guard lock(i.mutex);
-        if (i.state == Impl::State::Capturing) {
+        if (i.state == Impl::State::Capturing)
+        {
             s.frame = i.CurrentFrame();
             i.commandTotal += 1 + commands;
-            for (ID3D12GraphicsCommandList* list : executed) {
+            for (ID3D12GraphicsCommandList* list : executed)
+            {
                 AssignFrame(i.textures, list, s.frame);
                 AssignFrame(i.buffers, list, s.frame);
                 AssignFrame(i.timings, list, s.frame);
@@ -2030,45 +2455,57 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
         std::lock_guard lock(i.mutex);
         takes = i.TakesContents();
     }
-    if (takes) i.RunAfterSubmitCopies(device, queue, count, lists);
+    if (takes)
+        i.RunAfterSubmitCopies(device, queue, count, lists);
 
     // The frame boundary for a device that never presents: settled per device below, and this
     // submission ends its frame once it has. Runs whether or not a capture is active, so the
     // decision is made from the application's normal submissions and a queued "capture frame N"
     // lands on the right one.
-    if (!device) return false;
+    if (!device)
+        return false;
     const BoundaryOverride override = i.Override();
-    if (override == BoundaryOverride::Present) return false;
+    if (override == BoundaryOverride::Present)
+        return false;
     bool boundary = false;
     {
         std::lock_guard lock(i.frameMutex);
         DeviceFrame& df = i.FrameFor(device);
-        if (df.boundary == DeviceFrame::Boundary::Present) return false;   // this device presents; presents delimit it
+        if (df.boundary == DeviceFrame::Boundary::Present)
+            return false;   // this device presents; presents delimit it
         df.lastQueue = queue;
         const uint32_t n = ++df.submitsWithoutPresent;
-        if (df.boundary == DeviceFrame::Boundary::Auto) {
-            if (override == BoundaryOverride::Submit || n >= kSubmitsWithoutPresent) {
+        if (df.boundary == DeviceFrame::Boundary::Auto)
+        {
+            if (override == BoundaryOverride::Submit || n >= kSubmitsWithoutPresent)
+            {
                 df.boundary = DeviceFrame::Boundary::Submit;
                 Log("no present after %u submissions on device %p: its frames end at every ExecuteCommandLists", n, (void*)device);
             }
         }
         boundary = df.boundary == DeviceFrame::Boundary::Submit;
     }
-    if (boundary) EndFrame(device, queue, nullptr, false);
+    if (boundary)
+        EndFrame(device, queue, nullptr, false);
     return boundary;
 }
 
-void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle) {
-    if (!rec || !bundle) return;
+void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle)
+{
+    if (!rec || !bundle)
+        return;
     Impl& i = impl();
     CommandRecorder* bundleRec = LookupRecorder(bundle);
-    if (!bundleRec) return;
+    if (!bundleRec)
+        return;
     // The bundle's read-back copies (a bundle records none itself) go into the executing list, and
     // its entries count as this list's for the frame they run in.
-    if (std::vector<DeferredCopy>* deferred = i.DeferredOf(bundleRec)) {
+    if (std::vector<DeferredCopy>* deferred = i.DeferredOf(bundleRec))
+    {
         std::vector<DeferredCopy> pending;
         pending.swap(*deferred);
-        if (!pending.empty()) {
+        if (!pending.empty())
+        {
             {
                 std::lock_guard lock(i.mutex);
                 RekeyList(i.textures, bundle, rec->list());
@@ -2076,15 +2513,20 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
             }
             // Inside a pass they are held as this list's own are: for the pass's end, or for after
             // the submission when the pass is suspended (HeldCopiesOf).
-            if (std::vector<DeferredCopy>* mine = i.HeldCopiesOf(rec)) {
+            if (std::vector<DeferredCopy>* mine = i.HeldCopiesOf(rec))
+            {
                 mine->insert(mine->end(), std::make_move_iterator(pending.begin()), std::make_move_iterator(pending.end()));
-            } else {
-                for (auto& fn : pending) fn(rec->list());
+            }
+            else
+            {
+                for (auto& fn : pending)
+                    fn(rec->list());
             }
         }
     }
     std::shared_ptr<const CommandList> commands = bundleRec->Snapshot();
-    if (!commands || commands->empty()) return;
+    if (!commands || commands->empty())
+        return;
     // What the bundle binds is read when it runs, which is now: during a capture its snapshots are
     // taken again, their copies recorded into this list (or held for its pass's end).
     bool capturing = false;
@@ -2095,17 +2537,28 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
     JsonWriter w;
     w.BeginArray();
     w.BeginObject();
-    w.Key("commandBuffer"); w.Uint(Tracker::Get().IdOf(bundle));
-    w.Key("commands"); w.BeginArray();
+    w.Key("commandBuffer");
+    w.Uint(Tracker::Get().IdOf(bundle));
+    w.Key("commands");
+    w.BeginArray();
     uint32_t slot = 0;
-    for (const RecordedCommand& c : *commands) {
+    for (const RecordedCommand& c : *commands)
+    {
         w.BeginObject();
-        w.Key("method"); w.String(c.method);
-        w.Key("args"); if (c.args.empty()) w.Null(); else w.Raw(c.args);
-        w.Key("slot"); w.Uint(slot++);
+        w.Key("method");
+        w.String(c.method);
+        w.Key("args");
+        if (c.args.empty())
+            w.Null();
+        else
+            w.Raw(c.args);
+        w.Key("slot");
+        w.Uint(slot++);
         // A pre-separated member list: ,"descriptors":{...}
-        if (capturing && c.refresh) w.str() += c.extra.substr(0, c.refreshFrom) + (*c.refresh)(rec);
-        else if (!c.extra.empty()) w.str() += c.extra;
+        if (capturing && c.refresh)
+            w.str() += c.extra.substr(0, c.refreshFrom) + (*c.refresh)(rec);
+        else if (!c.extra.empty())
+            w.str() += c.extra;
         w.EndObject();
     }
     w.EndArray();
@@ -2114,12 +2567,14 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
     rec->SetExtraOnLast(",\"children\":" + w.str());
 }
 
-void CaptureManager::OnPresent(ID3D12Device* device, IDXGISwapChain* swapChain, ID3D12CommandQueue* queue) {
+void CaptureManager::OnPresent(ID3D12Device* device, IDXGISwapChain* swapChain, ID3D12CommandQueue* queue)
+{
     Impl& i = impl();
     // DXINSP_FRAME_BOUNDARY=submit delimits every device by its submissions and ignores presents
     // for framing (the Chrome case: the compositor may present on a hooked device, but the work to
     // capture is Dawn's, which never presents). The present still updated the frame timing.
-    if (i.Override() == BoundaryOverride::Submit) return;
+    if (i.Override() == BoundaryOverride::Submit)
+        return;
     {
         // A device that presents is delimited by its presents from now on, whatever it did before,
         // and any present in the process settles the guard below.
@@ -2132,8 +2587,10 @@ void CaptureManager::OnPresent(ID3D12Device* device, IDXGISwapChain* swapChain, 
     EndFrame(device, queue ? queue : PresentQueue(swapChain), swapChain, true);
 }
 
-void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, IDXGISwapChain* swapChain, bool present) {
-    if (!device) return;
+void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, IDXGISwapChain* swapChain, bool present)
+{
+    if (!device)
+        return;
     Impl& i = impl();
     const uint64_t deviceFrame = _frameCounter.fetch_add(1, std::memory_order_relaxed) + 1;
     uint64_t deviceFrameIndex;
@@ -2152,25 +2609,30 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
     uint64_t maxTextureSize = 0;
     {
         std::lock_guard lock(i.mutex);
-        if (i.state == Impl::State::Armed) {
+        if (i.state == Impl::State::Armed)
+        {
             // A process that presents somewhere has its frames ended by those presents: a
             // background device's substitute submit boundary does not start the capture, unless
             // DXINSP_FRAME_BOUNDARY=submit forces it (the Chrome case, where the compositor may
             // present on a hooked device but the WebGPU work to capture is Dawn's, which does not).
-            if (!present && i.presentSeenAny && override != BoundaryOverride::Submit) return;
+            if (!present && i.presentSeenAny && override != BoundaryOverride::Submit)
+                return;
             // A capture queued at a later frame starts recording one frame before it, so that the
             // lists the target frame executes are recorded wherever the engine records them (see
             // RequestCapture). Nothing is kept: the recorders are reset as the lists are.
-            if (i.options.atFrame != UINT64_MAX && deviceFrameIndex + 1 >= i.options.atFrame) {
+            if (i.options.atFrame != UINT64_MAX && deviceFrameIndex + 1 >= i.options.atFrame)
+            {
                 _recordActive.store(true, std::memory_order_relaxed);
                 i.warmingUp = true;
             }
             // One frame of recording before the captured one, so that its lists were recorded whole.
-            if (i.warmupBoundaries) {
+            if (i.warmupBoundaries)
+            {
                 --i.warmupBoundaries;
                 return;
             }
-            if (i.options.atFrame == UINT64_MAX || deviceFrameIndex >= i.options.atFrame) {
+            if (i.options.atFrame == UINT64_MAX || deviceFrameIndex >= i.options.atFrame)
+            {
                 i.state = Impl::State::Capturing;
                 i.frameIndex = deviceFrame;
                 i.framesDone = 0;
@@ -2202,8 +2664,11 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 meshOutput = i.options.meshOutput;
                 maxTextureSize = i.options.maxTextureSize;
             }
-        } else if (i.state == Impl::State::Capturing) {
-            if (present) {
+        }
+        else if (i.state == Impl::State::Capturing)
+        {
+            if (present)
+            {
                 // The present itself is part of the captured frame (a submit boundary has no such
                 // command; the ExecuteCommandLists that ended the frame is already recorded).
                 Submission s;
@@ -2218,18 +2683,22 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
             // other present or submit is recorded but lands in the frame the home is on.
             const bool home = i.homeSwapChain ? (present && swapChain == i.homeSwapChain)
                                               : (!present && device == i.homeDevice);
-            if (home) {
+            if (home)
+            {
                 i.framesDone++;
-                if (i.framesDone >= i.frameCount) finish = true;
+                if (i.framesDone >= i.frameCount)
+                    finish = true;
             }
         }
     }
-    if (started) {
+    if (started)
+    {
         // What the capture measures while it records (overdraw.h), with nothing left from the last one.
         StartMeasurements(overdraw, pixelHistory, drawOverlay, meshOutput, maxTextureSize);
         // The pass counters start over; the heaps themselves stay.
         std::lock_guard lock(i.deviceMutex);
-        for (auto& [d, dc] : i.devices) {
+        for (auto& [d, dc] : i.devices)
+        {
             dc->timestampsUsed.store(0, std::memory_order_relaxed);
             dc->statsUsed.store(0, std::memory_order_relaxed);
             dc->occlusionUsed.store(0, std::memory_order_relaxed);
@@ -2245,18 +2714,23 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
             present ? "present" : "submit boundary");
         return;
     }
-    if (IsCapturing()) {
-        if (DeviceCapture* dc = i.CaptureFor(device)) NoteQueue(*dc, queue);
+    if (IsCapturing())
+    {
+        if (DeviceCapture* dc = i.CaptureFor(device))
+            NoteQueue(*dc, queue);
     }
-    if (finish) i.Finish(*this, device);
+    if (finish)
+        i.Finish(*this, device);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Finish: wait for the GPU, map, send, release
 
-namespace {
+namespace
+{
 
-struct CaptureData {
+struct CaptureData
+{
     uint64_t frameIndex = 0;
     uint32_t frameCount = 1;
     uint64_t commandTotal = 0;
@@ -2268,42 +2742,67 @@ struct CaptureData {
 };
 
 void WriteCommandEntry(JsonWriter& w, uint64_t index, uint32_t frame, int64_t slot, const char* method, const char* objectClass,
-                       uint64_t objectId, const std::string& args, const std::string& extra) {
+    uint64_t objectId, const std::string& args, const std::string& extra)
+{
     w.BeginObject();
-    w.Key("index"); w.Uint(index);
-    w.Key("frame"); w.Uint(frame);
+    w.Key("index");
+    w.Uint(index);
+    w.Key("frame");
+    w.Uint(frame);
     // Position within the list's recording: what validation messages refer to.
-    if (slot >= 0) { w.Key("slot"); w.Uint((uint64_t)slot); }
-    w.Key("method"); w.String(method);
+    if (slot >= 0)
+    {
+        w.Key("slot");
+        w.Uint((uint64_t)slot);
+    }
+    w.Key("method");
+    w.String(method);
     w.Key("object");
-    if (objectId) {
+    if (objectId)
+    {
         char buf[96];
         snprintf(buf, sizeof(buf), "{\"__id\":%llu,\"__class\":\"%s\"}", (unsigned long long)objectId, objectClass);
         w.Raw(buf);
-    } else {
+    }
+    else
+    {
         w.Null();
     }
-    w.Key("args"); if (args.empty()) w.Null(); else w.Raw(args);
-    if (!extra.empty()) w.str() += extra;   // a pre-separated member list: ,"descriptors":{...},"stack":[...]
+    w.Key("args");
+    if (args.empty())
+        w.Null();
+    else
+        w.Raw(args);
+    if (!extra.empty())
+        w.str() += extra;   // a pre-separated member list: ,"descriptors":{...},"stack":[...]
     w.EndObject();
 }
 
-void SendCommands(const CaptureData& data) {
+void SendCommands(const CaptureData& data)
+{
     Transport& t = Transport::Get();
     uint64_t total = 0;
-    for (const Submission& s : data.submissions) {
+    for (const Submission& s : data.submissions)
+    {
         total += 1;
-        for (const SubmittedList& l : s.lists) total += l.commands ? l.commands->size() : 1;
+        for (const SubmittedList& l : s.lists)
+            total += l.commands ? l.commands->size() : 1;
     }
     {
         JsonWriter w;
         w.BeginObject();
-        w.Key("action"); w.String("CaptureFrameResults");
-        w.Key("frame"); w.Uint(data.frameIndex);
-        w.Key("frames"); w.Uint(data.frameCount);
-        w.Key("count"); w.Uint(total);
-        w.Key("batches"); w.Uint((total + kCommandBatch - 1) / kCommandBatch);
-        w.Key("api"); w.String("d3d12");
+        w.Key("action");
+        w.String("CaptureFrameResults");
+        w.Key("frame");
+        w.Uint(data.frameIndex);
+        w.Key("frames");
+        w.Uint(data.frameCount);
+        w.Key("count");
+        w.Uint(total);
+        w.Key("batches");
+        w.Uint((total + kCommandBatch - 1) / kCommandBatch);
+        w.Key("api");
+        w.String("d3d12");
         w.EndObject();
         t.SendJson(std::move(w.str()));
     }
@@ -2313,7 +2812,8 @@ void SendCommands(const CaptureData& data) {
     JsonWriter batch;
     size_t inBatch = 0;
     auto flush = [&]() {
-        if (!inBatch) return;
+        if (!inBatch)
+            return;
         batch.EndArray();
         batch.EndObject();
         t.SendJson(std::move(batch.str()));
@@ -2322,26 +2822,36 @@ void SendCommands(const CaptureData& data) {
     };
     auto emit = [&](uint32_t frame, int64_t slot, const char* method, const char* cls, uint64_t objectId, const std::string& args,
                     const std::string& extra) {
-        if (!inBatch) {
+        if (!inBatch)
+        {
             batch.BeginObject();
-            batch.Key("action"); batch.String("CaptureFrameCommands");
-            batch.Key("frame"); batch.Uint(data.frameIndex);
-            batch.Key("index"); batch.Uint(index);
-            batch.Key("commands"); batch.BeginArray();
+            batch.Key("action");
+            batch.String("CaptureFrameCommands");
+            batch.Key("frame");
+            batch.Uint(data.frameIndex);
+            batch.Key("index");
+            batch.Uint(index);
+            batch.Key("commands");
+            batch.BeginArray();
         }
         WriteCommandEntry(batch, index++, frame, slot, method, cls, objectId, args, extra);
-        if (++inBatch >= kCommandBatch) flush();
+        if (++inBatch >= kCommandBatch)
+            flush();
     };
     static const std::string kNone;
     uint32_t unrecorded = 0;
-    for (const Submission& s : data.submissions) {
-        if (s.present) {
+    for (const Submission& s : data.submissions)
+    {
+        if (s.present)
+        {
             emit(s.frame, -1, "Present", "IDXGISwapChain", s.objectId, s.args, kNone);
             continue;
         }
         emit(s.frame, -1, "ExecuteCommandLists", "ID3D12CommandQueue", s.objectId, s.args, kNone);
-        for (const SubmittedList& l : s.lists) {
-            if (!l.commands) {
+        for (const SubmittedList& l : s.lists)
+        {
+            if (!l.commands)
+            {
                 ++unrecorded;
                 emit(s.frame, -1, "<unrecorded command list>", "ID3D12GraphicsCommandList", l.listId, kNone, kNone);
                 continue;
@@ -2357,59 +2867,108 @@ void SendCommands(const CaptureData& data) {
     // is the difference between a capture that looks empty and one that says what to do about it.
     if (unrecorded)
         Log("capture: %u submitted command list(s) were recorded before the capture began and hold no commands; "
-            "turn on \"Record all command buffers\" to capture them", unrecorded);
+            "turn on \"Record all command buffers\" to capture them",
+            unrecorded);
 }
 
 }  // namespace
 
 /** The mapped staging chunk an entry's data is in, or null. */
-const uint8_t* CaptureManager::Impl::MappedChunk(ID3D12Device* device, uint32_t chunk) {
+const uint8_t* CaptureManager::Impl::MappedChunk(ID3D12Device* device, uint32_t chunk)
+{
     DeviceCapture* dc = FindCapture(device);
-    if (!dc) return nullptr;
+    if (!dc)
+        return nullptr;
     std::lock_guard lock(dc->mutex);
-    if (chunk >= dc->staging.size()) return nullptr;
+    if (chunk >= dc->staging.size())
+        return nullptr;
     return static_cast<const uint8_t*>(dc->staging[chunk].mapped);
 }
 
-void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures) {
+void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures)
+{
     Transport& t = Transport::Get();
     // What the frame before the capture queued and no list of the capture ran is not the capture's.
     textures.erase(std::remove_if(textures.begin(), textures.end(), [](const TextureEntry& e) { return e.warmup && e.frame == UINT32_MAX; }), textures.end());
-    for (TextureEntry& e : textures) {
-        if (e.frame == UINT32_MAX) {
+    for (TextureEntry& e : textures)
+    {
+        if (e.frame == UINT32_MAX)
+        {
             e.frame = 0;
-            if (!e.failed) { e.failed = true; e.note = "command list was not executed during the capture"; }
+            if (!e.failed)
+            {
+                e.failed = true;
+                e.note = "command list was not executed during the capture";
+            }
         }
-        if (!e.failed && !MappedChunk(e.device, e.chunk)) { e.failed = true; e.note = "staging buffer could not be mapped"; }
+        if (!e.failed && !MappedChunk(e.device, e.chunk))
+        {
+            e.failed = true;
+            e.note = "staging buffer could not be mapped";
+        }
     }
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("CaptureTextureFrames");
-    w.Key("count"); w.Uint(textures.size());
-    w.Key("textures"); w.BeginArray();
-    for (const TextureEntry& e : textures) {
+    w.Key("action");
+    w.String("CaptureTextureFrames");
+    w.Key("count");
+    w.Uint(textures.size());
+    w.Key("textures");
+    w.BeginArray();
+    for (const TextureEntry& e : textures)
+    {
         w.BeginObject();
-        w.Key("id"); w.Uint(e.resourceId);
-        w.Key("frame"); w.Uint(e.frame);
-        w.Key("commandBuffer"); w.Uint(e.listId);
-        w.Key("passIndex"); w.Uint(e.passIndex);
-        w.Key("attachment"); w.Uint(e.attachment);
-        w.Key("format"); w.String(e.format);
-        w.Key("aspect"); w.String(e.depthAspect ? "depth" : e.stencilAspect ? "stencil" : "color");
-        w.Key("width"); w.Uint(e.width);
-        w.Key("height"); w.Uint(e.height);
-        w.Key("depth"); w.Uint(e.depth);
-        w.Key("layers"); w.Uint(e.layers);
-        w.Key("mip"); w.Uint(e.mip);
-        if (e.mips > 1) { w.Key("mips"); w.Uint(e.mips); }
-        w.Key("size"); w.Uint(e.failed ? 0 : e.size);
-        if (e.samples > 1) { w.Key("samples"); w.Uint(e.samples); }
-        if (e.sampled) {
-            w.Key("kind"); w.String("sampled");
-            w.Key("capture"); w.Uint(e.captureId);
-            w.Key("baseLayer"); w.Uint(0);
+        w.Key("id");
+        w.Uint(e.resourceId);
+        w.Key("frame");
+        w.Uint(e.frame);
+        w.Key("commandBuffer");
+        w.Uint(e.listId);
+        w.Key("passIndex");
+        w.Uint(e.passIndex);
+        w.Key("attachment");
+        w.Uint(e.attachment);
+        w.Key("format");
+        w.String(e.format);
+        w.Key("aspect");
+        w.String(e.depthAspect ? "depth" : e.stencilAspect ? "stencil"
+                                                           : "color");
+        w.Key("width");
+        w.Uint(e.width);
+        w.Key("height");
+        w.Uint(e.height);
+        w.Key("depth");
+        w.Uint(e.depth);
+        w.Key("layers");
+        w.Uint(e.layers);
+        w.Key("mip");
+        w.Uint(e.mip);
+        if (e.mips > 1)
+        {
+            w.Key("mips");
+            w.Uint(e.mips);
         }
-        if (e.failed) { w.Key("error"); w.String(e.note); }
+        w.Key("size");
+        w.Uint(e.failed ? 0 : e.size);
+        if (e.samples > 1)
+        {
+            w.Key("samples");
+            w.Uint(e.samples);
+        }
+        if (e.sampled)
+        {
+            w.Key("kind");
+            w.String("sampled");
+            w.Key("capture");
+            w.Uint(e.captureId);
+            w.Key("baseLayer");
+            w.Uint(0);
+        }
+        if (e.failed)
+        {
+            w.Key("error");
+            w.String(e.note);
+        }
         w.EndObject();
     }
     w.EndArray();
@@ -2417,18 +2976,25 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures) {
     t.SendJson(std::move(w.str()));
 
     std::vector<uint8_t> packed;
-    for (const TextureEntry& e : textures) {
-        if (e.failed) continue;
+    for (const TextureEntry& e : textures)
+    {
+        if (e.failed)
+            continue;
         const uint8_t* mapped = MappedChunk(e.device, e.chunk);
-        if (!mapped) continue;
+        if (!mapped)
+            continue;
         // Rows come out of the staging buffer at the copy's 256-byte pitch; the UI wants them tight.
         packed.assign((size_t)e.size, 0);
         size_t at = 0;
-        for (const StagedRegion& r : e.regions) {
+        for (const StagedRegion& r : e.regions)
+        {
             const uint64_t slicePitch = (uint64_t)r.rowPitch * r.rows;
-            for (uint32_t s = 0; s < r.slices; ++s) {
-                for (uint32_t row = 0; row < r.rows; ++row) {
-                    if (at + r.rowBytes > packed.size()) break;
+            for (uint32_t s = 0; s < r.slices; ++s)
+            {
+                for (uint32_t row = 0; row < r.rows; ++row)
+                {
+                    if (at + r.rowBytes > packed.size())
+                        break;
                     memcpy(packed.data() + at, mapped + r.offset + s * slicePitch + (uint64_t)row * r.rowPitch, (size_t)r.rowBytes);
                     at += (size_t)r.rowBytes;
                 }
@@ -2436,61 +3002,109 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures) {
         }
         JsonWriter h;
         h.BeginObject();
-        h.Key("action"); h.String("CaptureTextureData");
-        h.Key("id"); h.Uint(e.resourceId);
-        h.Key("frame"); h.Uint(e.frame);
-        h.Key("commandBuffer"); h.Uint(e.listId);
-        h.Key("passIndex"); h.Uint(e.passIndex);
-        h.Key("attachment"); h.Uint(e.attachment);
+        h.Key("action");
+        h.String("CaptureTextureData");
+        h.Key("id");
+        h.Uint(e.resourceId);
+        h.Key("frame");
+        h.Uint(e.frame);
+        h.Key("commandBuffer");
+        h.Uint(e.listId);
+        h.Key("passIndex");
+        h.Uint(e.passIndex);
+        h.Key("attachment");
+        h.Uint(e.attachment);
         // A depth-stencil target has an entry per aspect under the same attachment index.
-        h.Key("aspect"); h.String(e.depthAspect ? "depth" : e.stencilAspect ? "stencil" : "color");
-        if (e.sampled) { h.Key("capture"); h.Uint(e.captureId); }
-        h.Key("size"); h.Uint(e.size);
+        h.Key("aspect");
+        h.String(e.depthAspect ? "depth" : e.stencilAspect ? "stencil"
+                                                           : "color");
+        if (e.sampled)
+        {
+            h.Key("capture");
+            h.Uint(e.captureId);
+        }
+        h.Key("size");
+        h.Uint(e.size);
         h.EndObject();
         t.SendBinary(std::move(h.str()), packed.data(), packed.size());
     }
 }
 
-void CaptureManager::Impl::SendBuffers(std::vector<BufferEntry>& buffers) {
+void CaptureManager::Impl::SendBuffers(std::vector<BufferEntry>& buffers)
+{
     Transport& t = Transport::Get();
     // What the frame before the capture queued and no list of the capture ran is not the capture's.
     buffers.erase(std::remove_if(buffers.begin(), buffers.end(), [](const BufferEntry& e) { return e.warmup && e.frame == UINT32_MAX; }), buffers.end());
-    for (BufferEntry& e : buffers) {
-        if (e.frame == UINT32_MAX) {
+    for (BufferEntry& e : buffers)
+    {
+        if (e.frame == UINT32_MAX)
+        {
             e.frame = 0;
-            if (!e.failed) { e.failed = true; e.note = "command list was not executed during the capture"; }
+            if (!e.failed)
+            {
+                e.failed = true;
+                e.note = "command list was not executed during the capture";
+            }
         }
-        if (!e.failed && !MappedChunk(e.device, e.chunk)) { e.failed = true; e.note = "staging buffer could not be mapped"; }
+        if (!e.failed && !MappedChunk(e.device, e.chunk))
+        {
+            e.failed = true;
+            e.note = "staging buffer could not be mapped";
+        }
     }
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("CaptureBuffers");
-    w.Key("count"); w.Uint(buffers.size());
-    w.Key("buffers"); w.BeginArray();
-    for (const BufferEntry& e : buffers) {
+    w.Key("action");
+    w.String("CaptureBuffers");
+    w.Key("count");
+    w.Uint(buffers.size());
+    w.Key("buffers");
+    w.BeginArray();
+    for (const BufferEntry& e : buffers)
+    {
         w.BeginObject();
-        w.Key("id"); w.Uint(e.id);
-        w.Key("buffer"); w.Uint(e.bufferId);
-        w.Key("frame"); w.Uint(e.frame);
-        w.Key("commandBuffer"); w.Uint(e.listId);
-        w.Key("offset"); w.Uint(e.offset);
-        w.Key("size"); w.Uint(e.failed ? 0 : e.size);
-        if (e.originalSize) { w.Key("originalSize"); w.Uint(e.originalSize); }
-        if (e.failed) { w.Key("error"); w.String(e.note); }
+        w.Key("id");
+        w.Uint(e.id);
+        w.Key("buffer");
+        w.Uint(e.bufferId);
+        w.Key("frame");
+        w.Uint(e.frame);
+        w.Key("commandBuffer");
+        w.Uint(e.listId);
+        w.Key("offset");
+        w.Uint(e.offset);
+        w.Key("size");
+        w.Uint(e.failed ? 0 : e.size);
+        if (e.originalSize)
+        {
+            w.Key("originalSize");
+            w.Uint(e.originalSize);
+        }
+        if (e.failed)
+        {
+            w.Key("error");
+            w.String(e.note);
+        }
         w.EndObject();
     }
     w.EndArray();
     w.EndObject();
     t.SendJson(std::move(w.str()));
-    for (const BufferEntry& e : buffers) {
-        if (e.failed) continue;
+    for (const BufferEntry& e : buffers)
+    {
+        if (e.failed)
+            continue;
         const uint8_t* mapped = MappedChunk(e.device, e.chunk);
-        if (!mapped) continue;
+        if (!mapped)
+            continue;
         JsonWriter h;
         h.BeginObject();
-        h.Key("action"); h.String("CaptureBufferData");
-        h.Key("id"); h.Uint(e.id);
-        h.Key("size"); h.Uint(e.size);
+        h.Key("action");
+        h.String("CaptureBufferData");
+        h.Key("id");
+        h.Uint(e.id);
+        h.Key("size");
+        h.Uint(e.size);
         h.EndObject();
         t.SendBinary(std::move(h.str()), mapped + e.stagingOffset, (size_t)e.size);
     }
@@ -2500,96 +3114,143 @@ void CaptureManager::Impl::SendBuffers(std::vector<BufferEntry>& buffers) {
  * A direct queue of the device, for GetClockCalibration. Any queue can calibrate, but the pass
  * timestamps were resolved on a direct one and a copy queue may run on a different clock.
  */
-ID3D12CommandQueue* CaptureManager::Impl::CalibrationQueue(ID3D12Device* device) {
+ID3D12CommandQueue* CaptureManager::Impl::CalibrationQueue(ID3D12Device* device)
+{
     std::vector<DeviceCapture*> captures;
     {
         std::lock_guard lock(deviceMutex);
-        for (auto& [d, dc] : devices) captures.push_back(dc.get());
+        for (auto& [d, dc] : devices)
+            captures.push_back(dc.get());
     }
     ID3D12CommandQueue* fallback = nullptr;
-    for (DeviceCapture* dc : captures) {
+    for (DeviceCapture* dc : captures)
+    {
         std::lock_guard lock(dc->mutex);
-        for (ID3D12CommandQueue* q : dc->queues) {
-            if (!q) continue;
-            if (dc->device == device) return q;
-            if (!fallback) fallback = q;
+        for (ID3D12CommandQueue* q : dc->queues)
+        {
+            if (!q)
+                continue;
+            if (dc->device == device)
+                return q;
+            if (!fallback)
+                fallback = q;
         }
     }
     return fallback;
 }
 
-void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timings, ID3D12Device* home) {
-    if (timings.empty()) return;
+void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timings, ID3D12Device* home)
+{
+    if (timings.empty())
+        return;
     std::vector<DeviceCapture*> captures;
     {
         std::lock_guard lock(deviceMutex);
         for (auto& [d, dc] : devices)
-            if (dc->queryMapped) captures.push_back(dc.get());
+            if (dc->queryMapped)
+                captures.push_back(dc.get());
     }
-    if (captures.empty()) return;
+    if (captures.empty())
+        return;
     // The period of the home device's clock; each device's passes are measured on its own clock,
     // from the earliest pass it timed.
     uint64_t frequency = 0;
     for (DeviceCapture* dc : captures)
-        if (dc->device == home && dc->frequency) frequency = dc->frequency;
+        if (dc->device == home && dc->frequency)
+            frequency = dc->frequency;
     if (!frequency)
         for (DeviceCapture* dc : captures)
-            if (dc->frequency) { frequency = dc->frequency; break; }
+            if (dc->frequency)
+            {
+                frequency = dc->frequency;
+                break;
+            }
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("CapturePassTimings");
-    w.Key("timestampPeriodNs"); w.Double(frequency ? 1e9 / (double)frequency : 0.0);
-    w.Key("passes"); w.BeginArray();
+    w.Key("action");
+    w.String("CapturePassTimings");
+    w.Key("timestampPeriodNs");
+    w.Double(frequency ? 1e9 / (double)frequency : 0.0);
+    w.Key("passes");
+    w.BeginArray();
     uint32_t sent = 0, counted = 0;
     // The tick every pass start is measured from, on the home device: with the clock
     // calibration (cpu_timeline.h) this is what places a pass beside the CPU events that
     // submitted it. Only the home device has a calibrated clock, so only its origin is sent.
     uint64_t originTicks = 0;
-    for (DeviceCapture* dc : captures) {
+    for (DeviceCapture* dc : captures)
+    {
         const double freq = (double)(dc->frequency ? dc->frequency : frequency);
-        if (freq <= 0) continue;
+        if (freq <= 0)
+            continue;
         const uint8_t* results = static_cast<const uint8_t*>(dc->queryMapped);
         auto stamps = [&](const TimingEntry& te, uint64_t& begin, uint64_t& end) {
-            if (te.device != dc->device || te.frame == UINT32_MAX || te.slot >= kPassSlots) return false;
+            if (te.device != dc->device || te.frame == UINT32_MAX || te.slot >= kPassSlots)
+                return false;
             memcpy(&begin, results + te.slot * kSlotBytes, 8);
             memcpy(&end, results + te.slot * kSlotBytes + 8, 8);
             // Both zero: the list never ran (a readback heap starts zeroed and nothing resolved into the slot).
             return !(begin == 0 && end == 0) && end >= begin;
         };
         uint64_t earliest = UINT64_MAX;
-        for (const TimingEntry& te : timings) {
+        for (const TimingEntry& te : timings)
+        {
             uint64_t b, e;
-            if (stamps(te, b, e)) earliest = std::min(earliest, b);
+            if (stamps(te, b, e))
+                earliest = std::min(earliest, b);
         }
-        if (dc->device == home && earliest != UINT64_MAX) originTicks = earliest;
-        for (const TimingEntry& te : timings) {
+        if (dc->device == home && earliest != UINT64_MAX)
+            originTicks = earliest;
+        for (const TimingEntry& te : timings)
+        {
             uint64_t begin, end;
-            if (!stamps(te, begin, end)) continue;
+            if (!stamps(te, begin, end))
+                continue;
             w.BeginObject();
-            w.Key("frame"); w.Uint(te.frame);
-            w.Key("commandBuffer"); w.Uint(te.listId);
-            w.Key("passIndex"); w.Uint(te.passIndex);
-            if (te.compute) { w.Key("kind"); w.String("compute"); }
-            w.Key("startMs"); w.Double((double)(begin - earliest) / freq * 1e3);
-            w.Key("durationMs"); w.Double((double)(end - begin) / freq * 1e3);
-            if (te.hasStats || te.hasOcclusion) {
-                w.Key("counters"); w.BeginObject();
-                if (te.hasStats) {
+            w.Key("frame");
+            w.Uint(te.frame);
+            w.Key("commandBuffer");
+            w.Uint(te.listId);
+            w.Key("passIndex");
+            w.Uint(te.passIndex);
+            if (te.compute)
+            {
+                w.Key("kind");
+                w.String("compute");
+            }
+            w.Key("startMs");
+            w.Double((double)(begin - earliest) / freq * 1e3);
+            w.Key("durationMs");
+            w.Double((double)(end - begin) / freq * 1e3);
+            if (te.hasStats || te.hasOcclusion)
+            {
+                w.Key("counters");
+                w.BeginObject();
+                if (te.hasStats)
+                {
                     // The Vulkan layer's names for the same quantities (pipeline_stats.cpp), which the
                     // bottleneck rules read.
                     D3D12_QUERY_DATA_PIPELINE_STATISTICS stats;
                     memcpy(&stats, results + te.slot * kSlotBytes + kStatsOffset, sizeof(stats));
-                    w.Key("inputAssemblyVertices"); w.Uint(stats.IAVertices);
-                    w.Key("inputAssemblyPrimitives"); w.Uint(stats.IAPrimitives);
-                    w.Key("vertexInvocations"); w.Uint(stats.VSInvocations);
-                    w.Key("clipperInvocations"); w.Uint(stats.CInvocations);
-                    w.Key("clipperPrimitivesOut"); w.Uint(stats.CPrimitives);
-                    w.Key("fragmentInvocations"); w.Uint(stats.PSInvocations);
+                    w.Key("inputAssemblyVertices");
+                    w.Uint(stats.IAVertices);
+                    w.Key("inputAssemblyPrimitives");
+                    w.Uint(stats.IAPrimitives);
+                    w.Key("vertexInvocations");
+                    w.Uint(stats.VSInvocations);
+                    w.Key("clipperInvocations");
+                    w.Uint(stats.CInvocations);
+                    w.Key("clipperPrimitivesOut");
+                    w.Uint(stats.CPrimitives);
+                    w.Key("fragmentInvocations");
+                    w.Uint(stats.PSInvocations);
                 }
-                if (te.hasOcclusion) {
+                if (te.hasOcclusion)
+                {
                     uint64_t passed = 0;
                     memcpy(&passed, results + te.slot * kSlotBytes + kOcclusionOffset, 8);
-                    w.Key("fragmentsPassed"); w.Uint(passed);
+                    w.Key("fragmentsPassed");
+                    w.Uint(passed);
                 }
                 w.EndObject();
                 counted++;
@@ -2599,8 +3260,13 @@ void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timin
         }
     }
     w.EndArray();
-    w.Key("count"); w.Uint(sent);
-    if (originTicks) { w.Key("originTicks"); w.Uint(originTicks); }
+    w.Key("count");
+    w.Uint(sent);
+    if (originTicks)
+    {
+        w.Key("originTicks");
+        w.Uint(originTicks);
+    }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
     Log("pass profiling: %u of %zu passes timed, %u with counters", sent, timings.size(), counted);
@@ -2616,84 +3282,122 @@ void CaptureManager::Impl::SendPassTimings(const std::vector<TimingEntry>& timin
  * pass a draw accounts for, which is what the Shader Flame Graph splits a pass's duration by. The
  * counters are exact.
  */
-void CaptureManager::Impl::SendDrawStats(const std::vector<DrawEntry>& draws, ID3D12Device* home) {
-    if (draws.empty()) return;
+void CaptureManager::Impl::SendDrawStats(const std::vector<DrawEntry>& draws, ID3D12Device* home)
+{
+    if (draws.empty())
+        return;
     std::vector<DeviceCapture*> captures;
     {
         std::lock_guard lock(deviceMutex);
-        for (auto& [d, dc] : devices) captures.push_back(dc.get());
+        for (auto& [d, dc] : devices)
+            captures.push_back(dc.get());
     }
     uint64_t frequency = 0;
     for (DeviceCapture* dc : captures)
-        if (dc->device == home && dc->frequency) frequency = dc->frequency;
+        if (dc->device == home && dc->frequency)
+            frequency = dc->frequency;
     if (!frequency)
         for (DeviceCapture* dc : captures)
-            if (dc->frequency) { frequency = dc->frequency; break; }
+            if (dc->frequency)
+            {
+                frequency = dc->frequency;
+                break;
+            }
 
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("CaptureDrawStats");
-    w.Key("draws"); w.BeginArray();
+    w.Key("action");
+    w.String("CaptureDrawStats");
+    w.Key("draws");
+    w.BeginArray();
     uint32_t sent = 0, timed = 0, counted = 0;
-    for (DeviceCapture* dc : captures) {
+    for (DeviceCapture* dc : captures)
+    {
         const double freq = (double)(dc->frequency ? dc->frequency : frequency);
         const uint8_t* results = static_cast<const uint8_t*>(dc->drawMapped);
-        if (!results || freq <= 0) continue;
-        for (const DrawEntry& de : draws) {
-            if (de.device != dc->device || de.frame == UINT32_MAX || de.slot >= kDrawSlots) continue;
+        if (!results || freq <= 0)
+            continue;
+        for (const DrawEntry& de : draws)
+        {
+            if (de.device != dc->device || de.frame == UINT32_MAX || de.slot >= kDrawSlots)
+                continue;
             uint64_t begin = 0, end = 0;
             memcpy(&begin, results + kDrawTimestampBase + (uint64_t)de.slot * kDrawTimestampBytes, 8);
             memcpy(&end, results + kDrawTimestampBase + (uint64_t)de.slot * kDrawTimestampBytes + 8, 8);
             // Both zero: the list never ran, so nothing resolved into the slot (the buffer starts zeroed).
             const bool hasTime = !(begin == 0 && end == 0) && end >= begin;
             D3D12_QUERY_DATA_PIPELINE_STATISTICS stats{};
-            if (de.hasStats) memcpy(&stats, results + kDrawStatsBase + (uint64_t)de.slot * kDrawStatsBytes, sizeof(stats));
+            if (de.hasStats)
+                memcpy(&stats, results + kDrawStatsBase + (uint64_t)de.slot * kDrawStatsBytes, sizeof(stats));
             uint64_t passed = 0;
-            if (de.hasOcclusion) memcpy(&passed, results + kDrawOcclusionBase + (uint64_t)de.slot * kDrawOcclusionBytes, 8);
+            if (de.hasOcclusion)
+                memcpy(&passed, results + kDrawOcclusionBase + (uint64_t)de.slot * kDrawOcclusionBytes, 8);
             w.BeginObject();
-            w.Key("command"); w.Uint(de.command);
-            w.Key("frame"); w.Uint(de.frame);
-            w.Key("commandBuffer"); w.Uint(de.listId);
+            w.Key("command");
+            w.Uint(de.command);
+            w.Key("frame");
+            w.Uint(de.frame);
+            w.Key("commandBuffer");
+            w.Uint(de.listId);
             // The sentinel draw_stats.ts reads as "in no render pass".
-            w.Key("passIndex"); w.Uint(de.passIndex);
-            w.Key("timed"); w.Boolean(hasTime);
-            w.Key("ms"); w.Double(hasTime ? (double)(end - begin) / freq * 1e3 : 0.0);
-            w.Key("counted"); w.Boolean(de.hasStats);
-            w.Key("vertexInvocations"); w.Uint(stats.VSInvocations);
-            w.Key("primitives"); w.Uint(stats.IAPrimitives);
-            w.Key("fragmentInvocations"); w.Uint(stats.PSInvocations);
-            w.Key("computeInvocations"); w.Uint(stats.CSInvocations);
-            w.Key("sampled"); w.Boolean(de.hasOcclusion);
-            w.Key("samplesPassed"); w.Uint(passed);
+            w.Key("passIndex");
+            w.Uint(de.passIndex);
+            w.Key("timed");
+            w.Boolean(hasTime);
+            w.Key("ms");
+            w.Double(hasTime ? (double)(end - begin) / freq * 1e3 : 0.0);
+            w.Key("counted");
+            w.Boolean(de.hasStats);
+            w.Key("vertexInvocations");
+            w.Uint(stats.VSInvocations);
+            w.Key("primitives");
+            w.Uint(stats.IAPrimitives);
+            w.Key("fragmentInvocations");
+            w.Uint(stats.PSInvocations);
+            w.Key("computeInvocations");
+            w.Uint(stats.CSInvocations);
+            w.Key("sampled");
+            w.Boolean(de.hasOcclusion);
+            w.Key("samplesPassed");
+            w.Uint(passed);
             w.EndObject();
             sent++;
-            if (hasTime) timed++;
-            if (de.hasStats) counted++;
+            if (hasTime)
+                timed++;
+            if (de.hasStats)
+                counted++;
         }
     }
     w.EndArray();
-    w.Key("count"); w.Uint(sent);
+    w.Key("count");
+    w.Uint(sent);
     // What the measurement could not reach, in the words the UI shows above the numbers.
     std::string note;
     uint32_t overflowed = 0;
-    for (DeviceCapture* dc : captures) {
+    for (DeviceCapture* dc : captures)
+    {
         const uint32_t used = dc->drawSlotsUsed.load(std::memory_order_relaxed);
-        if (used > kDrawSlots) overflowed = std::max(overflowed, used - kDrawSlots);
+        if (used > kDrawSlots)
+            overflowed = std::max(overflowed, used - kDrawSlots);
     }
     if (overflowed)
         note = "the first " + std::to_string(kDrawSlots) + " draws of the frame were measured; " +
-               std::to_string(overflowed) + " more were not";
+            std::to_string(overflowed) + " more were not";
     if (sent && !counted)
         note += std::string(note.empty() ? "" : "; ") +
-                "the draws were timed but not counted: statistics queries are not taken inside a BeginRenderPass region";
-    if (!note.empty()) { w.Key("note"); w.String(note); }
+            "the draws were timed but not counted: statistics queries are not taken inside a BeginRenderPass region";
+    if (!note.empty())
+    {
+        w.Key("note");
+        w.String(note);
+    }
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
     Log("draw profiling: %u of %zu draws sent, %u timed, %u with counters", sent, draws.size(), timed, counted);
 }
 
-
-void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
+void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device)
+{
     // Finish runs on the thread that presented, so the application is stopped for as long as it
     // takes: how long that was is the first thing to know when a capture of a large frame seems to
     // hang, and it says whether the wait is here or in the client reading it (docs/ARCHITECTURE.md).
@@ -2728,39 +3432,49 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
     // all: between the suspension and its resume nothing may be added to the list (ActivePass::split).
     if (splitPassCount)
         LogAlways("capture: %u render pass segment(s) were suspended across command lists, so they have no timings and their render targets were not read back",
-                  splitPassCount);
+            splitPassCount);
 
     // Everything recorded in the frames has been executed; wait for it on every queue that took
     // part, so the staging buffers and the query results are complete.
     std::vector<DeviceCapture*> captures;
     {
         std::lock_guard lock(deviceMutex);
-        for (auto& [d, dc] : devices) captures.push_back(dc.get());
+        for (auto& [d, dc] : devices)
+            captures.push_back(dc.get());
     }
-    for (DeviceCapture* dc : captures) {
+    for (DeviceCapture* dc : captures)
+    {
         std::vector<ID3D12CommandQueue*> queues;
         {
             std::lock_guard lock(dc->mutex);
             queues = dc->queues;
         }
-        if (!dc->fence || !dc->event) continue;
+        if (!dc->fence || !dc->event)
+            continue;
         ScopedInternal internal;
-        for (ID3D12CommandQueue* q : queues) {
+        for (ID3D12CommandQueue* q : queues)
+        {
             // A queue the application released mid-capture would be a dangling pointer here; the
             // application cannot release a queue it presented on or executed lists on this frame
             // without waiting for them, so this is not guarded against.
             const uint64_t value = ++dc->fenceValue;
-            if (FAILED(q->Signal(dc->fence.get(), value))) continue;
-            if (dc->fence->GetCompletedValue() >= value) continue;
-            if (FAILED(dc->fence->SetEventOnCompletion(value, dc->event))) continue;
+            if (FAILED(q->Signal(dc->fence.get(), value)))
+                continue;
+            if (dc->fence->GetCompletedValue() >= value)
+                continue;
+            if (FAILED(dc->fence->SetEventOnCompletion(value, dc->event)))
+                continue;
             if (WaitForSingleObject(dc->event, 10000) != WAIT_OBJECT_0)
                 LogAlways("capture: the GPU did not finish within 10 s; read-backs may be incomplete");
         }
         // Map the staging chunks for the sends.
         std::lock_guard lock(dc->mutex);
-        for (StagingChunk& c : dc->staging) {
-            if (!c.buffer || c.mapped) continue;
-            if (FAILED(c.buffer->Map(0, nullptr, &c.mapped))) c.mapped = nullptr;
+        for (StagingChunk& c : dc->staging)
+        {
+            if (!c.buffer || c.mapped)
+                continue;
+            if (FAILED(c.buffer->Map(0, nullptr, &c.mapped)))
+                c.mapped = nullptr;
         }
     }
 
@@ -2784,42 +3498,55 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device) {
         uint32_t failed = 0;
         std::string first;
         auto count = [&](bool isFailed, const std::string& note) {
-            if (!isFailed || note.find("budget") != std::string::npos || note.find("max ") != std::string::npos) return;
-            if (!failed) first = note;
+            if (!isFailed || note.find("budget") != std::string::npos || note.find("max ") != std::string::npos)
+                return;
+            if (!failed)
+                first = note;
             failed++;
         };
-        for (const TextureEntry& e : data.textures) count(e.failed, e.note);
-        for (const BufferEntry& e : data.buffers) count(e.failed, e.note);
-        if (failed) ValidationLog::Get().Note("capture: " + std::to_string(failed) + " read-back(s) failed: " + first);
+        for (const TextureEntry& e : data.textures)
+            count(e.failed, e.note);
+        for (const BufferEntry& e : data.buffers)
+            count(e.failed, e.note);
+        if (failed)
+            ValidationLog::Get().Note("capture: " + std::to_string(failed) + " read-back(s) failed: " + first);
     }
     {
         // The end of the capture's stream, whichever sections it had.
         JsonWriter w;
         w.BeginObject();
-        w.Key("action"); w.String("CaptureComplete");
-        w.Key("frame"); w.Uint(data.frameIndex);
-        w.Key("frames"); w.Uint(data.frameCount);
+        w.Key("action");
+        w.String("CaptureComplete");
+        w.Key("frame");
+        w.Uint(data.frameIndex);
+        w.Key("frames");
+        w.Uint(data.frameCount);
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
     }
 
-    for (DeviceCapture* dc : captures) ReleaseCaptureObjects(*dc);
+    for (DeviceCapture* dc : captures)
+        ReleaseCaptureObjects(*dc);
     // Not a clear. A capture ends at a frame boundary, and an engine that builds its lists on
     // worker threads has several of them open at that moment, in the middle of a pass this capture
     // began -- and so holding the queries it began with them. Only the list's own recorder knows to
     // end those, at its Close (OnBeforeClose), and a list closed with a query still open fails with
     // E_FAIL, which the application reads as a lost device. So the recorders of lists still open
     // stay until each one closes; the rest go here.
-    if (!cm.RecordAlways()) {
+    if (!cm.RecordAlways())
+    {
         std::unique_lock lock(recorderMutex);
-        for (auto it = recorders.begin(); it != recorders.end();) {
-            if (it->second.rec && !it->second.rec->closed()) ++it;
-            else it = recorders.erase(it);
+        for (auto it = recorders.begin(); it != recorders.end();)
+        {
+            if (it->second.rec && !it->second.rec->closed())
+                ++it;
+            else
+                it = recorders.erase(it);
         }
         cm._recorderCount.store(recorders.size(), std::memory_order_relaxed);
     }
     LogAlways("capture sent: %llu commands in %.1f s", (unsigned long long)data.commandTotal,
-              std::chrono::duration<double>(std::chrono::steady_clock::now() - finishBegan).count());
+        std::chrono::duration<double>(std::chrono::steady_clock::now() - finishBegan).count());
 }
 
 }  // namespace dxinsp

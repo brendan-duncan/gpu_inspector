@@ -1,0 +1,7 @@
+# Generated code: fix the generators in tools/, not the output.
+*.gen.h
+*.gen.cpp
+*.gen.mm
+src/app/node_modules/*
+src/app/release/*
+third_party/*

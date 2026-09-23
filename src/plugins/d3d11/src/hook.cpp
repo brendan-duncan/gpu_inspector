@@ -6,7 +6,8 @@
 #include <mutex>
 #include <vector>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
 // ---------------------------------------------------------------------------------------------
 // Re-entry
@@ -20,9 +21,11 @@ ScopedInternal::~ScopedInternal() { --t_internalDepth; }
 // ---------------------------------------------------------------------------------------------
 // Vtables
 
-namespace {
+namespace
+{
 
-struct PatchedVtable {
+struct PatchedVtable
+{
     void** vtable = nullptr;
     std::vector<void*> originals;
 };
@@ -41,26 +44,33 @@ constexpr size_t kMaxReplacements = 512;
 void* g_replacements[kMaxReplacements];
 std::atomic<size_t> g_replacementCount{0};
 
-const PatchedVtable* Find(void** vtable) {
+const PatchedVtable* Find(void** vtable)
+{
     size_t n = g_vtableCount.load(std::memory_order_acquire);
     for (size_t i = 0; i < n; ++i)
-        if (g_vtables[i].vtable == vtable) return &g_vtables[i];
+        if (g_vtables[i].vtable == vtable)
+            return &g_vtables[i];
     return nullptr;
 }
 
 /** Whether `fn` is one of our own replacements rather than a runtime implementation. */
-bool IsOurs(void* fn) {
+bool IsOurs(void* fn)
+{
     size_t n = g_replacementCount.load(std::memory_order_acquire);
     for (size_t i = 0; i < n; ++i)
-        if (g_replacements[i] == fn) return true;
+        if (g_replacements[i] == fn)
+            return true;
     return false;
 }
 
-void RememberReplacement(void* fn) {   // caller holds g_vtableMutex
+void RememberReplacement(void* fn)
+{   // caller holds g_vtableMutex
     size_t n = g_replacementCount.load(std::memory_order_relaxed);
     for (size_t i = 0; i < n; ++i)
-        if (g_replacements[i] == fn) return;
-    if (n >= kMaxReplacements) return;
+        if (g_replacements[i] == fn)
+            return;
+    if (n >= kMaxReplacements)
+        return;
     g_replacements[n] = fn;
     g_replacementCount.store(n + 1, std::memory_order_release);
 }
@@ -75,27 +85,37 @@ void RememberReplacement(void* fn) {   // caller holds g_vtableMutex
  * source's own implementations in the copy. The copy is then registered with the source's
  * originals, so later calls through it are an ordinary lookup.
  */
-const PatchedVtable* AdoptCopy(void** vtable, uint32_t slot) {
+const PatchedVtable* AdoptCopy(void** vtable, uint32_t slot)
+{
     std::lock_guard<std::mutex> lock(g_vtableMutex);
-    if (const PatchedVtable* already = Find(vtable)) return already;   // another thread got there first
+    if (const PatchedVtable* already = Find(vtable))
+        return already;   // another thread got there first
     const size_t n = g_vtableCount.load(std::memory_order_relaxed);
     const PatchedVtable* source = nullptr;
-    for (int tier = 0; tier < 2 && !source; ++tier) {
-        for (size_t i = 0; i < n; ++i) {
+    for (int tier = 0; tier < 2 && !source; ++tier)
+    {
+        for (size_t i = 0; i < n; ++i)
+        {
             const PatchedVtable& p = g_vtables[i];
-            if (p.vtable == vtable || p.originals.size() <= slot || p.originals.size() < 2) continue;
-            if (p.vtable[slot] != vtable[slot]) continue;
-            if (tier == 0 && (vtable[0] != p.originals[0] || vtable[1] != p.originals[1])) continue;
+            if (p.vtable == vtable || p.originals.size() <= slot || p.originals.size() < 2)
+                continue;
+            if (p.vtable[slot] != vtable[slot])
+                continue;
+            if (tier == 0 && (vtable[0] != p.originals[0] || vtable[1] != p.originals[1]))
+                continue;
             source = &p;
             if (tier == 1)
-                LogAlways("a copied vtable %p was matched to %p only by its replacement at slot %u, not by its "
-                          "QueryInterface and AddRef: the originals may belong to another class",
-                          (void*)vtable, (void*)p.vtable, slot);
+                LogAlways(
+                    "a copied vtable %p was matched to %p only by its replacement at slot %u, not by its "
+                    "QueryInterface and AddRef: the originals may belong to another class",
+                    (void*)vtable, (void*)p.vtable, slot);
             break;
         }
     }
-    if (!source) return nullptr;
-    if (n >= kMaxVtables) {
+    if (!source)
+        return nullptr;
+    if (n >= kMaxVtables)
+    {
         LogAlways("a copied vtable could not be adopted: the table is full; %p keeps its own entries", (void*)vtable);
         return source;
     }
@@ -109,36 +129,48 @@ const PatchedVtable* AdoptCopy(void** vtable, uint32_t slot) {
 
 }  // namespace
 
-bool VtableHooked(const void* object) {
-    if (!object) return false;
+bool VtableHooked(const void* object)
+{
+    if (!object)
+        return false;
     return Find(*reinterpret_cast<void** const*>(object)) != nullptr;
 }
 
-void* OriginalEntry(const void* object, uint32_t slot) {
+void* OriginalEntry(const void* object, uint32_t slot)
+{
     void** vtable = *reinterpret_cast<void** const*>(object);
-    if (const PatchedVtable* p = Find(vtable)) {
-        if (slot < p->originals.size()) return p->originals[slot];
+    if (const PatchedVtable* p = Find(vtable))
+    {
+        if (slot < p->originals.size())
+            return p->originals[slot];
         return vtable[slot];
     }
     // Not a vtable we patched. Its entry is the original unless it is one of ours, which means the
     // vtable was copied from one we had patched (see AdoptCopy).
     void* entry = vtable[slot];
-    if (!IsOurs(entry)) return entry;
-    if (const PatchedVtable* source = AdoptCopy(vtable, slot)) {
-        if (slot < source->originals.size()) return source->originals[slot];
+    if (!IsOurs(entry))
+        return entry;
+    if (const PatchedVtable* source = AdoptCopy(vtable, slot))
+    {
+        if (slot < source->originals.size())
+            return source->originals[slot];
     }
     LogAlways("a copied vtable %p holds our replacement at slot %u and its source is unknown; the call is refused",
-              (void*)vtable, slot);
+        (void*)vtable, slot);
     return nullptr;
 }
 
-bool HookVtable(void* object, const char* interfaceName, uint32_t count, std::initializer_list<SlotHook> hooks) {
-    if (!object) return false;
+bool HookVtable(void* object, const char* interfaceName, uint32_t count, std::initializer_list<SlotHook> hooks)
+{
+    if (!object)
+        return false;
     void** vtable = *reinterpret_cast<void***>(object);
     std::lock_guard<std::mutex> lock(g_vtableMutex);
-    if (Find(vtable)) return false;
+    if (Find(vtable))
+        return false;
     size_t n = g_vtableCount.load(std::memory_order_relaxed);
-    if (n >= kMaxVtables) {
+    if (n >= kMaxVtables)
+    {
         LogAlways("too many distinct vtables: %s is not hooked", interfaceName);
         return false;
     }
@@ -148,16 +180,20 @@ bool HookVtable(void* object, const char* interfaceName, uint32_t count, std::in
     // Publish the saved originals before any replacement can run and look them up.
     g_vtableCount.store(n + 1, std::memory_order_release);
     DWORD old = 0;
-    if (!VirtualProtect(vtable, count * sizeof(void*), PAGE_READWRITE, &old)) {
+    if (!VirtualProtect(vtable, count * sizeof(void*), PAGE_READWRITE, &old))
+    {
         LogAlways("VirtualProtect failed on the vtable of %s (%lu): not hooked", interfaceName, GetLastError());
         return false;
     }
     uint32_t patched = 0;
-    for (const SlotHook& h : hooks) {
-        if (h.slot >= count) continue;
-        if (p.originals[h.slot] == h.replacement) {
+    for (const SlotHook& h : hooks)
+    {
+        if (h.slot >= count)
+            continue;
+        if (p.originals[h.slot] == h.replacement)
+        {
             LogAlways("%s vtable %p slot %u already holds our replacement: a copy of a patched vtable, left alone",
-                      interfaceName, (void*)vtable, h.slot);
+                interfaceName, (void*)vtable, h.slot);
             continue;
         }
         RememberReplacement(h.replacement);
@@ -171,11 +207,14 @@ bool HookVtable(void* object, const char* interfaceName, uint32_t count, std::in
     return true;
 }
 
-uint32_t VtableCount(IUnknown* object, const VersionCount* versions, size_t n, uint32_t base) {
+uint32_t VtableCount(IUnknown* object, const VersionCount* versions, size_t n, uint32_t base)
+{
     ScopedInternal internal;
-    for (size_t i = 0; i < n; ++i) {
+    for (size_t i = 0; i < n; ++i)
+    {
         IUnknown* newer = nullptr;
-        if (SUCCEEDED(object->QueryInterface(*versions[i].iid, (void**)&newer)) && newer) {
+        if (SUCCEEDED(object->QueryInterface(*versions[i].iid, (void**)&newer)) && newer)
+        {
             newer->Release();
             return versions[i].count;
         }
@@ -189,27 +228,33 @@ uint32_t VtableCount(IUnknown* object, const VersionCount* versions, size_t n, u
 static std::once_flag g_minhookInit;
 static bool g_minhookOk = false;
 
-bool HookFunction(void* target, void* replacement, void** original, const char* name) {
+bool HookFunction(void* target, void* replacement, void** original, const char* name)
+{
     std::call_once(g_minhookInit, [] {
         const MH_STATUS s = MH_Initialize();
         g_minhookOk = s == MH_OK || s == MH_ERROR_ALREADY_INITIALIZED;
     });
-    if (!g_minhookOk) {
+    if (!g_minhookOk)
+    {
         LogAlways("MinHook failed to initialize: %s is not hooked", name);
         return false;
     }
     MH_STATUS st = MH_CreateHook(target, replacement, original);
-    if (st != MH_OK) {
+    if (st != MH_OK)
+    {
         LogAlways("hooking %s failed: %s", name, MH_StatusToString(st));
         return false;
     }
     return true;
 }
 
-bool EnableFunctionHooks() {
-    if (!g_minhookOk) return false;
+bool EnableFunctionHooks()
+{
+    if (!g_minhookOk)
+        return false;
     MH_STATUS st = MH_EnableHook(MH_ALL_HOOKS);
-    if (st != MH_OK) LogAlways("enabling the entry point hooks failed: %s", MH_StatusToString(st));
+    if (st != MH_OK)
+        LogAlways("enabling the entry point hooks failed: %s", MH_StatusToString(st));
     return st == MH_OK;
 }
 

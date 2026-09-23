@@ -35,13 +35,15 @@
 
 #include "mtl_decode.h"
 
-namespace mtlreplay {
+namespace mtlreplay
+{
 
 class MtlExporter;
 using vkreplay::CaptureFile;
 using vkreplay::JValue;
 
-struct MtlReplayOptions {
+struct MtlReplayOptions
+{
     /** Turn Metal's API validation on for this process and report what it says. */
     bool validate = false;
     bool compareTargets = true;
@@ -53,7 +55,8 @@ struct MtlReplayOptions {
     std::string exportDir;
 };
 
-struct MtlTargetComparison {
+struct MtlTargetComparison
+{
     uint64_t texture = 0;
     uint64_t commandBuffer = 0;
     uint32_t frame = 0;
@@ -75,7 +78,8 @@ struct MtlTargetComparison {
     std::vector<uint8_t> replayed;
 };
 
-struct MtlExportReport {
+struct MtlExportReport
+{
     std::string directory;
     std::string error;
     size_t objects = 0, commands = 0, submissions = 0, targets = 0, leftOut = 0;
@@ -84,7 +88,8 @@ struct MtlExportReport {
     std::vector<std::string> notes;
 };
 
-struct MtlReplayReport {
+struct MtlReplayReport
+{
     std::string device;
     std::string capturedDevice;
     size_t objects = 0, commands = 0, submissions = 0;
@@ -93,7 +98,8 @@ struct MtlReplayReport {
     MtlExportReport exported;
 };
 
-class MtlReplayer {
+class MtlReplayer
+{
 public:
     MtlReplayer(const CaptureFile& capture, MtlReplayOptions options);
     ~MtlReplayer();
@@ -120,7 +126,8 @@ private:
     /** An intersection or visible function table, made from the pipeline it belongs to. */
     id CreateFunctionTable(const JValue& object, const Decoder& d, uint64_t captureId, bool intersection);
     /** A table made above, waiting for the objects its entries and buffers name. */
-    struct PendingTable {
+    struct PendingTable
+    {
         id table = nil;
         uint64_t captureId = 0;
         id pipeline = nil;
@@ -199,14 +206,16 @@ private:
     const JValue* Record(uint64_t id) const;
     std::string LabelOf(uint64_t id) const;
 
-    struct Readback {
+    struct Readback
+    {
         MtlTargetComparison comparison;
         id<MTLBuffer> staging = nil;
         uint64_t rowBytes = 0;
         const uint8_t* captured = nullptr;
         size_t capturedSize = 0;
     };
-    struct OpenPass {
+    struct OpenPass
+    {
         uint64_t encoderId = 0;
         uint32_t passIndex = 0;
         bool parallel = false;

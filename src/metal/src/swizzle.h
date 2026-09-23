@@ -22,7 +22,8 @@
 
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * Replaces `cls`'s implementation of `sel` with `replacement`, once per class.
@@ -72,7 +73,8 @@ bool FirstSighting(Class cls);
  * Lookups are lock-free: the table of originals is an immutable snapshot replaced wholesale by
  * Hook(), which happens a few dozen times in a process, and read by every intercepted draw.
  */
-class Reentry {
+class Reentry
+{
 public:
     Reentry(id self, SEL sel);
     ~Reentry();
@@ -91,7 +93,8 @@ private:
  * image read-back queue — so that the tracker does not announce them as the application's objects
  * and the capture does not record them as the application's commands. Per thread.
  */
-class Internal {
+class Internal
+{
 public:
     Internal();
     ~Internal();
@@ -100,9 +103,9 @@ bool IsInternal();
 
 /** Logging: `MTLINSP_LOG=1` in the environment, matching the layer's VKINSP_LOG. */
 bool LogEnabled();
-void Log(const char *format, ...) __attribute__((format(printf, 1, 2)));
+void Log(const char* format, ...) __attribute__((format(printf, 1, 2)));
 
 /** The class name of an object, for the log. */
-const char *ClassName(id object);
+const char* ClassName(id object);
 
 }  // namespace mtlinsp

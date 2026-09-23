@@ -9,17 +9,25 @@
 
 #include "dx_replayer.h"
 
-namespace dxreplay {
+namespace dxreplay
+{
 
 // The exported project's hand-written files (src/d3d12/replay/export_template, embedded by tools/embed_files.py).
-struct EmbeddedFile { const char* name; const char* const* pieces; size_t count; };
+struct EmbeddedFile
+{
+    const char* name;
+    const char* const* pieces;
+    size_t count;
+};
 extern const EmbeddedFile kDxExportTemplates[];
 extern const size_t kDxExportTemplatesCount;
 
-namespace {
+namespace
+{
 
 /** Lines in one generated function and in one file; the Vulkan exporter's overrides apply here too. */
-size_t LimitFromEnvironment(const char* name, size_t fallback) {
+size_t LimitFromEnvironment(const char* name, size_t fallback)
+{
     const char* text = std::getenv(name);
     const long long value = text ? std::atoll(text) : 0;
     return value > 0 ? (size_t)value : fallback;
@@ -27,30 +35,38 @@ size_t LimitFromEnvironment(const char* name, size_t fallback) {
 const size_t kPartLines = LimitFromEnvironment("VKINSP_EXPORT_PART_LINES", 2000);
 const size_t kFileLines = LimitFromEnvironment("VKINSP_EXPORT_FILE_LINES", 24000);
 
-std::string Template(const char* name) {
-    for (size_t i = 0; i < kDxExportTemplatesCount; ++i) {
-        if (std::strcmp(kDxExportTemplates[i].name, name) != 0) continue;
+std::string Template(const char* name)
+{
+    for (size_t i = 0; i < kDxExportTemplatesCount; ++i)
+    {
+        if (std::strcmp(kDxExportTemplates[i].name, name) != 0)
+            continue;
         std::string out;
-        for (size_t p = 0; p < kDxExportTemplates[i].count; ++p) out += kDxExportTemplates[i].pieces[p];
+        for (size_t p = 0; p < kDxExportTemplates[i].count; ++p)
+            out += kDxExportTemplates[i].pieces[p];
         return out;
     }
     return std::string();
 }
 
-std::string Hex(uint64_t v) {
+std::string Hex(uint64_t v)
+{
     char buf[32];
     std::snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v);
     return buf;
 }
 
-uint64_t HashBytes(const void* data, size_t size) {
+uint64_t HashBytes(const void* data, size_t size)
+{
     uint64_t h = 1469598103934665603ull;
     const auto* p = static_cast<const uint8_t*>(data);
-    for (size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
+    for (size_t i = 0; i < size; ++i)
+        h = (h ^ p[i]) * 1099511628211ull;
     return h;
 }
 
-std::string Trimmed(const std::string& s) {
+std::string Trimmed(const std::string& s)
+{
     const size_t a = s.find_first_not_of(" \n");
     const size_t b = s.find_last_not_of(" \n");
     return a == std::string::npos ? std::string() : s.substr(a, b - a + 1);
@@ -58,27 +74,37 @@ std::string Trimmed(const std::string& s) {
 
 } // namespace
 
-DxExporter::DxExporter(std::string directory, const vkreplay::CaptureFile& capture) : _dir(std::move(directory)), _capture(capture) {
-    for (Part* p : {&_create, &_contents, &_frame, &_restore}) Configure(p->writer);
+DxExporter::DxExporter(std::string directory, const vkreplay::CaptureFile& capture) : _dir(std::move(directory)), _capture(capture)
+{
+    for (Part* p : {&_create, &_contents, &_frame, &_restore})
+        Configure(p->writer);
 }
 
-void DxExporter::FrameOutput(const std::string& name, const std::string& state, const std::string& comment) {
-    _outputSource = "// What the window shows: " + comment + "\n"
-                    "ID3D12Resource* FrameOutput(D3D12_RESOURCE_STATES* state) {\n";
-    if (name.empty()) _outputSource += "    (void)state;\n    return nullptr;\n}\n";
-    else _outputSource += "    *state = " + state + ";\n    return " + name + ";\n}\n";
+void DxExporter::FrameOutput(const std::string& name, const std::string& state, const std::string& comment)
+{
+    _outputSource = "// What the window shows: " + comment +
+        "\n"
+        "ID3D12Resource* FrameOutput(D3D12_RESOURCE_STATES* state) {\n";
+    if (name.empty())
+        _outputSource += "    (void)state;\n    return nullptr;\n}\n";
+    else
+        _outputSource += "    *state = " + state + ";\n    return " + name + ";\n}\n";
 }
 
-DxExporter::~DxExporter() {
-    if (_data) std::fclose(_data);
+DxExporter::~DxExporter()
+{
+    if (_data)
+        std::fclose(_data);
 }
 
-void DxExporter::Configure(Source& w) {
+void DxExporter::Configure(Source& w)
+{
     w.objectName = [this](IUnknown* object) { return NameOf(object); };
     w.data = [this](const void* data, size_t size) { return Data(data, size); };
     w.addressExpr = [this](D3D12_GPU_VIRTUAL_ADDRESS address) -> std::string {
         for (const BufferRange& b : _buffers)
-            if (address >= b.address && address < b.address + std::max<uint64_t>(b.size, 1)) {
+            if (address >= b.address && address < b.address + std::max<uint64_t>(b.size, 1))
+            {
                 const uint64_t offset = address - b.address;
                 return b.name + "->GetGPUVirtualAddress()" + (offset ? " + " + std::to_string(offset) : std::string());
             }
@@ -93,16 +119,19 @@ void DxExporter::Configure(Source& w) {
     w.indent = 1;
 }
 
-bool DxExporter::Open(std::string& error) {
+bool DxExporter::Open(std::string& error)
+{
     std::error_code ec;
     std::filesystem::create_directories(_dir, ec);
-    if (ec) {
+    if (ec)
+    {
         error = "could not create " + _dir + ": " + ec.message();
         return false;
     }
     const std::string path = _dir + "/frame_data.bin";
     _data = std::fopen(path.c_str(), "wb");
-    if (!_data) {
+    if (!_data)
+    {
         error = "could not write " + path;
         return false;
     }
@@ -112,7 +141,8 @@ bool DxExporter::Open(std::string& error) {
 // ---------------------------------------------------------------------------------------------
 // Names and data
 
-std::string DxExporter::Declare(const std::string& type, const std::string& stem, uint64_t id, IUnknown* object) {
+std::string DxExporter::Declare(const std::string& type, const std::string& stem, uint64_t id, IUnknown* object)
+{
     const std::string name = stem + "_" + std::to_string(id);
     _globals.emplace_back(type, name);
     _names[object] = name;
@@ -121,35 +151,43 @@ std::string DxExporter::Declare(const std::string& type, const std::string& stem
 
 void DxExporter::Alias(IUnknown* object, const std::string& name) { _names[object] = name; }
 
-std::string DxExporter::NameOf(IUnknown* object) const {
+std::string DxExporter::NameOf(IUnknown* object) const
+{
     auto it = _names.find(object);
     return it == _names.end() ? std::string() : it->second;
 }
 
-void DxExporter::Heap(ID3D12DescriptorHeap* heap, D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu, uint32_t increment, uint32_t count) {
+void DxExporter::Heap(ID3D12DescriptorHeap* heap, D3D12_CPU_DESCRIPTOR_HANDLE cpu, D3D12_GPU_DESCRIPTOR_HANDLE gpu, uint32_t increment, uint32_t count)
+{
     _heaps.push_back({NameOf(heap), cpu.ptr, gpu.ptr, increment, count});
 }
 
-void DxExporter::Buffer(ID3D12Resource* buffer, D3D12_GPU_VIRTUAL_ADDRESS address, uint64_t size) {
+void DxExporter::Buffer(ID3D12Resource* buffer, D3D12_GPU_VIRTUAL_ADDRESS address, uint64_t size)
+{
     _buffers.push_back({NameOf(buffer), address, size});
 }
 
-std::string DxExporter::GpuHandle(D3D12_GPU_DESCRIPTOR_HANDLE handle) const {
+std::string DxExporter::GpuHandle(D3D12_GPU_DESCRIPTOR_HANDLE handle) const
+{
     for (const HeapRange& h : _heaps)
         if (h.gpu && h.increment && handle.ptr >= h.gpu && handle.ptr < h.gpu + (UINT64)h.increment * h.count)
             return "GpuHandle(" + h.name + ", " + std::to_string((handle.ptr - h.gpu) / h.increment) + ")";
     return "D3D12_GPU_DESCRIPTOR_HANDLE{}";
 }
 
-std::string DxExporter::Data(const void* data, size_t size) {
-    if (!data || !size || !_data) return "nullptr";
+std::string DxExporter::Data(const void* data, size_t size)
+{
+    if (!data || !size || !_data)
+        return "nullptr";
     const uint64_t hash = HashBytes(data, size);
     auto& known = _blobs[hash];
     for (const Blob& b : known)
-        if (b.size == size) return "Data(" + Hex(b.offset) + ", " + std::to_string(size) + ")";
+        if (b.size == size)
+            return "Data(" + Hex(b.offset) + ", " + std::to_string(size) + ")";
     static const char zeros[16] = {};
     const uint64_t padded = (_dataSize + 15) & ~15ull;
-    if (padded != _dataSize) std::fwrite(zeros, 1, (size_t)(padded - _dataSize), _data);
+    if (padded != _dataSize)
+        std::fwrite(zeros, 1, (size_t)(padded - _dataSize), _data);
     std::fwrite(data, 1, size, _data);
     known.push_back({padded, size});
     _dataSize = padded + size;
@@ -159,33 +197,45 @@ std::string DxExporter::Data(const void* data, size_t size) {
 // ---------------------------------------------------------------------------------------------
 // Statements
 
-DxExporter::Part& DxExporter::PartOf(Section section) {
-    return section == Create ? _create : section == Contents ? _contents : section == Restore ? _restore : _frame;
+DxExporter::Part& DxExporter::PartOf(Section section)
+{
+    return section == Create ? _create : section == Contents ? _contents
+        : section == Restore                                 ? _restore
+                                                             : _frame;
 }
 
-void DxExporter::MaybeSplit(Part& p) {
-    if (p.writer.Lines() >= kPartLines) SplitNow(p);
+void DxExporter::MaybeSplit(Part& p)
+{
+    if (p.writer.Lines() >= kPartLines)
+        SplitNow(p);
 }
 
-void DxExporter::SplitNow(Part& p) {
-    if (p.writer.text.empty()) return;
+void DxExporter::SplitNow(Part& p)
+{
+    if (p.writer.text.empty())
+        return;
     p.parts.push_back(std::move(p.writer.text));
     p.writer.ResetPart();
 }
 
-void DxExporter::Block(Section section, const std::string& label, const std::function<void(Source&)>& body) {
+void DxExporter::Block(Section section, const std::string& label, const std::function<void(Source&)>& body)
+{
     Part& part = PartOf(section);
     Source& w = part.writer;
     Source scratch;
     Configure(scratch);
     scratch.indent = w.indent + 1;
     body(scratch);
-    for (const std::string& n : scratch.notes) w.Note(n);
-    if (scratch.Statements() == 1) {
+    for (const std::string& n : scratch.notes)
+        w.Note(n);
+    if (scratch.Statements() == 1)
+    {
         const std::string statement = Trimmed(scratch.text);
         // A one-time list declared in one statement stays in scope for the ones after it.
         w.Line(statement + (label.empty() ? "" : "   // " + label));
-    } else if (scratch.Statements()) {
+    }
+    else if (scratch.Statements())
+    {
         w.Line("{" + (label.empty() ? std::string() : "   // " + label));
         scratch.notes.clear();
         w.Append(scratch);
@@ -194,29 +244,36 @@ void DxExporter::Block(Section section, const std::string& label, const std::fun
     // The contents section ends with a one-time list held open across its statements, so it is only
     // cut after an upload, which is a block of its own and comes before that list.
     // The restore section is one such list from end to end.
-    if (section == Restore) return;
-    if (section != Contents || (!label.empty() && scratch.Statements() > 1)) MaybeSplit(part);
+    if (section == Restore)
+        return;
+    if (section != Contents || (!label.empty() && scratch.Statements() > 1))
+        MaybeSplit(part);
 }
 
 void DxExporter::Comment(Section section, const std::string& text) { PartOf(section).writer.Comment(text); }
 void DxExporter::Blank(Section section) { PartOf(section).writer.Blank(); }
 
-void DxExporter::EndSubmission() {
-    if (_frame.writer.Lines() >= kPartLines / 2) SplitNow(_frame);
+void DxExporter::EndSubmission()
+{
+    if (_frame.writer.Lines() >= kPartLines / 2)
+        SplitNow(_frame);
 }
 
-void DxExporter::LeftOut(uint32_t index, const std::string& method, const std::string& why) {
+void DxExporter::LeftOut(uint32_t index, const std::string& method, const std::string& why)
+{
     _frame.writer.Comment("[" + std::to_string(index) + "] " + method + ": left out: " + why);
     ++_leftOut;
 }
 
 void DxExporter::Note(const std::string& note) { _notes.push_back(note); }
 
-void DxExporter::Device(const std::string& capturedAdapter, const std::string& replayAdapter, const std::string& featureLevel) {
+void DxExporter::Device(const std::string& capturedAdapter, const std::string& replayAdapter, const std::string& featureLevel)
+{
     _capturedAdapter = capturedAdapter;
     _replayAdapter = replayAdapter;
     std::string s = "void CreateDevice(bool debugLayer) {\n";
-    if (!capturedAdapter.empty() && capturedAdapter != replayAdapter) s += "    // Captured on " + capturedAdapter + "; this source was exported from a replay on " + replayAdapter + ".\n";
+    if (!capturedAdapter.empty() && capturedAdapter != replayAdapter)
+        s += "    // Captured on " + capturedAdapter + "; this source was exported from a replay on " + replayAdapter + ".\n";
     s += "    // The adapter by name where this machine has it, else the first hardware one.\n";
     s += "    CreateDeviceOn(" + Source::String((capturedAdapter.empty() ? replayAdapter : capturedAdapter).c_str()) + ", " + featureLevel + ", debugLayer);\n";
     s += "}\n";
@@ -226,29 +283,37 @@ void DxExporter::Device(const std::string& capturedAdapter, const std::string& r
 // ---------------------------------------------------------------------------------------------
 // Files
 
-bool DxExporter::WriteText(const std::string& name, const std::string& text, std::string& error) {
+bool DxExporter::WriteText(const std::string& name, const std::string& text, std::string& error)
+{
     const std::string path = _dir + "/" + name;
     std::ofstream out(path, std::ios::binary);
-    if (out) out.write(text.data(), (std::streamsize)text.size());
-    if (!out) {
+    if (out)
+        out.write(text.data(), (std::streamsize)text.size());
+    if (!out)
+    {
         error = "could not write " + path;
         return false;
     }
     return true;
 }
 
-bool DxExporter::WritePart(Part& p, std::vector<std::string>& files, std::string& error) {
+bool DxExporter::WritePart(Part& p, std::vector<std::string>& files, std::string& error)
+{
     SplitNow(p);
-    for (const std::string& n : p.writer.notes) _notes.push_back(n);
-    const std::string header = "// Generated by GPU Inspector's Export to C++ (dxinsp_replay --export). See README.md.\n"
-                               "#include \"dx_support.h\"\n#include \"frame_objects.h\"\n\n";
+    for (const std::string& n : p.writer.notes)
+        _notes.push_back(n);
+    const std::string header =
+        "// Generated by GPU Inspector's Export to C++ (dxinsp_replay --export). See README.md.\n"
+        "#include \"dx_support.h\"\n#include \"frame_objects.h\"\n\n";
     std::vector<std::string> texts(1, header);
     std::vector<size_t> lines(1, 0);
     std::string declarations, calls;
-    for (size_t i = 0; i < p.parts.size(); ++i) {
+    for (size_t i = 0; i < p.parts.size(); ++i)
+    {
         const std::string name = p.function + "_" + std::to_string(i + 1);
         const size_t count = (size_t)std::count(p.parts[i].begin(), p.parts[i].end(), '\n');
-        if (lines.back() && lines.back() + count > kFileLines) {
+        if (lines.back() && lines.back() + count > kFileLines)
+        {
             texts.push_back(header);
             lines.push_back(0);
         }
@@ -258,15 +323,18 @@ bool DxExporter::WritePart(Part& p, std::vector<std::string>& files, std::string
         calls += "    " + name + "();\n";
     }
     texts[0].insert(header.size(), declarations + (declarations.empty() ? "" : "\n") + "void " + p.function + "() {\n" + calls + "}\n\n");
-    for (size_t f = 0; f < texts.size(); ++f) {
+    for (size_t f = 0; f < texts.size(); ++f)
+    {
         const std::string name = p.file + (f ? "_" + std::to_string(f + 1) : "") + ".cpp";
-        if (!WriteText(name, texts[f], error)) return false;
+        if (!WriteText(name, texts[f], error))
+            return false;
         files.push_back(name);
     }
     return true;
 }
 
-std::string DxExporter::Readme(const DxReplayReport& report, const DxExportReport& summary) const {
+std::string DxExporter::Readme(const DxReplayReport& report, const DxExportReport& summary) const
+{
     auto text = [&](const char* key) {
         const vkreplay::JValue* v = _capture.Manifest().Get(key);
         return v && v->IsString() ? std::string(v->Str()) : std::string();
@@ -281,9 +349,12 @@ std::string DxExporter::Readme(const DxReplayReport& report, const DxExportRepor
     std::string application;
     if (const auto* source = _capture.Manifest().Get("source"); source && source->Get("name") && source->Get("name")->IsString())
         application = std::string(source->Get("name")->Str());
-    if (!application.empty()) s += "| Application | `" + application + "` |\n";
-    if (!text("savedAt").empty()) s += "| Captured | " + text("savedAt") + " |\n";
-    if (!_capturedAdapter.empty()) s += "| Captured on | " + _capturedAdapter + " |\n";
+    if (!application.empty())
+        s += "| Application | `" + application + "` |\n";
+    if (!text("savedAt").empty())
+        s += "| Captured | " + text("savedAt") + " |\n";
+    if (!_capturedAdapter.empty())
+        s += "| Captured on | " + _capturedAdapter + " |\n";
     s += "| Exported from a replay on | " + _replayAdapter + " |\n";
     s += "| Objects | " + std::to_string(summary.objects) + " |\n";
     s += "| Commands | " + std::to_string(summary.commands) + " in " + std::to_string(summary.submissions) + " submission" + (summary.submissions == 1 ? "" : "s") + " |\n";
@@ -332,15 +403,21 @@ std::string DxExporter::Readme(const DxReplayReport& report, const DxExportRepor
          "  again from their descriptions.\n"
          "- Buffers hold the ranges the frame read; nothing else of the application's memory is in the capture.\n"
          "- Each submission is waited for before the next; fences and presents are left out.\n\n";
-    if (summary.leftOut || !report.problems.empty() || !summary.notes.empty()) {
+    if (summary.leftOut || !report.problems.empty() || !summary.notes.empty())
+    {
         s += "## What the replay left out or reported\n\n";
-        if (summary.leftOut) s += "- " + std::to_string(summary.leftOut) + " command(s) are left out, each with a comment where it would be in `frame_commands*.cpp`.\n";
+        if (summary.leftOut)
+            s += "- " + std::to_string(summary.leftOut) + " command(s) are left out, each with a comment where it would be in `frame_commands*.cpp`.\n";
         std::map<std::string, int> grouped;
-        for (const std::string& p : report.problems) ++grouped[p];
-        for (const std::string& n : summary.notes) ++grouped[n];
+        for (const std::string& p : report.problems)
+            ++grouped[p];
+        for (const std::string& n : summary.notes)
+            ++grouped[n];
         size_t shown = 0;
-        for (const auto& [p, n] : grouped) {
-            if (++shown > 60) {
+        for (const auto& [p, n] : grouped)
+        {
+            if (++shown > 60)
+            {
                 s += "- ... " + std::to_string(grouped.size() - 60) + " more\n";
                 break;
             }
@@ -348,46 +425,59 @@ std::string DxExporter::Readme(const DxReplayReport& report, const DxExportRepor
         }
         s += "\n";
     }
-    if (!report.targets.empty()) {
+    if (!report.targets.empty())
+    {
         s += "## The replay's own result\n\nWhat the replay this was exported from got on " + _replayAdapter + ", for comparison with a run of this program:\n\n";
-        for (const DxTargetComparison& t : report.targets) {
+        for (const DxTargetComparison& t : report.targets)
+        {
             s += "- resource " + std::to_string(t.resource) + " (" + t.format + " " + std::to_string(t.width) + "x" + std::to_string(t.height) + " " + t.aspect + "): ";
-            if (!t.compared) s += "not compared: " + t.note + "\n";
-            else if (!t.differingTexels) s += "identical to the capture\n";
-            else s += std::to_string(t.differingTexels) + " of " + std::to_string(t.texels) + " texels differ\n";
+            if (!t.compared)
+                s += "not compared: " + t.note + "\n";
+            else if (!t.differingTexels)
+                s += "identical to the capture\n";
+            else
+                s += std::to_string(t.differingTexels) + " of " + std::to_string(t.texels) + " texels differ\n";
         }
         s += "\n";
     }
     return s;
 }
 
-bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out) {
+bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out)
+{
     out.requested = true;
     out.directory = _dir;
-    if (_data) {
+    if (_data)
+    {
         std::fclose(_data);
         _data = nullptr;
     }
     std::vector<std::string> sources = {"main.cpp", "dx_support.cpp", "frame_window_win32.cpp", "frame_objects.cpp"};
     for (Part* p : {&_create, &_contents, &_frame, &_restore})
-        if (!WritePart(*p, sources, out.error)) return false;
-    if (_outputSource.empty()) FrameOutput("", "", "the frame has no output the export could name.");
+        if (!WritePart(*p, sources, out.error))
+            return false;
+    if (_outputSource.empty())
+        FrameOutput("", "", "the frame has no output the export could name.");
 
-    std::string header = "// One variable per object of the capture, named by its kind and its id in the capture (the id GPU\n"
-                         "// Inspector shows), and the functions the frame is made of.\n#pragma once\n\n#include \"dx_support.h\"\n\n";
+    std::string header =
+        "// One variable per object of the capture, named by its kind and its id in the capture (the id GPU\n"
+        "// Inspector shows), and the functions the frame is made of.\n#pragma once\n\n#include \"dx_support.h\"\n\n";
     std::string source = "#include \"frame_objects.h\"\n\n";
     std::string release = "void ReleaseObjects() {\n";
-    for (const auto& [type, name] : _globals) {
+    for (const auto& [type, name] : _globals)
+    {
         header += "extern " + type + "* " + name + ";\n";
         source += type + "* " + name + " = nullptr;\n";
     }
-    for (auto it = _globals.rbegin(); it != _globals.rend(); ++it) release += "    if (" + it->second + ") " + it->second + "->Release();\n";
+    for (auto it = _globals.rbegin(); it != _globals.rend(); ++it)
+        release += "    if (" + it->second + ") " + it->second + "->Release();\n";
     release += "}\n";
-    header += "\nvoid CreateDevice(bool debugLayer);\nvoid CreateObjects();\nvoid UploadContents();\nvoid Frame();\n"
-              "/** The texture the frame leaves on screen and the state it ends in; null when it has none to show. */\n"
-              "ID3D12Resource* FrameOutput(D3D12_RESOURCE_STATES* state);\n"
-              "/** Puts back what a frame changes, so that it can run again: allocators reset, every resource in the state the frame expects. */\n"
-              "void RestoreFrame();\nvoid ReleaseObjects();\n";
+    header +=
+        "\nvoid CreateDevice(bool debugLayer);\nvoid CreateObjects();\nvoid UploadContents();\nvoid Frame();\n"
+        "/** The texture the frame leaves on screen and the state it ends in; null when it has none to show. */\n"
+        "ID3D12Resource* FrameOutput(D3D12_RESOURCE_STATES* state);\n"
+        "/** Puts back what a frame changes, so that it can run again: allocators reset, every resource in the state the frame expects. */\n"
+        "void RestoreFrame();\nvoid ReleaseObjects();\n";
     source += "\n" + _deviceSource + "\n" + _outputSource + "\n" + release;
 
     out.objects = _objects;
@@ -401,14 +491,17 @@ bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out) {
     out.notes = _notes;
 
     std::string list;
-    for (const std::string& f : sources) list += "    " + f + "\n";
+    for (const std::string& f : sources)
+        list += "    " + f + "\n";
     const std::string cmake =
         "cmake_minimum_required(VERSION 3.20)\n"
         "project(frame CXX)\n\n"
         "# A frame exported from a GPU Inspector capture (README.md). Direct3D 12: Windows, with the Windows SDK.\n"
         "set(CMAKE_CXX_STANDARD 20)\n"
         "set(CMAKE_CXX_STANDARD_REQUIRED ON)\n\n"
-        "add_executable(frame\n" + list + ")\n"
+        "add_executable(frame\n" +
+        list +
+        ")\n"
         "target_compile_definitions(frame PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)\n"
         "if(MSVC)\n    target_compile_options(frame PRIVATE /W3 /bigobj)\nendif()\n"
         "target_link_libraries(frame PRIVATE d3d12 dxgi dxguid)\n\n"
@@ -419,16 +512,20 @@ bool DxExporter::Finish(const DxReplayReport& report, DxExportReport& out) {
     if (!WriteText("frame_objects.h", header, out.error) || !WriteText("frame_objects.cpp", source, out.error) ||
         !WriteText("CMakeLists.txt", cmake, out.error) || !WriteText("README.md", Readme(report, out), out.error))
         return false;
-    for (const char* name : {"main.cpp", "dx_support.h", "dx_support.cpp", "frame_window.h", "frame_window_win32.cpp"}) {
+    for (const char* name : {"main.cpp", "dx_support.h", "dx_support.cpp", "frame_window.h", "frame_window_win32.cpp"})
+    {
         const std::string text = Template(name);
-        if (text.empty()) {
+        if (text.empty())
+        {
             out.error = std::string("the exporter was built without its template ") + name;
             return false;
         }
-        if (!WriteText(name, text, out.error)) return false;
+        if (!WriteText(name, text, out.error))
+            return false;
     }
     out.files = sources;
-    for (const char* name : {"dx_support.h", "frame_window.h", "frame_objects.h", "CMakeLists.txt", "README.md", "frame_data.bin"}) out.files.push_back(name);
+    for (const char* name : {"dx_support.h", "frame_window.h", "frame_objects.h", "CMakeLists.txt", "README.md", "frame_data.bin"})
+        out.files.push_back(name);
     return true;
 }
 

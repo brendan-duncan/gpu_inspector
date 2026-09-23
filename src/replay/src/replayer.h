@@ -38,7 +38,8 @@
 #include "vk_decode.gen.h"
 #include "xfb_patch.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 class Exporter;
 
@@ -47,14 +48,16 @@ class Exporter;
  * Inspector and run in the captured frame instead of in the application. What the frame's targets
  * hold with it is compared with what the capture read back, which is the edit's effect.
  */
-struct ShaderReplacement {
+struct ShaderReplacement
+{
     uint64_t pipeline = 0;
     /** "vertex", "fragment", "compute", ...: the stage's name in the pipeline's blobs ("fragment:main"). */
     std::string stage;
     std::vector<uint32_t> words;
 };
 
-struct ReplayOptions {
+struct ReplayOptions
+{
     /** Enable the Khronos validation layer and report its messages. */
     bool validation = false;
     std::vector<ShaderReplacement> replacements;
@@ -75,7 +78,8 @@ struct ReplayOptions {
     /** Measure every render pass's overdraw (OverdrawResult). */
     bool overdraw = false;
     /** Follow one pixel of one image through the frame (PixelHistoryResult). */
-    struct {
+    struct
+    {
         bool enabled = false;
         uint64_t image = 0;
         uint32_t x = 0;
@@ -92,7 +96,8 @@ struct ReplayOptions {
     /** Time and count every draw of the frame with timestamps and pipeline statistics (DrawResult). */
     bool drawStats = false;
     /** Draw the pixels of named draws on their own, for the overlays of a render target (OverlayResult). */
-    struct {
+    struct
+    {
         bool enabled = false;
         /** Command indices of the draws wanted. */
         std::vector<uint32_t> commands;
@@ -100,7 +105,8 @@ struct ReplayOptions {
         bool wireframe = true;
     } overlay;
     /** Capture what the vertex shader wrote for named draws, through transform feedback (MeshResult). */
-    struct {
+    struct
+    {
         bool enabled = false;
         std::vector<uint32_t> commands;
     } mesh;
@@ -109,11 +115,13 @@ struct ReplayOptions {
      * taken out (AblationResult, ablation.cpp). The variants' SPIR-V comes with the request
      * (src/app/src/renderer/vulkan/spirv_ablate.ts writes it).
      */
-    struct AblationVariant {
+    struct AblationVariant
+    {
         std::string name;
         std::vector<uint32_t> words;
     };
-    struct AblationTarget {
+    struct AblationTarget
+    {
         uint32_t command = 0;
         /** "vertex", "fragment", "compute"... as StageName writes them. */
         std::string stage;
@@ -121,7 +129,8 @@ struct ReplayOptions {
         uint32_t repeat = 1;
         std::vector<AblationVariant> variants;
     };
-    struct {
+    struct
+    {
         bool enabled = false;
         /** Timed rounds per target, each issuing the draw once with every variant; one more round warms up first. */
         uint32_t rounds = 5;
@@ -132,7 +141,8 @@ struct ReplayOptions {
      * counters, read through NVIDIA's Nsight Perf SDK or VK_KHR_performance_query. The frame is replayed
      * once per collection pass the counters need.
      */
-    struct {
+    struct
+    {
         bool enabled = false;
         /** The counters wanted, by the names `list` prints; empty for the backend's default set. */
         std::vector<std::string> names;
@@ -154,7 +164,8 @@ struct ReplayOptions {
 };
 
 /** What Export to C++ wrote (ReplayOptions::exportDir). */
-struct ExportReport {
+struct ExportReport
+{
     bool requested = false;
     std::string directory;
     /** Why nothing, or not everything, was written. */
@@ -173,7 +184,8 @@ struct ExportReport {
 };
 
 /** One hardware counter: the name the backend knows it by, and what it measures. */
-struct HwCounterInfo {
+struct HwCounterInfo
+{
     std::string name;
     std::string description;
     /** The unit the backend groups it under (NvPerf: the hardware unit; KHR: the counter's category). */
@@ -185,7 +197,8 @@ struct HwCounterInfo {
 };
 
 /** The counters of one range: a render pass (`pass`), or a draw or dispatch. */
-struct HwCounterRange {
+struct HwCounterRange
+{
     bool pass = false;
     uint32_t command = 0;          // the draw, or the pass's begin
     uint32_t frame = 0;
@@ -195,7 +208,8 @@ struct HwCounterRange {
     std::vector<double> values;
 };
 
-struct HwCounterReport {
+struct HwCounterReport
+{
     bool requested = false;
     /** "nvperf" or "khr"; empty when no backend could run. */
     std::string backend;
@@ -212,7 +226,8 @@ struct HwCounterReport {
 };
 
 /** One pipeline issued at an ablation target: the draw's times with it, one per round. */
-struct AblationTiming {
+struct AblationTiming
+{
     std::string name;
     bool measured = false;
     /** The median of the rounds, and every round. */
@@ -226,7 +241,8 @@ struct AblationTiming {
  * the unchanged shader (the baseline) and with every variant, between a pair of timestamps, right
  * before the draw itself runs; the variant's cost is the baseline's time less its own.
  */
-struct AblationResult {
+struct AblationResult
+{
     uint32_t command = 0;
     std::string stage;
     uint64_t pipeline = 0;
@@ -248,7 +264,8 @@ struct AblationResult {
  * the pass they are in: a draw's time says what share of the pass it is, not what it costs on its
  * own. The counters are exact.
  */
-struct DrawResult {
+struct DrawResult
+{
     uint32_t command = 0;          // index in the capture's command list
     uint32_t frame = 0;
     uint64_t commandBuffer = 0;
@@ -281,14 +298,16 @@ struct DrawResult {
  * killed still says what it computed -- which is what "why is this pixel not what that draw writes"
  * needs. Whether it passed is the draw's own counts, which measure exactly that.
  */
-struct PixelFragment {
+struct PixelFragment
+{
     /** The primitive it came from: the draw's nth triangle (or line, or point). */
     int64_t primitive = -1;
     /** The fragment shader's output, in the target's format; empty when it could not be read. */
     std::vector<uint8_t> value;
 };
 
-struct PixelEvent {
+struct PixelEvent
+{
     std::string kind;
     uint32_t command = 0;          // the command's index in the capture (the pass's begin for "load")
     std::string method;
@@ -323,7 +342,8 @@ struct PixelEvent {
     std::vector<PixelFragment> fragments;
 };
 
-struct PixelHistoryResult {
+struct PixelHistoryResult
+{
     bool requested = false;
     uint64_t image = 0;
     uint32_t x = 0;
@@ -337,7 +357,8 @@ struct PixelHistoryResult {
 };
 
 /** A copy of a captured graphics pipeline being made: its create info and the state it points at, for an edit to change. */
-struct PipelineCopy {
+struct PipelineCopy
+{
     VkGraphicsPipelineCreateInfo info{};
     std::vector<VkPipelineShaderStageCreateInfo> stages;
     VkPipelineRasterizationStateCreateInfo rasterization{};
@@ -365,7 +386,8 @@ struct PipelineCopy {
  * The overdraw of one render pass: how many fragments landed on each pixel when the pass's draws
  * were replayed with a fragment shader that counts, into a target of the pass's size.
  */
-struct OverdrawResult {
+struct OverdrawResult
+{
     uint64_t commandBuffer = 0;
     uint32_t frame = 0;
     uint32_t passIndex = 0;
@@ -394,7 +416,8 @@ struct OverdrawResult {
  * same in RenderDoc). `mask` holds, per pixel: bit 0 the draw rasterized a fragment here, bit 1 one
  * of its fragments passed the depth and stencil tests, bit 2 a line of its wireframe crosses here.
  */
-struct OverlayResult {
+struct OverlayResult
+{
     uint32_t command = 0;
     uint64_t commandBuffer = 0;
     uint32_t frame = 0;
@@ -429,7 +452,8 @@ struct OverlayResult {
  * record of `stride` bytes with the outputs at their offsets. Captured with transform feedback
  * (mesh.cpp, xfb_patch.cpp).
  */
-struct MeshResult {
+struct MeshResult
+{
     uint32_t command = 0;
     uint64_t commandBuffer = 0;
     uint32_t frame = 0;
@@ -447,7 +471,8 @@ struct MeshResult {
 };
 
 /** A render target the capture read back at the end of a pass, and how the replay's copy compares. */
-struct TargetComparison {
+struct TargetComparison
+{
     uint64_t image = 0;
     uint64_t commandBuffer = 0;
     uint32_t frame = 0;
@@ -475,7 +500,8 @@ struct TargetComparison {
  * created, "frame" while its command buffers were recorded, "submit" while they were submitted
  * (synchronization and GPU-assisted validation report there).
  */
-struct ValidationRecord {
+struct ValidationRecord
+{
     bool error = false;
     std::string id;        // VUID-..., or the layer's message id name
     std::string message;
@@ -483,7 +509,8 @@ struct ValidationRecord {
     std::string phase;
 };
 
-struct ReplayReport {
+struct ReplayReport
+{
     std::string device;
     /** Where the replay is, for the messages the validation layer fires (ValidationRecord). */
     int64_t currentCommand = -1;
@@ -520,7 +547,8 @@ struct ReplayReport {
     ExportReport exported;
 };
 
-class Replayer {
+class Replayer
+{
 public:
     Replayer();
     ~Replayer();
@@ -542,7 +570,8 @@ public:
     void RunFrame(const ReplayOptions& options, ReplayReport& report);
 
 private:
-    struct ImageRecord {
+    struct ImageRecord
+    {
         VkImage image = VK_NULL_HANDLE;
         VkFormat format = VK_FORMAT_UNDEFINED;
         VkExtent3D extent{};
@@ -554,15 +583,18 @@ private:
         /** Per subresource, mip * layers + layer: the layout outside the frame's own command buffers. */
         std::vector<VkImageLayout> layouts;
     };
-    struct ViewRecord {
+    struct ViewRecord
+    {
         uint64_t image = 0;
         VkImageSubresourceRange range{};
     };
-    struct BufferRecord {
+    struct BufferRecord
+    {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceSize size = 0;
     };
-    struct RenderPassRecord {
+    struct RenderPassRecord
+    {
         std::vector<VkImageLayout> initialLayouts;
         std::vector<VkImageLayout> finalLayouts;
         std::vector<VkAttachmentLoadOp> loadOps;
@@ -572,19 +604,22 @@ private:
         /** Views a subpass renders at most (multiview): a query inside takes one index per view. */
         uint32_t views = 1;
     };
-    struct TransientImage {
+    struct TransientImage
+    {
         VkImage image = VK_NULL_HANDLE;
         VkImageView view = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
     };
-    struct Staging {
+    struct Staging
+    {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         void* mapped = nullptr;
         VkDeviceSize size = 0;
     };
     /** An upload waiting for FlushUploads: its bytes are at `at` in `_uploadBytes`. */
-    struct PendingUpload {
+    struct PendingUpload
+    {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceSize offset = 0;
         size_t at = 0;
@@ -593,19 +628,22 @@ private:
     bool _batchingUploads = false;
     std::vector<PendingUpload> _pendingUploads;
     std::vector<uint8_t> _uploadBytes;
-    struct PendingReadback {
+    struct PendingReadback
+    {
         Staging staging;
         size_t target = 0;
         const JValue* texture = nullptr;
     };
     /** One command buffer's recording in the command list: its begin to its end. */
-    struct CommandGroup {
+    struct CommandGroup
+    {
         uint64_t commandBuffer = 0;
         uint32_t first = 0;
         uint32_t last = 0;
         bool used = false;
     };
-    struct PassState {
+    struct PassState
+    {
         bool active = false;
         uint32_t index = 0;
         uint32_t frame = 0;
@@ -647,13 +685,23 @@ private:
      * transform feedback, its fragments that the stencil test alone kept, or the ones its own cull
      * mode would have thrown away.
      */
-    enum class ReissueMode { Count, DepthOnly, Wireframe, Xfb, StencilOnly, BackFace };
-    struct PendingOverdraw {
+    enum class ReissueMode
+    {
+        Count,
+        DepthOnly,
+        Wireframe,
+        Xfb,
+        StencilOnly,
+        BackFace
+    };
+    struct PendingOverdraw
+    {
         Staging staging;
         size_t result = 0;
     };
     /** One draw's vertex shader outputs waiting for its submission: the feedback buffer and its counter. */
-    struct PendingMesh {
+    struct PendingMesh
+    {
         Staging buffer;
         Staging counter;
         size_t result = 0;
@@ -662,7 +710,8 @@ private:
         uint64_t estimate = 0;
     };
     /** One draw's overlay waiting for its submission: a staging buffer per variant drawn. */
-    struct PendingOverlay {
+    struct PendingOverlay
+    {
         Staging rasterized;
         Staging passed;
         Staging wireframe;
@@ -672,8 +721,10 @@ private:
         size_t result = 0;
     };
     /** A pass's pixel history waiting for its submission: the pixel after each event, and the queries of each draw. */
-    struct PendingHistory {
-        struct Entry {
+    struct PendingHistory
+    {
+        struct Entry
+        {
             size_t event = 0;
             uint32_t slot = 0;
             int32_t queryBase = -1;
@@ -720,7 +771,8 @@ private:
         uint32_t fragSlots = 0;
         uint32_t nextFrag = 0;
         /** Per measured fragment: the event it belongs to, and the slot its value and id went into. */
-        struct FragmentEntry {
+        struct FragmentEntry
+        {
             size_t event = 0;
             uint32_t index = 0;
             uint32_t slot = 0;
@@ -733,13 +785,15 @@ private:
         std::vector<Entry> entries;
     };
     /** Whether a captured pipeline's scissor is dynamic, and its static scissor otherwise. */
-    struct ScissorInfo {
+    struct ScissorInfo
+    {
         bool dynamic = true;
         bool withCount = false;
         bool hasRect = false;
         VkRect2D rect{};
     };
-    struct Created {
+    struct Created
+    {
         std::string type;
         uint64_t handle;
     };
@@ -764,7 +818,7 @@ private:
     void ReplayCommands();
     void BuildGroups();
     void RecordGroup(CommandGroup& group, std::vector<PendingReadback>& readbacks, std::vector<PendingOverdraw>& overdraws,
-                     std::vector<PendingHistory>& histories);
+        std::vector<PendingHistory>& histories);
     /** Decodes a command's arguments and says whether every handle in them resolves, reporting nothing. */
     bool ArgsResolve(const std::string& method, const JValue& args);
 
@@ -841,7 +895,8 @@ private:
      * descriptor, which no argument names, so those are watched instead — the pixel is read before
      * and after, and the event is kept only when it changed.
      */
-    struct DirectWrite {
+    struct DirectWrite
+    {
         bool writes = false;
         const char* kind = "";                              // the event's kind: "clear", "copy", "blit", "resolve", "compute"
         std::string detail;                                 // what it was, for the event
@@ -850,7 +905,7 @@ private:
     DirectWrite HistoryDirectWrite(const std::string& method, const JValue& args);
     /** The pixel read straight from the followed image, into the group's direct-write staging. */
     void HistoryDirectPixel(VkCommandBuffer cb, const CommandGroup& group, const DirectWrite& write,
-                            std::vector<PendingHistory>& histories, uint32_t index, const std::string& method, uint32_t frame);
+        std::vector<PendingHistory>& histories, uint32_t index, const std::string& method, uint32_t frame);
     /**
      * Keeps whether each bound descriptor set holds the followed image as a storage image, per
      * pipeline bind point, so a dispatch or a trace that could have written the pixel is known.
@@ -862,7 +917,7 @@ private:
 
     // Overdraw
     TransientImage CreateTransientImage(VkFormat format, VkExtent2D extent, VkImageUsageFlags usage,
-                                        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
     void ReleaseTransients();
     VkRenderPass OverdrawRenderPass(VkFormat depthFormat);
     VkPipeline OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode = ReissueMode::Count);
@@ -874,7 +929,7 @@ private:
      * replay's own; or, with no render pass, into dynamic rendering to `color` (which shader objects need).
      */
     void ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-                     VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color = VK_NULL_HANDLE);
+        VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color = VK_NULL_HANDLE);
     /** Whether a draw's vertex stage is a shader object (vkCmdBindShadersEXT) rather than a pipeline's. */
     bool DrawUsesShaderObjects(const CommandGroup& group, uint32_t target) const;
     void CompleteOverdraw(std::vector<PendingOverdraw>& pending);
@@ -885,7 +940,7 @@ private:
     void RecordOverlay(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex);
     /** Draws one variant of an overlay into a count target and stages it; false when the draw could not be drawn. */
     bool DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, uint32_t target,
-                            ReissueMode mode, bool depthTested, Staging& out);
+        ReissueMode mode, bool depthTested, Staging& out);
     /** Reads the submission's overlays back into their masks; `submitted` false drops them. */
     void CompleteOverlay(bool submitted);
 
@@ -910,7 +965,8 @@ private:
     void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to);
 
     /** What a command buffer (or a secondary) has bound so far, which an ablation issues its draw again with. */
-    struct StreamState {
+    struct StreamState
+    {
         uint64_t graphicsPipeline = 0;
         uint64_t computePipeline = 0;
         /** The commands that set the depth write enable and the stencil write mask, restored after an ablation changes them. */
@@ -925,7 +981,7 @@ private:
     void ResetAblationQueries(VkCommandBuffer cb, const CommandGroup& group);
     /** At a draw or dispatch the request names: every variant issued and timed, then the command buffer's state put back. */
     void IssueAblation(VkCommandBuffer cb, uint32_t index, const std::string& method, const JValue& args, uint32_t frame, uint64_t commandBuffer,
-                       uint32_t passIndex, const StreamState& stream);
+        uint32_t passIndex, const StreamState& stream);
     VkPipeline AblationPipeline(uint64_t pipelineId, size_t target, int variant, bool compute);
     void CompleteAblation(bool submitted);
     void DestroyAblation();
@@ -959,7 +1015,8 @@ private:
     void ApplyBufferData(const CommandGroup& group);
     void ApplyDescriptorSnapshot(const JValue* descriptors);
     /** One snapshot set as writes (to `handle`, or to a pushed set when null), with the storage they point into. */
-    struct DescriptorWrites {
+    struct DescriptorWrites
+    {
         std::vector<VkWriteDescriptorSet> writes;
         std::vector<std::unique_ptr<std::vector<VkDescriptorBufferInfo>>> buffers;
         std::vector<std::unique_ptr<std::vector<VkDescriptorImageInfo>>> images;
@@ -991,7 +1048,7 @@ private:
     void DestroyStaging(Staging& staging);
     /** Allocates memory for requirements, preferring `want`; tracked memory is freed with the device, untracked is the caller's. */
     bool AllocateBound(VkMemoryRequirements requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool track = true,
-                       bool deviceAddress = false);
+        bool deviceAddress = false);
     bool RunOneTime(const std::function<void(VkCommandBuffer)>& record);
     void UploadToBuffer(VkBuffer buffer, VkDeviceSize offset, const uint8_t* data, size_t size);
     /**
@@ -1007,7 +1064,7 @@ private:
     void TransitionAll(VkCommandBuffer cb, ImageRecord& image, VkImageLayout to);
     /** A multisampled target resolved into a single-sampled copy the size of its mip, which the caller copies from; TRANSFER_SRC_OPTIMAL. */
     VkImage ResolveTarget(VkCommandBuffer cb, const ImageRecord& image, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer,
-                          VkImageLayout layout, std::string& why);
+        VkImageLayout layout, std::string& why);
     void Problem(std::string message);
     uint64_t Handle(uint64_t id) const;
 
@@ -1216,7 +1273,8 @@ private:
     /** Whether a captured pipeline sets its depth write enable and stencil write mask dynamically. */
     std::unordered_map<uint64_t, std::pair<bool, bool>> _ablationDynamic;
     /** The submission's ablations: the report's entry, and which pipeline of each round was issued. */
-    struct PendingAblation {
+    struct PendingAblation
+    {
         size_t result = 0;
         uint32_t base = 0;
         std::vector<bool> issued;

@@ -15,11 +15,13 @@
 #include <unordered_map>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct InstanceData;
 
-class ValidationLog {
+class ValidationLog
+{
 public:
     static ValidationLog& Get();
 
@@ -33,7 +35,7 @@ public:
 
     // The messenger callback (any thread).
     void OnMessage(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT types,
-                   const VkDebugUtilsMessengerCallbackDataEXT* data);
+        const VkDebugUtilsMessengerCallbackDataEXT* data);
 
     // Frame ordinal attached to new messages (the presenting device's frame counter).
     void SetFrame(uint64_t frame) { _frame.store(frame, std::memory_order_relaxed); }
@@ -45,13 +47,15 @@ public:
 private:
     ValidationLog() = default;
 
-    struct ObjectRef {
+    struct ObjectRef
+    {
         int handleType;       // HandleType, or -1 when unknown
         std::string className;
         uint64_t handle;
         std::string name;     // pObjectName, when given
     };
-    struct Entry {
+    struct Entry
+    {
         uint64_t key = 0;
         std::string severity;
         std::vector<std::string> types;
@@ -71,7 +75,8 @@ private:
         bool resend = false;  // the command reference changed during a capture: send it again
     };
 
-    struct CommandRef {
+    struct CommandRef
+    {
         uint64_t cmdBufferId = 0;
         int64_t slot = -1;
     };

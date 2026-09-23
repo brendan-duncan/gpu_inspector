@@ -32,14 +32,21 @@
 
 #include "mtl_source.h"
 
-namespace mtlreplay {
+namespace mtlreplay
+{
 
 struct MtlReplayReport;
 struct MtlExportReport;
 
-class MtlExporter {
+class MtlExporter
+{
 public:
-    enum Section { Create, Contents, Frame };
+    enum Section
+    {
+        Create,
+        Contents,
+        Frame
+    };
 
     MtlExporter(std::string directory, const vkreplay::CaptureFile& capture);
     ~MtlExporter();
@@ -91,7 +98,8 @@ public:
     bool Finish(const MtlReplayReport& report, MtlExportReport& out);
 
 private:
-    struct Part {
+    struct Part
+    {
         std::string file;
         std::string function;
         Source writer;

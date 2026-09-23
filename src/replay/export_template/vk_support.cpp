@@ -48,9 +48,11 @@ VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
 VkDevice device = VK_NULL_HANDLE;
 VkQueue queue = VK_NULL_HANDLE;
 
-namespace {
+namespace
+{
 
-struct ImageInfo {
+struct ImageInfo
+{
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent3D extent{};
     uint32_t mips = 1;
@@ -59,7 +61,8 @@ struct ImageInfo {
     std::vector<VkImageLayout> layouts;
 };
 
-struct Staging {
+struct Staging
+{
     VkBuffer buffer = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     void* mapped = nullptr;
@@ -67,7 +70,8 @@ struct Staging {
 };
 
 /** A read-back waiting for its submission, then compared. */
-struct Readback {
+struct Readback
+{
     Staging staging;
     std::string name;
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -100,7 +104,8 @@ std::map<VkImage, ImageInfo> images;
 std::vector<Readback> pending;
 std::vector<Readback> results;
 /** What a read-back made for itself, released once its submission has run. */
-struct Transient {
+struct Transient
+{
     VkImage image = VK_NULL_HANDLE;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     VkImageView view = VK_NULL_HANDLE;
@@ -116,7 +121,8 @@ std::set<std::string> validationSeen;   // a frame that runs in a loop says each
 // Buffer uploads are gathered into one command buffer and one wait: a frame binds thousands of
 // ranges, and a command buffer, a staging buffer and a wait for each made a frame that runs in a
 // loop run at a few frames a second. The staging memory is kept from frame to frame.
-struct UploadChunk {
+struct UploadChunk
+{
     Staging staging;
     VkDeviceSize used = 0;
 };
@@ -139,16 +145,21 @@ uint64_t framesAtTitle = 0;
 std::chrono::steady_clock::time_point titleTime;
 
 VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBitsEXT severity, VkDebugUtilsMessageTypeFlagsEXT,
-                                             const VkDebugUtilsMessengerCallbackDataEXT* data, void*) {
+    const VkDebugUtilsMessengerCallbackDataEXT* data, void*)
+{
     const bool error = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
-    if (!validationSeen.insert(data && data->pMessage ? data->pMessage : "").second) return VK_FALSE;
-    if (error) ++validationErrors;
+    if (!validationSeen.insert(data && data->pMessage ? data->pMessage : "").second)
+        return VK_FALSE;
+    if (error)
+        ++validationErrors;
     std::fprintf(stderr, "validation %s: %s\n", error ? "error" : "warning", data && data->pMessage ? data->pMessage : "");
     return VK_FALSE;
 }
 
-VkImageAspectFlags FormatAspects(VkFormat f) {
-    switch (f) {
+VkImageAspectFlags FormatAspects(VkFormat f)
+{
+    switch (f)
+    {
         case VK_FORMAT_D16_UNORM:
         case VK_FORMAT_X8_D24_UNORM_PACK32:
         case VK_FORMAT_D32_SFLOAT:
@@ -164,20 +175,28 @@ VkImageAspectFlags FormatAspects(VkFormat f) {
     }
 }
 
-bool AllocateBound(const VkMemoryRequirements& requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool deviceAddress, bool track) {
+bool AllocateBound(const VkMemoryRequirements& requirements, VkMemoryPropertyFlags want, VkDeviceMemory& memory, bool deviceAddress, bool track)
+{
     VkMemoryAllocateFlagsInfo addressFlags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
     addressFlags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-    for (int pass = 0; pass < 2; ++pass) {
-        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i) {
-            if (!(requirements.memoryTypeBits & (1u << i))) continue;
+    for (int pass = 0; pass < 2; ++pass)
+    {
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount; ++i)
+        {
+            if (!(requirements.memoryTypeBits & (1u << i)))
+                continue;
             const VkMemoryPropertyFlags flags = memoryProperties.memoryTypes[i].propertyFlags;
-            if (pass == 0 && (flags & want) != want) continue;
+            if (pass == 0 && (flags & want) != want)
+                continue;
             VkMemoryAllocateInfo info{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-            if (deviceAddress) info.pNext = &addressFlags;
+            if (deviceAddress)
+                info.pNext = &addressFlags;
             info.allocationSize = requirements.size;
             info.memoryTypeIndex = i;
-            if (vkAllocateMemory(device, &info, nullptr, &memory) == VK_SUCCESS) {
-                if (track) memories.push_back(memory);
+            if (vkAllocateMemory(device, &info, nullptr, &memory) == VK_SUCCESS)
+            {
+                if (track)
+                    memories.push_back(memory);
                 return true;
             }
         }
@@ -185,31 +204,39 @@ bool AllocateBound(const VkMemoryRequirements& requirements, VkMemoryPropertyFla
     return false;
 }
 
-bool CreateStaging(VkDeviceSize size, Staging& staging) {
+bool CreateStaging(VkDeviceSize size, Staging& staging)
+{
     staging = Staging{};
     VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     info.size = std::max<VkDeviceSize>(size, 1);
     info.usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT;
-    if (vkCreateBuffer(device, &info, nullptr, &staging.buffer) != VK_SUCCESS) return false;
+    if (vkCreateBuffer(device, &info, nullptr, &staging.buffer) != VK_SUCCESS)
+        return false;
     VkMemoryRequirements req{};
     vkGetBufferMemoryRequirements(device, staging.buffer, &req);
     const VkMemoryPropertyFlags want = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
     VkDeviceMemory memory = VK_NULL_HANDLE;
     bool ok = false;
     // Cached system memory first: it is read back on the CPU.
-    for (int pass = 0; pass < 3 && !ok; ++pass) {
-        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount && !ok; ++i) {
+    for (int pass = 0; pass < 3 && !ok; ++pass)
+    {
+        for (uint32_t i = 0; i < memoryProperties.memoryTypeCount && !ok; ++i)
+        {
             const VkMemoryPropertyFlags flags = memoryProperties.memoryTypes[i].propertyFlags;
-            if (!(req.memoryTypeBits & (1u << i)) || (flags & want) != want) continue;
-            if (pass == 0 && (!(flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) || (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))) continue;
-            if (pass == 1 && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)) continue;
+            if (!(req.memoryTypeBits & (1u << i)) || (flags & want) != want)
+                continue;
+            if (pass == 0 && (!(flags & VK_MEMORY_PROPERTY_HOST_CACHED_BIT) || (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)))
+                continue;
+            if (pass == 1 && (flags & VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT))
+                continue;
             VkMemoryAllocateInfo alloc{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
             alloc.allocationSize = req.size;
             alloc.memoryTypeIndex = i;
             ok = vkAllocateMemory(device, &alloc, nullptr, &memory) == VK_SUCCESS;
         }
     }
-    if (!ok) {
+    if (!ok)
+    {
         vkDestroyBuffer(device, staging.buffer, nullptr);
         staging.buffer = VK_NULL_HANDLE;
         return false;
@@ -221,16 +248,20 @@ bool CreateStaging(VkDeviceSize size, Staging& staging) {
     return true;
 }
 
-void DestroyStaging(Staging& staging) {
-    if (staging.memory) {
+void DestroyStaging(Staging& staging)
+{
+    if (staging.memory)
+    {
         vkUnmapMemory(device, staging.memory);
         vkFreeMemory(device, staging.memory, nullptr);
     }
-    if (staging.buffer) vkDestroyBuffer(device, staging.buffer, nullptr);
+    if (staging.buffer)
+        vkDestroyBuffer(device, staging.buffer, nullptr);
     staging = Staging{};
 }
 
-void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to) {
+void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to)
+{
     VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
     b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
     b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
@@ -242,13 +273,20 @@ void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& r
     vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-void ReleaseTransients() {
-    for (Transient& t : transients) {
-        if (t.framebuffer) vkDestroyFramebuffer(device, t.framebuffer, nullptr);
-        if (t.sourceView) vkDestroyImageView(device, t.sourceView, nullptr);
-        if (t.view) vkDestroyImageView(device, t.view, nullptr);
-        if (t.image) vkDestroyImage(device, t.image, nullptr);
-        if (t.memory) vkFreeMemory(device, t.memory, nullptr);
+void ReleaseTransients()
+{
+    for (Transient& t : transients)
+    {
+        if (t.framebuffer)
+            vkDestroyFramebuffer(device, t.framebuffer, nullptr);
+        if (t.sourceView)
+            vkDestroyImageView(device, t.sourceView, nullptr);
+        if (t.view)
+            vkDestroyImageView(device, t.view, nullptr);
+        if (t.image)
+            vkDestroyImage(device, t.image, nullptr);
+        if (t.memory)
+            vkFreeMemory(device, t.memory, nullptr);
     }
     transients.clear();
 }
@@ -258,17 +296,21 @@ void ReleaseTransients() {
  * TRANSFER_SRC_OPTIMAL: a subpass that resolves into it (VK_KHR_depth_stencil_resolve, core in 1.2),
  * which is how the capture read the target back. Null with `why` when it cannot be made.
  */
-VkImage ResolveDepth(VkCommandBuffer cb, VkImage image, const ImageInfo& info, uint32_t mip, uint32_t baseLayer, VkImageLayout layout, std::string& why) {
-    if (!vkCreateRenderPass2) {
+VkImage ResolveDepth(VkCommandBuffer cb, VkImage image, const ImageInfo& info, uint32_t mip, uint32_t baseLayer, VkImageLayout layout, std::string& why)
+{
+    if (!vkCreateRenderPass2)
+    {
         why = "resolving multisampled depth needs Vulkan 1.2 render passes";
         return VK_NULL_HANDLE;
     }
     const VkExtent2D extent{std::max(1u, info.extent.width >> mip), std::max(1u, info.extent.height >> mip)};
     const VkImageAspectFlags aspects = FormatAspects(info.format);
     VkRenderPass& rp = depthResolvePasses[{info.format, info.samples}];
-    if (!rp) {
+    if (!rp)
+    {
         VkAttachmentDescription2 attachments[2]{};
-        for (VkAttachmentDescription2& a : attachments) {
+        for (VkAttachmentDescription2& a : attachments)
+        {
             a.sType = VK_STRUCTURE_TYPE_ATTACHMENT_DESCRIPTION_2;
             a.format = info.format;
             a.storeOp = a.stencilStoreOp = VK_ATTACHMENT_STORE_OP_STORE;
@@ -295,9 +337,11 @@ VkImage ResolveDepth(VkCommandBuffer cb, VkImage image, const ImageInfo& info, u
         create.pAttachments = attachments;
         create.subpassCount = 1;
         create.pSubpasses = &subpass;
-        if (vkCreateRenderPass2(device, &create, nullptr, &rp) != VK_SUCCESS) rp = VK_NULL_HANDLE;
+        if (vkCreateRenderPass2(device, &create, nullptr, &rp) != VK_SUCCESS)
+            rp = VK_NULL_HANDLE;
     }
-    if (!rp) {
+    if (!rp)
+    {
         why = "the pass that resolves multisampled depth could not be created";
         return VK_NULL_HANDLE;
     }
@@ -314,24 +358,28 @@ VkImage ResolveDepth(VkCommandBuffer cb, VkImage image, const ImageInfo& info, u
     create.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
     VkMemoryRequirements req{};
     bool ok = vkCreateImage(device, &create, nullptr, &t.image) == VK_SUCCESS;
-    if (ok) {
+    if (ok)
+    {
         vkGetImageMemoryRequirements(device, t.image, &req);
         ok = AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, t.memory, false, false) && vkBindImageMemory(device, t.image, t.memory, 0) == VK_SUCCESS;
     }
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.viewType = VK_IMAGE_VIEW_TYPE_2D;
     view.format = info.format;
-    if (ok) {
+    if (ok)
+    {
         view.image = t.image;
         view.subresourceRange = {aspects, 0, 1, 0, 1};
         ok = vkCreateImageView(device, &view, nullptr, &t.view) == VK_SUCCESS;
     }
-    if (ok) {
+    if (ok)
+    {
         view.image = image;
         view.subresourceRange = {aspects, mip, 1, baseLayer, 1};
         ok = vkCreateImageView(device, &view, nullptr, &t.sourceView) == VK_SUCCESS;
     }
-    if (ok) {
+    if (ok)
+    {
         const VkImageView views[2] = {t.sourceView, t.view};
         VkFramebufferCreateInfo fb{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fb.renderPass = rp;
@@ -343,7 +391,8 @@ VkImage ResolveDepth(VkCommandBuffer cb, VkImage image, const ImageInfo& info, u
         ok = vkCreateFramebuffer(device, &fb, nullptr, &t.framebuffer) == VK_SUCCESS;
     }
     transients.push_back(t);   // released with the submission, whatever was made of it
-    if (!ok) {
+    if (!ok)
+    {
         why = "the multisampled depth target could not be resolved";
         return VK_NULL_HANDLE;
     }
@@ -360,7 +409,8 @@ VkImage ResolveDepth(VkCommandBuffer cb, VkImage image, const ImageInfo& info, u
 }
 
 /** A single-sampled copy of one subresource of a multisampled color image, in TRANSFER_SRC_OPTIMAL; null with `why` when it cannot be made. */
-VkImage ResolveTarget(VkCommandBuffer cb, VkImage image, const ImageInfo& info, uint32_t mip, uint32_t baseLayer, VkImageLayout layout, std::string& why) {
+VkImage ResolveTarget(VkCommandBuffer cb, VkImage image, const ImageInfo& info, uint32_t mip, uint32_t baseLayer, VkImageLayout layout, std::string& why)
+{
     const VkExtent2D extent{std::max(1u, info.extent.width >> mip), std::max(1u, info.extent.height >> mip)};
     VkImageCreateInfo create{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     create.imageType = VK_IMAGE_TYPE_2D;
@@ -372,14 +422,16 @@ VkImage ResolveTarget(VkCommandBuffer cb, VkImage image, const ImageInfo& info, 
     create.tiling = VK_IMAGE_TILING_OPTIMAL;
     create.usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     VkImage resolved = VK_NULL_HANDLE;
-    if (vkCreateImage(device, &create, nullptr, &resolved) != VK_SUCCESS) {
+    if (vkCreateImage(device, &create, nullptr, &resolved) != VK_SUCCESS)
+    {
         why = "the resolve image could not be created";
         return VK_NULL_HANDLE;
     }
     VkMemoryRequirements req{};
     vkGetImageMemoryRequirements(device, resolved, &req);
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory, false, false) || vkBindImageMemory(device, resolved, memory, 0) != VK_SUCCESS) {
+    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory, false, false) || vkBindImageMemory(device, resolved, memory, 0) != VK_SUCCESS)
+    {
         vkDestroyImage(device, resolved, nullptr);
         why = "no memory for the resolve image";
         return VK_NULL_HANDLE;
@@ -403,31 +455,39 @@ VkImage ResolveTarget(VkCommandBuffer cb, VkImage image, const ImageInfo& info, 
 
 // ---- PNG output (stored deflate blocks: large files, no zlib)
 
-uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc) {
+uint32_t Crc32(const uint8_t* data, size_t size, uint32_t crc)
+{
     static uint32_t table[256];
     static bool ready = false;
-    if (!ready) {
-        for (uint32_t n = 0; n < 256; ++n) {
+    if (!ready)
+    {
+        for (uint32_t n = 0; n < 256; ++n)
+        {
             uint32_t c = n;
-            for (int k = 0; k < 8; ++k) c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
+            for (int k = 0; k < 8; ++k)
+                c = c & 1 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
             table[n] = c;
         }
         ready = true;
     }
     crc = ~crc;
-    for (size_t i = 0; i < size; ++i) crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
+    for (size_t i = 0; i < size; ++i)
+        crc = table[(crc ^ data[i]) & 0xFF] ^ (crc >> 8);
     return ~crc;
 }
 
-bool WritePng(const std::string& path, uint32_t width, uint32_t height, const std::vector<uint8_t>& rgba) {
+bool WritePng(const std::string& path, uint32_t width, uint32_t height, const std::vector<uint8_t>& rgba)
+{
     std::vector<uint8_t> raw;
     raw.reserve(((size_t)width * 4 + 1) * height);
-    for (uint32_t y = 0; y < height; ++y) {
+    for (uint32_t y = 0; y < height; ++y)
+    {
         raw.push_back(0);
         raw.insert(raw.end(), rgba.begin() + (size_t)y * width * 4, rgba.begin() + ((size_t)y + 1) * width * 4);
     }
     std::vector<uint8_t> z = {0x78, 0x01};
-    for (size_t pos = 0; pos < raw.size();) {
+    for (size_t pos = 0; pos < raw.size();)
+    {
         const size_t n = std::min<size_t>(65535, raw.size() - pos);
         z.push_back(pos + n == raw.size() ? 1 : 0);
         z.push_back((uint8_t)(n & 0xFF));
@@ -438,15 +498,18 @@ bool WritePng(const std::string& path, uint32_t width, uint32_t height, const st
         pos += n;
     }
     uint32_t a = 1, b = 0;
-    for (uint8_t byte : raw) {
+    for (uint8_t byte : raw)
+    {
         a = (a + byte) % 65521;
         b = (b + a) % 65521;
     }
     const uint32_t adler = (b << 16) | a;
-    for (int s = 24; s >= 0; s -= 8) z.push_back((uint8_t)(adler >> s));
+    for (int s = 24; s >= 0; s -= 8)
+        z.push_back((uint8_t)(adler >> s));
 
     std::ofstream out(path, std::ios::binary);
-    if (!out) return false;
+    if (!out)
+        return false;
     const uint8_t signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
     out.write((const char*)signature, 8);
     auto chunk = [&](const char* type, const std::vector<uint8_t>& data) {
@@ -461,8 +524,8 @@ bool WritePng(const std::string& path, uint32_t width, uint32_t height, const st
         out.write((const char*)cb, 4);
     };
     const std::vector<uint8_t> ihdr = {(uint8_t)(width >> 24), (uint8_t)(width >> 16), (uint8_t)(width >> 8), (uint8_t)width,
-                                       (uint8_t)(height >> 24), (uint8_t)(height >> 16), (uint8_t)(height >> 8), (uint8_t)height,
-                                       8, 6, 0, 0, 0};
+        (uint8_t)(height >> 24), (uint8_t)(height >> 16), (uint8_t)(height >> 8), (uint8_t)height,
+        8, 6, 0, 0, 0};
     chunk("IHDR", ihdr);
     chunk("IDAT", z);
     chunk("IEND", {});
@@ -470,29 +533,41 @@ bool WritePng(const std::string& path, uint32_t width, uint32_t height, const st
 }
 
 /** 8-bit RGBA and BGRA as they are, 32-bit float depth stretched to its range; false for other formats. */
-bool ToRgba(const Readback& r, const uint8_t* bytes, size_t size, std::vector<uint8_t>& rgba) {
+bool ToRgba(const Readback& r, const uint8_t* bytes, size_t size, std::vector<uint8_t>& rgba)
+{
     const size_t texels = (size_t)r.width * r.height;
     rgba.assign(texels * 4, 255);
     const bool bgr = r.format == VK_FORMAT_B8G8R8A8_UNORM || r.format == VK_FORMAT_B8G8R8A8_SRGB;
     const bool rgb = r.format == VK_FORMAT_R8G8B8A8_UNORM || r.format == VK_FORMAT_R8G8B8A8_SRGB;
-    if ((bgr || rgb) && r.aspect == VK_IMAGE_ASPECT_COLOR_BIT) {
-        if (size < texels * 4) return false;
-        for (size_t i = 0; i < texels; ++i) {
+    if ((bgr || rgb) && r.aspect == VK_IMAGE_ASPECT_COLOR_BIT)
+    {
+        if (size < texels * 4)
+            return false;
+        for (size_t i = 0; i < texels; ++i)
+        {
             rgba[i * 4] = bytes[i * 4 + (bgr ? 2 : 0)];
             rgba[i * 4 + 1] = bytes[i * 4 + 1];
             rgba[i * 4 + 2] = bytes[i * 4 + (bgr ? 0 : 2)];
         }
         return true;
     }
-    if ((r.format == VK_FORMAT_D32_SFLOAT || r.format == VK_FORMAT_D32_SFLOAT_S8_UINT) && r.aspect == VK_IMAGE_ASPECT_DEPTH_BIT) {
-        if (size < texels * 4) return false;
+    if ((r.format == VK_FORMAT_D32_SFLOAT || r.format == VK_FORMAT_D32_SFLOAT_S8_UINT) && r.aspect == VK_IMAGE_ASPECT_DEPTH_BIT)
+    {
+        if (size < texels * 4)
+            return false;
         float lo = INFINITY, hi = -INFINITY;
-        for (size_t i = 0; i < texels; ++i) {
+        for (size_t i = 0; i < texels; ++i)
+        {
             float v;
             std::memcpy(&v, &bytes[i * 4], 4);
-            if (std::isfinite(v)) { lo = std::min(lo, v); hi = std::max(hi, v); }
+            if (std::isfinite(v))
+            {
+                lo = std::min(lo, v);
+                hi = std::max(hi, v);
+            }
         }
-        for (size_t i = 0; i < texels; ++i) {
+        for (size_t i = 0; i < texels; ++i)
+        {
             float v;
             std::memcpy(&v, &bytes[i * 4], 4);
             const uint8_t g = hi > lo ? (uint8_t)std::lround(255.0 * (v - lo) / (hi - lo)) : 0;
@@ -507,83 +582,104 @@ bool ToRgba(const Readback& r, const uint8_t* bytes, size_t size, std::vector<ui
 
 // ---------------------------------------------------------------------------------------------
 
-void Fail(const char* what, VkResult result) {
+void Fail(const char* what, VkResult result)
+{
     std::fprintf(stderr, "%s returned %d\n", what, (int)result);
     std::fflush(stderr);
     std::exit(2);
 }
 
-void Fail(const std::string& message) {
+void Fail(const std::string& message)
+{
     std::fprintf(stderr, "%s\n", message.c_str());
     std::fflush(stderr);
     std::exit(2);
 }
 
-bool LoadData(const std::string& path) {
+bool LoadData(const std::string& path)
+{
     std::ifstream in(path, std::ios::binary);
-    if (!in) return false;
+    if (!in)
+        return false;
     dataBytes.assign(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
     return true;
 }
 
-const void* Data(uint64_t offset, uint64_t size) {
-    if (offset + size > dataBytes.size()) Fail("the data file is shorter than the frame expects (offset " + std::to_string(offset) + ", " + std::to_string(size) + " bytes)");
+const void* Data(uint64_t offset, uint64_t size)
+{
+    if (offset + size > dataBytes.size())
+        Fail("the data file is shorter than the frame expects (offset " + std::to_string(offset) + ", " + std::to_string(size) + " bytes)");
     return dataBytes.data() + offset;
 }
 
-PFN_vkGetInstanceProcAddr LoadVulkanLoader() {
+PFN_vkGetInstanceProcAddr LoadVulkanLoader()
+{
 #ifdef _WIN32
     library = LoadLibraryA("vulkan-1.dll");
     return library ? (PFN_vkGetInstanceProcAddr)GetProcAddress(static_cast<HMODULE>(library), "vkGetInstanceProcAddr") : nullptr;
 #else
     library = dlopen("libvulkan.so.1", RTLD_NOW | RTLD_LOCAL);
-    if (!library) library = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
-    if (!library) library = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
+    if (!library)
+        library = dlopen("libvulkan.so", RTLD_NOW | RTLD_LOCAL);
+    if (!library)
+        library = dlopen("libvulkan.dylib", RTLD_NOW | RTLD_LOCAL);
     return library ? (PFN_vkGetInstanceProcAddr)dlsym(library, "vkGetInstanceProcAddr") : nullptr;
 #endif
 }
 
-bool ValidationLayerAvailable() {
+bool ValidationLayerAvailable()
+{
     uint32_t count = 0;
     vkEnumerateInstanceLayerProperties(&count, nullptr);
     std::vector<VkLayerProperties> layers(count);
     vkEnumerateInstanceLayerProperties(&count, layers.data());
     for (const VkLayerProperties& l : layers)
-        if (!std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation")) return true;
+        if (!std::strcmp(l.layerName, "VK_LAYER_KHRONOS_validation"))
+            return true;
     std::fprintf(stderr, "the validation layer is not installed (Vulkan SDK); running without it\n");
     return false;
 }
 
-std::vector<const char*> AvailableInstanceExtensions(const char* const* wanted, size_t count) {
+std::vector<const char*> AvailableInstanceExtensions(const char* const* wanted, size_t count)
+{
     uint32_t n = 0;
     vkEnumerateInstanceExtensionProperties(nullptr, &n, nullptr);
     std::vector<VkExtensionProperties> available(n);
     vkEnumerateInstanceExtensionProperties(nullptr, &n, available.data());
     std::vector<const char*> out;
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i)
+    {
         const bool has = std::any_of(available.begin(), available.end(), [&](const VkExtensionProperties& e) { return !std::strcmp(e.extensionName, wanted[i]); });
-        if (has) out.push_back(wanted[i]);
-        else std::fprintf(stderr, "instance extension not available here: %s\n", wanted[i]);
+        if (has)
+            out.push_back(wanted[i]);
+        else
+            std::fprintf(stderr, "instance extension not available here: %s\n", wanted[i]);
     }
     return out;
 }
 
-std::vector<const char*> AvailableDeviceExtensions(VkPhysicalDevice gpu, const char* const* wanted, size_t count) {
+std::vector<const char*> AvailableDeviceExtensions(VkPhysicalDevice gpu, const char* const* wanted, size_t count)
+{
     uint32_t n = 0;
     vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, nullptr);
     std::vector<VkExtensionProperties> available(n);
     vkEnumerateDeviceExtensionProperties(gpu, nullptr, &n, available.data());
     std::vector<const char*> out;
-    for (size_t i = 0; i < count; ++i) {
+    for (size_t i = 0; i < count; ++i)
+    {
         const bool has = std::any_of(available.begin(), available.end(), [&](const VkExtensionProperties& e) { return !std::strcmp(e.extensionName, wanted[i]); });
-        if (has) out.push_back(wanted[i]);
-        else std::fprintf(stderr, "device extension not available here: %s\n", wanted[i]);
+        if (has)
+            out.push_back(wanted[i]);
+        else
+            std::fprintf(stderr, "device extension not available here: %s\n", wanted[i]);
     }
     return out;
 }
 
-void CreateDebugMessenger() {
-    if (!vkCreateDebugUtilsMessengerEXT) return;
+void CreateDebugMessenger()
+{
+    if (!vkCreateDebugUtilsMessengerEXT)
+        return;
     VkDebugUtilsMessengerCreateInfoEXT m{VK_STRUCTURE_TYPE_DEBUG_UTILS_MESSENGER_CREATE_INFO_EXT};
     m.messageSeverity = VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT;
     m.messageType = VK_DEBUG_UTILS_MESSAGE_TYPE_VALIDATION_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_TYPE_GENERAL_BIT_EXT;
@@ -591,19 +687,28 @@ void CreateDebugMessenger() {
     vkCreateDebugUtilsMessengerEXT(instance, &m, nullptr, &messenger);
 }
 
-VkPhysicalDevice SelectPhysicalDevice(const char* preferredName) {
+VkPhysicalDevice SelectPhysicalDevice(const char* preferredName)
+{
     uint32_t count = 0;
     vkEnumeratePhysicalDevices(instance, &count, nullptr);
     std::vector<VkPhysicalDevice> physicals(count);
     vkEnumeratePhysicalDevices(instance, &count, physicals.data());
-    if (physicals.empty()) Fail("no Vulkan device");
+    if (physicals.empty())
+        Fail("no Vulkan device");
     VkPhysicalDevice chosen = VK_NULL_HANDLE;
     VkPhysicalDeviceProperties chosenProps{};
-    for (VkPhysicalDevice p : physicals) {
+    for (VkPhysicalDevice p : physicals)
+    {
         VkPhysicalDeviceProperties props{};
         vkGetPhysicalDeviceProperties(p, &props);
-        if (preferredName && *preferredName && !std::strcmp(preferredName, props.deviceName)) { chosen = p; chosenProps = props; break; }
-        if (!chosen || (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && chosenProps.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU)) {
+        if (preferredName && *preferredName && !std::strcmp(preferredName, props.deviceName))
+        {
+            chosen = p;
+            chosenProps = props;
+            break;
+        }
+        if (!chosen || (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU && chosenProps.deviceType != VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU))
+        {
             chosen = p;
             chosenProps = props;
         }
@@ -616,10 +721,12 @@ VkPhysicalDevice SelectPhysicalDevice(const char* preferredName) {
 
 const char* DeviceName() { return deviceProperties.deviceName; }
 
-void InitDevice(uint32_t family, const VkDeviceQueueCreateInfo* queues, uint32_t queueCount) {
+void InitDevice(uint32_t family, const VkDeviceQueueCreateInfo* queues, uint32_t queueCount)
+{
     vkGetPhysicalDeviceMemoryProperties(physicalDevice, &memoryProperties);
     queueFamily = family;
-    for (uint32_t i = 0; i < queueCount; ++i) createdQueues.emplace_back(queues[i].queueFamilyIndex, queues[i].queueCount);
+    for (uint32_t i = 0; i < queueCount; ++i)
+        createdQueues.emplace_back(queues[i].queueFamilyIndex, queues[i].queueCount);
     vkGetDeviceQueue(device, family, 0, &queue);
     VkCommandPoolCreateInfo pool{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     pool.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -627,33 +734,42 @@ void InitDevice(uint32_t family, const VkDeviceQueueCreateInfo* queues, uint32_t
     VK_CHECK(vkCreateCommandPool(device, &pool, nullptr, &utilityPool));
 }
 
-VkQueue DeviceQueue(uint32_t family, uint32_t index) {
-    for (const auto& [f, count] : createdQueues) {
-        if (f != family || index >= count) continue;
+VkQueue DeviceQueue(uint32_t family, uint32_t index)
+{
+    for (const auto& [f, count] : createdQueues)
+    {
+        if (f != family || index >= count)
+            continue;
         VkQueue q = VK_NULL_HANDLE;
         vkGetDeviceQueue(device, family, index, &q);
-        if (q) return q;
+        if (q)
+            return q;
     }
     return queue;
 }
 
-void BindImageMemory(VkImage image) {
+void BindImageMemory(VkImage image)
+{
     VkMemoryRequirements req{};
     vkGetImageMemoryRequirements(device, image, &req);
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory, false, true)) Fail("no memory for an image");
+    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory, false, true))
+        Fail("no memory for an image");
     VK_CHECK(vkBindImageMemory(device, image, memory, 0));
 }
 
-void BindBufferMemory(VkBuffer buffer, bool deviceAddress) {
+void BindBufferMemory(VkBuffer buffer, bool deviceAddress)
+{
     VkMemoryRequirements req{};
     vkGetBufferMemoryRequirements(device, buffer, &req);
     VkDeviceMemory memory = VK_NULL_HANDLE;
-    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory, deviceAddress, true)) Fail("no memory for a buffer");
+    if (!AllocateBound(req, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, memory, deviceAddress, true))
+        Fail("no memory for a buffer");
     VK_CHECK(vkBindBufferMemory(device, buffer, memory, 0));
 }
 
-void RegisterImage(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mips, uint32_t layers, VkSampleCountFlagBits samples) {
+void RegisterImage(VkImage image, VkFormat format, VkExtent3D extent, uint32_t mips, uint32_t layers, VkSampleCountFlagBits samples)
+{
     ImageInfo info;
     info.format = format;
     info.extent = extent;
@@ -665,8 +781,10 @@ void RegisterImage(VkImage image, VkFormat format, VkExtent3D extent, uint32_t m
 }
 
 /** Submits the buffer uploads gathered so far, before anything that reads what they write. */
-static void FlushUploads() {
-    if (!uploadCb) return;
+static void FlushUploads()
+{
+    if (!uploadCb)
+        return;
     VkCommandBuffer cb = uploadCb;
     uploadCb = VK_NULL_HANDLE;
     VK_CHECK(vkEndCommandBuffer(cb));
@@ -676,10 +794,12 @@ static void FlushUploads() {
     VK_CHECK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
     VK_CHECK(vkQueueWaitIdle(queue));
     vkFreeCommandBuffers(device, utilityPool, 1, &cb);
-    for (UploadChunk& c : uploadChunks) c.used = 0;
+    for (UploadChunk& c : uploadChunks)
+        c.used = 0;
 }
 
-VkCommandBuffer BeginOneTime() {
+VkCommandBuffer BeginOneTime()
+{
     FlushUploads();
     VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
     alloc.commandPool = utilityPool;
@@ -693,7 +813,8 @@ VkCommandBuffer BeginOneTime() {
     return cb;
 }
 
-void EndOneTime(VkCommandBuffer cb) {
+void EndOneTime(VkCommandBuffer cb)
+{
     VK_CHECK(vkEndCommandBuffer(cb));
     VkSubmitInfo submit{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     submit.commandBufferCount = 1;
@@ -703,20 +824,26 @@ void EndOneTime(VkCommandBuffer cb) {
     vkFreeCommandBuffers(device, utilityPool, 1, &cb);
 }
 
-void TransitionSubresources(VkCommandBuffer cb, VkImage image, const VkImageLayout* targets, size_t count) {
+void TransitionSubresources(VkCommandBuffer cb, VkImage image, const VkImageLayout* targets, size_t count)
+{
     auto it = images.find(image);
-    if (it == images.end()) Fail("TransitionSubresources: an image that was not registered");
+    if (it == images.end())
+        Fail("TransitionSubresources: an image that was not registered");
     ImageInfo& info = it->second;
     // One barrier per run of layers in a mip that share their current and target layouts.
     std::vector<VkImageMemoryBarrier> barriers;
-    for (uint32_t m = 0; m < info.mips; ++m) {
-        for (uint32_t l = 0; l < info.layers;) {
+    for (uint32_t m = 0; m < info.mips; ++m)
+    {
+        for (uint32_t l = 0; l < info.layers;)
+        {
             const size_t i = (size_t)m * info.layers + l;
             const VkImageLayout from = info.layouts[i];
             const VkImageLayout to = i < count ? targets[i] : VK_IMAGE_LAYOUT_UNDEFINED;
             uint32_t end = l + 1;
-            while (end < info.layers && info.layouts[i + end - l] == from && (i + end - l < count ? targets[i + end - l] : VK_IMAGE_LAYOUT_UNDEFINED) == to) ++end;
-            if (to != VK_IMAGE_LAYOUT_UNDEFINED && to != from) {
+            while (end < info.layers && info.layouts[i + end - l] == from && (i + end - l < count ? targets[i + end - l] : VK_IMAGE_LAYOUT_UNDEFINED) == to)
+                ++end;
+            if (to != VK_IMAGE_LAYOUT_UNDEFINED && to != from)
+            {
                 VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
                 b.oldLayout = from;
                 b.newLayout = to;
@@ -726,26 +853,31 @@ void TransitionSubresources(VkCommandBuffer cb, VkImage image, const VkImageLayo
                 b.srcAccessMask = VK_ACCESS_MEMORY_WRITE_BIT;
                 b.dstAccessMask = VK_ACCESS_MEMORY_READ_BIT;
                 barriers.push_back(b);
-                for (uint32_t k = l; k < end; ++k) info.layouts[(size_t)m * info.layers + k] = to;
+                for (uint32_t k = l; k < end; ++k)
+                    info.layouts[(size_t)m * info.layers + k] = to;
             }
             l = end;
         }
     }
     if (!barriers.empty())
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr,
-                             (uint32_t)barriers.size(), barriers.data());
+            (uint32_t)barriers.size(), barriers.data());
 }
 
-void TransitionAll(VkCommandBuffer cb, VkImage image, VkImageLayout layout) {
+void TransitionAll(VkCommandBuffer cb, VkImage image, VkImageLayout layout)
+{
     auto it = images.find(image);
-    if (it == images.end()) Fail("TransitionAll: an image that was not registered");
+    if (it == images.end())
+        Fail("TransitionAll: an image that was not registered");
     const std::vector<VkImageLayout> targets(it->second.layouts.size(), layout);
     TransitionSubresources(cb, image, targets.data(), targets.size());
 }
 
-void UploadImage(VkImage image, const VkBufferImageCopy* regions, uint32_t regionCount, const void* data, size_t size) {
+void UploadImage(VkImage image, const VkBufferImageCopy* regions, uint32_t regionCount, const void* data, size_t size)
+{
     Staging staging;
-    if (!CreateStaging(size, staging)) Fail("no staging memory for an image upload");
+    if (!CreateStaging(size, staging))
+        Fail("no staging memory for an image upload");
     std::memcpy(staging.mapped, data, size);
     VkCommandBuffer cb = BeginOneTime();
     TransitionAll(cb, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
@@ -754,26 +886,37 @@ void UploadImage(VkImage image, const VkBufferImageCopy* regions, uint32_t regio
     DestroyStaging(staging);
 }
 
-void SetImageLayouts(VkImage image, const VkImageLayout* layouts, size_t count) {
+void SetImageLayouts(VkImage image, const VkImageLayout* layouts, size_t count)
+{
     auto it = images.find(image);
-    if (it == images.end()) return;
-    for (size_t i = 0; i < count && i < it->second.layouts.size(); ++i) it->second.layouts[i] = layouts[i];
+    if (it == images.end())
+        return;
+    for (size_t i = 0; i < count && i < it->second.layouts.size(); ++i)
+        it->second.layouts[i] = layouts[i];
 }
 
-void UploadBuffer(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t size) {
+void UploadBuffer(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t size)
+{
     // Into the command buffer of gathered uploads (FlushUploads), which runs before the submission they are for.
     const VkDeviceSize aligned = ((VkDeviceSize)size + 255) & ~(VkDeviceSize)255;
     UploadChunk* chunk = nullptr;
     for (UploadChunk& c : uploadChunks)
-        if (c.used + aligned <= c.staging.size) { chunk = &c; break; }
-    if (!chunk) {
+        if (c.used + aligned <= c.staging.size)
+        {
+            chunk = &c;
+            break;
+        }
+    if (!chunk)
+    {
         UploadChunk c;
-        if (!CreateStaging(std::max<VkDeviceSize>(aligned, (VkDeviceSize)16 << 20), c.staging)) Fail("no staging memory for a buffer upload");
+        if (!CreateStaging(std::max<VkDeviceSize>(aligned, (VkDeviceSize)16 << 20), c.staging))
+            Fail("no staging memory for a buffer upload");
         uploadChunks.push_back(c);
         chunk = &uploadChunks.back();
     }
     std::memcpy(static_cast<uint8_t*>(chunk->staging.mapped) + chunk->used, data, size);
-    if (!uploadCb) {
+    if (!uploadCb)
+    {
         VkCommandBufferAllocateInfo alloc{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         alloc.commandPool = utilityPool;
         alloc.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -789,9 +932,11 @@ void UploadBuffer(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t
 }
 
 void ReadbackImage(VkCommandBuffer cb, VkImage image, const char* name, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer,
-                   uint32_t layers, VkExtent2D extent, VkImageLayout layout, VkSampleCountFlagBits samples, VkFormat format,
-                   const void* captured, size_t capturedSize) {
-    if (window) return;   // shown, not compared: the comparison is --batch's
+    uint32_t layers, VkExtent2D extent, VkImageLayout layout, VkSampleCountFlagBits samples, VkFormat format,
+    const void* captured, size_t capturedSize)
+{
+    if (window)
+        return;   // shown, not compared: the comparison is --batch's
     Readback r;
     r.name = name;
     r.format = format;
@@ -805,20 +950,41 @@ void ReadbackImage(VkCommandBuffer cb, VkImage image, const char* name, VkImageA
         r.note = std::move(why);
         results.push_back(r);
     };
-    if (samples != VK_SAMPLE_COUNT_1_BIT && layers > 1) { skip("not compared: a multisampled layered target"); return; }
-    if (!CreateStaging(capturedSize, r.staging)) { skip("not compared: no staging memory"); return; }
+    if (samples != VK_SAMPLE_COUNT_1_BIT && layers > 1)
+    {
+        skip("not compared: a multisampled layered target");
+        return;
+    }
+    if (!CreateStaging(capturedSize, r.staging))
+    {
+        skip("not compared: no staging memory");
+        return;
+    }
     VkBufferImageCopy copy{};
     copy.imageExtent = {std::max(1u, extent.width), std::max(1u, extent.height), 1};
-    if (samples != VK_SAMPLE_COUNT_1_BIT) {
+    if (samples != VK_SAMPLE_COUNT_1_BIT)
+    {
         auto it = images.find(image);
-        if (it == images.end()) { DestroyStaging(r.staging); skip("not compared: the image was not registered"); return; }
+        if (it == images.end())
+        {
+            DestroyStaging(r.staging);
+            skip("not compared: the image was not registered");
+            return;
+        }
         std::string why;
         const VkImage resolved = aspect == VK_IMAGE_ASPECT_COLOR_BIT ? ResolveTarget(cb, image, it->second, mip, baseLayer, layout, why)
-                                                                      : ResolveDepth(cb, image, it->second, mip, baseLayer, layout, why);
-        if (!resolved) { DestroyStaging(r.staging); skip("not compared: " + why); return; }
+                                                                     : ResolveDepth(cb, image, it->second, mip, baseLayer, layout, why);
+        if (!resolved)
+        {
+            DestroyStaging(r.staging);
+            skip("not compared: " + why);
+            return;
+        }
         copy.imageSubresource = {aspect, 0, 0, 1};
         vkCmdCopyImageToBuffer(cb, resolved, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, r.staging.buffer, 1, &copy);
-    } else {
+    }
+    else
+    {
         const VkImageSubresourceRange range{FormatAspects(format), mip, 1, baseLayer, layers};
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -839,7 +1005,8 @@ void ReadbackImage(VkCommandBuffer cb, VkImage image, const char* name, VkImageA
     pending.push_back(std::move(r));
 }
 
-void SubmitAndWait(VkQueue q, const VkCommandBuffer* commandBuffers, uint32_t count) {
+void SubmitAndWait(VkQueue q, const VkCommandBuffer* commandBuffers, uint32_t count)
+{
     FlushUploads();
     VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     info.commandBufferCount = count;
@@ -848,8 +1015,10 @@ void SubmitAndWait(VkQueue q, const VkCommandBuffer* commandBuffers, uint32_t co
     VK_CHECK(vkQueueWaitIdle(q));
 }
 
-void CompleteReadbacks() {
-    for (Readback& r : pending) {
+void CompleteReadbacks()
+{
+    for (Readback& r : pending)
+    {
         const auto* replayed = static_cast<const uint8_t*>(r.staging.mapped);
         const size_t size = std::min<size_t>(r.capturedSize, (size_t)r.staging.size);
         // A 24-bit depth aspect is copied as 32 bits whose top byte is undefined.
@@ -860,16 +1029,20 @@ void CompleteReadbacks() {
         const uint32_t compared = d24 ? 3 : texel;
         r.compared = true;
         r.texels = size / texel;
-        for (size_t t = 0; t + texel <= size; t += texel) {
+        for (size_t t = 0; t + texel <= size; t += texel)
+        {
             bool differs = false;
-            for (uint32_t k = 0; k < compared; ++k) {
+            for (uint32_t k = 0; k < compared; ++k)
+            {
                 const uint32_t delta = (uint32_t)std::abs((int)r.captured[t + k] - (int)replayed[t + k]);
-                if (delta) {
+                if (delta)
+                {
                     differs = true;
                     r.maxByteDelta = std::max(r.maxByteDelta, delta);
                 }
             }
-            if (differs) ++r.differing;
+            if (differs)
+                ++r.differing;
         }
         r.replayed.assign(replayed, replayed + size);
         DestroyStaging(r.staging);
@@ -879,42 +1052,56 @@ void CompleteReadbacks() {
     ReleaseTransients();
 }
 
-int ReportResults(const std::string& directory, bool writeImages) {
+int ReportResults(const std::string& directory, bool writeImages)
+{
     size_t identical = 0, differing = 0, skipped = 0;
-    if (writeImages && !results.empty()) std::filesystem::create_directories(directory);
+    if (writeImages && !results.empty())
+        std::filesystem::create_directories(directory);
     std::printf("render targets: %zu\n", results.size());
-    for (const Readback& r : results) {
-        if (r.layers > 1) std::printf("  %s (%ux%u, %u layers): ", r.name.c_str(), r.width, r.height, r.layers);
-        else std::printf("  %s (%ux%u): ", r.name.c_str(), r.width, r.height);
-        if (!r.compared) {
+    for (const Readback& r : results)
+    {
+        if (r.layers > 1)
+            std::printf("  %s (%ux%u, %u layers): ", r.name.c_str(), r.width, r.height, r.layers);
+        else
+            std::printf("  %s (%ux%u): ", r.name.c_str(), r.width, r.height);
+        if (!r.compared)
+        {
             ++skipped;
             std::printf("%s\n", r.note.c_str());
             continue;
         }
-        if (r.differing == 0) {
+        if (r.differing == 0)
+        {
             ++identical;
             std::printf("identical to the capture (%llu texels)\n", (unsigned long long)r.texels);
-        } else {
+        }
+        else
+        {
             ++differing;
             std::printf("%llu of %llu texels differ from the capture, largest byte difference %u\n", (unsigned long long)r.differing,
-                        (unsigned long long)r.texels, r.maxByteDelta);
+                (unsigned long long)r.texels, r.maxByteDelta);
         }
-        if (!writeImages) continue;
+        if (!writeImages)
+            continue;
         const std::string base = directory + "/" + r.name;
         std::ofstream raw(base + "_replayed.raw", std::ios::binary);
         raw.write((const char*)r.replayed.data(), (std::streamsize)r.replayed.size());
         // The PNGs show the first layer; the .raw file holds every one.
         std::vector<uint8_t> a, b;
-        if (ToRgba(r, r.captured, r.capturedSize, a) && ToRgba(r, r.replayed.data(), r.replayed.size(), b)) {
+        if (ToRgba(r, r.captured, r.capturedSize, a) && ToRgba(r, r.replayed.data(), r.replayed.size(), b))
+        {
             WritePng(base + "_captured.png", r.width, r.height, a);
             WritePng(base + "_replayed.png", r.width, r.height, b);
-            if (r.differing) {
+            if (r.differing)
+            {
                 std::vector<uint8_t> diff(a.size(), 255);
                 const size_t texel = r.texels ? r.replayed.size() / r.texels : 4;
                 const size_t shown = (size_t)r.width * r.height;
-                for (size_t i = 0; i < shown && i * 4 < diff.size() && (i + 1) * texel <= r.replayed.size(); ++i) {
+                for (size_t i = 0; i < shown && i * 4 < diff.size() && (i + 1) * texel <= r.replayed.size(); ++i)
+                {
                     uint32_t delta = 0;
-                    for (size_t k = 0; k < texel; ++k) delta = std::max<uint32_t>(delta, (uint32_t)std::abs((int)r.captured[i * texel + k] - (int)r.replayed[i * texel + k]));
+                    for (size_t k = 0; k < texel; ++k)
+                        delta = std::max<uint32_t>(delta, (uint32_t)std::abs((int)r.captured[i * texel + k] - (int)r.replayed[i * texel + k]));
                     diff[i * 4] = (uint8_t)std::min<uint32_t>(255, delta ? 64 + delta * 4 : 0);
                     diff[i * 4 + 1] = diff[i * 4 + 2] = 0;
                 }
@@ -922,8 +1109,10 @@ int ReportResults(const std::string& directory, bool writeImages) {
             }
         }
     }
-    if (writeImages && !results.empty()) std::printf("wrote the targets to %s/\n", directory.c_str());
-    if (validationErrors) std::printf("validation errors: %zu\n", validationErrors);
+    if (writeImages && !results.empty())
+        std::printf("wrote the targets to %s/\n", directory.c_str());
+    if (validationErrors)
+        std::printf("validation errors: %zu\n", validationErrors);
     return differing == 0 && skipped == 0 ? 0 : 1;
 }
 
@@ -931,7 +1120,8 @@ int ReportResults(const std::string& directory, bool writeImages) {
 
 void WantWindow(bool wanted) { windowWanted = wanted; }
 
-namespace {
+namespace
+{
 
 #if defined(FRAME_NO_WINDOW)
 const char* const kSurfaceExtension = nullptr;
@@ -943,11 +1133,13 @@ const char* const kSurfaceExtension = VK_EXT_METAL_SURFACE_EXTENSION_NAME;
 const char* const kSurfaceExtension = VK_KHR_XLIB_SURFACE_EXTENSION_NAME;
 #endif
 
-bool Has(const std::vector<const char*>& list, const char* name) {
+bool Has(const std::vector<const char*>& list, const char* name)
+{
     return std::any_of(list.begin(), list.end(), [&](const char* e) { return !std::strcmp(e, name); });
 }
 
-VkSurfaceKHR CreateSurface(FrameWindow* w) {
+VkSurfaceKHR CreateSurface(FrameWindow* w)
+{
     VkSurfaceKHR created = VK_NULL_HANDLE;
 #if defined(FRAME_NO_WINDOW)
     (void)w;
@@ -956,24 +1148,29 @@ VkSurfaceKHR CreateSurface(FrameWindow* w) {
     VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
     info.hinstance = static_cast<HINSTANCE>(FrameWindowDisplay(w));
     info.hwnd = static_cast<HWND>(FrameWindowHandle(w));
-    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
 #elif defined(__APPLE__)
     auto create = (PFN_vkCreateMetalSurfaceEXT)vkGetInstanceProcAddr(instance, "vkCreateMetalSurfaceEXT");
     VkMetalSurfaceCreateInfoEXT info{VK_STRUCTURE_TYPE_METAL_SURFACE_CREATE_INFO_EXT};
     info.pLayer = static_cast<const CAMetalLayer*>(FrameWindowHandle(w));
-    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
 #else
     auto create = (PFN_vkCreateXlibSurfaceKHR)vkGetInstanceProcAddr(instance, "vkCreateXlibSurfaceKHR");
     VkXlibSurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_XLIB_SURFACE_CREATE_INFO_KHR};
     info.dpy = static_cast<Display*>(FrameWindowDisplay(w));
     info.window = static_cast<Window>(reinterpret_cast<uintptr_t>(FrameWindowHandle(w)));
-    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS) return VK_NULL_HANDLE;
+    if (!create || create(instance, &info, nullptr, &created) != VK_SUCCESS)
+        return VK_NULL_HANDLE;
 #endif
     return created;
 }
 
-bool IsSrgb(VkFormat f) {
-    switch (f) {
+bool IsSrgb(VkFormat f)
+{
+    switch (f)
+    {
         case VK_FORMAT_R8G8B8A8_SRGB:
         case VK_FORMAT_B8G8R8A8_SRGB:
         case VK_FORMAT_A8B8G8R8_SRGB_PACK32:
@@ -983,11 +1180,16 @@ bool IsSrgb(VkFormat f) {
     }
 }
 
-void CloseWindowObjects() {
-    if (acquireFence) vkDestroyFence(device, acquireFence, nullptr);
-    if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
-    if (surface) vkDestroySurfaceKHR(instance, surface, nullptr);
-    if (window) CloseFrameWindow(window);
+void CloseWindowObjects()
+{
+    if (acquireFence)
+        vkDestroyFence(device, acquireFence, nullptr);
+    if (swapchain)
+        vkDestroySwapchainKHR(device, swapchain, nullptr);
+    if (surface)
+        vkDestroySurfaceKHR(instance, surface, nullptr);
+    if (window)
+        CloseFrameWindow(window);
     acquireFence = VK_NULL_HANDLE;
     swapchain = VK_NULL_HANDLE;
     surface = VK_NULL_HANDLE;
@@ -997,66 +1199,86 @@ void CloseWindowObjects() {
 
 }  // namespace
 
-void AddWindowInstanceExtensions(std::vector<const char*>& extensions) {
-    if (!windowWanted || !kSurfaceExtension) return;
+void AddWindowInstanceExtensions(std::vector<const char*>& extensions)
+{
+    if (!windowWanted || !kSurfaceExtension)
+        return;
     const char* const wanted[] = {VK_KHR_SURFACE_EXTENSION_NAME, kSurfaceExtension};
     for (const char* e : AvailableInstanceExtensions(wanted, 2))
-        if (!Has(extensions, e)) extensions.push_back(e);
+        if (!Has(extensions, e))
+            extensions.push_back(e);
 }
 
-void AddWindowDeviceExtensions(VkPhysicalDevice gpu, std::vector<const char*>& extensions) {
+void AddWindowDeviceExtensions(VkPhysicalDevice gpu, std::vector<const char*>& extensions)
+{
     const char* const wanted[] = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
     if (windowWanted && !Has(extensions, wanted[0]))
-        for (const char* e : AvailableDeviceExtensions(gpu, wanted, 1)) extensions.push_back(e);
+        for (const char* e : AvailableDeviceExtensions(gpu, wanted, 1))
+            extensions.push_back(e);
     swapchainEnabled = Has(extensions, wanted[0]);
 }
 
 void SetOutputVsync(bool on) { vsync = on; }
 
-bool OpenOutputWindow(const FrameOutputInfo& output, const char* title) {
+bool OpenOutputWindow(const FrameOutputInfo& output, const char* title)
+{
     auto no = [](const char* why) {
         std::fprintf(stderr, "%s\n", why);
         CloseWindowObjects();
         return false;
     };
-    if (!kSurfaceExtension) return no("this program was built without a window");
-    if (!swapchainEnabled || !vkCreateSwapchainKHR || !vkGetPhysicalDeviceSurfaceSupportKHR) return no("this Vulkan has no swapchain to show the frame in");
+    if (!kSurfaceExtension)
+        return no("this program was built without a window");
+    if (!swapchainEnabled || !vkCreateSwapchainKHR || !vkGetPhysicalDeviceSurfaceSupportKHR)
+        return no("this Vulkan has no swapchain to show the frame in");
     auto known = images.find(output.image);
     if (known == images.end() || known->second.samples != VK_SAMPLE_COUNT_1_BIT || !(FormatAspects(output.format) & VK_IMAGE_ASPECT_COLOR_BIT))
         return no("the frame's output is not a single-sampled color image, which is all a window can show");
     VkFormatProperties properties{};
     vkGetPhysicalDeviceFormatProperties(physicalDevice, output.format, &properties);
-    if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT)) return no("the frame's output has a format this device cannot blit to a swapchain");
+    if (!(properties.optimalTilingFeatures & VK_FORMAT_FEATURE_BLIT_SRC_BIT))
+        return no("the frame's output has a format this device cannot blit to a swapchain");
 
     window = OpenFrameWindow(title, output.extent.width, output.extent.height);
-    if (!window) return no("no window could be opened");
+    if (!window)
+        return no("no window could be opened");
     surface = CreateSurface(window);
-    if (!surface) return no("no Vulkan surface could be made for the window");
+    if (!surface)
+        return no("no Vulkan surface could be made for the window");
     VkBool32 presents = VK_FALSE;
     vkGetPhysicalDeviceSurfaceSupportKHR(physicalDevice, queueFamily, surface, &presents);
-    if (!presents) return no("the frame's queue family cannot present to the window");
+    if (!presents)
+        return no("the frame's queue family cannot present to the window");
 
     VkSurfaceCapabilitiesKHR caps{};
     VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(physicalDevice, surface, &caps));
-    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT)) return no("the window's swapchain cannot be blitted to");
+    if (!(caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_DST_BIT))
+        return no("the window's swapchain cannot be blitted to");
     uint32_t formatCount = 0;
     vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, nullptr);
     std::vector<VkSurfaceFormatKHR> formats(formatCount);
     vkGetPhysicalDeviceSurfaceFormatsKHR(physicalDevice, surface, &formatCount, formats.data());
-    if (formats.empty()) return no("the window's surface offers no format");
+    if (formats.empty())
+        return no("the window's surface offers no format");
     // A blit converts between formats, through linear for an sRGB one. The swapchain is sRGB when
     // the output is and not otherwise, so the bytes on screen are the bytes the frame wrote.
     VkSurfaceFormatKHR chosen = formats[0];
     const bool srgb = IsSrgb(output.format);
-    for (const VkSurfaceFormatKHR& f : formats) {
+    for (const VkSurfaceFormatKHR& f : formats)
+    {
         const bool eight = f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM || f.format == VK_FORMAT_B8G8R8A8_SRGB || f.format == VK_FORMAT_R8G8B8A8_SRGB;
-        if (eight && IsSrgb(f.format) == srgb && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR) { chosen = f; break; }
+        if (eight && IsSrgb(f.format) == srgb && f.colorSpace == VK_COLOR_SPACE_SRGB_NONLINEAR_KHR)
+        {
+            chosen = f;
+            break;
+        }
     }
 
     VkSwapchainCreateInfoKHR info{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
     info.surface = surface;
     info.minImageCount = std::max(caps.minImageCount, 2u);
-    if (caps.maxImageCount && info.minImageCount > caps.maxImageCount) info.minImageCount = caps.maxImageCount;
+    if (caps.maxImageCount && info.minImageCount > caps.maxImageCount)
+        info.minImageCount = caps.maxImageCount;
     info.imageFormat = chosen.format;
     info.imageColorSpace = chosen.colorSpace;
     // The window is the output's size; a surface that insists on another one is blitted to at its own.
@@ -1067,20 +1289,24 @@ bool OpenOutputWindow(const FrameOutputInfo& output, const char* title) {
     info.preTransform = caps.currentTransform;
     info.compositeAlpha = (caps.supportedCompositeAlpha & VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR) ? VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR : VK_COMPOSITE_ALPHA_INHERIT_BIT_KHR;
     info.presentMode = VK_PRESENT_MODE_FIFO_KHR;   // the one every surface has
-    if (!vsync) {
+    if (!vsync)
+    {
         // IMMEDIATE, else MAILBOX, where the surface has one; FIFO is what is left.
         uint32_t modeCount = 0;
         auto getModes = (PFN_vkGetPhysicalDeviceSurfacePresentModesKHR)vkGetInstanceProcAddr(instance, "vkGetPhysicalDeviceSurfacePresentModesKHR");
         std::vector<VkPresentModeKHR> modes;
-        if (getModes && getModes(physicalDevice, surface, &modeCount, nullptr) == VK_SUCCESS) {
+        if (getModes && getModes(physicalDevice, surface, &modeCount, nullptr) == VK_SUCCESS)
+        {
             modes.resize(modeCount);
             getModes(physicalDevice, surface, &modeCount, modes.data());
         }
         for (VkPresentModeKHR wanted : {VK_PRESENT_MODE_MAILBOX_KHR, VK_PRESENT_MODE_IMMEDIATE_KHR})
-            if (std::find(modes.begin(), modes.end(), wanted) != modes.end()) info.presentMode = wanted;
+            if (std::find(modes.begin(), modes.end(), wanted) != modes.end())
+                info.presentMode = wanted;
     }
     info.clipped = VK_TRUE;
-    if (vkCreateSwapchainKHR(device, &info, nullptr, &swapchain) != VK_SUCCESS) return no("no swapchain could be made for the window");
+    if (vkCreateSwapchainKHR(device, &info, nullptr, &swapchain) != VK_SUCCESS)
+        return no("no swapchain could be made for the window");
     uint32_t imageCount = 0;
     vkGetSwapchainImagesKHR(device, swapchain, &imageCount, nullptr);
     swapchainImages.resize(imageCount);
@@ -1093,14 +1319,19 @@ bool OpenOutputWindow(const FrameOutputInfo& output, const char* title) {
     return true;
 }
 
-bool PresentOutput(const FrameOutputInfo& output) {
-    if (!window || !swapchain) return false;
-    if (!PumpFrameWindow(window)) return false;
+bool PresentOutput(const FrameOutputInfo& output)
+{
+    if (!window || !swapchain)
+        return false;
+    if (!PumpFrameWindow(window))
+        return false;
     // The image is waited for on the host: the frame's submissions use no semaphores, and neither does this.
     uint32_t index = 0;
     const VkResult acquired = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, VK_NULL_HANDLE, acquireFence, &index);
-    if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_ERROR_SURFACE_LOST_KHR) return false;   // the window is going
-    if (acquired < 0) Fail("vkAcquireNextImageKHR", acquired);
+    if (acquired == VK_ERROR_OUT_OF_DATE_KHR || acquired == VK_ERROR_SURFACE_LOST_KHR)
+        return false;   // the window is going
+    if (acquired < 0)
+        Fail("vkAcquireNextImageKHR", acquired);
     VK_CHECK(vkWaitForFences(device, 1, &acquireFence, VK_TRUE, UINT64_MAX));
     VK_CHECK(vkResetFences(device, 1, &acquireFence));
 
@@ -1117,7 +1348,8 @@ bool PresentOutput(const FrameOutputInfo& output) {
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
     };
     // The first mip of the first layer, from the layout the frame leaves it in and back.
-    if (output.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) barrier(output.image, output.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+    if (output.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        barrier(output.image, output.layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
     barrier(swapchainImages[index], VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
     VkImageBlit blit{};
     blit.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
@@ -1126,7 +1358,8 @@ bool PresentOutput(const FrameOutputInfo& output) {
     blit.dstOffsets[1] = {(int32_t)swapchainExtent.width, (int32_t)swapchainExtent.height, 1};
     vkCmdBlitImage(cb, output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapchainImages[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &blit, VK_FILTER_NEAREST);
     barrier(swapchainImages[index], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR);
-    if (output.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) barrier(output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, output.layout);
+    if (output.layout != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL)
+        barrier(output.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, output.layout);
     EndOneTime(cb);
 
     VkPresentInfoKHR present{VK_STRUCTURE_TYPE_PRESENT_INFO_KHR};
@@ -1134,14 +1367,17 @@ bool PresentOutput(const FrameOutputInfo& output) {
     present.pSwapchains = &swapchain;
     present.pImageIndices = &index;
     const VkResult presented = vkQueuePresentKHR(queue, &present);
-    if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_ERROR_SURFACE_LOST_KHR) return false;
-    if (presented < 0) Fail("vkQueuePresentKHR", presented);
+    if (presented == VK_ERROR_OUT_OF_DATE_KHR || presented == VK_ERROR_SURFACE_LOST_KHR)
+        return false;
+    if (presented < 0)
+        Fail("vkQueuePresentKHR", presented);
 
     // The frame rate in the title, twice a second.
     ++framesShown;
     const auto now = std::chrono::steady_clock::now();
     const double seconds = std::chrono::duration<double>(now - titleTime).count();
-    if (seconds >= 0.5) {
+    if (seconds >= 0.5)
+    {
         char text[320];
         std::snprintf(text, sizeof(text), "%s - %.1f fps", windowTitle.c_str(), (double)(framesShown - framesAtTitle) / seconds);
         SetFrameWindowTitle(window, text);
@@ -1151,34 +1387,46 @@ bool PresentOutput(const FrameOutputInfo& output) {
     return true;
 }
 
-int CloseOutputWindow() {
-    if (device) vkDeviceWaitIdle(device);
+int CloseOutputWindow()
+{
+    if (device)
+        vkDeviceWaitIdle(device);
     std::printf("frames shown: %llu\n", (unsigned long long)framesShown);
-    if (messenger) std::printf("validation errors: %zu\n", validationErrors);
+    if (messenger)
+        std::printf("validation errors: %zu\n", validationErrors);
     CloseWindowObjects();
     return validationErrors ? 1 : 0;
 }
 
-void DestroySupport() {
-    if (device) {
+void DestroySupport()
+{
+    if (device)
+    {
         FlushUploads();
         vkDeviceWaitIdle(device);
         CloseWindowObjects();
-        for (UploadChunk& c : uploadChunks) DestroyStaging(c.staging);
+        for (UploadChunk& c : uploadChunks)
+            DestroyStaging(c.staging);
         uploadChunks.clear();
-        for (Readback& r : pending) DestroyStaging(r.staging);
+        for (Readback& r : pending)
+            DestroyStaging(r.staging);
         pending.clear();
         ReleaseTransients();
         for (auto& [key, pass] : depthResolvePasses)
-            if (pass) vkDestroyRenderPass(device, pass, nullptr);
+            if (pass)
+                vkDestroyRenderPass(device, pass, nullptr);
         depthResolvePasses.clear();
-        for (VkDeviceMemory m : memories) vkFreeMemory(device, m, nullptr);
+        for (VkDeviceMemory m : memories)
+            vkFreeMemory(device, m, nullptr);
         memories.clear();
-        if (utilityPool) vkDestroyCommandPool(device, utilityPool, nullptr);
+        if (utilityPool)
+            vkDestroyCommandPool(device, utilityPool, nullptr);
         vkDestroyDevice(device, nullptr);
         device = VK_NULL_HANDLE;
     }
-    if (messenger && vkDestroyDebugUtilsMessengerEXT) vkDestroyDebugUtilsMessengerEXT(instance, messenger, nullptr);
-    if (instance) vkDestroyInstance(instance, nullptr);
+    if (messenger && vkDestroyDebugUtilsMessengerEXT)
+        vkDestroyDebugUtilsMessengerEXT(instance, messenger, nullptr);
+    if (instance)
+        vkDestroyInstance(instance, nullptr);
     instance = VK_NULL_HANDLE;
 }

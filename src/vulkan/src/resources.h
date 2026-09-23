@@ -15,9 +15,11 @@
 
 #include "vk_commands.gen.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-struct ImageInfo {
+struct ImageInfo
+{
     VkDevice device = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageType type = VK_IMAGE_TYPE_2D;
@@ -31,13 +33,15 @@ struct ImageInfo {
     bool transferSrc = false;   // usage includes TRANSFER_SRC (we add it when we can)
 };
 
-struct ImageViewInfo {
+struct ImageViewInfo
+{
     VkImage image = VK_NULL_HANDLE;
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkImageSubresourceRange range{};
 };
 
-struct BufferInfo {
+struct BufferInfo
+{
     VkDevice device = VK_NULL_HANDLE;
     VkDeviceSize size = 0;
     VkBufferUsageFlags usage = 0;
@@ -56,7 +60,8 @@ struct BufferInfo {
  * the application's own memory, and the layer may not map memory the application has mapped, so
  * reading them means borrowing the pointer the application already holds (descriptor_buffer.h).
  */
-struct MemoryInfo {
+struct MemoryInfo
+{
     VkDeviceSize size = 0;
     bool hostVisible = false;
     void* mapped = nullptr;              // the application's mapping, null when it holds none
@@ -64,14 +69,16 @@ struct MemoryInfo {
     VkDeviceSize mappedSize = 0;         // VK_WHOLE_SIZE resolved against the allocation
 };
 
-struct FramebufferInfo {
+struct FramebufferInfo
+{
     VkRenderPass renderPass = VK_NULL_HANDLE;
     std::vector<VkImageView> attachments;  // empty for imageless framebuffers
     uint32_t width = 0, height = 0, layers = 1;
     bool imageless = false;
 };
 
-struct RenderPassAttachment {
+struct RenderPassAttachment
+{
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT;
     VkImageLayout finalLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -83,7 +90,8 @@ struct RenderPassAttachment {
     VkImageLayout initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
 };
 
-struct SwapchainInfo {
+struct SwapchainInfo
+{
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     VkImageUsageFlags usage = 0;
@@ -94,7 +102,8 @@ struct SwapchainInfo {
     int refreshSource = 0;       // RefreshSource (refresh_rate.h)
 };
 
-struct RenderPassInfo {
+struct RenderPassInfo
+{
     std::vector<RenderPassAttachment> attachments;
     // Per subpass: which attachments are color / depth targets (indices into attachments).
     std::vector<std::vector<uint32_t>> subpassColor;
@@ -107,7 +116,8 @@ struct RenderPassInfo {
     VkRenderPass storeAll = VK_NULL_HANDLE;
 };
 
-class ResourceRegistry {
+class ResourceRegistry
+{
 public:
     static ResourceRegistry& Get();
 
@@ -152,7 +162,8 @@ public:
     VkAccelerationStructureKHR StructureAt(VkDeviceAddress address) const;
 
     /** One range a structure's build read: which field of which geometry, and the device range. */
-    struct StructureInput {
+    struct StructureInput
+    {
         const char* field = "";     // a string literal: vertexData, indexData, transformData, data
         uint32_t geometry = 0;
         VkDeviceAddress address = 0;
@@ -166,7 +177,7 @@ public:
      * outside one): that capture has the build itself, and needs no second read-back of it.
      */
     void NoteStructureInputs(VkAccelerationStructureKHR structure, VkDevice device, uint64_t id, uint64_t capture,
-                             std::vector<StructureInput> inputs);
+        std::vector<StructureInput> inputs);
     /** The structures of `device` with recorded inputs, by object id, less those built in capture `capture`. */
     std::vector<std::pair<uint64_t, std::vector<StructureInput>>> StructureInputs(VkDevice device, uint64_t capture) const;
 
@@ -202,14 +213,16 @@ private:
     std::unordered_map<uint64_t, RenderPassInfo> _renderPasses;
     std::unordered_map<uint64_t, SwapchainInfo> _swapchains;
     /** Buffer addresses in ascending order, so a lookup is a binary search over their ranges. */
-    struct AddressRange {
+    struct AddressRange
+    {
         VkDeviceAddress address = 0;
         VkDeviceSize size = 0;
         VkBuffer buffer = VK_NULL_HANDLE;
     };
     std::vector<AddressRange> _addresses;
     std::unordered_map<uint64_t, VkAccelerationStructureKHR> _structureAddresses;
-    struct StructureInputSet {
+    struct StructureInputSet
+    {
         VkDevice device = VK_NULL_HANDLE;
         uint64_t id = 0;
         uint64_t capture = 0;

@@ -41,17 +41,21 @@
 #include <unordered_map>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 
 // Owns the memory of a deep-copied create info chain.
-struct Arena {
+struct Arena
+{
     std::vector<std::unique_ptr<uint8_t[]>> blocks;
     void* Alloc(size_t size);
     template <typename T>
-    T* Copy(const T* src, size_t count = 1) {
-        if (!src || !count) return nullptr;
+    T* Copy(const T* src, size_t count = 1)
+    {
+        if (!src || !count)
+            return nullptr;
         T* dst = static_cast<T*>(Alloc(sizeof(T) * count));
         memcpy(dst, src, sizeof(T) * count);
         return dst;
@@ -59,21 +63,24 @@ struct Arena {
     const char* CopyString(const char* s);
 };
 
-class ShaderEditor {
+class ShaderEditor
+{
 public:
     static ShaderEditor& Get();
 
     // Creation hooks: remember how each pipeline was made.
     void OnCreateGraphicsPipelines(VkDevice device, uint32_t count, const VkGraphicsPipelineCreateInfo* infos,
-                                   const VkPipeline* pipelines);
+        const VkPipeline* pipelines);
     void OnCreateComputePipelines(VkDevice device, uint32_t count, const VkComputePipelineCreateInfo* infos,
-                                  const VkPipeline* pipelines);
+        const VkPipeline* pipelines);
     // Called from the tracker's destroy path (with its lock held): only queues the cleanup.
     void OnDestroyPipeline(uint64_t handle);
 
     // The pipeline to bind in place of `pipeline` (itself when it has no active edit).
-    VkPipeline Resolve(VkPipeline pipeline) {
-        if (!_anyActive.load(std::memory_order_relaxed)) return pipeline;
+    VkPipeline Resolve(VkPipeline pipeline)
+    {
+        if (!_anyActive.load(std::memory_order_relaxed))
+            return pipeline;
         return ResolveSlow(pipeline);
     }
     // The original a bound pipeline is the active replacement of, VK_NULL_HANDLE when it is not one
@@ -85,8 +92,10 @@ public:
     void OnCreateShaders(VkDevice device, uint32_t count, const VkShaderCreateInfoEXT* infos, const VkShaderEXT* shaders);
     void OnDestroyShader(uint64_t handle);
     // The shaders to bind in place of `shaders` (`storage` holds them when any is substituted).
-    const VkShaderEXT* ResolveShaders(uint32_t count, const VkShaderEXT* shaders, std::vector<VkShaderEXT>& storage) {
-        if (!_anyShaderActive.load(std::memory_order_relaxed) || !shaders) return shaders;
+    const VkShaderEXT* ResolveShaders(uint32_t count, const VkShaderEXT* shaders, std::vector<VkShaderEXT>& storage)
+    {
+        if (!_anyShaderActive.load(std::memory_order_relaxed) || !shaders)
+            return shaders;
         return ResolveShadersSlow(count, shaders, storage);
     }
 
@@ -101,7 +110,8 @@ public:
 private:
     ShaderEditor() = default;
 
-    struct Record {
+    struct Record
+    {
         VkDevice device = VK_NULL_HANDLE;
         Arena arena;
         VkGraphicsPipelineCreateInfo* graphics = nullptr;
@@ -124,7 +134,8 @@ private:
         uint64_t replacementId = 0;       // tracker id of the replacement pipeline
     };
 
-    struct ShaderRecord {
+    struct ShaderRecord
+    {
         VkDevice device = VK_NULL_HANDLE;
         Arena arena;
         VkShaderCreateInfoEXT* info = nullptr;   // deep copy, code included
@@ -146,7 +157,7 @@ private:
     bool Rebuild(VkPipeline original, Record& rec, std::string& error);
     // Makes a pipeline from a record with `edits` applied, its libraries first (added to `libraries`).
     VkPipeline Create(DeviceData* dev, Record& rec, const std::map<VkShaderStageFlagBits, VkShaderModule>& edits,
-                      std::vector<VkPipeline>& libraries, VkResult& result);
+        std::vector<VkPipeline>& libraries, VkResult& result);
     static bool HasStage(const Record& rec, VkShaderStageFlagBits stage);
     void Retire(VkDevice device, VkPipeline pipeline, VkShaderModule module);
     void Reply(uint64_t pipelineId, VkShaderStageFlagBits stage, bool ok, const std::string& message, uint64_t replacementId);

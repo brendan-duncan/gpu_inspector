@@ -17,9 +17,11 @@
 
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-struct ResourceInfo {
+struct ResourceInfo
+{
     ID3D12Resource* resource = nullptr;
     D3D12_RESOURCE_DESC desc{};
     D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -36,13 +38,14 @@ struct ResourceInfo {
     UINT64 heapOffset = 0;
 };
 
-class ResourceTracker {
+class ResourceTracker
+{
 public:
     static ResourceTracker& Get();
 
     /** A resource the application created, or a swap chain buffer it retrieved. */
     void OnCreated(ID3D12Resource* resource, const D3D12_RESOURCE_DESC& desc, D3D12_HEAP_TYPE heapType,
-                   D3D12_RESOURCE_STATES initialState, ID3D12Heap* heap = nullptr, UINT64 heapOffset = 0, bool swapChainBuffer = false);
+        D3D12_RESOURCE_STATES initialState, ID3D12Heap* heap = nullptr, UINT64 heapOffset = 0, bool swapChainBuffer = false);
     void OnReleased(ID3D12Resource* resource);
     bool Get(ID3D12Resource* resource, ResourceInfo& out);
 

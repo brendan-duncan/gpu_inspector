@@ -13,7 +13,8 @@
 
 #include "hook.h"
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /** MinHook on D3D12CreateDevice and the CreateDXGIFactory family (main.cpp calls this once). */
 bool InstallEntryPointHooks();

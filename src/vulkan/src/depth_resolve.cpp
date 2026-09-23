@@ -6,29 +6,39 @@
 
 #include <cstring>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-static bool HasName(const char* const* names, uint32_t count, const char* name) {
+static bool HasName(const char* const* names, uint32_t count, const char* name)
+{
     for (uint32_t i = 0; i < count; ++i)
-        if (names[i] && strcmp(names[i], name) == 0) return true;
+        if (names[i] && strcmp(names[i], name) == 0)
+            return true;
     return false;
 }
 
-static const VkBaseInStructure* ChainFind(const void* pNext, VkStructureType type) {
+static const VkBaseInStructure* ChainFind(const void* pNext, VkStructureType type)
+{
     for (auto* p = (const VkBaseInStructure*)pNext; p; p = p->pNext)
-        if (p->sType == type) return p;
+        if (p->sType == type)
+            return p;
     return nullptr;
 }
 
-void PlanDynamicRendering(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, DynamicRenderingSetup& setup) {
-    if (!inst || !inst->dispatch.GetPhysicalDeviceProperties) return;
-    if (ConfigFlag("VKINSP_NO_REFRESH_EXTENSIONS")) return;   // the same switch: leave the device alone
+void PlanDynamicRendering(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, DynamicRenderingSetup& setup)
+{
+    if (!inst || !inst->dispatch.GetPhysicalDeviceProperties)
+        return;
+    if (ConfigFlag("VKINSP_NO_REFRESH_EXTENSIONS"))
+        return;   // the same switch: leave the device alone
     // The application's own feature structs decide when present (chaining a second copy is invalid).
-    if (auto* v13 = ChainFind(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES)) {
+    if (auto* v13 = ChainFind(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_3_FEATURES))
+    {
         setup.enabled = ((const VkPhysicalDeviceVulkan13Features*)v13)->dynamicRendering == VK_TRUE;
         return;
     }
-    if (auto* dr = ChainFind(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES)) {
+    if (auto* dr = ChainFind(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES))
+    {
         setup.enabled = ((const VkPhysicalDeviceDynamicRenderingFeatures*)dr)->dynamicRendering == VK_TRUE;
         return;
     }
@@ -39,38 +49,54 @@ void PlanDynamicRendering(InstanceData* inst, VkPhysicalDevice physicalDevice, V
     const uint32_t deviceApi = props.apiVersion;
     const uint32_t appApi = inst->apiVersion;
     const uint32_t api = deviceApi < appApi ? deviceApi : appApi;
-    if (api < VK_API_VERSION_1_1) return;
+    if (api < VK_API_VERSION_1_1)
+        return;
     PFN_vkGetPhysicalDeviceFeatures2 features2 = inst->dispatch.GetPhysicalDeviceFeatures2
-        ? inst->dispatch.GetPhysicalDeviceFeatures2 : (PFN_vkGetPhysicalDeviceFeatures2)inst->dispatch.GetPhysicalDeviceFeatures2KHR;
-    if (!features2) return;
+        ? inst->dispatch.GetPhysicalDeviceFeatures2
+        : (PFN_vkGetPhysicalDeviceFeatures2)inst->dispatch.GetPhysicalDeviceFeatures2KHR;
+    if (!features2)
+        return;
     VkPhysicalDeviceDynamicRenderingFeatures dr{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
     VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     f2.pNext = &dr;
     features2(physicalDevice, &f2);
-    if (!dr.dynamicRendering) return;
+    if (!dr.dynamicRendering)
+        return;
 
     // Below 1.3 the extension carries the feature; below 1.2 its dependencies are extensions
     // too (multiview and maintenance2 are core in 1.1). Every one of them must be offered.
-    if (api < VK_API_VERSION_1_3) {
+    if (api < VK_API_VERSION_1_3)
+    {
         std::vector<const char*> needed{VK_KHR_DYNAMIC_RENDERING_EXTENSION_NAME};
-        if (api < VK_API_VERSION_1_2) {
+        if (api < VK_API_VERSION_1_2)
+        {
             needed.push_back(VK_KHR_DEPTH_STENCIL_RESOLVE_EXTENSION_NAME);
             needed.push_back(VK_KHR_CREATE_RENDERPASS_2_EXTENSION_NAME);
         }
-        if (!inst->dispatch.EnumerateDeviceExtensionProperties) return;
+        if (!inst->dispatch.EnumerateDeviceExtensionProperties)
+            return;
         uint32_t count = 0;
-        if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || !count) return;
+        if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || !count)
+            return;
         std::vector<VkExtensionProperties> ext(count);
-        if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, ext.data()) < VK_SUCCESS) return;
-        for (const char* name : needed) {
+        if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, ext.data()) < VK_SUCCESS)
+            return;
+        for (const char* name : needed)
+        {
             bool offered = false;
             for (uint32_t i = 0; i < count; ++i)
-                if (strcmp(ext[i].extensionName, name) == 0) { offered = true; break; }
-            if (!offered) return;
+                if (strcmp(ext[i].extensionName, name) == 0)
+                {
+                    offered = true;
+                    break;
+                }
+            if (!offered)
+                return;
         }
         setup.extensionNames.assign(info.ppEnabledExtensionNames, info.ppEnabledExtensionNames + info.enabledExtensionCount);
         for (const char* name : needed)
-            if (!HasName(setup.extensionNames.data(), (uint32_t)setup.extensionNames.size(), name)) setup.extensionNames.push_back(name);
+            if (!HasName(setup.extensionNames.data(), (uint32_t)setup.extensionNames.size(), name))
+                setup.extensionNames.push_back(name);
         info.ppEnabledExtensionNames = setup.extensionNames.data();
         info.enabledExtensionCount = (uint32_t)setup.extensionNames.size();
     }
@@ -82,12 +108,14 @@ void PlanDynamicRendering(InstanceData* inst, VkPhysicalDevice physicalDevice, V
     Log("depth resolve: enabling dynamic rendering (%s)", api >= VK_API_VERSION_1_3 ? "core 1.3" : "VK_KHR_dynamic_rendering");
 }
 
-bool CanResolveDepth(DeviceData* dev) {
+bool CanResolveDepth(DeviceData* dev)
+{
     return dev && dev->dynamicRendering && (dev->dispatch.CmdBeginRendering || dev->dispatch.CmdBeginRenderingKHR) &&
-           (dev->dispatch.CmdEndRendering || dev->dispatch.CmdEndRenderingKHR);
+        (dev->dispatch.CmdEndRendering || dev->dispatch.CmdEndRenderingKHR);
 }
 
-bool CreateDepthResolveViews(DeviceData* dev, const PendingImageCopy& p, VkImageView* srcView, VkImageView* dstView) {
+bool CreateDepthResolveViews(DeviceData* dev, const PendingImageCopy& p, VkImageView* srcView, VkImageView* dstView)
+{
     const DeviceDispatch& d = dev->dispatch;
     *srcView = *dstView = VK_NULL_HANDLE;
     const VkImageViewType type = p.range.layerCount > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
@@ -98,10 +126,12 @@ bool CreateDepthResolveViews(DeviceData* dev, const PendingImageCopy& p, VkImage
     // Both aspects of a depth-stencil format: one view serves as depth and stencil attachment.
     const VkImageAspectFlags viewAspects = FormatAspects(p.format);
     ci.subresourceRange = {viewAspects, p.range.baseMipLevel, 1, p.range.baseArrayLayer, p.range.layerCount};
-    if (d.CreateImageView(dev->device, &ci, nullptr, srcView) != VK_SUCCESS) return false;
+    if (d.CreateImageView(dev->device, &ci, nullptr, srcView) != VK_SUCCESS)
+        return false;
     ci.image = p.resolve;
     ci.subresourceRange = {viewAspects, 0, 1, 0, p.range.layerCount};
-    if (d.CreateImageView(dev->device, &ci, nullptr, dstView) != VK_SUCCESS) {
+    if (d.CreateImageView(dev->device, &ci, nullptr, dstView) != VK_SUCCESS)
+    {
         d.DestroyImageView(dev->device, *srcView, nullptr);
         *srcView = VK_NULL_HANDLE;
         return false;
@@ -109,7 +139,8 @@ bool CreateDepthResolveViews(DeviceData* dev, const PendingImageCopy& p, VkImage
     return true;
 }
 
-void RecordDepthResolve(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy& p) {
+void RecordDepthResolve(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy& p)
+{
     const DeviceDispatch& d = dev->dispatch;
     const VkImageAspectFlags aspects = FormatAspects(p.format);
 
@@ -129,8 +160,8 @@ void RecordDepthResolve(DeviceData* dev, VkCommandBuffer cb, const PendingImageC
     target.subresourceRange = {aspects, 0, 1, 0, p.range.layerCount};
     VkImageMemoryBarrier both[2] = {toAttach, target};
     d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
-                         VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 0,
-                         0, nullptr, 0, nullptr, 2, both);
+        VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT, 0,
+        0, nullptr, 0, nullptr, 2, both);
 
     // Both aspects resolve with the same mode, so a device without independentResolve is fine.
     VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -145,10 +176,18 @@ void RecordDepthResolve(DeviceData* dev, VkCommandBuffer cb, const PendingImageC
     VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
     ri.renderArea = {{0, 0}, {p.extent.width, p.extent.height}};
     ri.layerCount = p.range.layerCount;
-    if (formatAspects & VK_IMAGE_ASPECT_DEPTH_BIT) ri.pDepthAttachment = &attachment;
-    if (formatAspects & VK_IMAGE_ASPECT_STENCIL_BIT) ri.pStencilAttachment = &attachment;
-    if (d.CmdBeginRendering) d.CmdBeginRendering(cb, &ri); else d.CmdBeginRenderingKHR(cb, &ri);
-    if (d.CmdEndRendering) d.CmdEndRendering(cb); else d.CmdEndRenderingKHR(cb);
+    if (formatAspects & VK_IMAGE_ASPECT_DEPTH_BIT)
+        ri.pDepthAttachment = &attachment;
+    if (formatAspects & VK_IMAGE_ASPECT_STENCIL_BIT)
+        ri.pStencilAttachment = &attachment;
+    if (d.CmdBeginRendering)
+        d.CmdBeginRendering(cb, &ri);
+    else
+        d.CmdBeginRenderingKHR(cb, &ri);
+    if (d.CmdEndRendering)
+        d.CmdEndRendering(cb);
+    else
+        d.CmdEndRenderingKHR(cb);
 
     // The resolved image goes to the copy; the multisampled one back to the application's layout.
     VkImageMemoryBarrier resolved = target;
@@ -163,8 +202,8 @@ void RecordDepthResolve(DeviceData* dev, VkCommandBuffer cb, const PendingImageC
     back.newLayout = p.layout;
     VkImageMemoryBarrier after[2] = {resolved, back};
     d.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT | VK_PIPELINE_STAGE_LATE_FRAGMENT_TESTS_BIT,
-                         VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
-                         0, nullptr, 0, nullptr, 2, after);
+        VK_PIPELINE_STAGE_TRANSFER_BIT | VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
+        0, nullptr, 0, nullptr, 2, after);
 }
 
 }  // namespace vkinsp

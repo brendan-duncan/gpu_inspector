@@ -13,9 +13,11 @@
 
 #include <string>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-class ValidationLog {
+class ValidationLog
+{
 public:
     static ValidationLog& Get();
 

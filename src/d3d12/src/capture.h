@@ -25,7 +25,8 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /**
  * The Capture message's `pixelHistory`: one pixel of one render target followed through the
@@ -33,7 +34,8 @@ namespace dxinsp {
  * capture; a swap chain's back buffer (or one no longer alive) follows whichever back buffer the
  * captured frame renders into, the way a Metal capture follows the next drawable.
  */
-struct PixelHistoryRequest {
+struct PixelHistoryRequest
+{
     bool enabled = false;
     uint64_t texture = 0;
     uint32_t x = 0;
@@ -47,14 +49,16 @@ struct PixelHistoryRequest {
  * its pass and its ordinal within that pass rather than by a command index: the measurement happens
  * while the *next* frame records, whose commands are numbered again from the start.
  */
-struct DrawOverlayRequest {
+struct DrawOverlayRequest
+{
     bool enabled = false;
     uint32_t passIndex = 0;
     uint32_t drawIndex = 0;
 };
 
 /** One draw's vertex shader outputs, streamed out while the frame records (mesh_output.cpp). */
-struct MeshOutputRequest {
+struct MeshOutputRequest
+{
     bool enabled = false;
     uint32_t passIndex = 0;
     uint32_t drawIndex = 0;
@@ -62,7 +66,8 @@ struct MeshOutputRequest {
     uint32_t maxVertices = 200000;
 };
 
-struct CaptureOptions {
+struct CaptureOptions
+{
     uint32_t frameCount = 1;
     /** Frame (the present counter) to start at; UINT64_MAX = the next frame. A frame already passed captures the next one. */
     uint64_t atFrame = UINT64_MAX;
@@ -99,7 +104,8 @@ struct CaptureOptions {
     MeshOutputRequest meshOutput;
 };
 
-class CaptureManager {
+class CaptureManager
+{
 public:
     static CaptureManager& Get();
 
@@ -120,9 +126,12 @@ public:
     // --- Command lists -------------------------------------------------------------------------
 
     /** The recorder of a list being recorded, else nullptr. Cheap when nothing records: one atomic load. */
-    CommandRecorder* RecorderFor(ID3D12GraphicsCommandList* list) {
-        if (!ShouldRecord()) return nullptr;
-        if (CommandRecorder* rec = LookupRecorder(list)) return rec;
+    CommandRecorder* RecorderFor(ID3D12GraphicsCommandList* list)
+    {
+        if (!ShouldRecord())
+            return nullptr;
+        if (CommandRecorder* rec = LookupRecorder(list))
+            return rec;
         return Adopt(list);
     }
     /**
@@ -137,7 +146,7 @@ public:
     CommandRecorder* RecorderIfAny(ID3D12GraphicsCommandList* list) { return ShouldRecord() ? LookupRecorder(list) : nullptr; }
     /** Reset (or CreateCommandList without an initial close): attaches or resets the recorder when recording. */
     void OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList* list, D3D12_COMMAND_LIST_TYPE type, bool bundle,
-                     ID3D12PipelineState* initialState);
+        ID3D12PipelineState* initialState);
     /** Before Close is forwarded: closes the open passes (their read-back and timestamps go into the list) and freezes. */
     void OnBeforeClose(ID3D12GraphicsCommandList* list);
     void OnListReleased(ID3D12GraphicsCommandList* list);
@@ -207,7 +216,7 @@ public:
      * bounds it.
      */
     uint32_t QueueBufferCapture(CommandRecorder* rec, ID3D12Resource* buffer, UINT64 offset, UINT64 size, bool whole = false,
-                                bool afterSubmit = false);
+        bool afterSubmit = false);
     /** The same for a GPU virtual address range (resolved through the AddressMap); `size` 0 means to the buffer's end. */
     uint32_t QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIRTUAL_ADDRESS address, UINT64 size, bool whole = false);
     /**

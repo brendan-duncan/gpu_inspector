@@ -22,39 +22,53 @@
 #include "frame_handles.h"
 #include "vk_support.h"
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     bool batch = false;
     bool validate = false;
     bool writeImages = true;
     unsigned long long frames = 0;
     std::string dataPath;
     std::string outDir = "out";
-    for (int i = 1; i < argc; ++i) {
-        if (!std::strcmp(argv[i], "--batch")) batch = true;
-        else if (!std::strcmp(argv[i], "--validate")) validate = true;
-        else if (!std::strcmp(argv[i], "--no-vsync")) SetOutputVsync(false);
-        else if (!std::strcmp(argv[i], "--no-images")) writeImages = false;
-        else if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::strtoull(argv[++i], nullptr, 10);
-        else if (!std::strcmp(argv[i], "--data") && i + 1 < argc) dataPath = argv[++i];
-        else if (!std::strcmp(argv[i], "--out") && i + 1 < argc) outDir = argv[++i];
-        else {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!std::strcmp(argv[i], "--batch"))
+            batch = true;
+        else if (!std::strcmp(argv[i], "--validate"))
+            validate = true;
+        else if (!std::strcmp(argv[i], "--no-vsync"))
+            SetOutputVsync(false);
+        else if (!std::strcmp(argv[i], "--no-images"))
+            writeImages = false;
+        else if (!std::strcmp(argv[i], "--frames") && i + 1 < argc)
+            frames = std::strtoull(argv[++i], nullptr, 10);
+        else if (!std::strcmp(argv[i], "--data") && i + 1 < argc)
+            dataPath = argv[++i];
+        else if (!std::strcmp(argv[i], "--out") && i + 1 < argc)
+            outDir = argv[++i];
+        else
+        {
             std::fprintf(stderr, "usage: %s [--batch] [--frames <n>] [--no-vsync] [--validate] [--data <frame_data.bin>] [--out <directory>] [--no-images]\n", argv[0]);
             return 2;
         }
     }
     // The data file: as given, else in the working directory, else beside the executable.
-    if (dataPath.empty()) {
+    if (dataPath.empty())
+    {
         dataPath = "frame_data.bin";
         std::error_code ec;
-        if (!std::filesystem::exists(dataPath, ec)) dataPath = (std::filesystem::path(argv[0]).parent_path() / "frame_data.bin").string();
+        if (!std::filesystem::exists(dataPath, ec))
+            dataPath = (std::filesystem::path(argv[0]).parent_path() / "frame_data.bin").string();
     }
-    if (!LoadData(dataPath)) {
+    if (!LoadData(dataPath))
+    {
         std::fprintf(stderr, "could not read %s (--data names it)\n", dataPath.c_str());
         return 2;
     }
 
     PFN_vkGetInstanceProcAddr getInstanceProcAddr = LoadVulkanLoader();
-    if (!getInstanceProcAddr) {
+    if (!getInstanceProcAddr)
+    {
         std::fprintf(stderr, "the Vulkan loader was not found\n");
         return 2;
     }
@@ -70,24 +84,33 @@ int main(int argc, char** argv) {
 
     // The window is opened before the frame first runs: with one, the frame takes no read-backs.
     FrameOutputInfo output;
-    if (!batch) {
+    if (!batch)
+    {
         const bool named = FrameOutput(&output);
-        if (!named) std::fprintf(stderr, "the frame has no output to show\n");
-        if (!named || !OpenOutputWindow(output, "Exported frame (Vulkan)")) {
+        if (!named)
+            std::fprintf(stderr, "the frame has no output to show\n");
+        if (!named || !OpenOutputWindow(output, "Exported frame (Vulkan)"))
+        {
             std::fprintf(stderr, "running as --batch instead\n");
             batch = true;
         }
     }
 
     int code = 0;
-    if (batch) {
+    if (batch)
+    {
         Frame();
         code = ReportResults(outDir, writeImages);
-    } else {
-        for (unsigned long long shown = 0;;) {
+    }
+    else
+    {
+        for (unsigned long long shown = 0;;)
+        {
             Frame();
-            if (!PresentOutput(output)) break;
-            if (frames && ++shown >= frames) break;
+            if (!PresentOutput(output))
+                break;
+            if (frames && ++shown >= frames)
+                break;
             RestoreFrame();
         }
         code = CloseOutputWindow();

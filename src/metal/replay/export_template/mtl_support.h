@@ -32,7 +32,7 @@ id<MTLLibrary> LoadLibrary(const void* bytes, uint64_t size, NSError** error);
 
 /** Writes one mip of a texture through a staging buffer, which a private texture needs. */
 void UploadTexture(id<MTLTexture> texture, const void* data, uint64_t size, uint64_t rowBytes,
-                   uint64_t width, uint64_t height, uint64_t slice, uint64_t level);
+    uint64_t width, uint64_t height, uint64_t slice, uint64_t level);
 /** Writes a buffer's range; a private buffer goes through a staging blit. */
 void UploadBuffer(id<MTLBuffer> buffer, uint64_t offset, const void* data, uint64_t size);
 
@@ -42,8 +42,8 @@ void UploadBuffer(id<MTLBuffer> buffer, uint64_t offset, const void* data, uint6
  * MTLBlitOptionDepthFromDepthStencil for a depth aspect, MTLBlitOptionNone otherwise.
  */
 void ReadbackTexture(id<MTLCommandBuffer> commands, id<MTLTexture> texture, const char* name,
-                     uint64_t slice, uint64_t level, uint64_t width, uint64_t height, uint64_t rowBytes,
-                     uint64_t imageBytes, MTLBlitOption options, const void* captured, uint64_t capturedSize);
+    uint64_t slice, uint64_t level, uint64_t width, uint64_t height, uint64_t rowBytes,
+    uint64_t imageBytes, MTLBlitOption options, const void* captured, uint64_t capturedSize);
 
 /** Prints every comparison and writes the images to `directory`; the process exit code. */
 int ReportResults(const std::string& directory, bool writeImages);

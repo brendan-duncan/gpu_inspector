@@ -18,11 +18,13 @@
 #include <cstring>
 #include <tuple>
 
-namespace dxreplay {
+namespace dxreplay
+{
 
 using vkreplay::JValue;
 
-namespace {
+namespace
+{
 
 std::string Str(const JValue* v) { return v && v->IsString() ? std::string(v->Str()) : std::string(); }
 
@@ -33,25 +35,32 @@ constexpr uint64_t kTimestampBytes = sizeof(uint64_t);
 constexpr uint64_t kStatisticsBytes = sizeof(D3D12_QUERY_DATA_PIPELINE_STATISTICS);
 constexpr uint64_t kOcclusionBytes = sizeof(uint64_t);
 
-double Median(std::vector<double> v) {
-    if (v.empty()) return 0;
+double Median(std::vector<double> v)
+{
+    if (v.empty())
+        return 0;
     std::sort(v.begin(), v.end());
     return v.size() % 2 ? v[v.size() / 2] : (v[v.size() / 2 - 1] + v[v.size() / 2]) / 2;
 }
 
-template <typename T> void SafeRelease(T*& p) {
-    if (p) p->Release();
+template <typename T>
+void SafeRelease(T*& p)
+{
+    if (p)
+        p->Release();
     p = nullptr;
 }
 
 }  // namespace
 
-bool IsActionMethod(const std::string& m) {
+bool IsActionMethod(const std::string& m)
+{
     return m == "DrawInstanced" || m == "DrawIndexedInstanced" || m == "Dispatch" || m == "ExecuteIndirect" || m == "DispatchMesh" ||
-           m == "DispatchRays" || m == "ExecuteBundle";
+        m == "DispatchRays" || m == "ExecuteBundle";
 }
 
-struct DxReplayer::MeasureState {
+struct DxReplayer::MeasureState
+{
     // --draws
     ID3D12QueryHeap* timestamps = nullptr;
     ID3D12QueryHeap* statistics = nullptr;
@@ -61,7 +70,8 @@ struct DxReplayer::MeasureState {
     uint32_t capacity = 0;
     uint32_t slot = 0;        // the next free one, over the submission
     uint32_t listFirst = 0;   // the first the list being recorded took
-    struct Pending {
+    struct Pending
+    {
         DxDrawResult result;
         uint32_t slot = 0;
     };
@@ -76,7 +86,8 @@ struct DxReplayer::MeasureState {
     std::vector<uint32_t> ablationBase;                 // per target: its first query
     std::unordered_map<uint32_t, size_t> ablationAt;    // command -> target
     std::map<std::tuple<uint64_t, size_t, int>, ID3D12PipelineState*> pipelines;
-    struct PendingAblation {
+    struct PendingAblation
+    {
         size_t result = 0;
         uint32_t base = 0;
         std::vector<bool> issued;
@@ -86,7 +97,8 @@ struct DxReplayer::MeasureState {
     std::vector<std::pair<uint32_t, uint32_t>> ablationRanges;
 };
 
-bool DxReplayer::PrepareMeasurements() {
+bool DxReplayer::PrepareMeasurements()
+{
     _measure = new MeasureState();
     MeasureState& s = *_measure;
     auto readbackBuffer = [&](uint64_t bytes) -> ID3D12Resource* {
@@ -99,7 +111,8 @@ bool DxReplayer::PrepareMeasurements() {
         desc.SampleDesc.Count = 1;
         desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
         ID3D12Resource* buffer = nullptr;
-        if (FAILED(_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer)))) return nullptr;
+        if (FAILED(_device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&buffer))))
+            return nullptr;
         return buffer;
     };
     auto queryHeap = [&](D3D12_QUERY_HEAP_TYPE type, uint32_t count) -> ID3D12QueryHeap* {
@@ -107,26 +120,36 @@ bool DxReplayer::PrepareMeasurements() {
         desc.Type = type;
         desc.Count = count;
         ID3D12QueryHeap* heap = nullptr;
-        if (FAILED(_device->CreateQueryHeap(&desc, IID_PPV_ARGS(&heap)))) return nullptr;
+        if (FAILED(_device->CreateQueryHeap(&desc, IID_PPV_ARGS(&heap))))
+            return nullptr;
         return heap;
     };
 
-    if (_options.drawStats) {
+    if (_options.drawStats)
+    {
         // The most actions any one submission has: the slots start over with each.
         uint32_t actions = 0, inSubmission = 0;
-        if (const JValue* commands = _capture->Commands(); commands && commands->IsArray()) {
-            for (uint32_t i = 0; i < commands->count; ++i) {
+        if (const JValue* commands = _capture->Commands(); commands && commands->IsArray())
+        {
+            for (uint32_t i = 0; i < commands->count; ++i)
+            {
                 const std::string m = Str(commands->items[i].Get("method"));
-                if (m == "ExecuteCommandLists") inSubmission = 0;
-                else if (IsActionMethod(m) && !commands->items[i].Get("secondary")) actions = std::max(actions, ++inSubmission);
+                if (m == "ExecuteCommandLists")
+                    inSubmission = 0;
+                else if (IsActionMethod(m) && !commands->items[i].Get("secondary"))
+                    actions = std::max(actions, ++inSubmission);
             }
         }
-        if (!actions) {
+        if (!actions)
+        {
             _report->drawStatsNote = "the capture has no draws or dispatches to measure";
-        } else {
-            if (actions > kMaxMeasuredActions) {
+        }
+        else
+        {
+            if (actions > kMaxMeasuredActions)
+            {
                 _report->drawStatsNote = "a submission has " + std::to_string(actions) + " draws and dispatches; the first " +
-                                         std::to_string(kMaxMeasuredActions) + " of each are measured";
+                    std::to_string(kMaxMeasuredActions) + " of each are measured";
                 actions = kMaxMeasuredActions;
             }
             s.capacity = actions;
@@ -135,25 +158,31 @@ bool DxReplayer::PrepareMeasurements() {
             s.occlusion = queryHeap(D3D12_QUERY_HEAP_TYPE_OCCLUSION, actions);
             s.readback = readbackBuffer((uint64_t)actions * (2 * kTimestampBytes + kStatisticsBytes + kOcclusionBytes));
             s.flags.assign(actions, 0);
-            if (!s.readback || (!s.timestamps && !s.statistics && !s.occlusion)) {
+            if (!s.readback || (!s.timestamps && !s.statistics && !s.occlusion))
+            {
                 _report->drawStatsNote = "this device made none of the query heaps the measurement needs";
                 s.capacity = 0;
-            } else if (!s.timestamps) {
+            }
+            else if (!s.timestamps)
+            {
                 _report->drawStatsNote = "this device made no timestamp query heap, so the draws carry counters only";
             }
         }
     }
 
-    if (_options.ablation.enabled) {
+    if (_options.ablation.enabled)
+    {
         const uint32_t rounds = std::max(1u, _options.ablation.rounds) + 1;
         uint32_t queries = 0;
-        for (size_t t = 0; t < _options.ablation.targets.size(); ++t) {
+        for (size_t t = 0; t < _options.ablation.targets.size(); ++t)
+        {
             const auto& target = _options.ablation.targets[t];
             s.ablationBase.push_back(queries);
             s.ablationAt[target.command] = t;
             queries += rounds * ((uint32_t)target.variants.size() + 1) * 2;
         }
-        if (queries) {
+        if (queries)
+        {
             s.ablationTimestamps = queryHeap(D3D12_QUERY_HEAP_TYPE_TIMESTAMP, queries);
             s.ablationReadback = readbackBuffer((uint64_t)queries * kTimestampBytes);
         }
@@ -161,10 +190,13 @@ bool DxReplayer::PrepareMeasurements() {
     return true;
 }
 
-void DxReplayer::DestroyMeasurements() {
-    if (!_measure) return;
+void DxReplayer::DestroyMeasurements()
+{
+    if (!_measure)
+        return;
     MeasureState& s = *_measure;
-    for (auto& [key, pipeline] : s.pipelines) SafeRelease(pipeline);
+    for (auto& [key, pipeline] : s.pipelines)
+        SafeRelease(pipeline);
     SafeRelease(s.timestamps);
     SafeRelease(s.statistics);
     SafeRelease(s.occlusion);
@@ -175,18 +207,24 @@ void DxReplayer::DestroyMeasurements() {
     _measure = nullptr;
 }
 
-void DxReplayer::BeginListMeasurements() {
-    if (!_measure) return;
+void DxReplayer::BeginListMeasurements()
+{
+    if (!_measure)
+        return;
     _measure->listFirst = _measure->slot;
     _measure->ablationRanges.clear();
 }
 
-int DxReplayer::BeginDrawQuery(ID3D12GraphicsCommandList* list, uint32_t command, uint32_t frame, uint64_t listId, uint32_t passIndex) {
-    if (!_measure || !_measure->capacity) return -1;
+int DxReplayer::BeginDrawQuery(ID3D12GraphicsCommandList* list, uint32_t command, uint32_t frame, uint64_t listId, uint32_t passIndex)
+{
+    if (!_measure || !_measure->capacity)
+        return -1;
     MeasureState& s = *_measure;
     const D3D12_COMMAND_LIST_TYPE type = list->GetType();
-    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE) return -1;
-    if (s.slot >= s.capacity) return -1;
+    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        return -1;
+    if (s.slot >= s.capacity)
+        return -1;
     const uint32_t slot = s.slot++;
     MeasureState::Pending p;
     p.slot = slot;
@@ -201,37 +239,56 @@ int DxReplayer::BeginDrawQuery(ID3D12GraphicsCommandList* list, uint32_t command
     p.result.counted = graphics && s.statistics != nullptr;
     p.result.sampled = graphics && s.occlusion != nullptr && _appQueryDepth == 0;
     s.flags[slot] = (p.result.counted ? MeasureState::kCounted : 0) | (p.result.sampled ? MeasureState::kSampled : 0);
-    if (p.result.timed) list->EndQuery(s.timestamps, D3D12_QUERY_TYPE_TIMESTAMP, slot * 2);
-    if (p.result.counted) list->BeginQuery(s.statistics, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
-    if (p.result.sampled) list->BeginQuery(s.occlusion, D3D12_QUERY_TYPE_OCCLUSION, slot);
+    if (p.result.timed)
+        list->EndQuery(s.timestamps, D3D12_QUERY_TYPE_TIMESTAMP, slot * 2);
+    if (p.result.counted)
+        list->BeginQuery(s.statistics, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
+    if (p.result.sampled)
+        list->BeginQuery(s.occlusion, D3D12_QUERY_TYPE_OCCLUSION, slot);
     s.pending.push_back(p);
     return (int)s.pending.size() - 1;
 }
 
-void DxReplayer::EndDrawQuery(ID3D12GraphicsCommandList* list, int pending) {
-    if (!_measure || pending < 0 || (size_t)pending >= _measure->pending.size()) return;
+void DxReplayer::EndDrawQuery(ID3D12GraphicsCommandList* list, int pending)
+{
+    if (!_measure || pending < 0 || (size_t)pending >= _measure->pending.size())
+        return;
     MeasureState& s = *_measure;
     const MeasureState::Pending& p = s.pending[(size_t)pending];
-    if (p.result.sampled) list->EndQuery(s.occlusion, D3D12_QUERY_TYPE_OCCLUSION, p.slot);
-    if (p.result.counted) list->EndQuery(s.statistics, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, p.slot);
-    if (p.result.timed) list->EndQuery(s.timestamps, D3D12_QUERY_TYPE_TIMESTAMP, p.slot * 2 + 1);
+    if (p.result.sampled)
+        list->EndQuery(s.occlusion, D3D12_QUERY_TYPE_OCCLUSION, p.slot);
+    if (p.result.counted)
+        list->EndQuery(s.statistics, D3D12_QUERY_TYPE_PIPELINE_STATISTICS, p.slot);
+    if (p.result.timed)
+        list->EndQuery(s.timestamps, D3D12_QUERY_TYPE_TIMESTAMP, p.slot * 2 + 1);
 }
 
-void DxReplayer::ResolveListMeasurements(ID3D12GraphicsCommandList* list) {
-    if (!_measure) return;
+void DxReplayer::ResolveListMeasurements(ID3D12GraphicsCommandList* list)
+{
+    if (!_measure)
+        return;
     MeasureState& s = *_measure;
     const uint32_t first = s.listFirst, count = s.slot - s.listFirst;
-    if (count) {
+    if (count)
+    {
         const uint64_t statisticsBase = (uint64_t)s.capacity * 2 * kTimestampBytes;
         const uint64_t occlusionBase = statisticsBase + (uint64_t)s.capacity * kStatisticsBytes;
-        if (s.timestamps) list->ResolveQueryData(s.timestamps, D3D12_QUERY_TYPE_TIMESTAMP, first * 2, count * 2, s.readback, (uint64_t)first * 2 * kTimestampBytes);
+        if (s.timestamps)
+            list->ResolveQueryData(s.timestamps, D3D12_QUERY_TYPE_TIMESTAMP, first * 2, count * 2, s.readback, (uint64_t)first * 2 * kTimestampBytes);
         // A query that was never begun may not be resolved, so these go by runs of the slots that began one.
         auto runs = [&](uint8_t bit, ID3D12QueryHeap* heap, D3D12_QUERY_TYPE type, uint64_t base, uint64_t bytes) {
-            if (!heap) return;
-            for (uint32_t i = first; i < first + count;) {
-                if (!(s.flags[i] & bit)) { ++i; continue; }
+            if (!heap)
+                return;
+            for (uint32_t i = first; i < first + count;)
+            {
+                if (!(s.flags[i] & bit))
+                {
+                    ++i;
+                    continue;
+                }
                 uint32_t end = i;
-                while (end + 1 < first + count && (s.flags[end + 1] & bit)) ++end;
+                while (end + 1 < first + count && (s.flags[end + 1] & bit))
+                    ++end;
                 list->ResolveQueryData(heap, type, i, end - i + 1, s.readback, base + (uint64_t)i * bytes);
                 i = end + 1;
             }
@@ -244,30 +301,40 @@ void DxReplayer::ResolveListMeasurements(ID3D12GraphicsCommandList* list) {
     s.ablationRanges.clear();
 }
 
-void DxReplayer::CompleteMeasurements(ID3D12CommandQueue* queue, bool ran) {
-    if (!_measure) return;
+void DxReplayer::CompleteMeasurements(ID3D12CommandQueue* queue, bool ran)
+{
+    if (!_measure)
+        return;
     MeasureState& s = *_measure;
     UINT64 frequency = 0;
-    if (FAILED(queue->GetTimestampFrequency(&frequency))) frequency = 0;
+    if (FAILED(queue->GetTimestampFrequency(&frequency)))
+        frequency = 0;
     const double msPerTick = frequency ? 1000.0 / (double)frequency : 0;
 
-    if (!s.pending.empty() && ran && s.readback) {
+    if (!s.pending.empty() && ran && s.readback)
+    {
         void* mapped = nullptr;
         const D3D12_RANGE read{0, (SIZE_T)((uint64_t)s.capacity * (2 * kTimestampBytes + kStatisticsBytes + kOcclusionBytes))};
-        if (SUCCEEDED(s.readback->Map(0, &read, &mapped)) && mapped) {
+        if (SUCCEEDED(s.readback->Map(0, &read, &mapped)) && mapped)
+        {
             const auto* bytes = static_cast<const uint8_t*>(mapped);
             const uint64_t statisticsBase = (uint64_t)s.capacity * 2 * kTimestampBytes;
             const uint64_t occlusionBase = statisticsBase + (uint64_t)s.capacity * kStatisticsBytes;
-            for (MeasureState::Pending& p : s.pending) {
+            for (MeasureState::Pending& p : s.pending)
+            {
                 DxDrawResult d = p.result;
-                if (d.timed && msPerTick > 0) {
+                if (d.timed && msPerTick > 0)
+                {
                     uint64_t stamps[2];
                     std::memcpy(stamps, bytes + (uint64_t)p.slot * 2 * kTimestampBytes, sizeof(stamps));
                     d.durationMs = stamps[1] > stamps[0] ? (double)(stamps[1] - stamps[0]) * msPerTick : 0;
-                } else {
+                }
+                else
+                {
                     d.timed = false;
                 }
-                if (d.counted) {
+                if (d.counted)
+                {
                     D3D12_QUERY_DATA_PIPELINE_STATISTICS stats{};
                     std::memcpy(&stats, bytes + statisticsBase + (uint64_t)p.slot * kStatisticsBytes, sizeof(stats));
                     d.primitives = stats.IAPrimitives;
@@ -275,7 +342,8 @@ void DxReplayer::CompleteMeasurements(ID3D12CommandQueue* queue, bool ran) {
                     d.fragmentInvocations = stats.PSInvocations;
                     d.computeInvocations = stats.CSInvocations;
                 }
-                if (d.sampled) std::memcpy(&d.samplesPassed, bytes + occlusionBase + (uint64_t)p.slot * kOcclusionBytes, sizeof(uint64_t));
+                if (d.sampled)
+                    std::memcpy(&d.samplesPassed, bytes + occlusionBase + (uint64_t)p.slot * kOcclusionBytes, sizeof(uint64_t));
                 _report->draws.push_back(d);
             }
             const D3D12_RANGE none{0, 0};
@@ -286,10 +354,12 @@ void DxReplayer::CompleteMeasurements(ID3D12CommandQueue* queue, bool ran) {
     s.slot = 0;
     std::fill(s.flags.begin(), s.flags.end(), (uint8_t)0);
 
-    for (MeasureState::PendingAblation& p : s.pendingAblations) {
+    for (MeasureState::PendingAblation& p : s.pendingAblations)
+    {
         DxAblationResult& r = _report->ablations[p.result];
         void* mapped = nullptr;
-        if (!ran || msPerTick <= 0 || !s.ablationReadback || FAILED(s.ablationReadback->Map(0, nullptr, &mapped)) || !mapped) {
+        if (!ran || msPerTick <= 0 || !s.ablationReadback || FAILED(s.ablationReadback->Map(0, nullptr, &mapped)) || !mapped)
+        {
             r.note = !ran ? "the submission holding the command did not run" : "the queue reports no timestamp frequency";
             continue;
         }
@@ -297,9 +367,12 @@ void DxReplayer::CompleteMeasurements(ID3D12CommandQueue* queue, bool ran) {
         const size_t count = r.variants.size() + 1;
         const uint32_t rounds = r.rounds + 1;
         std::vector<std::vector<double>> samples(count);
-        for (uint32_t round = 1; round < rounds; ++round) {   // the first round only warms up
-            for (size_t v = 0; v < count; ++v) {
-                if (!p.issued[round * count + v]) continue;
+        for (uint32_t round = 1; round < rounds; ++round)
+        {   // the first round only warms up
+            for (size_t v = 0; v < count; ++v)
+            {
+                if (!p.issued[round * count + v])
+                    continue;
                 const uint32_t query = p.base + (uint32_t)((round * count + v) * 2);
                 if (stamps[query + 1] >= stamps[query])
                     samples[v].push_back((double)(stamps[query + 1] - stamps[query]) * msPerTick / std::max(1u, r.repeat));
@@ -313,7 +386,8 @@ void DxReplayer::CompleteMeasurements(ID3D12CommandQueue* queue, bool ran) {
             timing.ms = Median(v);
         };
         fill(r.baseline, samples[0]);
-        for (size_t v = 1; v < count; ++v) fill(r.variants[v - 1], samples[v]);
+        for (size_t v = 1; v < count; ++v)
+            fill(r.variants[v - 1], samples[v]);
     }
     s.pendingAblations.clear();
 }
@@ -337,15 +411,18 @@ void DxReplayer::CompleteMeasurements(ID3D12CommandQueue* queue, bool ran) {
 // came just before), but that is the same for every pipeline of a round, which is why the baseline
 // is issued in each round and a variant's cost is the difference of medians.
 
-ID3D12PipelineState* DxReplayer::AblationPipeline(uint64_t pipelineId, size_t target, int variant) {
+ID3D12PipelineState* DxReplayer::AblationPipeline(uint64_t pipelineId, size_t target, int variant)
+{
     MeasureState& s = *_measure;
     const auto key = std::make_tuple(pipelineId, target, variant);
-    if (auto it = s.pipelines.find(key); it != s.pipelines.end()) return it->second;
+    if (auto it = s.pipelines.find(key); it != s.pipelines.end())
+        return it->second;
     s.pipelines[key] = nullptr;   // a copy that cannot be made is not tried again
     const JValue* object = _capture->Object(pipelineId);
     const JValue* args = object ? object->Get("args") : nullptr;
     const JValue* json = args ? args->Get("pDesc") : nullptr;
-    if (!object || !json || json->IsNull()) return nullptr;
+    if (!object || !json || json->IsNull())
+        return nullptr;
     const std::string cmd = Str(object->Get("cmd"));
     const bool stream = cmd == "CreatePipelineState" || cmd == "LoadPipeline";
     const bool compute = cmd == "CreateComputePipelineState" || cmd == "LoadComputePipeline" || (stream && json->Get("CS") && !json->Get("CS")->IsNull());
@@ -358,21 +435,28 @@ ID3D12PipelineState* DxReplayer::AblationPipeline(uint64_t pipelineId, size_t ta
     const size_t unresolved = _env.unresolved;
     const size_t problems = _env.problems.size();
     ID3D12PipelineState* pipeline = nullptr;
-    if (compute) {
+    if (compute)
+    {
         D3D12_COMPUTE_PIPELINE_STATE_DESC desc{};
         DecodeStruct(_env, *args, "pDesc", desc);
         desc.CachedPSO = {};
-        if (_env.unresolved == unresolved) _device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline));
-    } else {
+        if (_env.unresolved == unresolved)
+            _device->CreateComputePipelineState(&desc, IID_PPV_ARGS(&pipeline));
+    }
+    else
+    {
         D3D12_GRAPHICS_PIPELINE_STATE_DESC desc{};
         DecodeStruct(_env, *args, "pDesc", desc);
-        if (desc.SampleDesc.Count == 0) desc.SampleDesc.Count = 1;
-        if (stream && !json->Get("SampleMask")) desc.SampleMask = UINT_MAX;
+        if (desc.SampleDesc.Count == 0)
+            desc.SampleDesc.Count = 1;
+        if (stream && !json->Get("SampleMask"))
+            desc.SampleMask = UINT_MAX;
         desc.CachedPSO = {};
         // No depth or stencil written: every issue meets the depth the draw itself meets.
         desc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
         desc.DepthStencilState.StencilWriteMask = 0;
-        if (_env.unresolved == unresolved) _device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline));
+        if (_env.unresolved == unresolved)
+            _device->CreateGraphicsPipelineState(&desc, IID_PPV_ARGS(&pipeline));
     }
     _currentObject = nullptr;
     _overrideStage.clear();
@@ -384,11 +468,14 @@ ID3D12PipelineState* DxReplayer::AblationPipeline(uint64_t pipelineId, size_t ta
 }
 
 void DxReplayer::IssueAblation(uint32_t index, const std::string& method, const JValue& command, const JValue* args,
-                               ID3D12GraphicsCommandList* list, uint64_t listId, uint32_t frame, uint32_t passIndex) {
-    if (!_measure) return;
+    ID3D12GraphicsCommandList* list, uint64_t listId, uint32_t frame, uint32_t passIndex)
+{
+    if (!_measure)
+        return;
     MeasureState& s = *_measure;
     auto found = s.ablationAt.find(index);
-    if (found == s.ablationAt.end()) return;
+    if (found == s.ablationAt.end())
+        return;
     const size_t t = found->second;
     const auto& target = _options.ablation.targets[t];
     DxAblationResult result;
@@ -400,27 +487,35 @@ void DxReplayer::IssueAblation(uint32_t index, const std::string& method, const 
     result.rounds = std::max(1u, _options.ablation.rounds);
     result.repeat = std::max(1u, target.repeat);
     result.baseline.name = "baseline";
-    for (const auto& v : target.variants) result.variants.push_back({v.name});
+    for (const auto& v : target.variants)
+        result.variants.push_back({v.name});
     result.pipeline = _boundPipeline;
     auto fail = [&](std::string why) {
         result.note = std::move(why);
         _report->ablations.push_back(std::move(result));
     };
     const bool action = method == "DrawInstanced" || method == "DrawIndexedInstanced" || method == "Dispatch" || method == "ExecuteIndirect" || method == "DispatchMesh";
-    if (!s.ablationTimestamps || !s.ablationReadback) return fail("this device made no timestamp query heap");
-    if (!action) return fail(method + " is not a draw or a dispatch the replay can issue again");
-    if (!result.pipeline) return fail("no pipeline is set at the command");
+    if (!s.ablationTimestamps || !s.ablationReadback)
+        return fail("this device made no timestamp query heap");
+    if (!action)
+        return fail(method + " is not a draw or a dispatch the replay can issue again");
+    if (!result.pipeline)
+        return fail("no pipeline is set at the command");
     const D3D12_COMMAND_LIST_TYPE type = list->GetType();
-    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE) return fail("the command is in a list that cannot write timestamps");
+    if (type != D3D12_COMMAND_LIST_TYPE_DIRECT && type != D3D12_COMMAND_LIST_TYPE_COMPUTE)
+        return fail("the command is in a list that cannot write timestamps");
 
     // Pipelines: [0] the baseline, then one per variant.
     const size_t count = target.variants.size() + 1;
     std::vector<ID3D12PipelineState*> pipelines(count, nullptr);
     pipelines[0] = AblationPipeline(result.pipeline, t, -1);
-    if (!pipelines[0]) return fail("the pipeline could not be made again (the capture has no description of it, or the copy was refused)");
-    for (size_t v = 1; v < count; ++v) {
+    if (!pipelines[0])
+        return fail("the pipeline could not be made again (the capture has no description of it, or the copy was refused)");
+    for (size_t v = 1; v < count; ++v)
+    {
         pipelines[v] = AblationPipeline(result.pipeline, t, (int)v - 1);
-        if (!pipelines[v]) result.variants[v - 1].note = "the variant's pipeline could not be created";
+        if (!pipelines[v])
+            result.variants[v - 1].note = "the variant's pipeline could not be created";
     }
 
     const uint32_t rounds = result.rounds + 1;
@@ -429,29 +524,36 @@ void DxReplayer::IssueAblation(uint32_t index, const std::string& method, const 
     pending.base = s.ablationBase[t];
     pending.issued.assign(rounds * count, false);
     const size_t problems = _report->problems.size();
-    for (uint32_t r = 0; r < rounds; ++r) {
-        for (size_t k = 0; k < count; ++k) {
+    for (uint32_t r = 0; r < rounds; ++r)
+    {
+        for (size_t k = 0; k < count; ++k)
+        {
             const size_t v = (k + r) % count;
-            if (!pipelines[v]) continue;
+            if (!pipelines[v])
+                continue;
             const uint32_t query = pending.base + (uint32_t)((r * count + v) * 2);
             list->SetPipelineState(pipelines[v]);
             // Once untimed: what a driver does at the first draw after a pipeline change stays out of the span.
             IssueCommand(index, method, command, args, list, listId);
             list->EndQuery(s.ablationTimestamps, D3D12_QUERY_TYPE_TIMESTAMP, query);
-            for (uint32_t n = 0; n < result.repeat; ++n) IssueCommand(index, method, command, args, list, listId);
+            for (uint32_t n = 0; n < result.repeat; ++n)
+                IssueCommand(index, method, command, args, list, listId);
             list->EndQuery(s.ablationTimestamps, D3D12_QUERY_TYPE_TIMESTAMP, query + 1);
             pending.issued[r * count + v] = true;
             // Only what was written is resolved: a variant whose pipeline was refused leaves its
             // pair unwritten, and resolving a query that never ended is an error.
-            if (!s.ablationRanges.empty() && s.ablationRanges.back().first + s.ablationRanges.back().second == query) s.ablationRanges.back().second += 2;
-            else s.ablationRanges.emplace_back(query, 2u);
+            if (!s.ablationRanges.empty() && s.ablationRanges.back().first + s.ablationRanges.back().second == query)
+                s.ablationRanges.back().second += 2;
+            else
+                s.ablationRanges.emplace_back(query, 2u);
         }
     }
     // Whatever the repeats said about the command, the captured issue after this says once.
     _report->problems.resize(problems);
 
     // The list's own pipeline again.
-    if (auto own = static_cast<ID3D12PipelineState*>(Object(result.pipeline))) list->SetPipelineState(own);
+    if (auto own = static_cast<ID3D12PipelineState*>(Object(result.pipeline)))
+        list->SetPipelineState(own);
     _report->ablations.push_back(std::move(result));
     s.pendingAblations.push_back(std::move(pending));
 }

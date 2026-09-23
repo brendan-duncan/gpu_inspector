@@ -7,13 +7,17 @@
 #include "common.h"
 #include "transport.h"
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-namespace {
+namespace
+{
 
 /** The runtime's names for the operations it records, indexed by D3D12_AUTO_BREADCRUMB_OP. */
-const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
-    switch (op) {
+const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op)
+{
+    switch (op)
+    {
         case D3D12_AUTO_BREADCRUMB_OP_SETMARKER: return "SetMarker";
         case D3D12_AUTO_BREADCRUMB_OP_BEGINEVENT: return "BeginEvent";
         case D3D12_AUTO_BREADCRUMB_OP_ENDEVENT: return "EndEvent";
@@ -43,8 +47,10 @@ const char* BreadcrumbOpName(D3D12_AUTO_BREADCRUMB_OP op) {
 }
 
 /** What a resource near a page fault was: still live, recently freed, or never allocated. */
-const char* AllocationTypeName(D3D12_DRED_ALLOCATION_TYPE type) {
-    switch (type) {
+const char* AllocationTypeName(D3D12_DRED_ALLOCATION_TYPE type)
+{
+    switch (type)
+    {
         case D3D12_DRED_ALLOCATION_TYPE_COMMAND_QUEUE: return "command queue";
         case D3D12_DRED_ALLOCATION_TYPE_COMMAND_ALLOCATOR: return "command allocator";
         case D3D12_DRED_ALLOCATION_TYPE_PIPELINE_STATE: return "pipeline state";
@@ -80,8 +86,10 @@ std::string NameOf(const wchar_t* text) { return text && *text ? Narrow(text) : 
  * that ran too long is the application's to fix, a driver fault is not — and a bare hex code says
  * none of it.
  */
-std::string RemovalReason(HRESULT hr) {
-    switch (hr) {
+std::string RemovalReason(HRESULT hr)
+{
+    switch (hr)
+    {
         case DXGI_ERROR_DEVICE_HUNG:
             return "the GPU stopped making progress on this application's work (DXGI_ERROR_DEVICE_HUNG), "
                    "usually a shader that does not terminate or a draw too large to finish in the time Windows allows";
@@ -103,24 +111,29 @@ std::atomic<bool> g_reported{false};
 
 } // namespace
 
-bool IsDeviceRemoved(HRESULT hr) {
-    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG
-        || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
+bool IsDeviceRemoved(HRESULT hr)
+{
+    return hr == DXGI_ERROR_DEVICE_REMOVED || hr == DXGI_ERROR_DEVICE_RESET || hr == DXGI_ERROR_DEVICE_HUNG || hr == DXGI_ERROR_DRIVER_INTERNAL_ERROR;
 }
 
-void EnableDeviceRemovedData() {
-    if (ConfigFlag("DXINSP_NO_DRED")) return;
+void EnableDeviceRemovedData()
+{
+    if (ConfigFlag("DXINSP_NO_DRED"))
+        return;
     static std::once_flag once;
     std::call_once(once, [] {
         HMODULE d3d12 = GetModuleHandleW(L"d3d12.dll");
-        if (!d3d12) d3d12 = LoadLibraryW(L"d3d12.dll");
+        if (!d3d12)
+            d3d12 = LoadLibraryW(L"d3d12.dll");
         auto getDebugInterface = d3d12 ? reinterpret_cast<PFN_D3D12_GET_DEBUG_INTERFACE>(GetProcAddress(d3d12, "D3D12GetDebugInterface")) : nullptr;
-        if (!getDebugInterface) return;
+        if (!getDebugInterface)
+            return;
         ScopedInternal internal;
         // DRED 1.1 carries the breadcrumbs and the page fault; the runtime only keeps them when
         // asked before the device exists, which is why this cannot be done later.
         ComPtr<ID3D12DeviceRemovedExtendedDataSettings> settings;
-        if (FAILED(getDebugInterface(IID_PPV_ARGS(settings.put()))) || !settings) {
+        if (FAILED(getDebugInterface(IID_PPV_ARGS(settings.put()))) || !settings)
+        {
             Log("device-removed data: this runtime has no DRED settings interface");
             return;
         }
@@ -130,49 +143,66 @@ void EnableDeviceRemovedData() {
     });
 }
 
-bool SimulateDeviceRemoved() {
+bool SimulateDeviceRemoved()
+{
     static const int at = [] {
         const std::string v = ConfigValue("DXINSP_SIMULATE_DEVICE_REMOVED");
-        if (v.empty() || v == "0") return 0;
+        if (v.empty() || v == "0")
+            return 0;
         const int n = atoi(v.c_str());
         return n > 0 ? n : 1;
     }();
-    if (!at) return false;
+    if (!at)
+        return false;
     static std::atomic<int> presents{0};
     return presents.fetch_add(1) + 1 == at;
 }
 
-void OnDeviceRemoved(ID3D12Device* device, const char* call) {
-    if (g_reported.exchange(true)) return;
+void OnDeviceRemoved(ID3D12Device* device, const char* call)
+{
+    if (g_reported.exchange(true))
+        return;
     ScopedInternal internal;
 
     // The reason is the device's own, and is more specific than the call's result. It is S_OK when
     // the device is in fact fine, which is the case under DXINSP_SIMULATE_DEVICE_REMOVED; then there
     // is nothing to report but the breadcrumbs.
     std::string reason;
-    if (device) {
+    if (device)
+    {
         const HRESULT why = device->GetDeviceRemovedReason();
-        if (FAILED(why)) reason = RemovalReason(why);
+        if (FAILED(why))
+            reason = RemovalReason(why);
     }
 
     ComPtr<ID3D12DeviceRemovedExtendedData1> dred;
-    if (device) device->QueryInterface(IID_PPV_ARGS(dred.put()));
+    if (device)
+        device->QueryInterface(IID_PPV_ARGS(dred.put()));
 
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("DeviceRemoved");
-    w.Key("call"); w.String(call);
-    if (!reason.empty()) { w.Key("reason"); w.String(reason); }
+    w.Key("action");
+    w.String("DeviceRemoved");
+    w.Key("call");
+    w.String(call);
+    if (!reason.empty())
+    {
+        w.Key("reason");
+        w.String(reason);
+    }
 
     // Every message opens the same way, with the reason where the device gave one.
     const std::string lead = reason.empty() ? std::string("The device was lost. ")
                                             : "The device was lost: " + reason + ". ";
 
     std::string message;
-    if (!dred) {
-        w.Key("breadcrumbs"); w.Boolean(false);
+    if (!dred)
+    {
+        w.Key("breadcrumbs");
+        w.Boolean(false);
         message = lead + "The command it was running is not known: this runtime has no DRED, or it was turned off.";
-        w.Key("message"); w.String(message);
+        w.Key("message");
+        w.String(message);
         w.EndObject();
         LogAlways("device removed from %s. %s", call, message.c_str());
         Transport::Get().SendJson(std::move(w.str()));
@@ -189,32 +219,42 @@ void OnDeviceRemoved(ID3D12Device* device, const char* call) {
     size_t listsInFlight = 0;
     size_t nodes = 0;
     const HRESULT crumbsHr = dred->GetAutoBreadcrumbsOutput1(&crumbs);
-    w.Key("commandLists"); w.BeginArray();
-    if (SUCCEEDED(crumbsHr)) {
-        for (const D3D12_AUTO_BREADCRUMB_NODE1* node = crumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext) {
+    w.Key("commandLists");
+    w.BeginArray();
+    if (SUCCEEDED(crumbsHr))
+    {
+        for (const D3D12_AUTO_BREADCRUMB_NODE1* node = crumbs.pHeadAutoBreadcrumbNode; node; node = node->pNext)
+        {
             ++nodes;
             const uint32_t done = node->pLastBreadcrumbValue ? *node->pLastBreadcrumbValue : 0;
             const uint32_t total = node->BreadcrumbCount;
             // A list whose last completed operation is its last one finished cleanly; the rest were
             // still running when the GPU stopped, and the first of those is the suspect.
             const bool complete = done >= total;
-            if (!complete) ++listsInFlight;
+            if (!complete)
+                ++listsInFlight;
             Log("DRED node: %u/%u operations, history %s", done, total, node->pCommandHistory ? "kept" : "absent");
             const std::string listName = NameOf(node->pCommandListDebugNameW);
             const std::string queueName = NameOf(node->pCommandQueueDebugNameW);
             w.BeginObject();
-            w.Key("commandList"); w.String(listName.empty() ? "(unnamed)" : listName);
-            w.Key("commandQueue"); w.String(queueName.empty() ? "(unnamed)" : queueName);
-            w.Key("operationsCompleted"); w.Uint(done);
-            w.Key("operationsTotal"); w.Uint(total);
-            w.Key("complete"); w.Boolean(complete);
-            if (!complete && node->pCommandHistory && done < total) {
+            w.Key("commandList");
+            w.String(listName.empty() ? "(unnamed)" : listName);
+            w.Key("commandQueue");
+            w.String(queueName.empty() ? "(unnamed)" : queueName);
+            w.Key("operationsCompleted");
+            w.Uint(done);
+            w.Key("operationsTotal");
+            w.Uint(total);
+            w.Key("complete");
+            w.Boolean(complete);
+            if (!complete && node->pCommandHistory && done < total)
+            {
                 const char* op = BreadcrumbOpName(node->pCommandHistory[done]);
-                w.Key("stoppedAt"); w.String(op);
-                if (firstIncomplete.empty()) {
-                    firstIncomplete = std::string(op) + " (operation " + std::to_string(done + 1) + " of "
-                                    + std::to_string(total) + " in command list "
-                                    + (listName.empty() ? "(unnamed)" : listName) + ")";
+                w.Key("stoppedAt");
+                w.String(op);
+                if (firstIncomplete.empty())
+                {
+                    firstIncomplete = std::string(op) + " (operation " + std::to_string(done + 1) + " of " + std::to_string(total) + " in command list " + (listName.empty() ? "(unnamed)" : listName) + ")";
                 }
             }
             w.EndObject();
@@ -226,24 +266,29 @@ void OnDeviceRemoved(ID3D12Device* device, const char* call) {
     // lists what was allocated near it, which is usually the resource freed too early.
     D3D12_DRED_PAGE_FAULT_OUTPUT pageFault{};
     std::string faultText;
-    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault)) && pageFault.PageFaultVA) {
+    if (SUCCEEDED(dred->GetPageFaultAllocationOutput(&pageFault)) && pageFault.PageFaultVA)
+    {
         char va[32];
         snprintf(va, sizeof(va), "0x%llx", (unsigned long long)pageFault.PageFaultVA);
-        w.Key("pageFaultAddress"); w.String(va);
+        w.Key("pageFaultAddress");
+        w.String(va);
         faultText = std::string(" The GPU faulted on address ") + va + ".";
         auto allocations = [&](const char* key, const D3D12_DRED_ALLOCATION_NODE* head, const char* what) {
-            w.Key(key); w.BeginArray();
+            w.Key(key);
+            w.BeginArray();
             size_t n = 0;
-            for (const D3D12_DRED_ALLOCATION_NODE* node = head; node && n < 32; node = node->pNext, ++n) {
+            for (const D3D12_DRED_ALLOCATION_NODE* node = head; node && n < 32; node = node->pNext, ++n)
+            {
                 const std::string name = NameOf(node->ObjectNameW);
                 w.BeginObject();
-                w.Key("name"); w.String(name.empty() ? "(unnamed)" : name);
-                w.Key("type"); w.String(AllocationTypeName(node->AllocationType));
+                w.Key("name");
+                w.String(name.empty() ? "(unnamed)" : name);
+                w.Key("type");
+                w.String(AllocationTypeName(node->AllocationType));
                 w.EndObject();
-                if (n == 0) {
-                    faultText += std::string(" The nearest ") + what + " object is "
-                               + (name.empty() ? std::string("an unnamed ") + AllocationTypeName(node->AllocationType)
-                                               : name + " (" + AllocationTypeName(node->AllocationType) + ")") + ".";
+                if (n == 0)
+                {
+                    faultText += std::string(" The nearest ") + what + " object is " + (name.empty() ? std::string("an unnamed ") + AllocationTypeName(node->AllocationType) : name + " (" + AllocationTypeName(node->AllocationType) + ")") + ".";
                 }
             }
             w.EndArray();
@@ -253,26 +298,38 @@ void OnDeviceRemoved(ID3D12Device* device, const char* call) {
         allocations("recentFreedAllocations", pageFault.pHeadRecentFreedAllocationNode, "recently freed");
     }
 
-    w.Key("breadcrumbs"); w.Boolean(nodes > 0);
-    if (!firstIncomplete.empty()) {
-        message = lead + "The GPU was running " + firstIncomplete
-                + (listsInFlight > 1 ? " (" + std::to_string(listsInFlight) + " command lists were in flight)" : "") + ".";
-    } else if (listsInFlight) {
-        message = lead + std::to_string(listsInFlight)
-                + " command list(s) were unfinished, but the runtime kept no operation history for them.";
-    } else if (nodes) {
-        message = lead + "Every tracked command list had finished, so the cause is outside the work the runtime "
-                         "was tracking.";
-    } else if (crumbsHr == DXGI_ERROR_UNSUPPORTED) {
+    w.Key("breadcrumbs");
+    w.Boolean(nodes > 0);
+    if (!firstIncomplete.empty())
+    {
+        message = lead + "The GPU was running " + firstIncomplete + (listsInFlight > 1 ? " (" + std::to_string(listsInFlight) + " command lists were in flight)" : "") + ".";
+    }
+    else if (listsInFlight)
+    {
+        message = lead + std::to_string(listsInFlight) + " command list(s) were unfinished, but the runtime kept no operation history for them.";
+    }
+    else if (nodes)
+    {
+        message = lead +
+            "Every tracked command list had finished, so the cause is outside the work the runtime "
+            "was tracking.";
+    }
+    else if (crumbsHr == DXGI_ERROR_UNSUPPORTED)
+    {
         // The one case the user can do something about: the runtime was never asked to keep them.
-        message = lead + "The runtime kept no breadcrumbs, because device-removed data was not enabled before the "
-                         "device was created (DXINSP_NO_DRED). What the GPU was running is not known.";
-    } else {
-        message = lead + "The runtime returned no breadcrumbs (" + HrText(crumbsHr) + "), so what the GPU was "
-                         "running is not known. It keeps them only once the device has really been removed.";
+        message = lead +
+            "The runtime kept no breadcrumbs, because device-removed data was not enabled before the "
+            "device was created (DXINSP_NO_DRED). What the GPU was running is not known.";
+    }
+    else
+    {
+        message = lead + "The runtime returned no breadcrumbs (" + HrText(crumbsHr) +
+            "), so what the GPU was "
+            "running is not known. It keeps them only once the device has really been removed.";
     }
     message += faultText;
-    w.Key("message"); w.String(message);
+    w.Key("message");
+    w.String(message);
     w.EndObject();
 
     LogAlways("device removed from %s. %s", call, message.c_str());

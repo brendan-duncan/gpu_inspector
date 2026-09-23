@@ -9,7 +9,8 @@
 #include <string>
 #include <unordered_map>
 
-namespace glesinsp {
+namespace glesinsp
+{
 
 #if defined(__linux__) && !defined(__ANDROID__)
 void ResolveEglProcs();   // platform_linux.cpp
@@ -17,9 +18,11 @@ void ResolveEglProcs();   // platform_linux.cpp
 
 EglDispatch g_egl{};
 
-namespace {
+namespace
+{
 
-std::string HandleText(const void* p) {
+std::string HandleText(const void* p)
+{
     char buf[32];
     snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)(uintptr_t)p);
     return buf;
@@ -27,22 +30,30 @@ std::string HandleText(const void* p) {
 
 /** The value of `key` in an EGL_NONE-terminated attribute list, or `def`. */
 template <class T>
-T Attrib(const T* list, T key, T def) {
-    if (!list) return def;
-    for (const T* p = list; *p != (T)EGL_NONE; p += 2) {
-        if (p[0] == key) return p[1];
+T Attrib(const T* list, T key, T def)
+{
+    if (!list)
+        return def;
+    for (const T* p = list; *p != (T)EGL_NONE; p += 2)
+    {
+        if (p[0] == key)
+            return p[1];
     }
     return def;
 }
 
-void NewSurface(EGLDisplay display, EGLSurface surface, const char* cmd, const char* kind, void* window) {
-    if (!surface) return;
+void NewSurface(EGLDisplay display, EGLSurface surface, const char* cmd, const char* kind, void* window)
+{
+    if (!surface)
+        return;
     Object& o = NewObject("GLSurface", ObjType::Count, 0, cmd);
     o.handle = HandleText(surface);
     o.args.push_back({"kind", JsonString(kind)});
-    if (window) o.args.push_back({"window", JsonString(HandleText(window))});
+    if (window)
+        o.args.push_back({"window", JsonString(HandleText(window))});
     EGLint w = 0, h = 0;
-    if (g_egl.eglQuerySurface) {
+    if (g_egl.eglQuerySurface)
+    {
         g_egl.eglQuerySurface(display, surface, EGL_WIDTH, &w);
         g_egl.eglQuerySurface(display, surface, EGL_HEIGHT, &h);
         o.args.push_back({"width", JsonInt(w)});
@@ -55,12 +66,15 @@ void NewSurface(EGLDisplay display, EGLSurface surface, const char* cmd, const c
     Announce(o);
 }
 
-EGLContext EGLAPIENTRY Hook_eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share, const EGLint* attribs) {
+EGLContext EGLAPIENTRY Hook_eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share, const EGLint* attribs)
+{
     EGLContext result = g_egl.eglCreateContext(display, config, share, attribs);
-    if (!result) return result;
+    if (!result)
+        return result;
     // A desktop OpenGL context (eglBindAPI(EGL_OPENGL_API), which Linux applications use) is not
     // this library's to capture: it is left alone, and so are its calls.
-    if (g_egl.eglQueryAPI && g_egl.eglQueryAPI() != EGL_OPENGL_ES_API) return result;
+    if (g_egl.eglQueryAPI && g_egl.eglQueryAPI() != EGL_OPENGL_ES_API)
+        return result;
     // The inspector's connection comes up with the first context: a process that never makes one
     // (a Vulkan or D3D application the library went into beside the others) leaves the port alone.
     StartServer();
@@ -78,7 +92,8 @@ EGLContext EGLAPIENTRY Hook_eglCreateContext(EGLDisplay display, EGLConfig confi
     Object& o = NewObject("GLContext", ObjType::Count, 0, "eglCreateContext");
     o.handle = HandleText(result);
     o.args.push_back({"clientVersion", JsonInt(c->major)});
-    if (c->minor) o.args.push_back({"minorVersion", JsonInt(c->minor)});
+    if (c->minor)
+        o.args.push_back({"minorVersion", JsonInt(c->minor)});
     o.args.push_back({"shareContext", JsonRef(shared ? shared->id : 0, "GLContext")});
     o.args.push_back({"config", JsonString(HandleText(config))});
     c->id = o.id;
@@ -91,44 +106,57 @@ EGLContext EGLAPIENTRY Hook_eglCreateContext(EGLDisplay display, EGLConfig confi
     return result;
 }
 
-EGLBoolean EGLAPIENTRY Hook_eglDestroyContext(EGLDisplay display, EGLContext context) {
+EGLBoolean EGLAPIENTRY Hook_eglDestroyContext(EGLDisplay display, EGLContext context)
+{
     const EGLBoolean result = g_egl.eglDestroyContext(display, context);
-    if (!result) return result;
+    if (!result)
+        return result;
     uint64_t id = 0;
     {
         std::lock_guard lock(State().mutex);
         auto it = State().contexts.find(context);
-        if (it != State().contexts.end()) {
+        if (it != State().contexts.end())
+        {
             id = it->second->id;
             // Still current somewhere, it lives on until released; the library forgets it now.
-            if (CurrentKnown() == it->second.get()) SetCurrent(nullptr);
+            if (CurrentKnown() == it->second.get())
+                SetCurrent(nullptr);
             State().contexts.erase(it);
         }
     }
-    if (id) Forget(id);
+    if (id)
+        Forget(id);
     return result;
 }
 
-EGLBoolean EGLAPIENTRY Hook_eglMakeCurrent(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context) {
+EGLBoolean EGLAPIENTRY Hook_eglMakeCurrent(EGLDisplay display, EGLSurface draw, EGLSurface read, EGLContext context)
+{
     const EGLBoolean result = g_egl.eglMakeCurrent(display, draw, read, context);
-    if (!result) return result;
-    if (!context) {
+    if (!result)
+        return result;
+    if (!context)
+    {
         SetCurrent(nullptr);
         return result;
     }
     Context* c = ContextOf(context);
-    if (!c) {
+    if (!c)
+    {
         SetCurrent(nullptr);
         c = Current();   // one made before the library was in: taken on here
-    } else {
+    }
+    else
+    {
         SetCurrent(c);
     }
-    if (c) c->drawSurface = draw;
+    if (c)
+        c->drawSurface = draw;
     return result;
 }
 
 EGLBoolean Swap(EGLDisplay display, EGLSurface surface, const char* method, const EGLint* rects, EGLint n,
-                PFN_eglSwapBuffersWithDamageKHR withDamage) {
+    PFN_eglSwapBuffersWithDamageKHR withDamage)
+{
     Context* c = Current();
     BeforeSwap(c, display, surface, method);
     const EGLBoolean result = withDamage ? withDamage(display, surface, rects, n) : g_egl.eglSwapBuffers(display, surface);
@@ -136,70 +164,89 @@ EGLBoolean Swap(EGLDisplay display, EGLSurface surface, const char* method, cons
     return result;
 }
 
-EGLBoolean EGLAPIENTRY Hook_eglSwapBuffers(EGLDisplay display, EGLSurface surface) {
+EGLBoolean EGLAPIENTRY Hook_eglSwapBuffers(EGLDisplay display, EGLSurface surface)
+{
     return Swap(display, surface, "eglSwapBuffers", nullptr, 0, nullptr);
 }
 
-EGLBoolean EGLAPIENTRY Hook_eglSwapBuffersWithDamageKHR(EGLDisplay display, EGLSurface surface, const EGLint* rects, EGLint n) {
+EGLBoolean EGLAPIENTRY Hook_eglSwapBuffersWithDamageKHR(EGLDisplay display, EGLSurface surface, const EGLint* rects, EGLint n)
+{
     return Swap(display, surface, "eglSwapBuffersWithDamageKHR", rects, n, g_egl.eglSwapBuffersWithDamageKHR);
 }
 
-EGLBoolean EGLAPIENTRY Hook_eglSwapBuffersWithDamageEXT(EGLDisplay display, EGLSurface surface, const EGLint* rects, EGLint n) {
+EGLBoolean EGLAPIENTRY Hook_eglSwapBuffersWithDamageEXT(EGLDisplay display, EGLSurface surface, const EGLint* rects, EGLint n)
+{
     return Swap(display, surface, "eglSwapBuffersWithDamageEXT", rects, n, g_egl.eglSwapBuffersWithDamageEXT);
 }
 
-EGLSurface EGLAPIENTRY Hook_eglCreateWindowSurface(EGLDisplay display, EGLConfig config, EGLNativeWindowType window, const EGLint* attribs) {
+EGLSurface EGLAPIENTRY Hook_eglCreateWindowSurface(EGLDisplay display, EGLConfig config, EGLNativeWindowType window, const EGLint* attribs)
+{
     EGLSurface s = g_egl.eglCreateWindowSurface(display, config, window, attribs);
     NewSurface(display, s, "eglCreateWindowSurface", "window", window);
     return s;
 }
 
-EGLSurface EGLAPIENTRY Hook_eglCreatePlatformWindowSurface(EGLDisplay display, EGLConfig config, void* window, const EGLAttrib* attribs) {
+EGLSurface EGLAPIENTRY Hook_eglCreatePlatformWindowSurface(EGLDisplay display, EGLConfig config, void* window, const EGLAttrib* attribs)
+{
     EGLSurface s = g_egl.eglCreatePlatformWindowSurface(display, config, window, attribs);
     NewSurface(display, s, "eglCreatePlatformWindowSurface", "window", window);
     return s;
 }
 
-EGLSurface EGLAPIENTRY Hook_eglCreatePlatformWindowSurfaceEXT(EGLDisplay display, EGLConfig config, void* window, const EGLint* attribs) {
+EGLSurface EGLAPIENTRY Hook_eglCreatePlatformWindowSurfaceEXT(EGLDisplay display, EGLConfig config, void* window, const EGLint* attribs)
+{
     EGLSurface s = g_egl.eglCreatePlatformWindowSurfaceEXT(display, config, window, attribs);
     NewSurface(display, s, "eglCreatePlatformWindowSurfaceEXT", "window", window);
     return s;
 }
 
-EGLSurface EGLAPIENTRY Hook_eglCreatePbufferSurface(EGLDisplay display, EGLConfig config, const EGLint* attribs) {
+EGLSurface EGLAPIENTRY Hook_eglCreatePbufferSurface(EGLDisplay display, EGLConfig config, const EGLint* attribs)
+{
     EGLSurface s = g_egl.eglCreatePbufferSurface(display, config, attribs);
     NewSurface(display, s, "eglCreatePbufferSurface", "pbuffer", nullptr);
     return s;
 }
 
-EGLBoolean EGLAPIENTRY Hook_eglDestroySurface(EGLDisplay display, EGLSurface surface) {
+EGLBoolean EGLAPIENTRY Hook_eglDestroySurface(EGLDisplay display, EGLSurface surface)
+{
     const EGLBoolean result = g_egl.eglDestroySurface(display, surface);
-    if (!result) return result;
+    if (!result)
+        return result;
     uint64_t id = 0;
     {
         std::lock_guard lock(State().mutex);
         auto it = State().surfaces.find(surface);
-        if (it != State().surfaces.end()) {
+        if (it != State().surfaces.end())
+        {
             id = it->second;
             State().surfaces.erase(it);
         }
     }
-    if (id) Forget(id);
+    if (id)
+        Forget(id);
     return result;
 }
 
-EGLFuncPtr EGLAPIENTRY Hook_eglGetProcAddress(const char* name) {
+EGLFuncPtr EGLAPIENTRY Hook_eglGetProcAddress(const char* name)
+{
     EGLFuncPtr real = g_egl.eglGetProcAddress(name);
-    if (!real || !name) return real;
+    if (!real || !name)
+        return real;
     // Our hook stands in for the driver's entry point; the driver's is what the hook calls.
-    for (size_t i = 0; i < kHookCount; ++i) {
-        if (strcmp(kHooks[i].name, name) != 0) continue;
-        if (!*kHooks[i].real) *kHooks[i].real = (void*)real;
+    for (size_t i = 0; i < kHookCount; ++i)
+    {
+        if (strcmp(kHooks[i].name, name) != 0)
+            continue;
+        if (!*kHooks[i].real)
+            *kHooks[i].real = (void*)real;
         return (EGLFuncPtr)kHooks[i].hook;
     }
-    for (size_t i = 0; i < kEglHookCount; ++i) {
-        if (strcmp(kEglHooks[i].name, name) != 0) continue;
-        if (!*kEglHooks[i].real) *kEglHooks[i].real = (void*)real;
+    for (size_t i = 0; i < kEglHookCount; ++i)
+    {
+        if (strcmp(kEglHooks[i].name, name) != 0)
+            continue;
+        if (!*kEglHooks[i].real)
+            *kEglHooks[i].real = (void*)real;
         return (EGLFuncPtr)kEglHooks[i].hook;
     }
     return real;
@@ -234,13 +281,16 @@ const EglImport kEglImports[] = {
 };
 const size_t kEglImportCount = sizeof(kEglImports) / sizeof(kEglImports[0]);
 
-void* EglLookupProc(const char* name) {
+void* EglLookupProc(const char* name)
+{
     return g_egl.eglGetProcAddress ? (void*)g_egl.eglGetProcAddress(name) : nullptr;
 }
 
-Drawable EglDrawable(Context* c) {
+Drawable EglDrawable(Context* c)
+{
     Drawable d;
-    if (!g_egl.eglQuerySurface || !g_egl.eglGetCurrentSurface) return d;
+    if (!g_egl.eglQuerySurface || !g_egl.eglGetCurrentSurface)
+        return d;
     EGLDisplay display = g_egl.eglGetCurrentDisplay ? g_egl.eglGetCurrentDisplay() : c->display;
     EGLSurface surface = g_egl.eglGetCurrentSurface(EGL_DRAW);
     EGLint w = 0, h = 0, colorspace = 0;
@@ -274,14 +324,18 @@ GLESINSP_EXPORT EGLSurface eglCreatePlatformWindowSurfaceEXT(EGLDisplay d, EGLCo
 GLESINSP_EXPORT EGLSurface eglCreatePbufferSurface(EGLDisplay d, EGLConfig c, const EGLint* a) { return glesinsp::Hook_eglCreatePbufferSurface(d, c, a); }
 GLESINSP_EXPORT EGLBoolean eglDestroySurface(EGLDisplay d, EGLSurface s) { return glesinsp::Hook_eglDestroySurface(d, s); }
 
-namespace glesinsp {
+namespace glesinsp
+{
 #endif
 
-void* HookFor(const char* name) {
+void* HookFor(const char* name)
+{
     static const std::unordered_map<std::string, void*> hooks = [] {
         std::unordered_map<std::string, void*> m;
-        for (size_t i = 0; i < kHookCount; ++i) m[kHooks[i].name] = kHooks[i].hook;
-        for (size_t i = 0; i < kEglHookCount; ++i) m[kEglHooks[i].name] = kEglHooks[i].hook;
+        for (size_t i = 0; i < kHookCount; ++i)
+            m[kHooks[i].name] = kHooks[i].hook;
+        for (size_t i = 0; i < kEglHookCount; ++i)
+            m[kEglHooks[i].name] = kEglHooks[i].hook;
         return m;
     }();
     auto it = hooks.find(name ? name : "");

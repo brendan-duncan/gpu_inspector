@@ -23,34 +23,47 @@
 #include "frame_objects.h"
 #include "mtl_support.h"
 
-int main(int argc, const char** argv) {
-    @autoreleasepool {
+int main(int argc, const char** argv)
+{
+    @autoreleasepool
+    {
         bool batch = false;
         bool writeImages = true;
         unsigned long long frames = 0;
         std::string dataPath;
         std::string outDir = "out";
-        for (int i = 1; i < argc; ++i) {
-            if (!std::strcmp(argv[i], "--batch")) batch = true;
-            else if (!std::strcmp(argv[i], "--no-vsync")) SetOutputVsync(false);
-            else if (!std::strcmp(argv[i], "--no-images")) writeImages = false;
-            else if (!std::strcmp(argv[i], "--frames") && i + 1 < argc) frames = std::strtoull(argv[++i], nullptr, 10);
-            else if (!std::strcmp(argv[i], "--data") && i + 1 < argc) dataPath = argv[++i];
-            else if (!std::strcmp(argv[i], "--out") && i + 1 < argc) outDir = argv[++i];
-            else {
+        for (int i = 1; i < argc; ++i)
+        {
+            if (!std::strcmp(argv[i], "--batch"))
+                batch = true;
+            else if (!std::strcmp(argv[i], "--no-vsync"))
+                SetOutputVsync(false);
+            else if (!std::strcmp(argv[i], "--no-images"))
+                writeImages = false;
+            else if (!std::strcmp(argv[i], "--frames") && i + 1 < argc)
+                frames = std::strtoull(argv[++i], nullptr, 10);
+            else if (!std::strcmp(argv[i], "--data") && i + 1 < argc)
+                dataPath = argv[++i];
+            else if (!std::strcmp(argv[i], "--out") && i + 1 < argc)
+                outDir = argv[++i];
+            else
+            {
                 std::fprintf(stderr, "usage: %s [--batch] [--frames <n>] [--no-vsync] [--data <frame_data.bin>] [--out <directory>] [--no-images]\n", argv[0]);
                 return 2;
             }
         }
         // The data file: as given, else in the working directory, else beside the executable.
-        if (dataPath.empty()) {
+        if (dataPath.empty())
+        {
             dataPath = "frame_data.bin";
             std::error_code ec;
-            if (!std::filesystem::exists(dataPath, ec)) {
+            if (!std::filesystem::exists(dataPath, ec))
+            {
                 dataPath = (std::filesystem::path(argv[0]).parent_path() / "frame_data.bin").string();
             }
         }
-        if (!LoadData(dataPath)) {
+        if (!LoadData(dataPath))
+        {
             std::fprintf(stderr, "could not read %s (--data names it)\n", dataPath.c_str());
             return 2;
         }
@@ -62,21 +75,27 @@ int main(int argc, const char** argv) {
 
         // The window is opened before the frame first runs: with one, the frame takes no read-backs.
         id<MTLTexture> output = batch ? nil : FrameOutput();
-        if (!batch && !OpenOutputWindow(output, "Exported frame (Metal)")) {
+        if (!batch && !OpenOutputWindow(output, "Exported frame (Metal)"))
+        {
             std::fprintf(stderr, "running as --batch instead\n");
             batch = true;
         }
-        if (batch) {
+        if (batch)
+        {
             Frame();
             return ReportResults(outDir, writeImages);
         }
-        for (unsigned long long shown = 0;;) {
+        for (unsigned long long shown = 0;;)
+        {
             // What a frame autoreleases (its command buffers and encoders) goes with the frame.
-            @autoreleasepool {
+            @autoreleasepool
+            {
                 Frame();
-                if (!PresentOutput(output)) break;
+                if (!PresentOutput(output))
+                    break;
             }
-            if (frames && ++shown >= frames) break;
+            if (frames && ++shown >= frames)
+                break;
         }
         return CloseOutputWindow();
     }

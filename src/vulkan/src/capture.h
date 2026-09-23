@@ -19,12 +19,14 @@
 #include "command_recorder.h"
 #include "resources.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 struct ImageInfo;
 
-struct CaptureOptions {
+struct CaptureOptions
+{
     uint32_t frameCount = 1;
     // Frame to start at (the device's present counter); UINT64_MAX = the next frame. A frame
     // that has already passed captures the next one.
@@ -44,7 +46,8 @@ struct CaptureOptions {
 };
 
 // GPU timing of one pass: a timestamp query pair, read back when the capture finishes.
-struct PassTiming {
+struct PassTiming
+{
     VkDevice device = VK_NULL_HANDLE;   // whose query pools hold the results
     uint32_t frame = UINT32_MAX;
     uint64_t commandBufferId = 0;
@@ -57,12 +60,14 @@ struct PassTiming {
 };
 
 // One command buffer executed by a submit, with its frozen command list.
-struct SubmittedCommandBuffer {
+struct SubmittedCommandBuffer
+{
     uint64_t commandBufferId = 0;
     std::shared_ptr<const CommandList> commands;   // null if the buffer was recorded before capture
 };
 
-struct CaptureSubmission {
+struct CaptureSubmission
+{
     uint64_t queueId = 0;
     uint32_t frame = 0;         // frame ordinal within the capture (0-based)
     std::string method;         // vkQueueSubmit / vkQueueSubmit2 / vkQueuePresentKHR
@@ -72,7 +77,8 @@ struct CaptureSubmission {
 };
 
 // A render target captured at the end of a pass (data lands in a staging buffer).
-struct TextureCapture {
+struct TextureCapture
+{
     uint64_t imageId = 0;
     uint32_t frame = UINT32_MAX;  // frame ordinal, assigned when its command buffer is submitted
     uint64_t commandBufferId = 0;
@@ -104,7 +110,8 @@ struct TextureCapture {
 
 // A buffer range captured when it was bound (descriptor sets, vertex and index buffers,
 // indirect arguments). Referenced from the binding command by its id.
-struct BufferCapture {
+struct BufferCapture
+{
     uint32_t id = 0;
     uint64_t bufferId = 0;
     uint32_t frame = UINT32_MAX;
@@ -124,7 +131,7 @@ struct BufferCapture {
 // layers, with TRANSFER_SRC | TRANSFER_DST usage, for resolving a multisampled image before the
 // copy to host memory. Device-local memory; the caller frees both once the GPU is done.
 bool CreateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* image,
-                        VkDeviceMemory* memory);
+    VkDeviceMemory* memory);
 
 // Records the copy of one image subresource range into a staging buffer: a barrier to
 // TRANSFER_SRC, the resolve into `p.resolve` for multisampled images, the copy, and barriers back
@@ -138,14 +145,16 @@ void RecordImageCopy(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy
  * only do with queries active when the device inherits queries. `suspending` / `resuming`: dynamic
  * rendering split across command buffers, between whose parts nothing may be recorded at all.
  */
-struct PassShape {
+struct PassShape
+{
     bool multiview = false;
     bool secondaries = false;
     bool suspending = false;
     bool resuming = false;
 };
 
-class CaptureManager {
+class CaptureManager
+{
 public:
     static CaptureManager& Get();
 
@@ -174,7 +183,8 @@ public:
     CommandRecorder* RecorderFor(DeviceData* dev, VkCommandBuffer cb);
 
     /** What the last capture recorded of one command buffer, for a message that arrives after it. */
-    struct CapturedCommands {
+    struct CapturedCommands
+    {
         /** The command buffer's object id, as the capture's commands are keyed by. */
         uint64_t cmdBufferId = 0;
         std::shared_ptr<const CommandList> commands;
@@ -194,7 +204,7 @@ public:
 
     // `readBack`: command buffers of the submission whose attachments ReadBackSubmitted already read.
     void OnSubmit(DeviceData* dev, VkQueue queue, const std::string& method, std::string args, int64_t result,
-                  const std::vector<VkCommandBuffer>& commandBuffers, const std::vector<VkCommandBuffer>& readBack = {});
+        const std::vector<VkCommandBuffer>& commandBuffers, const std::vector<VkCommandBuffer>& readBack = {});
     /**
      * A command buffer recorded before the capture began, whose passes hold no read-back copies: its
      * attachments are read after it runs. The submit hooks split a submission after each such buffer
@@ -232,7 +242,7 @@ public:
     // captured (no capture in progress, buffers disabled, empty range, budget exhausted).
     // `whole`: not truncated to maxBufferSize (the source of a copy, which a replay must write whole).
     uint32_t QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer, VkDeviceSize offset,
-                                VkDeviceSize size, bool whole = false);
+        VkDeviceSize size, bool whole = false);
     // Which capture this is, counting from 1; a structure's build inputs remember the one they were
     // recorded in (ResourceRegistry::NoteStructureInputs).
     uint64_t CaptureSerial() const { return _captureSerial.load(std::memory_order_acquire); }
@@ -249,21 +259,26 @@ public:
     // ids go into `ids`, for the command's "imageData". Stencil and multisampled contents are not
     // taken (neither can be read back into something a replay could upload).
     void SnapshotImageRead(DeviceData* dev, CommandRecorder* rec, VkImage image, VkImageAspectFlags aspect, uint32_t baseMip,
-                           uint32_t mipCount, uint32_t baseLayer, uint32_t layerCount, VkImageLayout layout,
-                           std::vector<uint32_t>& ids);
+        uint32_t mipCount, uint32_t baseLayer, uint32_t layerCount, VkImageLayout layout,
+        std::vector<uint32_t>& ids);
     // A write that replaces whole subresources (a clear, a copy over the whole extent, a pass that
     // does not load and renders everywhere): a later read of them in the capture takes no copy.
     void NoteImageWrite(VkImage image, VkImageAspectFlags aspect, uint32_t baseMip, uint32_t mipCount, uint32_t baseLayer,
-                        uint32_t layerCount);
+        uint32_t layerCount);
     // A render pass attachment about to begin: a snapshot when it loads, a whole write when it
     // does not and the render area covers it.
     void OnAttachmentBegin(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageAspectFlags aspects, VkAttachmentLoadOp loadOp,
-                           VkImageLayout layout, const VkRect2D& renderArea, std::vector<uint32_t>& ids);
+        VkImageLayout layout, const VkRect2D& renderArea, std::vector<uint32_t>& ids);
 
 private:
     CaptureManager() = default;
 
-    enum class State { Idle, Armed, Capturing };
+    enum class State
+    {
+        Idle,
+        Armed,
+        Capturing
+    };
 
     void Start(DeviceData* dev);
     void Finish(DeviceData* dev);
@@ -277,7 +292,7 @@ private:
     // kind, the first layer, the layer count and the aspect); the texture capture id, of a failed
     // record when the copy cannot be made.
     uint32_t QueueImageCopy(DeviceData* dev, CommandRecorder* rec, VkImage image, const ImageInfo& img, TextureCapture tc,
-                            uint32_t mips, VkImageLayout layout);
+        uint32_t mips, VkImageLayout layout);
     // Resets a query pair and writes its begin timestamp; UINT32_MAX when not profiling.
     uint32_t BeginTimestamp(DeviceData* dev, CommandRecorder* rec);
     // Resets and begins a pipeline statistics query over a render pass; UINT32_MAX when the
@@ -292,14 +307,16 @@ private:
     uint32_t BeginOcclusion(DeviceData* dev, CommandRecorder* rec);
 
     // Staging memory for readbacks, allocated on demand during the captured frame.
-    struct StagingChunk {
+    struct StagingChunk
+    {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkDeviceSize size = 0;
         VkDeviceSize used = 0;
         void* mapped = nullptr;
     };
-    struct ResolveImage {
+    struct ResolveImage
+    {
         VkImage image = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
     };
@@ -309,7 +326,8 @@ private:
      * took part. Every device an application records on gets one, since none of these can be used
      * by another device's command buffers.
      */
-    struct DeviceCapture {
+    struct DeviceCapture
+    {
         DeviceData* dev = nullptr;
         uint64_t startFrame = 0;
         VkQueryPool queryPool = VK_NULL_HANDLE;
@@ -343,21 +361,21 @@ private:
     uint32_t FrameOf(DeviceData* dev);
     /** `originTicks`, when given, receives the device tick this device's pass starts are measured from. */
     void SendPassTimings(DeviceCapture& dc, JsonWriter& w, uint32_t& sent, uint32_t& counted, size_t& total,
-                         uint64_t* originTicks);
+        uint64_t* originTicks);
     void ReleaseDevice(DeviceCapture& dc);
     bool AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_t& chunkIndex, VkDeviceSize& offset,
-                         VkBuffer* bufferOut = nullptr);
+        VkBuffer* bufferOut = nullptr);
     // A render target's read-back: one texture per aspect (ReadBackAspects: color, or depth and
     // then stencil, each its own copy and texture entry).
     void CaptureAttachment(DeviceData* dev, CommandRecorder* rec, uint32_t attachmentIndex, VkImageView view,
-                           VkImageLayout layout, bool resolveTarget = false);
+        VkImageLayout layout, bool resolveTarget = false);
     static std::vector<VkImageAspectFlagBits> ReadBackAspects(VkImageView view);
     // The capture record and the copy for one aspect of one attachment (staging, resolve image);
     // false with the failed record already listed. The copy is recorded by the caller into its
     // command buffer.
     bool PrepareAttachment(DeviceData* dev, uint64_t commandBufferId, uint32_t passIndex, uint32_t layerCount,
-                           uint32_t attachmentIndex, VkImageView view, VkImageLayout layout, bool resolveTarget,
-                           VkImageAspectFlagBits aspect, TextureCapture& tc, PendingImageCopy& p);
+        uint32_t attachmentIndex, VkImageView view, VkImageLayout layout, bool resolveTarget,
+        VkImageAspectFlagBits aspect, TextureCapture& tc, PendingImageCopy& p);
     // The frame-start state of one aspect of one subresource (_imageStates; called with _mutex held).
     uint8_t& SubresourceState(VkImage image, const ImageInfo& img, VkImageAspectFlagBits aspect, uint32_t mip, uint32_t layer);
     // Attachments of the passes a submitted command buffer recorded before the capture began,
@@ -369,7 +387,7 @@ private:
     // when nothing is captured), with `copy` filled in when there is a copy to record. A pending
     // copy in `reuse` that covers the range stands in for it.
     uint32_t PrepareBufferCopy(DeviceData* dev, VkBuffer buffer, VkDeviceSize offset, VkDeviceSize size, bool whole,
-                               const std::vector<PendingBufferCopy>* reuse, PendingBufferCopy& copy);
+        const std::vector<PendingBufferCopy>* reuse, PendingBufferCopy& copy);
     // Buffer copies into staging, with the barriers around them.
     void RecordBufferCopies(DeviceData* dev, VkCommandBuffer cb, const std::vector<PendingBufferCopy>& copies);
     // Single-sampled images that multisampled captures are resolved into; freed with the staging.
@@ -405,7 +423,12 @@ private:
     uint64_t _imageBytes = 0;
     // Frame-start contents: per image, per aspect and subresource (SubresourceState), whether the
     // capture has read it (and taken its contents) or written it whole first.
-    enum SubresourceState : uint8_t { kUntouched = 0, kRead = 1, kWritten = 2 };
+    enum SubresourceState : uint8_t
+    {
+        kUntouched = 0,
+        kRead = 1,
+        kWritten = 2
+    };
     std::unordered_map<uint64_t, std::vector<uint8_t>> _imageStates;
 
     // Every device taking part in the capture (pass profiling pools, staging), and the one the

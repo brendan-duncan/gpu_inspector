@@ -9,23 +9,29 @@
 #endif
 #include <windows.h>
 
-struct FrameWindow {
+struct FrameWindow
+{
     HWND hwnd = nullptr;
     bool closed = false;
 };
 
-namespace {
+namespace
+{
 
 const wchar_t kClassName[] = L"GpuInspectorExportedFrame";
 
-LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam) {
+LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lparam)
+{
     auto* window = reinterpret_cast<FrameWindow*>(GetWindowLongPtrW(hwnd, GWLP_USERDATA));
-    switch (message) {
+    switch (message)
+    {
         case WM_CLOSE:
-            if (window) window->closed = true;
+            if (window)
+                window->closed = true;
             return 0;
         case WM_KEYDOWN:
-            if (wparam == VK_ESCAPE && window) window->closed = true;
+            if (wparam == VK_ESCAPE && window)
+                window->closed = true;
             return 0;
         default:
             return DefWindowProcW(hwnd, message, wparam, lparam);
@@ -34,7 +40,8 @@ LRESULT CALLBACK WindowProc(HWND hwnd, UINT message, WPARAM wparam, LPARAM lpara
 
 }  // namespace
 
-FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height) {
+FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
+{
     // The frame's pixels are shown one to one, whatever the display's scale.
     SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
     const HINSTANCE instance = GetModuleHandleW(nullptr);
@@ -44,18 +51,21 @@ FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
     wc.hInstance = instance;
     wc.hCursor = LoadCursorW(nullptr, MAKEINTRESOURCEW(32512));   // IDC_ARROW
     wc.lpszClassName = kClassName;
-    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS) return nullptr;
+    if (!RegisterClassExW(&wc) && GetLastError() != ERROR_CLASS_ALREADY_EXISTS)
+        return nullptr;
 
     // Not resizable: the swap chain is made once, for this size.
     const DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
     RECT rect{0, 0, (LONG)width, (LONG)height};
     AdjustWindowRect(&rect, style, FALSE);
     wchar_t wide[256];
-    if (!MultiByteToWideChar(CP_UTF8, 0, title ? title : "", -1, wide, 256)) wide[0] = 0;
+    if (!MultiByteToWideChar(CP_UTF8, 0, title ? title : "", -1, wide, 256))
+        wide[0] = 0;
     auto* window = new FrameWindow;
     window->hwnd = CreateWindowExW(0, kClassName, wide, style, CW_USEDEFAULT, CW_USEDEFAULT, rect.right - rect.left, rect.bottom - rect.top,
-                                   nullptr, nullptr, instance, nullptr);
-    if (!window->hwnd) {
+        nullptr, nullptr, instance, nullptr);
+    if (!window->hwnd)
+    {
         delete window;
         return nullptr;
     }
@@ -64,25 +74,34 @@ FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
     return window;
 }
 
-bool PumpFrameWindow(FrameWindow* window) {
-    if (!window) return false;
+bool PumpFrameWindow(FrameWindow* window)
+{
+    if (!window)
+        return false;
     MSG message;
-    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+    while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE))
+    {
         TranslateMessage(&message);
         DispatchMessageW(&message);
     }
     return !window->closed;
 }
 
-void SetFrameWindowTitle(FrameWindow* window, const char* title) {
-    if (!window || !window->hwnd) return;
+void SetFrameWindowTitle(FrameWindow* window, const char* title)
+{
+    if (!window || !window->hwnd)
+        return;
     wchar_t wide[256];
-    if (MultiByteToWideChar(CP_UTF8, 0, title ? title : "", -1, wide, 256)) SetWindowTextW(window->hwnd, wide);
+    if (MultiByteToWideChar(CP_UTF8, 0, title ? title : "", -1, wide, 256))
+        SetWindowTextW(window->hwnd, wide);
 }
 
-void CloseFrameWindow(FrameWindow* window) {
-    if (!window) return;
-    if (window->hwnd) DestroyWindow(window->hwnd);
+void CloseFrameWindow(FrameWindow* window)
+{
+    if (!window)
+        return;
+    if (window->hwnd)
+        DestroyWindow(window->hwnd);
     delete window;
 }
 

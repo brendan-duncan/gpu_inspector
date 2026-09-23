@@ -1,0 +1,127 @@
+# GPU Inspector C++ style.
+#
+# Allman braces, and the body of a conditional or loop always on its own line.
+# ColumnLimit is 0 so clang-format keeps hand-chosen line breaks and only fixes
+# brace and body placement.  Generated code is excluded via .clang-format-ignore.
+---
+Language: Cpp
+BasedOnStyle: Google
+
+ColumnLimit: 0
+IndentWidth: 4
+AccessModifierOffset: -4
+PointerAlignment: Left
+DerivePointerAlignment: false
+LineEnding: LF
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+# Leave everything that is not a brace or a body placement alone.
+AlignTrailingComments:
+  Kind: Leave
+ReflowComments: false
+FixNamespaceComments: false
+KeepEmptyLinesAtTheStartOfBlocks: true
+
+# A line the author broke by hand is indented one step, not aligned under
+# whatever bracket or operator happens to precede it: aligning pushes lambda
+# bodies, vtable tables and chained conditionals far off to the right.
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+
+# Allman.  The one exception is a lambda body, whose brace stays on the line
+# that opens the lambda: breaking it defeats clang-format at ColumnLimit 0 and
+# it gives up on formatting the body inside.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: true
+  AfterClass: true
+  AfterControlStatement: Always
+  AfterEnum: true
+  AfterExternBlock: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterObjCDeclaration: true
+  AfterStruct: true
+  AfterUnion: true
+  BeforeCatch: true
+  BeforeElse: true
+  BeforeLambdaBody: false
+  BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: true
+
+# The body of a conditional or a loop goes on the next line, always.
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# Definitions that already fit on one line stay that way.
+AllowShortFunctionsOnASingleLine: All
+AllowShortEnumsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortLambdasOnASingleLine: All
+---
+Language: ObjC
+BasedOnStyle: Google
+
+ColumnLimit: 0
+IndentWidth: 4
+AccessModifierOffset: -4
+PointerAlignment: Left
+DerivePointerAlignment: false
+LineEnding: LF
+SortIncludes: Never
+IncludeBlocks: Preserve
+
+# Leave everything that is not a brace or a body placement alone.
+AlignTrailingComments:
+  Kind: Leave
+ReflowComments: false
+FixNamespaceComments: false
+KeepEmptyLinesAtTheStartOfBlocks: true
+
+# A line the author broke by hand is indented one step, not aligned under
+# whatever bracket or operator happens to precede it: aligning pushes lambda
+# bodies, vtable tables and chained conditionals far off to the right.
+AlignAfterOpenBracket: DontAlign
+AlignOperands: DontAlign
+
+# Allman.  The one exception is a lambda body, whose brace stays on the line
+# that opens the lambda: breaking it defeats clang-format at ColumnLimit 0 and
+# it gives up on formatting the body inside.
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterCaseLabel: true
+  AfterClass: true
+  AfterControlStatement: Always
+  AfterEnum: true
+  AfterExternBlock: true
+  AfterFunction: true
+  AfterNamespace: true
+  AfterObjCDeclaration: true
+  AfterStruct: true
+  AfterUnion: true
+  BeforeCatch: true
+  BeforeElse: true
+  BeforeLambdaBody: false
+  BeforeWhile: false
+  IndentBraces: false
+  SplitEmptyFunction: true
+  SplitEmptyRecord: false
+  SplitEmptyNamespace: true
+
+# The body of a conditional or a loop goes on the next line, always.
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AllowShortBlocksOnASingleLine: Never
+
+# Definitions that already fit on one line stay that way.
+AllowShortFunctionsOnASingleLine: All
+AllowShortEnumsOnASingleLine: true
+AllowShortCaseLabelsOnASingleLine: true
+AllowShortLambdasOnASingleLine: All
+ObjCBlockIndentWidth: 4
+---

@@ -30,39 +30,48 @@
 #include <xcb/xcb.h>
 #endif
 
-#define CHECK(x)                                                                     \
-    do {                                                                             \
-        VkResult r_ = (x);                                                           \
-        if (r_ != VK_SUCCESS) {                                                      \
+#define CHECK(x)                                                                         \
+    do                                                                                   \
+    {                                                                                    \
+        VkResult r_ = (x);                                                               \
+        if (r_ != VK_SUCCESS)                                                            \
+        {                                                                                \
             fprintf(stderr, "%s failed: %d (%s:%d)\n", #x, (int)r_, __FILE__, __LINE__); \
-            exit(1);                                                                 \
-        }                                                                            \
+            exit(1);                                                                     \
+        }                                                                                \
     } while (0)
 
-namespace {
+namespace
+{
 
-struct Vertex {
+struct Vertex
+{
     float pos[3];
     float color[3];
     float uv[2];
 };
 
-struct Mat4 {
+struct Mat4
+{
     float m[16];
 };
 
-Mat4 Mul(const Mat4& a, const Mat4& b) {
+Mat4 Mul(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
-        for (int row = 0; row < 4; ++row) {
+        for (int row = 0; row < 4; ++row)
+        {
             float s = 0;
-            for (int k = 0; k < 4; ++k) s += a.m[k * 4 + row] * b.m[c * 4 + k];
+            for (int k = 0; k < 4; ++k)
+                s += a.m[k * 4 + row] * b.m[c * 4 + k];
             r.m[c * 4 + row] = s;
         }
     return r;
 }
 
-Mat4 Perspective(float fovy, float aspect, float zn, float zf) {
+Mat4 Perspective(float fovy, float aspect, float zn, float zf)
+{
     float f = 1.0f / tanf(fovy / 2);
     Mat4 r{};
     r.m[0] = f / aspect;
@@ -73,28 +82,45 @@ Mat4 Perspective(float fovy, float aspect, float zn, float zf) {
     return r;
 }
 
-Mat4 Translate(float x, float y, float z) {
+Mat4 Translate(float x, float y, float z)
+{
     Mat4 r{};
     r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1;
-    r.m[12] = x; r.m[13] = y; r.m[14] = z;
+    r.m[12] = x;
+    r.m[13] = y;
+    r.m[14] = z;
     return r;
 }
 
-Mat4 RotateY(float a) {
+Mat4 RotateY(float a)
+{
     Mat4 r{};
-    r.m[0] = cosf(a); r.m[2] = -sinf(a); r.m[5] = 1; r.m[8] = sinf(a); r.m[10] = cosf(a); r.m[15] = 1;
+    r.m[0] = cosf(a);
+    r.m[2] = -sinf(a);
+    r.m[5] = 1;
+    r.m[8] = sinf(a);
+    r.m[10] = cosf(a);
+    r.m[15] = 1;
     return r;
 }
 
-Mat4 RotateX(float a) {
+Mat4 RotateX(float a)
+{
     Mat4 r{};
-    r.m[0] = 1; r.m[5] = cosf(a); r.m[6] = sinf(a); r.m[9] = -sinf(a); r.m[10] = cosf(a); r.m[15] = 1;
+    r.m[0] = 1;
+    r.m[5] = cosf(a);
+    r.m[6] = sinf(a);
+    r.m[9] = -sinf(a);
+    r.m[10] = cosf(a);
+    r.m[15] = 1;
     return r;
 }
 
-std::vector<char> ReadFile(const std::string& path) {
+std::vector<char> ReadFile(const std::string& path)
+{
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) {
+    if (!f)
+    {
         fprintf(stderr, "cannot open %s\n", path.c_str());
         exit(1);
     }
@@ -104,7 +130,8 @@ std::vector<char> ReadFile(const std::string& path) {
     return data;
 }
 
-std::string ExeDir() {
+std::string ExeDir()
+{
 #if defined(_WIN32)
     char buf[MAX_PATH];
     GetModuleFileNameA(nullptr, buf, MAX_PATH);
@@ -121,7 +148,8 @@ std::string ExeDir() {
 // Mip levels of the checker texture (8x8 -> 1x1).
 constexpr uint32_t kTextureMips = 4;
 
-struct App {
+struct App
+{
     uint32_t width = 640, height = 480;
     int maxFrames = -1;
     int captureAt = 0;        // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
@@ -130,7 +158,11 @@ struct App {
     // allocation and frees the one made two frames before (transient allocations), and every 30th
     // frame makes one that is kept until exit (a slow leak).
     bool churn = false;
-    struct ChurnBuffer { VkBuffer buffer = VK_NULL_HANDLE; VkDeviceMemory memory = VK_NULL_HANDLE; };
+    struct ChurnBuffer
+    {
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceMemory memory = VK_NULL_HANDLE;
+    };
     std::vector<ChurnBuffer> churnRecent, churnKept;
     bool badScissor = false;
     bool leak = false;
@@ -194,13 +226,15 @@ struct App {
     // again, as most engines do, so a capture holds no build of it and the layer has to read its
     // inputs back when the capture begins (CaptureManager::ReadBackEarlierStructures).
     bool staticBlas = false;
-    struct DeviceBuffer {
+    struct DeviceBuffer
+    {
         VkBuffer buffer = VK_NULL_HANDLE;
         VkDeviceMemory memory = VK_NULL_HANDLE;
         VkDeviceAddress address = 0;
         void* mapped = nullptr;
     };
-    struct RayTracing {
+    struct RayTracing
+    {
         PFN_vkCreateAccelerationStructureKHR createAS;
         PFN_vkDestroyAccelerationStructureKHR destroyAS;
         PFN_vkGetAccelerationStructureBuildSizesKHR buildSizes;
@@ -224,7 +258,8 @@ struct App {
     } rt{};
     // --descriptor-buffer: the set's descriptors live in a buffer the application owns rather
     // than in a set object, so a draw names them by an offset into memory (docs/VULKAN.md).
-    struct DescriptorBufferFns {
+    struct DescriptorBufferFns
+    {
         PFN_vkGetDescriptorSetLayoutSizeEXT layoutSize;
         PFN_vkGetDescriptorSetLayoutBindingOffsetEXT bindingOffset;
         PFN_vkGetDescriptorEXT getDescriptor;
@@ -237,7 +272,8 @@ struct App {
         VkDeviceAddress address = 0;
         void* mapped = nullptr;
     } db{};
-    struct ShaderObjectFns {
+    struct ShaderObjectFns
+    {
         PFN_vkCreateShadersEXT create;
         PFN_vkDestroyShaderEXT destroy;
         PFN_vkCmdBindShadersEXT bind;
@@ -264,8 +300,14 @@ struct App {
     // --second-device / --second-queue: a second stream of work each frame, a 256x256 offscreen
     // target cleared in a render pass of its own, on a VkDevice of its own (same GPU) or on a second
     // queue of the main device, so a capture has passes, timings and read-backs from both.
-    enum class Side { None, Device, Queue } side = Side::None;
-    struct SideWork {
+    enum class Side
+    {
+        None,
+        Device,
+        Queue
+    } side = Side::None;
+    struct SideWork
+    {
         VkDevice device = VK_NULL_HANDLE;
         VkQueue queue = VK_NULL_HANDLE;
         VkCommandPool pool = VK_NULL_HANDLE;
@@ -279,7 +321,8 @@ struct App {
     } sideWork;
     VkDescriptorUpdateTemplate pushUpdateTemplate{};
     PFN_vkCmdPushDescriptorSetWithTemplateKHR pushWithTemplate = nullptr;   // not in every loader's import library
-    struct PushData {
+    struct PushData
+    {
         VkDescriptorBufferInfo uniform;
         VkDescriptorImageInfo texture;
     } pushData{};
@@ -360,7 +403,8 @@ struct App {
     // that loads them, and a staging buffer per frame slot the host writes every frame.
     static const uint32_t kPersistSize = 64;
     static const uint32_t kStagingSize = 16;
-    struct PersistImage {
+    struct PersistImage
+    {
         VkImage image{};
         VkDeviceMemory memory{};
         VkImageView view{};
@@ -389,18 +433,24 @@ struct App {
 
     // --------------------------------------------------------------------------------- window
 #if defined(_WIN32)
-    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l)
+    {
         App* app = (App*)GetWindowLongPtrA(h, GWLP_USERDATA);
-        if (msg == WM_CLOSE || msg == WM_DESTROY) {
-            if (app) app->quit = true;
+        if (msg == WM_CLOSE || msg == WM_DESTROY)
+        {
+            if (app)
+                app->quit = true;
             return 0;
         }
-        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app) app->quit = true;
-        if (msg == WM_SIZE && app) app->resized = true;
+        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app)
+            app->quit = true;
+        if (msg == WM_SIZE && app)
+            app->resized = true;
         return DefWindowProcA(h, msg, w, l);
     }
 
-    void CreateWindowNative() {
+    void CreateWindowNative()
+    {
         WNDCLASSA wc{};
         wc.lpfnWndProc = WndProc;
         wc.hInstance = GetModuleHandleA(nullptr);
@@ -410,39 +460,48 @@ struct App {
         RECT r{0, 0, (LONG)width, (LONG)height};
         AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
         hwnd = CreateWindowA(wc.lpszClassName, "GPU Inspector test: cube", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
-                             wc.hInstance, nullptr);
+            CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
+            wc.hInstance, nullptr);
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)this);
     }
 
-    void PumpEvents() {
+    void PumpEvents()
+    {
         MSG msg;
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
     }
 #else
-    void CreateWindowNative() {
+    void CreateWindowNative()
+    {
         conn = xcb_connect(nullptr, nullptr);
         const xcb_setup_t* setup = xcb_get_setup(conn);
         xcb_screen_t* screen = xcb_setup_roots_iterator(setup).data;
         window = xcb_generate_id(conn);
         uint32_t values[] = {screen->black_pixel, XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_STRUCTURE_NOTIFY};
         xcb_create_window(conn, XCB_COPY_FROM_PARENT, window, screen->root, 0, 0, (uint16_t)width, (uint16_t)height, 0,
-                          XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
+            XCB_WINDOW_CLASS_INPUT_OUTPUT, screen->root_visual, XCB_CW_BACK_PIXEL | XCB_CW_EVENT_MASK, values);
         xcb_map_window(conn, window);
         xcb_flush(conn);
     }
 
-    void PumpEvents() {
-        while (xcb_generic_event_t* e = xcb_poll_for_event(conn)) {
+    void PumpEvents()
+    {
+        while (xcb_generic_event_t* e = xcb_poll_for_event(conn))
+        {
             uint8_t type = e->response_type & 0x7f;
-            if (type == XCB_KEY_PRESS) {
+            if (type == XCB_KEY_PRESS)
+            {
                 quit = true;
-            } else if (type == XCB_CONFIGURE_NOTIFY) {
+            }
+            else if (type == XCB_CONFIGURE_NOTIFY)
+            {
                 auto* c = reinterpret_cast<xcb_configure_notify_event_t*>(e);
-                if (c->width != width || c->height != height) {
+                if (c->width != width || c->height != height)
+                {
                     width = c->width;
                     height = c->height;
                     resized = true;
@@ -454,15 +513,18 @@ struct App {
 #endif
 
     // --------------------------------------------------------------------------------- helpers
-    uint32_t FindMemoryType(uint32_t bits, VkMemoryPropertyFlags props) {
+    uint32_t FindMemoryType(uint32_t bits, VkMemoryPropertyFlags props)
+    {
         for (uint32_t i = 0; i < memProps.memoryTypeCount; ++i)
-            if ((bits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & props) == props) return i;
+            if ((bits & (1u << i)) && (memProps.memoryTypes[i].propertyFlags & props) == props)
+                return i;
         fprintf(stderr, "no memory type\n");
         exit(1);
     }
 
     void CreateBuffer(VkDeviceSize size, VkBufferUsageFlags usage, VkMemoryPropertyFlags props, VkBuffer& buf,
-                      VkDeviceMemory& mem, const char* name, bool deviceAddress = false) {
+        VkDeviceMemory& mem, const char* name, bool deviceAddress = false)
+    {
         VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bci.size = size;
         bci.usage = usage | (deviceAddress ? VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT : 0);
@@ -475,14 +537,17 @@ struct App {
         mai.memoryTypeIndex = FindMemoryType(req.memoryTypeBits, props);
         VkMemoryAllocateFlagsInfo flags{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_FLAGS_INFO};
         flags.flags = VK_MEMORY_ALLOCATE_DEVICE_ADDRESS_BIT;
-        if (deviceAddress) mai.pNext = &flags;
+        if (deviceAddress)
+            mai.pNext = &flags;
         CHECK(vkAllocateMemory(device, &mai, nullptr, &mem));
         CHECK(vkBindBufferMemory(device, buf, mem, 0));
         Name(VK_OBJECT_TYPE_BUFFER, (uint64_t)buf, name);
     }
 
-    void Name(VkObjectType type, uint64_t handle, const char* name) {
-        if (!setName) return;
+    void Name(VkObjectType type, uint64_t handle, const char* name)
+    {
+        if (!setName)
+            return;
         VkDebugUtilsObjectNameInfoEXT ni{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
         ni.objectType = type;
         ni.objectHandle = handle;
@@ -490,7 +555,8 @@ struct App {
         setName(device, &ni);
     }
 
-    VkShaderModule LoadShader(const char* file) {
+    VkShaderModule LoadShader(const char* file)
+    {
         std::vector<char> code = ReadFile(ExeDir() + file);
         VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         ci.codeSize = code.size();
@@ -500,7 +566,8 @@ struct App {
         return m;
     }
 
-    VkCommandBuffer BeginOneShot() {
+    VkCommandBuffer BeginOneShot()
+    {
         VkCommandBufferAllocateInfo ai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
         ai.commandPool = commandPool;
         ai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
@@ -513,7 +580,8 @@ struct App {
         return cb;
     }
 
-    void EndOneShot(VkCommandBuffer cb) {
+    void EndOneShot(VkCommandBuffer cb)
+    {
         CHECK(vkEndCommandBuffer(cb));
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         si.commandBufferCount = 1;
@@ -524,7 +592,8 @@ struct App {
     }
 
     // --------------------------------------------------------------------------------- setup
-    void InitVulkan() {
+    void InitVulkan()
+    {
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         ai.pApplicationName = "vkinsp_triangle";
         ai.pEngineName = "none";
@@ -533,12 +602,14 @@ struct App {
         // 1.2 for the modes that take a buffer's device address: vkGetBufferDeviceAddress is core
         // there, and on a 1.1 instance the loader has no entry point for it to call.
         ai.apiVersion = shaderObject || suspend ? VK_API_VERSION_1_3
-                      : rayTracing || descriptorBuffer ? VK_API_VERSION_1_2 : VK_API_VERSION_1_1;
-        std::vector<const char*> instExts = {VK_KHR_SURFACE_EXTENSION_NAME,
+            : rayTracing || descriptorBuffer    ? VK_API_VERSION_1_2
+                                                : VK_API_VERSION_1_1;
+        std::vector<const char*> instExts = {
+            VK_KHR_SURFACE_EXTENSION_NAME,
 #if defined(_WIN32)
-                                             VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
+            VK_KHR_WIN32_SURFACE_EXTENSION_NAME,
 #else
-                                             VK_KHR_XCB_SURFACE_EXTENSION_NAME,
+            VK_KHR_XCB_SURFACE_EXTENSION_NAME,
 #endif
         };
         uint32_t n = 0;
@@ -547,8 +618,10 @@ struct App {
         vkEnumerateInstanceExtensionProperties(nullptr, &n, avail.data());
         bool debugUtils = false;
         for (auto& e : avail)
-            if (strcmp(e.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0) debugUtils = true;
-        if (debugUtils) instExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+            if (strcmp(e.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME) == 0)
+                debugUtils = true;
+        if (debugUtils)
+            instExts.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
         VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         ici.pApplicationInfo = &ai;
@@ -572,23 +645,28 @@ struct App {
         CHECK(vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr));
         std::vector<VkPhysicalDevice> gpus(gpuCount);
         CHECK(vkEnumeratePhysicalDevices(instance, &gpuCount, gpus.data()));
-        for (VkPhysicalDevice g : gpus) {
+        for (VkPhysicalDevice g : gpus)
+        {
             uint32_t qn = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(g, &qn, nullptr);
             std::vector<VkQueueFamilyProperties> qf(qn);
             vkGetPhysicalDeviceQueueFamilyProperties(g, &qn, qf.data());
-            for (uint32_t i = 0; i < qn; ++i) {
+            for (uint32_t i = 0; i < qn; ++i)
+            {
                 VkBool32 present = VK_FALSE;
                 vkGetPhysicalDeviceSurfaceSupportKHR(g, i, surface, &present);
-                if ((qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present) {
+                if ((qf[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) && present)
+                {
                     gpu = g;
                     queueFamily = i;
                     break;
                 }
             }
-            if (gpu) break;
+            if (gpu)
+                break;
         }
-        if (!gpu) {
+        if (!gpu)
+        {
             fprintf(stderr, "no suitable GPU\n");
             exit(1);
         }
@@ -599,20 +677,24 @@ struct App {
         qci.queueFamilyIndex = queueFamily;
         qci.queueCount = 1;
         qci.pQueuePriorities = prio;
-        if (side == Side::Queue) {
+        if (side == Side::Queue)
+        {
             uint32_t qn = 0;
             vkGetPhysicalDeviceQueueFamilyProperties(gpu, &qn, nullptr);
             std::vector<VkQueueFamilyProperties> qf(qn);
             vkGetPhysicalDeviceQueueFamilyProperties(gpu, &qn, qf.data());
-            if (qf[queueFamily].queueCount < 2) {
+            if (qf[queueFamily].queueCount < 2)
+            {
                 fprintf(stderr, "--second-queue: the graphics queue family has a single queue\n");
                 exit(1);
             }
             qci.queueCount = 2;
         }
         std::vector<const char*> devExts = {VK_KHR_SWAPCHAIN_EXTENSION_NAME};
-        if (pushTemplate) devExts.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
-        if (descriptorBuffer) {
+        if (pushTemplate)
+            devExts.push_back(VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
+        if (descriptorBuffer)
+        {
             devExts.push_back(VK_EXT_DESCRIPTOR_BUFFER_EXTENSION_NAME);
             // What VK_EXT_descriptor_buffer is defined on top of, and so must be enabled with it.
             devExts.push_back(VK_KHR_BUFFER_DEVICE_ADDRESS_EXTENSION_NAME);
@@ -623,7 +705,8 @@ struct App {
         dci.queueCreateInfoCount = 1;
         dci.pQueueCreateInfos = &qci;
         VkPhysicalDeviceGraphicsPipelineLibraryFeaturesEXT gpl{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_GRAPHICS_PIPELINE_LIBRARY_FEATURES_EXT};
-        if (pipelineLibrary) {
+        if (pipelineLibrary)
+        {
             devExts.push_back(VK_KHR_PIPELINE_LIBRARY_EXTENSION_NAME);
             devExts.push_back(VK_EXT_GRAPHICS_PIPELINE_LIBRARY_EXTENSION_NAME);
             gpl.graphicsPipelineLibrary = VK_TRUE;
@@ -631,11 +714,13 @@ struct App {
         }
         VkPhysicalDeviceShaderObjectFeaturesEXT soFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
-        if (shaderObject || suspend) {
+        if (shaderObject || suspend)
+        {
             // Dynamic rendering (core in the 1.3 instance these modes ask for): what shader objects
             // draw in, and what a pass can be suspended and resumed in. Its targets here are
             // single-sampled, and the split pass is recorded every frame.
-            if (samples != VK_SAMPLE_COUNT_1_BIT || stencil || (suspend && prerecord)) {
+            if (samples != VK_SAMPLE_COUNT_1_BIT || stencil || (suspend && prerecord))
+            {
                 fprintf(stderr, "--shader-object and --suspend do not combine with --msaa or --stencil, nor --suspend with --prerecord\n");
                 exit(1);
             }
@@ -643,7 +728,8 @@ struct App {
             dynamicRendering.pNext = (void*)dci.pNext;
             dci.pNext = &dynamicRendering;
         }
-        if (shaderObject) {
+        if (shaderObject)
+        {
             // The extension brings the dynamic state commands it needs with it.
             devExts.push_back(VK_EXT_SHADER_OBJECT_EXTENSION_NAME);
             soFeatures.shaderObject = VK_TRUE;
@@ -652,7 +738,8 @@ struct App {
         }
         VkPhysicalDeviceDescriptorBufferFeaturesEXT dbFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DESCRIPTOR_BUFFER_FEATURES_EXT};
         VkPhysicalDeviceBufferDeviceAddressFeatures dbAddress{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
-        if (descriptorBuffer) {
+        if (descriptorBuffer)
+        {
             // A descriptor buffer is named by its device address, and so is every buffer a
             // descriptor in it points at, so the two features go together.
             dbFeatures.descriptorBuffer = VK_TRUE;
@@ -664,7 +751,8 @@ struct App {
         VkPhysicalDeviceBufferDeviceAddressFeatures bufferAddress{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_BUFFER_DEVICE_ADDRESS_FEATURES};
         VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
         VkPhysicalDeviceRayTracingPipelineFeaturesKHR rtFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_FEATURES_KHR};
-        if (rayTracing) {
+        if (rayTracing)
+        {
             devExts.push_back(VK_KHR_ACCELERATION_STRUCTURE_EXTENSION_NAME);
             devExts.push_back(VK_KHR_RAY_TRACING_PIPELINE_EXTENSION_NAME);
             devExts.push_back(VK_KHR_DEFERRED_HOST_OPERATIONS_EXTENSION_NAME);
@@ -680,18 +768,22 @@ struct App {
         dci.ppEnabledExtensionNames = devExts.data();
         CHECK(vkCreateDevice(gpu, &dci, nullptr, &device));
         vkGetDeviceQueue(device, queueFamily, 0, &queue);
-        if (stencil) {
+        if (stencil)
+        {
             // A depth-stencil format: every device offers one of these two as an attachment.
-            for (VkFormat f : {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT}) {
+            for (VkFormat f : {VK_FORMAT_D24_UNORM_S8_UINT, VK_FORMAT_D32_SFLOAT_S8_UINT})
+            {
                 VkFormatProperties props{};
                 vkGetPhysicalDeviceFormatProperties(gpu, f, &props);
-                if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT) {
+                if (props.optimalTilingFeatures & VK_FORMAT_FEATURE_DEPTH_STENCIL_ATTACHMENT_BIT)
+                {
                     depthFormat = f;
                     break;
                 }
             }
         }
-        if (side == Side::Device) {
+        if (side == Side::Device)
+        {
             // Its own device on the same GPU, with the same single queue and no extensions.
             VkDeviceCreateInfo sdci{VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO};
             VkDeviceQueueCreateInfo sqci = qci;
@@ -700,11 +792,14 @@ struct App {
             sdci.pQueueCreateInfos = &sqci;
             CHECK(vkCreateDevice(gpu, &sdci, nullptr, &sideWork.device));
             vkGetDeviceQueue(sideWork.device, queueFamily, 0, &sideWork.queue);
-        } else if (side == Side::Queue) {
+        }
+        else if (side == Side::Queue)
+        {
             sideWork.device = device;
             vkGetDeviceQueue(device, queueFamily, 1, &sideWork.queue);
         }
-        if (rayTracing) {
+        if (rayTracing)
+        {
             auto fn = [&](const char* name) { return vkGetDeviceProcAddr(device, name); };
             rt.createAS = (PFN_vkCreateAccelerationStructureKHR)fn("vkCreateAccelerationStructureKHR");
             rt.destroyAS = (PFN_vkDestroyAccelerationStructureKHR)fn("vkDestroyAccelerationStructureKHR");
@@ -714,12 +809,14 @@ struct App {
             rt.createPipelines = (PFN_vkCreateRayTracingPipelinesKHR)fn("vkCreateRayTracingPipelinesKHR");
             rt.groupHandles = (PFN_vkGetRayTracingShaderGroupHandlesKHR)fn("vkGetRayTracingShaderGroupHandlesKHR");
             rt.trace = (PFN_vkCmdTraceRaysKHR)fn("vkCmdTraceRaysKHR");
-            if (!rt.createAS || !rt.build || !rt.createPipelines || !rt.trace) {
+            if (!rt.createAS || !rt.build || !rt.createPipelines || !rt.trace)
+            {
                 fprintf(stderr, "--ray-tracing: the device has no ray tracing\n");
                 exit(1);
             }
         }
-        if (shaderObject) {
+        if (shaderObject)
+        {
             auto fn = [&](const char* name) { return vkGetDeviceProcAddr(device, name); };
             so.create = (PFN_vkCreateShadersEXT)fn("vkCreateShadersEXT");
             so.destroy = (PFN_vkDestroyShaderEXT)fn("vkDestroyShaderEXT");
@@ -743,19 +840,22 @@ struct App {
             so.alphaToCoverage = (PFN_vkCmdSetAlphaToCoverageEnableEXT)fn("vkCmdSetAlphaToCoverageEnableEXT");
             so.blendEnable = (PFN_vkCmdSetColorBlendEnableEXT)fn("vkCmdSetColorBlendEnableEXT");
             so.writeMask = (PFN_vkCmdSetColorWriteMaskEXT)fn("vkCmdSetColorWriteMaskEXT");
-            if (!so.create || !so.bind || !so.vertexInput || !so.writeMask || !so.viewport) {
+            if (!so.create || !so.bind || !so.vertexInput || !so.writeMask || !so.viewport)
+            {
                 fprintf(stderr, "--shader-object: the device has no VK_EXT_shader_object\n");
                 exit(1);
             }
         }
-        if (descriptorBuffer) {
+        if (descriptorBuffer)
+        {
             auto fn = [&](const char* name) { return vkGetDeviceProcAddr(device, name); };
             db.layoutSize = (PFN_vkGetDescriptorSetLayoutSizeEXT)fn("vkGetDescriptorSetLayoutSizeEXT");
             db.bindingOffset = (PFN_vkGetDescriptorSetLayoutBindingOffsetEXT)fn("vkGetDescriptorSetLayoutBindingOffsetEXT");
             db.getDescriptor = (PFN_vkGetDescriptorEXT)fn("vkGetDescriptorEXT");
             db.bindBuffers = (PFN_vkCmdBindDescriptorBuffersEXT)fn("vkCmdBindDescriptorBuffersEXT");
             db.setOffsets = (PFN_vkCmdSetDescriptorBufferOffsetsEXT)fn("vkCmdSetDescriptorBufferOffsetsEXT");
-            if (!db.layoutSize || !db.bindingOffset || !db.getDescriptor || !db.bindBuffers || !db.setOffsets) {
+            if (!db.layoutSize || !db.bindingOffset || !db.getDescriptor || !db.bindBuffers || !db.setOffsets)
+            {
                 fprintf(stderr, "--descriptor-buffer: the device has no VK_EXT_descriptor_buffer\n");
                 exit(1);
             }
@@ -763,15 +863,18 @@ struct App {
             props2.pNext = &db.props;
             vkGetPhysicalDeviceProperties2(gpu, &props2);
         }
-        if (pushTemplate) {
+        if (pushTemplate)
+        {
             pushWithTemplate = (PFN_vkCmdPushDescriptorSetWithTemplateKHR)vkGetDeviceProcAddr(device, "vkCmdPushDescriptorSetWithTemplateKHR");
-            if (!pushWithTemplate) {
+            if (!pushWithTemplate)
+            {
                 fprintf(stderr, "--push-template: the device has no VK_KHR_push_descriptor\n");
                 exit(1);
             }
         }
 
-        if (debugUtils) {
+        if (debugUtils)
+        {
             beginLabel = (PFN_vkCmdBeginDebugUtilsLabelEXT)vkGetInstanceProcAddr(instance, "vkCmdBeginDebugUtilsLabelEXT");
             endLabel = (PFN_vkCmdEndDebugUtilsLabelEXT)vkGetInstanceProcAddr(instance, "vkCmdEndDebugUtilsLabelEXT");
             setName = (PFN_vkSetDebugUtilsObjectNameEXT)vkGetInstanceProcAddr(instance, "vkSetDebugUtilsObjectNameEXT");
@@ -786,9 +889,12 @@ struct App {
         cbai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cbai.commandBufferCount = kFramesInFlight;
         CHECK(vkAllocateCommandBuffers(device, &cbai, commandBuffers));
-        if (hazard) CHECK(vkAllocateCommandBuffers(device, &cbai, hazardBuffers));
-        if (suspend) CHECK(vkAllocateCommandBuffers(device, &cbai, suspendBuffers));
-        for (int i = 0; i < kFramesInFlight; ++i) {
+        if (hazard)
+            CHECK(vkAllocateCommandBuffers(device, &cbai, hazardBuffers));
+        if (suspend)
+            CHECK(vkAllocateCommandBuffers(device, &cbai, suspendBuffers));
+        for (int i = 0; i < kFramesInFlight; ++i)
+        {
             VkSemaphoreCreateInfo sci2{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             CHECK(vkCreateSemaphore(device, &sci2, nullptr, &imageAvailable[i]));
             CHECK(vkCreateSemaphore(device, &sci2, nullptr, &renderFinished[i]));
@@ -800,7 +906,8 @@ struct App {
 
     // Creates the swapchain, its image views and the depth buffer for the current window size.
     // Pass the previous swapchain when recreating after a resize; it is destroyed here.
-    void CreateSwapchain(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE) {
+    void CreateSwapchain(VkSwapchainKHR oldSwapchain = VK_NULL_HANDLE)
+    {
         VkSurfaceCapabilitiesKHR caps;
         CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps));
         uint32_t fn = 0;
@@ -809,12 +916,19 @@ struct App {
         vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &fn, formats.data());
         VkSurfaceFormatKHR chosen = formats[0];
         for (auto& f : formats)
-            if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM) { chosen = f; break; }
+            if (f.format == VK_FORMAT_B8G8R8A8_UNORM || f.format == VK_FORMAT_R8G8B8A8_UNORM)
+            {
+                chosen = f;
+                break;
+            }
         colorFormat = chosen.format;
-        if (caps.currentExtent.width != 0xFFFFFFFF) {
+        if (caps.currentExtent.width != 0xFFFFFFFF)
+        {
             width = caps.currentExtent.width;
             height = caps.currentExtent.height;
-        } else {
+        }
+        else
+        {
             width = std::max(caps.minImageExtent.width, std::min(caps.maxImageExtent.width, width));
             height = std::max(caps.minImageExtent.height, std::min(caps.maxImageExtent.height, height));
         }
@@ -834,14 +948,16 @@ struct App {
         sci.clipped = VK_TRUE;
         sci.oldSwapchain = oldSwapchain;
         CHECK(vkCreateSwapchainKHR(device, &sci, nullptr, &swapchain));
-        if (oldSwapchain) vkDestroySwapchainKHR(device, oldSwapchain, nullptr);
+        if (oldSwapchain)
+            vkDestroySwapchainKHR(device, oldSwapchain, nullptr);
 
         uint32_t count = 0;
         vkGetSwapchainImagesKHR(device, swapchain, &count, nullptr);
         swapImages.resize(count);
         vkGetSwapchainImagesKHR(device, swapchain, &count, swapImages.data());
         swapViews.resize(count);
-        for (uint32_t i = 0; i < count; ++i) {
+        for (uint32_t i = 0; i < count; ++i)
+        {
             VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
             vci.image = swapImages[i];
             vci.viewType = VK_IMAGE_VIEW_TYPE_2D;
@@ -878,7 +994,8 @@ struct App {
         CHECK(vkCreateImageView(device, &dvci, nullptr, &depthView));
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Depth buffer");
 
-        if (offscreen) {
+        if (offscreen)
+        {
             VkImageCreateInfo oci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             oci.imageType = VK_IMAGE_TYPE_2D;
             oci.format = colorFormat;
@@ -906,7 +1023,8 @@ struct App {
             Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)offImage, "Offscreen color");
         }
         // Multisampled color target, resolved into the swapchain image by the render pass.
-        if (samples != VK_SAMPLE_COUNT_1_BIT) {
+        if (samples != VK_SAMPLE_COUNT_1_BIT)
+        {
             VkImageCreateInfo mci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
             mci.imageType = VK_IMAGE_TYPE_2D;
             mci.format = colorFormat;
@@ -935,7 +1053,8 @@ struct App {
         }
     }
 
-    void CreateRenderPass() {
+    void CreateRenderPass()
+    {
         // Attachment 0 is the color target (the swapchain image, or with --msaa the multisampled
         // image resolved into attachment 2, the swapchain image), 1 the depth buffer.
         const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
@@ -989,10 +1108,12 @@ struct App {
         CHECK(vkCreateRenderPass(device, &rpci, nullptr, &renderPass));
     }
 
-    void CreateFramebuffers() {
+    void CreateFramebuffers()
+    {
         const uint32_t count = (uint32_t)swapViews.size();
         framebuffers.resize(count);
-        if (offscreen) {
+        if (offscreen)
+        {
             const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
             VkImageView views[] = {msaa ? msaaView : offView, depthView, offView};
             VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
@@ -1004,7 +1125,8 @@ struct App {
             fci.layers = 1;
             CHECK(vkCreateFramebuffer(device, &fci, nullptr, &offFramebuffer));
         }
-        for (uint32_t i = 0; i < count; ++i) {
+        for (uint32_t i = 0; i < count; ++i)
+        {
             const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
             VkImageView views[] = {msaa ? msaaView : swapViews[i], depthView, swapViews[i]};
             VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
@@ -1016,9 +1138,11 @@ struct App {
             fci.layers = 1;
             CHECK(vkCreateFramebuffer(device, &fci, nullptr, &framebuffers[i]));
         }
-        if (overlayPass) {
+        if (overlayPass)
+        {
             overlayFramebuffers.resize(count);
-            for (uint32_t i = 0; i < count; ++i) {
+            for (uint32_t i = 0; i < count; ++i)
+            {
                 VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
                 fci.renderPass = overlayPass;
                 fci.attachmentCount = 1;
@@ -1029,11 +1153,13 @@ struct App {
                 CHECK(vkCreateFramebuffer(device, &fci, nullptr, &overlayFramebuffers[i]));
             }
         }
-        if (prerecord && computePipeline) PrerecordAll();
+        if (prerecord && computePipeline)
+            PrerecordAll();
     }
 
     // --ray-tracing: a buffer with a device address, optionally host visible (mapped).
-    DeviceBuffer CreateDeviceBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host, const char* name) {
+    DeviceBuffer CreateDeviceBuffer(VkDeviceSize size, VkBufferUsageFlags usage, bool host, const char* name)
+    {
         DeviceBuffer b;
         VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
         bci.size = size;
@@ -1046,11 +1172,11 @@ struct App {
         VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
         mai.pNext = &flags;
         mai.allocationSize = req.size;
-        mai.memoryTypeIndex = FindMemoryType(req.memoryTypeBits, host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
-                                                                      : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        mai.memoryTypeIndex = FindMemoryType(req.memoryTypeBits, host ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
         CHECK(vkAllocateMemory(device, &mai, nullptr, &b.memory));
         CHECK(vkBindBufferMemory(device, b.buffer, b.memory, 0));
-        if (host) CHECK(vkMapMemory(device, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped));
+        if (host)
+            CHECK(vkMapMemory(device, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped));
         VkBufferDeviceAddressInfo ai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
         ai.buffer = b.buffer;
         b.address = vkGetBufferDeviceAddress(device, &ai);
@@ -1058,16 +1184,21 @@ struct App {
         return b;
     }
 
-    void DestroyDeviceBuffer(DeviceBuffer& b) {
-        if (b.buffer) vkDestroyBuffer(device, b.buffer, nullptr);
-        if (b.memory) vkFreeMemory(device, b.memory, nullptr);
+    void DestroyDeviceBuffer(DeviceBuffer& b)
+    {
+        if (b.buffer)
+            vkDestroyBuffer(device, b.buffer, nullptr);
+        if (b.memory)
+            vkFreeMemory(device, b.memory, nullptr);
         b = DeviceBuffer{};
     }
 
     // --ray-tracing: the triangle's bottom-level structure (built once), the top-level structure
     // over it (rebuilt every frame in Record), the output image and the pipeline with its table.
-    void CreateRayTracing() {
-        if (!rayTracing) return;
+    void CreateRayTracing()
+    {
+        if (!rayTracing)
+            return;
         const float tri[9] = {-0.5f, -0.5f, 0.0f, 0.5f, -0.5f, 0.0f, 0.0f, 0.5f, 0.0f};
         rt.vertices = CreateDeviceBuffer(sizeof(tri), VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR, true, "RT triangle");
         memcpy(rt.vertices.mapped, tri, sizeof(tri));
@@ -1208,14 +1339,16 @@ struct App {
         const VkShaderStageFlagBits kinds[3] = {VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR};
         const char* files[3] = {"rt.rgen.spv", "rt.rmiss.spv", "rt.rchit.spv"};
         VkPipelineShaderStageCreateInfo stages[3]{};
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 3; ++i)
+        {
             stages[i].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
             stages[i].stage = kinds[i];
             stages[i].module = LoadShader(files[i]);
             stages[i].pName = "main";
         }
         VkRayTracingShaderGroupCreateInfoKHR groups[3]{};
-        for (int i = 0; i < 3; ++i) {
+        for (int i = 0; i < 3; ++i)
+        {
             groups[i].sType = VK_STRUCTURE_TYPE_RAY_TRACING_SHADER_GROUP_CREATE_INFO_KHR;
             groups[i].type = VK_RAY_TRACING_SHADER_GROUP_TYPE_GENERAL_KHR;
             groups[i].generalShader = groups[i].closestHitShader = groups[i].anyHitShader = groups[i].intersectionShader = VK_SHADER_UNUSED_KHR;
@@ -1233,7 +1366,8 @@ struct App {
         rpci.layout = rt.layout;
         CHECK(rt.createPipelines(device, VK_NULL_HANDLE, VK_NULL_HANDLE, 1, &rpci, nullptr, &rt.pipeline));
         Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)rt.pipeline, "RT pipeline");
-        for (auto& s : stages) vkDestroyShaderModule(device, s.module, nullptr);
+        for (auto& s : stages)
+            vkDestroyShaderModule(device, s.module, nullptr);
 
         // The shader binding table: one group per record, aligned as the device asks.
         VkPhysicalDeviceRayTracingPipelinePropertiesKHR props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
@@ -1247,14 +1381,16 @@ struct App {
         std::vector<uint8_t> handles(3 * handle);
         CHECK(rt.groupHandles(device, rt.pipeline, 0, 3, handles.size(), handles.data()));
         rt.sbt = CreateDeviceBuffer(3 * stride, VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR, true, "RT shader binding table");
-        for (int i = 0; i < 3; ++i) memcpy(static_cast<uint8_t*>(rt.sbt.mapped) + i * stride, handles.data() + i * handle, handle);
+        for (int i = 0; i < 3; ++i)
+            memcpy(static_cast<uint8_t*>(rt.sbt.mapped) + i * stride, handles.data() + i * handle, handle);
         rt.raygen = {rt.sbt.address, stride, stride};
         rt.miss = {rt.sbt.address + stride, stride, stride};
         rt.hit = {rt.sbt.address + 2 * stride, stride, stride};
     }
 
     // The top-level structure's one geometry: the instance buffer.
-    VkAccelerationStructureGeometryKHR TlasGeometry() {
+    VkAccelerationStructureGeometryKHR TlasGeometry()
+    {
         VkAccelerationStructureGeometryKHR g{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
         g.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
         g.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
@@ -1264,13 +1400,16 @@ struct App {
     }
 
     // Each frame: the top level rebuilt, then one trace into the storage image.
-    void RecordRayTracing(VkCommandBuffer cb) {
-        if (!rayTracing) return;
+    void RecordRayTracing(VkCommandBuffer cb)
+    {
+        if (!rayTracing)
+            return;
         // The bottom level is rebuilt every frame beside the top one, as an engine with deforming
         // geometry does. It also means a capture holds the build of everything it traces against:
         // a bottom level built once before the capture cannot be rebuilt by a replay, which then
         // traces against an empty structure (docs/REPLAY.md). --static-blas leaves it as built at start-up.
-        if (!staticBlas) {
+        if (!staticBlas)
+        {
             VkAccelerationStructureGeometryKHR triangles{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
             triangles.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
             triangles.flags = VK_GEOMETRY_OPAQUE_BIT_KHR;
@@ -1295,7 +1434,7 @@ struct App {
             barrier.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
             barrier.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR | VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
             vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                                 VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+                VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR, 0, 1, &barrier, 0, nullptr, 0, nullptr);
         }
         VkAccelerationStructureGeometryKHR geometry = TlasGeometry();
         VkAccelerationStructureBuildGeometryInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
@@ -1316,14 +1455,16 @@ struct App {
         built.srcAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_WRITE_BIT_KHR;
         built.dstAccessMask = VK_ACCESS_ACCELERATION_STRUCTURE_READ_BIT_KHR;
         vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ACCELERATION_STRUCTURE_BUILD_BIT_KHR,
-                             VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1, &built, 0, nullptr, 0, nullptr);
+            VK_PIPELINE_STAGE_RAY_TRACING_SHADER_BIT_KHR, 0, 1, &built, 0, nullptr, 0, nullptr);
         vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt.pipeline);
         vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_RAY_TRACING_KHR, rt.layout, 0, 1, &rt.set, 0, nullptr);
         rt.trace(cb, &rt.raygen, &rt.miss, &rt.hit, &rt.callable, 256, 256, 1);
     }
 
-    void DestroyRayTracing() {
-        if (!rayTracing) return;
+    void DestroyRayTracing()
+    {
+        if (!rayTracing)
+            return;
         vkDestroyPipeline(device, rt.pipeline, nullptr);
         vkDestroyPipelineLayout(device, rt.layout, nullptr);
         vkDestroyDescriptorPool(device, rt.pool, nullptr);
@@ -1333,12 +1474,15 @@ struct App {
         vkFreeMemory(device, rt.imageMemory, nullptr);
         rt.destroyAS(device, rt.tlas, nullptr);
         rt.destroyAS(device, rt.blas, nullptr);
-        for (DeviceBuffer* b : {&rt.vertices, &rt.instances, &rt.blasMemory, &rt.tlasMemory, &rt.scratch, &rt.sbt}) DestroyDeviceBuffer(*b);
+        for (DeviceBuffer* b : {&rt.vertices, &rt.instances, &rt.blasMemory, &rt.tlasMemory, &rt.scratch, &rt.sbt})
+            DestroyDeviceBuffer(*b);
     }
 
     // --second-device / --second-queue: the side target, its pass and its command buffer.
-    void CreateSide() {
-        if (side == Side::None) return;
+    void CreateSide()
+    {
+        if (side == Side::None)
+            return;
         VkDevice d = sideWork.device;
         VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
         cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -1408,8 +1552,10 @@ struct App {
     }
 
     // One frame of side work: the target cleared to a color that follows the time.
-    void DrawSide(float t) {
-        if (side == Side::None) return;
+    void DrawSide(float t)
+    {
+        if (side == Side::None)
+            return;
         VkDevice d = sideWork.device;
         CHECK(vkWaitForFences(d, 1, &sideWork.fence, VK_TRUE, UINT64_MAX));
         CHECK(vkResetFences(d, 1, &sideWork.fence));
@@ -1434,8 +1580,10 @@ struct App {
         CHECK(vkQueueSubmit(sideWork.queue, 1, &si, sideWork.fence));
     }
 
-    void DestroySide() {
-        if (side == Side::None) return;
+    void DestroySide()
+    {
+        if (side == Side::None)
+            return;
         VkDevice d = sideWork.device;
         vkDeviceWaitIdle(d);
         vkDestroyFramebuffer(d, sideWork.framebuffer, nullptr);
@@ -1445,12 +1593,15 @@ struct App {
         vkFreeMemory(d, sideWork.memory, nullptr);
         vkDestroyFence(d, sideWork.fence, nullptr);
         vkDestroyCommandPool(d, sideWork.pool, nullptr);
-        if (side == Side::Device) vkDestroyDevice(d, nullptr);
+        if (side == Side::Device)
+            vkDestroyDevice(d, nullptr);
     }
 
     // --prerecord: a pass that loads the presented image and clears its left half.
-    void CreateOverlayPass() {
-        if (offscreen || samples != VK_SAMPLE_COUNT_1_BIT) return;
+    void CreateOverlayPass()
+    {
+        if (offscreen || samples != VK_SAMPLE_COUNT_1_BIT)
+            return;
         VkAttachmentDescription att{};
         att.format = colorFormat;
         att.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -1474,7 +1625,8 @@ struct App {
         Name(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)overlayPass, "Overlay");
     }
 
-    void RecordOverlay(VkCommandBuffer cb, uint32_t imageIndex) {
+    void RecordOverlay(VkCommandBuffer cb, uint32_t imageIndex)
+    {
         CHECK(vkResetCommandBuffer(cb, 0));
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         bi.flags = VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT;
@@ -1495,10 +1647,13 @@ struct App {
     }
 
     // --prerecord: one command buffer per swapchain image, recorded now and resubmitted as is.
-    void PrerecordAll() {
+    void PrerecordAll()
+    {
         const uint32_t count = (uint32_t)framebuffers.size();
-        if (prerecorded.size() != count) {
-            if (!prerecorded.empty()) vkFreeCommandBuffers(device, commandPool, (uint32_t)prerecorded.size(), prerecorded.data());
+        if (prerecorded.size() != count)
+        {
+            if (!prerecorded.empty())
+                vkFreeCommandBuffers(device, commandPool, (uint32_t)prerecorded.size(), prerecorded.data());
             prerecorded.assign(count, VK_NULL_HANDLE);
             VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
             cai.commandPool = commandPool;
@@ -1506,10 +1661,14 @@ struct App {
             cai.commandBufferCount = count;
             CHECK(vkAllocateCommandBuffers(device, &cai, prerecorded.data()));
         }
-        for (uint32_t i = 0; i < count; ++i) Record(prerecorded[i], i, 0.0f);
-        if (!overlayPass) return;
-        if (overlays.size() != count) {
-            if (!overlays.empty()) vkFreeCommandBuffers(device, commandPool, (uint32_t)overlays.size(), overlays.data());
+        for (uint32_t i = 0; i < count; ++i)
+            Record(prerecorded[i], i, 0.0f);
+        if (!overlayPass)
+            return;
+        if (overlays.size() != count)
+        {
+            if (!overlays.empty())
+                vkFreeCommandBuffers(device, commandPool, (uint32_t)overlays.size(), overlays.data());
             overlays.assign(count, VK_NULL_HANDLE);
             VkCommandBufferAllocateInfo cai{VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO};
             cai.commandPool = commandPool;
@@ -1517,14 +1676,18 @@ struct App {
             cai.commandBufferCount = count;
             CHECK(vkAllocateCommandBuffers(device, &cai, overlays.data()));
         }
-        for (uint32_t i = 0; i < count; ++i) RecordOverlay(overlays[i], i);
+        for (uint32_t i = 0; i < count; ++i)
+            RecordOverlay(overlays[i], i);
     }
 
     // Everything sized by the window, except the swapchain itself (see CreateSwapchain).
-    void DestroySwapchainResources() {
-        for (auto fb : framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
+    void DestroySwapchainResources()
+    {
+        for (auto fb : framebuffers)
+            vkDestroyFramebuffer(device, fb, nullptr);
         framebuffers.clear();
-        for (auto fb : overlayFramebuffers) vkDestroyFramebuffer(device, fb, nullptr);
+        for (auto fb : overlayFramebuffers)
+            vkDestroyFramebuffer(device, fb, nullptr);
         overlayFramebuffers.clear();
         vkDestroyImageView(device, depthView, nullptr);
         vkDestroyImage(device, depthImage, nullptr);
@@ -1532,31 +1695,42 @@ struct App {
         depthView = VK_NULL_HANDLE;
         depthImage = VK_NULL_HANDLE;
         depthMemory = VK_NULL_HANDLE;
-        if (msaaView) vkDestroyImageView(device, msaaView, nullptr);
-        if (msaaImage) vkDestroyImage(device, msaaImage, nullptr);
-        if (msaaMemory) vkFreeMemory(device, msaaMemory, nullptr);
+        if (msaaView)
+            vkDestroyImageView(device, msaaView, nullptr);
+        if (msaaImage)
+            vkDestroyImage(device, msaaImage, nullptr);
+        if (msaaMemory)
+            vkFreeMemory(device, msaaMemory, nullptr);
         msaaView = VK_NULL_HANDLE;
         msaaImage = VK_NULL_HANDLE;
         msaaMemory = VK_NULL_HANDLE;
-        if (offFramebuffer) vkDestroyFramebuffer(device, offFramebuffer, nullptr);
-        if (offView) vkDestroyImageView(device, offView, nullptr);
-        if (offImage) vkDestroyImage(device, offImage, nullptr);
-        if (offMemory) vkFreeMemory(device, offMemory, nullptr);
+        if (offFramebuffer)
+            vkDestroyFramebuffer(device, offFramebuffer, nullptr);
+        if (offView)
+            vkDestroyImageView(device, offView, nullptr);
+        if (offImage)
+            vkDestroyImage(device, offImage, nullptr);
+        if (offMemory)
+            vkFreeMemory(device, offMemory, nullptr);
         offFramebuffer = VK_NULL_HANDLE;
         offView = VK_NULL_HANDLE;
         offImage = VK_NULL_HANDLE;
         offMemory = VK_NULL_HANDLE;
-        for (auto v : swapViews) vkDestroyImageView(device, v, nullptr);
+        for (auto v : swapViews)
+            vkDestroyImageView(device, v, nullptr);
         swapViews.clear();
         swapImages.clear();
     }
 
     // Returns false while the window has no drawable area (minimized); try again later.
-    bool RecreateSwapchain() {
+    bool RecreateSwapchain()
+    {
         VkSurfaceCapabilitiesKHR caps;
         CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps));
-        if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0) return false;
-        if (caps.currentExtent.width == 0xFFFFFFFF && (width == 0 || height == 0)) return false;
+        if (caps.currentExtent.width == 0 || caps.currentExtent.height == 0)
+            return false;
+        if (caps.currentExtent.width == 0xFFFFFFFF && (width == 0 || height == 0))
+            return false;
         vkDeviceWaitIdle(device);
         DestroySwapchainResources();
         CreateSwapchain(swapchain);
@@ -1565,7 +1739,8 @@ struct App {
         return true;
     }
 
-    void CreateResources() {
+    void CreateResources()
+    {
         // Cube geometry
         const float p = 0.5f;
         Vertex verts[24];
@@ -1573,14 +1748,17 @@ struct App {
         const float faces[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
         const float colors[6][3] = {{1, 0.3f, 0.3f}, {0.3f, 1, 0.3f}, {0.3f, 0.3f, 1}, {1, 1, 0.3f}, {1, 0.3f, 1}, {0.3f, 1, 1}};
         int v = 0, ix = 0;
-        for (int f = 0; f < 6; ++f) {
+        for (int f = 0; f < 6; ++f)
+        {
             const float* n = faces[f];
             float u[3] = {n[1], n[2], n[0]};
             float w[3] = {n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]};
-            for (int c = 0; c < 4; ++c) {
+            for (int c = 0; c < 4; ++c)
+            {
                 float su = (c == 1 || c == 2) ? 1.f : -1.f;
                 float sv = (c >= 2) ? 1.f : -1.f;
-                for (int k = 0; k < 3; ++k) verts[v].pos[k] = p * (n[k] + su * u[k] + sv * w[k]);
+                for (int k = 0; k < 3; ++k)
+                    verts[v].pos[k] = p * (n[k] + su * u[k] + sv * w[k]);
                 memcpy(verts[v].color, colors[f], sizeof(verts[v].color));
                 verts[v].uv[0] = su * 0.5f + 0.5f;
                 verts[v].uv[1] = sv * 0.5f + 0.5f;
@@ -1588,13 +1766,14 @@ struct App {
             }
             uint16_t b = (uint16_t)(f * 4);
             uint16_t quad[6] = {b, (uint16_t)(b + 1), (uint16_t)(b + 2), b, (uint16_t)(b + 2), (uint16_t)(b + 3)};
-            for (int k = 0; k < 6; ++k) indices[ix++] = quad[k];
+            for (int k = 0; k < 6; ++k)
+                indices[ix++] = quad[k];
         }
         VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         CreateBuffer(sizeof(verts), VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | (hazard ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0), host, vertexBuffer, vertexMemory, "Cube vertices");
         CreateBuffer(sizeof(indices), VK_BUFFER_USAGE_INDEX_BUFFER_BIT, host, indexBuffer, indexMemory, "Cube indices");
         CreateBuffer(sizeof(Mat4), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, uniformBuffer, uniformMemory, "Cube uniforms",
-                     descriptorBuffer);
+            descriptorBuffer);
         void* map;
         CHECK(vkMapMemory(device, vertexMemory, 0, VK_WHOLE_SIZE, 0, &map));
         memcpy(map, verts, sizeof(verts));
@@ -1608,7 +1787,8 @@ struct App {
         const uint32_t ts = 8;
         uint8_t pixels[ts * ts * 4];
         for (uint32_t y = 0; y < ts; ++y)
-            for (uint32_t x = 0; x < ts; ++x) {
+            for (uint32_t x = 0; x < ts; ++x)
+            {
                 uint8_t c = ((x + y) & 1) ? 255 : 90;
                 uint8_t* px = &pixels[(y * ts + x) * 4];
                 px[0] = px[1] = px[2] = c;
@@ -1655,7 +1835,8 @@ struct App {
         region.imageExtent = {ts, ts, 1};
         vkCmdCopyBufferToImage(upload, staging, texture, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         // Each level is a blit of the previous one (level i-1 goes to TRANSFER_SRC first).
-        for (uint32_t level = 1; level < kTextureMips; ++level) {
+        for (uint32_t level = 1; level < kTextureMips; ++level)
+        {
             VkImageMemoryBarrier toSrc = b;
             toSrc.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
             toSrc.newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
@@ -1676,7 +1857,8 @@ struct App {
         toRead[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, kTextureMips - 1, 0, 1};
         toRead[1].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
         toRead[1].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, kTextureMips - 1, 1, 0, 1};
-        for (auto& t : toRead) {
+        for (auto& t : toRead)
+        {
             t.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
             t.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT | VK_ACCESS_TRANSFER_READ_BIT;
             t.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
@@ -1713,8 +1895,10 @@ struct App {
         VkDescriptorSetLayoutCreateInfo dslci{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
         dslci.bindingCount = 2;
         dslci.pBindings = bindings;
-        if (pushTemplate) dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
-        if (descriptorBuffer) dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        if (pushTemplate)
+            dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_PUSH_DESCRIPTOR_BIT_KHR;
+        if (descriptorBuffer)
+            dslci.flags = VK_DESCRIPTOR_SET_LAYOUT_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         CHECK(vkCreateDescriptorSetLayout(device, &dslci, nullptr, &setLayout));
         VkPushConstantRange pcr{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
         VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
@@ -1725,7 +1909,7 @@ struct App {
         CHECK(vkCreatePipelineLayout(device, &plci, nullptr, &pipelineLayout));
 
         VkDescriptorPoolSize sizes[3] = {{VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 1}, {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1},
-                                         {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
+            {VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1}};
         VkDescriptorPoolCreateInfo dpci{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
         dpci.maxSets = 2;
         dpci.poolSizeCount = 3;
@@ -1733,7 +1917,8 @@ struct App {
         CHECK(vkCreateDescriptorPool(device, &dpci, nullptr, &descriptorPool));
         VkDescriptorBufferInfo dbi{uniformBuffer, 0, sizeof(Mat4)};
         VkDescriptorImageInfo dii{sampler, textureView, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
-        if (pushTemplate) {
+        if (pushTemplate)
+        {
             pushData.uniform = dbi;
             pushData.texture = dii;
             VkDescriptorUpdateTemplateEntry entries[2]{};
@@ -1752,7 +1937,8 @@ struct App {
         dsai.descriptorPool = descriptorPool;
         dsai.descriptorSetCount = 1;
         dsai.pSetLayouts = &setLayout;
-        if (!pushTemplate && !descriptorBuffer) CHECK(vkAllocateDescriptorSets(device, &dsai, &descriptorSet));
+        if (!pushTemplate && !descriptorBuffer)
+            CHECK(vkAllocateDescriptorSets(device, &dsai, &descriptorSet));
         VkWriteDescriptorSet writes[2]{};
         writes[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
         writes[0].dstSet = descriptorSet;
@@ -1766,16 +1952,18 @@ struct App {
         writes[1].descriptorCount = 1;
         writes[1].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         writes[1].pImageInfo = &dii;
-        if (!pushTemplate && !descriptorBuffer) vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
-        if (descriptorBuffer) {
+        if (!pushTemplate && !descriptorBuffer)
+            vkUpdateDescriptorSets(device, 2, writes, 0, nullptr);
+        if (descriptorBuffer)
+        {
             // The set's bytes, laid out as the driver wants them: its size and the offset of each
             // binding come from the layout, and each descriptor itself from vkGetDescriptorEXT,
             // which is the only way to make one.
             VkDeviceSize size = 0;
             db.layoutSize(device, setLayout, &size);
             CreateBuffer(size,
-                         VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
-                         host, db.buffer, db.memory, "Cube descriptors", true);
+                VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
+                host, db.buffer, db.memory, "Cube descriptors", true);
             CHECK(vkMapMemory(device, db.memory, 0, VK_WHOLE_SIZE, 0, &db.mapped));
             VkBufferDeviceAddressInfo bdai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
             bdai.buffer = db.buffer;
@@ -1838,7 +2026,8 @@ struct App {
         ds.depthTestEnable = VK_TRUE;
         ds.depthWriteEnable = VK_TRUE;
         ds.depthCompareOp = VK_COMPARE_OP_LESS;
-        if (stencil) {
+        if (stencil)
+        {
             // Every fragment that passes writes 1 into the stencil buffer.
             VkStencilOpState op{};
             op.failOp = op.depthFailOp = VK_STENCIL_OP_KEEP;
@@ -1871,18 +2060,21 @@ struct App {
         gpci.pDynamicState = &dsci;
         gpci.layout = pipelineLayout;
         gpci.renderPass = renderPass;
-        if (descriptorBuffer) gpci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
+        if (descriptorBuffer)
+            gpci.flags |= VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT;
         // --suspend draws with this pipeline in dynamic rendering: the targets' formats stand in
         // for the render pass.
         VkPipelineRenderingCreateInfo dynamicTargets{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
         dynamicTargets.colorAttachmentCount = 1;
         dynamicTargets.pColorAttachmentFormats = &colorFormat;
         dynamicTargets.depthAttachmentFormat = depthFormat;
-        if (suspend) {
+        if (suspend)
+        {
             gpci.pNext = &dynamicTargets;
             gpci.renderPass = VK_NULL_HANDLE;
         }
-        if (pipelineLibrary) {
+        if (pipelineLibrary)
+        {
             // Library 1: vertex input interface and pre-rasterization shaders (the vertex stage).
             VkGraphicsPipelineLibraryCreateInfoEXT vertexParts{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_LIBRARY_CREATE_INFO_EXT};
             vertexParts.flags = VK_GRAPHICS_PIPELINE_LIBRARY_VERTEX_INPUT_INTERFACE_BIT_EXT | VK_GRAPHICS_PIPELINE_LIBRARY_PRE_RASTERIZATION_SHADERS_BIT_EXT;
@@ -1923,19 +2115,23 @@ struct App {
             linked.layout = pipelineLayout;
             linked.renderPass = renderPass;
             CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &linked, nullptr, &pipeline));
-        } else {
+        }
+        else
+        {
             CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline));
         }
         Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipeline, "Cube pipeline");
         vkDestroyShaderModule(device, vs, nullptr);
         vkDestroyShaderModule(device, fs, nullptr);
-        if (shaderObject) {
+        if (shaderObject)
+        {
             // The same code as linked shader objects, with the pipeline layout's set layout and push constants.
             std::vector<char> vcode = ReadFile(ExeDir() + "cube.vert.spv");
             std::vector<char> fcode = ReadFile(ExeDir() + (heavy ? "heavy.frag.spv" : "cube.frag.spv"));
             VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
             VkShaderCreateInfoEXT sci[2]{};
-            for (int i = 0; i < 2; ++i) {
+            for (int i = 0; i < 2; ++i)
+            {
                 sci[i].sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT;
                 sci[i].flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT;
                 sci[i].codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;
@@ -1958,7 +2154,8 @@ struct App {
         }
     }
 
-    void CreatePersistImage(PersistImage& p, uint32_t mips, const char* name) {
+    void CreatePersistImage(PersistImage& p, uint32_t mips, const char* name)
+    {
         VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
         ici.imageType = VK_IMAGE_TYPE_2D;
         ici.format = VK_FORMAT_R8G8B8A8_UNORM;
@@ -1993,7 +2190,8 @@ struct App {
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)p.image, name);
     }
 
-    void CreatePersistent() {
+    void CreatePersistent()
+    {
         VkAttachmentDescription att{};
         att.format = VK_FORMAT_R8G8B8A8_UNORM;
         att.samples = VK_SAMPLE_COUNT_1_BIT;
@@ -2018,7 +2216,8 @@ struct App {
         CreatePersistImage(source, 1, "Persistent source");
         CreatePersistImage(copy, 1, "Persistent copy");
         VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-        for (int i = 0; i < kFramesInFlight; ++i) {
+        for (int i = 0; i < kFramesInFlight; ++i)
+        {
             CreateBuffer(kStagingSize * kStagingSize * 4, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, persistStaging[i], persistStagingMemory[i], "Persistent staging");
             CHECK(vkMapMemory(device, persistStagingMemory[i], 0, VK_WHOLE_SIZE, 0, &persistStagingMapped[i]));
         }
@@ -2035,7 +2234,8 @@ struct App {
         barriers[1].image = source.image;
         barriers[2].image = copy.image;
         barriers[3].image = trail.image;
-        for (VkImageMemoryBarrier& c : barriers) c.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        for (VkImageMemoryBarrier& c : barriers)
+            c.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
         barriers[3].newLayout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
         barriers[3].dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
         barriers[3].subresourceRange.baseMipLevel = 1;
@@ -2048,14 +2248,16 @@ struct App {
 
     // An access of the first mip of a persistent image ending and the next beginning, in its layout
     // (synchronization validation wants each change of use marked).
-    struct Use {
+    struct Use
+    {
         VkAccessFlags access;
         VkPipelineStageFlags stage;
     };
     static constexpr Use kTransferRead{VK_ACCESS_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
     static constexpr Use kTransferWrite{VK_ACCESS_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT};
     static constexpr Use kAttachment{VK_ACCESS_COLOR_ATTACHMENT_READ_BIT | VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT};
-    void Hand(VkCommandBuffer cb, VkImage image, Use from, Use to) {
+    void Hand(VkCommandBuffer cb, VkImage image, Use from, Use to)
+    {
         VkImageMemoryBarrier b{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
         b.oldLayout = b.newLayout = VK_IMAGE_LAYOUT_GENERAL;
         b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2066,7 +2268,8 @@ struct App {
         vkCmdPipelineBarrier(cb, from.stage, to.stage, 0, 0, nullptr, 0, nullptr, 1, &b);
     }
 
-    void ClearRect(VkCommandBuffer cb, const PersistImage& p, int32_t x, int32_t y, uint32_t size, uint64_t n) {
+    void ClearRect(VkCommandBuffer cb, const PersistImage& p, int32_t x, int32_t y, uint32_t size, uint64_t n)
+    {
         VkRenderPassBeginInfo rpbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rpbi.renderPass = persistPass;
         rpbi.framebuffer = p.framebuffer;
@@ -2088,11 +2291,13 @@ struct App {
     //  - the trail and source images, which render passes load and add a square to;
     //  - the trail's second mip, blitted from the first, which stays TRANSFER_SRC between frames
     //    while the first mip is GENERAL (initial layouts differ per subresource).
-    void RecordPersistent(VkCommandBuffer cb) {
+    void RecordPersistent(VkCommandBuffer cb)
+    {
         const uint64_t n = frameCount;
         auto* texels = static_cast<uint8_t*>(persistStagingMapped[frameSlot]);
         for (uint32_t y = 0; y < kStagingSize; ++y)
-            for (uint32_t x = 0; x < kStagingSize; ++x) {
+            for (uint32_t x = 0; x < kStagingSize; ++x)
+            {
                 uint8_t* px = &texels[(y * kStagingSize + x) * 4];
                 const bool on = ((x / 4 + y / 4 + n) & 1) != 0;
                 px[0] = on ? (uint8_t)(n * 29) : 20;
@@ -2144,13 +2349,15 @@ struct App {
     }
 
     // Records one frame's commands: the compute pass, then the cube in the main pass.
-    void Record(VkCommandBuffer cb, uint32_t imageIndex, float t) {
+    void Record(VkCommandBuffer cb, uint32_t imageIndex, float t)
+    {
         CHECK(vkResetCommandBuffer(cb, 0));
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         // Prerecorded buffers may be resubmitted while a previous submission is still pending.
         bi.flags = prerecord ? VK_COMMAND_BUFFER_USAGE_SIMULTANEOUS_USE_BIT : VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         CHECK(vkBeginCommandBuffer(cb, &bi));
-        if (persistent && !prerecord) RecordPersistent(cb);
+        if (persistent && !prerecord)
+            RecordPersistent(cb);
 
         // Compute first: two dispatches refreshing the wave buffer, then a barrier. The inspector
         // times the run as one compute pass.
@@ -2160,7 +2367,11 @@ struct App {
         // dispatches for them, so it writes past the end. Nothing on the CPU can see that: the
         // index is computed on the GPU, and only GPU-assisted validation reports it.
         const uint32_t waveCount = outOfBounds ? kWaveCount * 4 : kWaveCount;
-        struct { float time; uint32_t count; } wavePush{t, waveCount};
+        struct
+        {
+            float time;
+            uint32_t count;
+        } wavePush{t, waveCount};
         vkCmdPushConstants(cb, computePipelineLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(wavePush), &wavePush);
         vkCmdDispatch(cb, waveCount / 64, 1, 1);
         vkCmdDispatch(cb, waveCount / 64, 1, 1);
@@ -2171,9 +2382,13 @@ struct App {
 
         VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
         label.pLabelName = "Main Pass";
-        label.color[0] = 0.2f; label.color[1] = 0.6f; label.color[2] = 1.0f; label.color[3] = 1.0f;
+        label.color[0] = 0.2f;
+        label.color[1] = 0.6f;
+        label.color[2] = 1.0f;
+        label.color[3] = 1.0f;
         RecordRayTracing(cb);
-        if (beginLabel) beginLabel(cb, &label);
+        if (beginLabel)
+            beginLabel(cb, &label);
 
         VkClearValue clears[2]{};
         clears[0].color = {{0.1f, 0.1f, 0.15f, 1.0f}};
@@ -2184,7 +2399,8 @@ struct App {
         rpbi.renderArea = {{0, 0}, {width, height}};
         rpbi.clearValueCount = 2;
         rpbi.pClearValues = clears;
-        if (hazard) {
+        if (hazard)
+        {
             // The first vertex wiggles, written by a submission of its own that nothing waits
             // for before the draw below reads the buffer (see --hazard).
             VkCommandBuffer hb = hazardBuffers[frameSlot];
@@ -2205,9 +2421,11 @@ struct App {
         VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
-        if (dynamic) {
+        if (dynamic)
+        {
             VkImageMemoryBarrier toTargets[2]{};
-            for (auto& b : toTargets) {
+            for (auto& b : toTargets)
+            {
                 b.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
                 b.srcQueueFamilyIndex = b.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
                 b.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
@@ -2221,7 +2439,7 @@ struct App {
             toTargets[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
             toTargets[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
             vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
-                                 0, 0, nullptr, 0, nullptr, 2, toTargets);
+                0, 0, nullptr, 0, nullptr, 2, toTargets);
             color.imageView = colorView;
             color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -2237,9 +2455,12 @@ struct App {
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &color;
             ri.pDepthAttachment = &depth;
-            if (suspend) ri.flags = VK_RENDERING_SUSPENDING_BIT;
+            if (suspend)
+                ri.flags = VK_RENDERING_SUSPENDING_BIT;
             vkCmdBeginRendering(cb, &ri);
-        } else {
+        }
+        else
+        {
             vkCmdBeginRenderPass(cb, &rpbi, VK_SUBPASS_CONTENTS_INLINE);
         }
         VkViewport viewport{0, 0, (float)width, (float)height, 0, 1};
@@ -2247,7 +2468,8 @@ struct App {
         // used to exercise the inspector's validation message reporting.
         VkRect2D scissor{{badScissor ? -1 : 0, 0}, {width, height}};
         RecordCubeDraw(cb, viewport, scissor, t);
-        if (suspend) {
+        if (suspend)
+        {
             // The pass is suspended with the frame's buffer, and resumed in the second buffer with
             // the same rendering info, where the cube is drawn again (in place, so the depth test
             // rejects it), before the pass ends for good. The debug label spans both.
@@ -2260,7 +2482,8 @@ struct App {
             vkCmdBeginRendering(cb, &ri);
             RecordCubeDraw(cb, viewport, scissor, t);
         }
-        if (dynamic) {
+        if (dynamic)
+        {
             vkCmdEndRendering(cb);
             VkImageMemoryBarrier toPresent{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
             toPresent.srcQueueFamilyIndex = toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
@@ -2270,17 +2493,22 @@ struct App {
             toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
             toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
             vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
-        } else {
+        }
+        else
+        {
             vkCmdEndRenderPass(cb);
         }
-        if (endLabel) endLabel(cb);
+        if (endLabel)
+            endLabel(cb);
         CHECK(vkEndCommandBuffer(cb));
     }
 
     // The cube's draw inside the main pass: its pipeline or shader objects, state, bindings and the draw
     // (a second, identical draw with --occluded).
-    void RecordCubeDraw(VkCommandBuffer cb, const VkViewport& viewport, const VkRect2D& scissor, float t) {
-        if (shaderObject) {
+    void RecordCubeDraw(VkCommandBuffer cb, const VkViewport& viewport, const VkRect2D& scissor, float t)
+    {
+        if (shaderObject)
+        {
             // Shader objects: the shaders, and all the state a pipeline would have carried.
             const VkShaderStageFlagBits stageBits[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
             so.bind(cb, 2, stageBits, shaders);
@@ -2304,7 +2532,8 @@ struct App {
             VkVertexInputAttributeDescription2EXT attrs[3]{};
             const VkFormat formats[3] = {VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32B32_SFLOAT, VK_FORMAT_R32G32_SFLOAT};
             const uint32_t offsets[3] = {offsetof(Vertex, pos), offsetof(Vertex, color), offsetof(Vertex, uv)};
-            for (uint32_t i = 0; i < 3; ++i) {
+            for (uint32_t i = 0; i < 3; ++i)
+            {
                 attrs[i].sType = VK_STRUCTURE_TYPE_VERTEX_INPUT_ATTRIBUTE_DESCRIPTION_2_EXT;
                 attrs[i].location = i;
                 attrs[i].format = formats[i];
@@ -2320,13 +2549,17 @@ struct App {
             so.blendEnable(cb, 0, 1, &blendOff);
             const VkColorComponentFlags all = 0xF;
             so.writeMask(cb, 0, 1, &all);
-        } else {
+        }
+        else
+        {
             vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             vkCmdSetViewport(cb, 0, 1, &viewport);
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
-        if (pushTemplate) pushWithTemplate(cb, pushUpdateTemplate, pipelineLayout, 0, &pushData);
-        else if (descriptorBuffer) {
+        if (pushTemplate)
+            pushWithTemplate(cb, pushUpdateTemplate, pipelineLayout, 0, &pushData);
+        else if (descriptorBuffer)
+        {
             VkDescriptorBufferBindingInfoEXT binding{VK_STRUCTURE_TYPE_DESCRIPTOR_BUFFER_BINDING_INFO_EXT};
             binding.address = db.address;
             binding.usage = VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT;
@@ -2335,14 +2568,16 @@ struct App {
             const VkDeviceSize setOffset = 0;
             db.setOffsets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &bufferIndex, &setOffset);
         }
-        else vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+        else
+            vkCmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
         VkDeviceSize offset = 0;
         vkCmdBindVertexBuffers(cb, 0, 1, &vertexBuffer, &offset);
         vkCmdBindIndexBuffer(cb, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
         float tint = 0.5f + 0.5f * sinf(t);
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
         vkCmdDrawIndexed(cb, insideOut ? 18 : 36, 1, 0, 0, 0);
-        if (occluded) vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
+        if (occluded)
+            vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
     }
 
     // --------------------------------------------------------------------------------- frame
@@ -2353,9 +2588,12 @@ struct App {
      * without a cache and thrown away again: the timeline should show the frame stopping for it
      * (**Where the CPU went**, "Creating pipelines").
      */
-    void CompileHitch() {
-        if (!compileHitch) return;
-        if (hitchPipeline) vkDestroyPipeline(device, hitchPipeline, nullptr);
+    void CompileHitch()
+    {
+        if (!compileHitch)
+            return;
+        if (hitchPipeline)
+            vkDestroyPipeline(device, hitchPipeline, nullptr);
         VkShaderModule cs = LoadShader("wave.comp.spv");
         VkComputePipelineCreateInfo cpci{VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO};
         cpci.stage.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -2368,43 +2606,53 @@ struct App {
         vkDestroyShaderModule(device, cs, nullptr);
     }
 
-    void Churn() {
+    void Churn()
+    {
         const VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         ChurnBuffer scratch;
         CreateBuffer(64 * 1024, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT, host, scratch.buffer, scratch.memory, "Churn: per-frame scratch");
         churnRecent.push_back(scratch);
-        if (churnRecent.size() > 2) {
+        if (churnRecent.size() > 2)
+        {
             // Never bound to anything the GPU runs, so it can go without waiting for the frame.
             vkDestroyBuffer(device, churnRecent.front().buffer, nullptr);
             vkFreeMemory(device, churnRecent.front().memory, nullptr);
             churnRecent.erase(churnRecent.begin());
         }
-        if (frameCount % 30 == 0) {
+        if (frameCount % 30 == 0)
+        {
             ChurnBuffer kept;
             CreateBuffer(1024 * 1024, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, kept.buffer, kept.memory, "Churn: kept forever");
             churnKept.push_back(kept);
         }
     }
 
-    bool DrawFrame(float t) {
-        if (resized && !RecreateSwapchain()) return false;
+    bool DrawFrame(float t)
+    {
+        if (resized && !RecreateSwapchain())
+            return false;
         CompileHitch();
         // --hitch-every: the application's own work stalling the frame, which no call the layer
         // times accounts for. One frame in N, so a timing run has a hitch to trigger on.
-        if (hitchEvery > 0 && frameCount > 0 && (int)(frameCount % hitchEvery) == 0) std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        if (hitchEvery > 0 && frameCount > 0 && (int)(frameCount % hitchEvery) == 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
         // --stall: every frame late, so a vsynced present misses refreshes and the display repeats
         // the frame before it, which is what the dropped-frame count has to see.
-        if (stallMs > 0) std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
+        if (stallMs > 0)
+            std::this_thread::sleep_for(std::chrono::milliseconds(stallMs));
         VkFence fence = inFlight[frameSlot];
         CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
         uint32_t imageIndex = 0;
-        if (!offscreen) {
+        if (!offscreen)
+        {
             VkResult ar = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable[frameSlot], VK_NULL_HANDLE, &imageIndex);
-            if (ar == VK_ERROR_OUT_OF_DATE_KHR) {
+            if (ar == VK_ERROR_OUT_OF_DATE_KHR)
+            {
                 resized = true;
                 return false;
             }
-            if (ar != VK_SUBOPTIMAL_KHR) CHECK(ar);
+            if (ar != VK_SUBOPTIMAL_KHR)
+                CHECK(ar);
         }
         CHECK(vkResetFences(device, 1, &fence));
 
@@ -2419,9 +2667,12 @@ struct App {
         // inspector then needs "Record all command buffers" to see its commands.
         VkCommandBuffer cbs[2] = {prerecord ? prerecorded[imageIndex] : commandBuffers[frameSlot], VK_NULL_HANDLE};
         VkCommandBuffer cb = cbs[0];
-        if (!prerecord) Record(cb, imageIndex, t);
-        if (prerecord && !overlays.empty()) cbs[1] = overlays[imageIndex];
-        if (suspend) cbs[1] = suspendBuffers[frameSlot];   // the resumed half of the pass, in the same submission
+        if (!prerecord)
+            Record(cb, imageIndex, t);
+        if (prerecord && !overlays.empty())
+            cbs[1] = overlays[imageIndex];
+        if (suspend)
+            cbs[1] = suspendBuffers[frameSlot];   // the resumed half of the pass, in the same submission
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
         VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
@@ -2434,7 +2685,8 @@ struct App {
         si.pSignalSemaphores = &renderFinished[frameSlot];
         CHECK(vkQueueSubmit(queue, 1, &si, fence));
         DrawSide(t);
-        if (offscreen) {
+        if (offscreen)
+        {
             // No present: pace the loop like a 90 Hz headset's runtime instead, on a steady
             // schedule (a sleep after the frame's own work would drift and jitter).
             using namespace std::chrono;
@@ -2453,14 +2705,17 @@ struct App {
         pi.pSwapchains = &swapchain;
         pi.pImageIndices = &imageIndex;
         VkResult pr = vkQueuePresentKHR(queue, &pi);
-        if (pr == VK_SUBOPTIMAL_KHR || pr == VK_ERROR_OUT_OF_DATE_KHR) resized = true;
-        else CHECK(pr);
+        if (pr == VK_SUBOPTIMAL_KHR || pr == VK_ERROR_OUT_OF_DATE_KHR)
+            resized = true;
+        else
+            CHECK(pr);
         frameSlot = (frameSlot + 1) % kFramesInFlight;
         frameCount++;
         return true;
     }
 
-    void CreateCompute() {
+    void CreateCompute()
+    {
         VkMemoryPropertyFlags host = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
         CreateBuffer(kWaveCount * sizeof(float), VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, host, waveBuffer, waveMemory, "Wave");
 
@@ -2507,10 +2762,13 @@ struct App {
         vkDestroyShaderModule(device, cs, nullptr);
     }
 
-    void Cleanup() {
+    void Cleanup()
+    {
         vkDeviceWaitIdle(device);
-        for (auto* list : {&churnRecent, &churnKept}) {
-            for (const ChurnBuffer& b : *list) {
+        for (auto* list : {&churnRecent, &churnKept})
+        {
+            for (const ChurnBuffer& b : *list)
+            {
                 vkDestroyBuffer(device, b.buffer, nullptr);
                 vkFreeMemory(device, b.memory, nullptr);
             }
@@ -2520,18 +2778,22 @@ struct App {
         DestroyRayTracing();
         // --leak: leave the sampler and the wave buffer alive so the inspector's leak report has
         // something to report at vkDestroyDevice.
-        if (leak) {
+        if (leak)
+        {
             sampler = VK_NULL_HANDLE;
             waveBuffer = VK_NULL_HANDLE;
         }
-        if (persistent) {
-            for (PersistImage* p : {&trail, &source, &copy}) {
+        if (persistent)
+        {
+            for (PersistImage* p : {&trail, &source, &copy})
+            {
                 vkDestroyFramebuffer(device, p->framebuffer, nullptr);
                 vkDestroyImageView(device, p->view, nullptr);
                 vkDestroyImage(device, p->image, nullptr);
                 vkFreeMemory(device, p->memory, nullptr);
             }
-            for (int i = 0; i < kFramesInFlight; ++i) {
+            for (int i = 0; i < kFramesInFlight; ++i)
+            {
                 vkDestroyBuffer(device, persistStaging[i], nullptr);
                 vkFreeMemory(device, persistStagingMemory[i], nullptr);
             }
@@ -2542,16 +2804,23 @@ struct App {
         vkDestroyDescriptorSetLayout(device, computeSetLayout, nullptr);
         vkDestroyBuffer(device, waveBuffer, nullptr);
         vkFreeMemory(device, waveMemory, nullptr);
-        for (int i = 0; i < kFramesInFlight; ++i) {
+        for (int i = 0; i < kFramesInFlight; ++i)
+        {
             vkDestroySemaphore(device, imageAvailable[i], nullptr);
             vkDestroySemaphore(device, renderFinished[i], nullptr);
             vkDestroyFence(device, inFlight[i], nullptr);
         }
-        if (overlayPass) vkDestroyRenderPass(device, overlayPass, nullptr);
-        if (pushUpdateTemplate) vkDestroyDescriptorUpdateTemplate(device, pushUpdateTemplate, nullptr);
+        if (overlayPass)
+            vkDestroyRenderPass(device, overlayPass, nullptr);
+        if (pushUpdateTemplate)
+            vkDestroyDescriptorUpdateTemplate(device, pushUpdateTemplate, nullptr);
         vkDestroyPipeline(device, pipeline, nullptr);
-        for (VkPipeline lib : pipelineLibraries) if (lib) vkDestroyPipeline(device, lib, nullptr);
-        for (VkShaderEXT s : shaders) if (s) so.destroy(device, s, nullptr);
+        for (VkPipeline lib : pipelineLibraries)
+            if (lib)
+                vkDestroyPipeline(device, lib, nullptr);
+        for (VkShaderEXT s : shaders)
+            if (s)
+                so.destroy(device, s, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
@@ -2563,12 +2832,14 @@ struct App {
         vkFreeMemory(device, vertexMemory, nullptr);
         vkDestroyBuffer(device, indexBuffer, nullptr);
         vkFreeMemory(device, indexMemory, nullptr);
-        if (db.buffer) {
+        if (db.buffer)
+        {
             vkUnmapMemory(device, db.memory);
             vkDestroyBuffer(device, db.buffer, nullptr);
             vkFreeMemory(device, db.memory, nullptr);
         }
-        if (hitchPipeline) vkDestroyPipeline(device, hitchPipeline, nullptr);
+        if (hitchPipeline)
+            vkDestroyPipeline(device, hitchPipeline, nullptr);
         vkDestroyBuffer(device, uniformBuffer, nullptr);
         vkFreeMemory(device, uniformMemory, nullptr);
         DestroySwapchainResources();
@@ -2580,32 +2851,40 @@ struct App {
         vkDestroyInstance(instance, nullptr);
     }
 
-    int Run() {
+    int Run()
+    {
         CreateWindowNative();
         InitVulkan();
         CreateSwapchain();
         CreateRenderPass();
-        if (prerecord) CreateOverlayPass();
+        if (prerecord)
+            CreateOverlayPass();
         CreateFramebuffers();
         CreateResources();
         CreateCompute();
-        if (persistent) CreatePersistent();
+        if (persistent)
+            CreatePersistent();
         CreateSide();
         CreateRayTracing();
-        if (prerecord) PrerecordAll();
+        if (prerecord)
+            PrerecordAll();
         auto start = std::chrono::steady_clock::now();
-        while (!quit && (maxFrames < 0 || (int)frameCount < maxFrames)) {
+        while (!quit && (maxFrames < 0 || (int)frameCount < maxFrames))
+        {
             PumpEvents();
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
             // Asked again each frame until somebody is there to hear it: the inspector connects a
             // few frames after the device is made.
-            if (captureAt > 0 && (int)frameCount >= captureAt && !captureAsked) {
+            if (captureAt > 0 && (int)frameCount >= captureAt && !captureAsked)
+            {
                 char label[48];
                 snprintf(label, sizeof label, "asked at frame %d", captureAt);   // the tab's name
                 captureAsked = gpu_inspector_capture_named(1, label) != 0;
             }
-            if (churn) Churn();
-            if (!DrawFrame(t)) std::this_thread::sleep_for(std::chrono::milliseconds(16));
+            if (churn)
+                Churn();
+            if (!DrawFrame(t))
+                std::this_thread::sleep_for(std::chrono::milliseconds(16));
         }
         Cleanup();
         return 0;
@@ -2614,39 +2893,71 @@ struct App {
 
 } // namespace
 
-int RunApp(int argc, char** argv) {
+int RunApp(int argc, char** argv)
+{
     App app;
-    for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--frames") && i + 1 < argc) app.maxFrames = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc) app.captureAt = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--churn")) app.churn = true;
-        else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--bad-scissor")) app.badScissor = true;
-        else if (!strcmp(argv[i], "--leak")) app.leak = true;
-        else if (!strcmp(argv[i], "--hazard")) app.hazard = true;
-        else if (!strcmp(argv[i], "--occluded")) app.occluded = true;
-        else if (!strcmp(argv[i], "--no-cull")) app.noCull = true;
-        else if (!strcmp(argv[i], "--inside-out")) app.insideOut = true;
-        else if (!strcmp(argv[i], "--prerecord")) app.prerecord = true;
-        else if (!strcmp(argv[i], "--push-template")) app.pushTemplate = true;
-        else if (!strcmp(argv[i], "--descriptor-buffer")) app.descriptorBuffer = true;
-        else if (!strcmp(argv[i], "--compile-hitch")) app.compileHitch = true;
-        else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc) app.hitchEvery = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--stall") && i + 1 < argc) app.stallMs = atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--oob")) app.outOfBounds = true;
-        else if (!strcmp(argv[i], "--pipeline-library")) app.pipelineLibrary = true;
-        else if (!strcmp(argv[i], "--shader-object")) app.shaderObject = true;
-        else if (!strcmp(argv[i], "--suspend")) app.suspend = true;
-        else if (!strcmp(argv[i], "--stencil")) app.stencil = true;
-        else if (!strcmp(argv[i], "--ray-tracing")) app.rayTracing = true;
-        else if (!strcmp(argv[i], "--static-blas")) app.staticBlas = true;
-        else if (!strcmp(argv[i], "--second-device")) app.side = App::Side::Device;
-        else if (!strcmp(argv[i], "--second-queue")) app.side = App::Side::Queue;
-        else if (!strcmp(argv[i], "--persistent")) app.persistent = true;
-        else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
-        else if (!strcmp(argv[i], "--msaa")) app.samples = VK_SAMPLE_COUNT_4_BIT;
-        else if (!strcmp(argv[i], "--offscreen")) {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!strcmp(argv[i], "--frames") && i + 1 < argc)
+            app.maxFrames = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc)
+            app.captureAt = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--churn"))
+            app.churn = true;
+        else if (!strcmp(argv[i], "--width") && i + 1 < argc)
+            app.width = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--height") && i + 1 < argc)
+            app.height = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--bad-scissor"))
+            app.badScissor = true;
+        else if (!strcmp(argv[i], "--leak"))
+            app.leak = true;
+        else if (!strcmp(argv[i], "--hazard"))
+            app.hazard = true;
+        else if (!strcmp(argv[i], "--occluded"))
+            app.occluded = true;
+        else if (!strcmp(argv[i], "--no-cull"))
+            app.noCull = true;
+        else if (!strcmp(argv[i], "--inside-out"))
+            app.insideOut = true;
+        else if (!strcmp(argv[i], "--prerecord"))
+            app.prerecord = true;
+        else if (!strcmp(argv[i], "--push-template"))
+            app.pushTemplate = true;
+        else if (!strcmp(argv[i], "--descriptor-buffer"))
+            app.descriptorBuffer = true;
+        else if (!strcmp(argv[i], "--compile-hitch"))
+            app.compileHitch = true;
+        else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc)
+            app.hitchEvery = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stall") && i + 1 < argc)
+            app.stallMs = atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--oob"))
+            app.outOfBounds = true;
+        else if (!strcmp(argv[i], "--pipeline-library"))
+            app.pipelineLibrary = true;
+        else if (!strcmp(argv[i], "--shader-object"))
+            app.shaderObject = true;
+        else if (!strcmp(argv[i], "--suspend"))
+            app.suspend = true;
+        else if (!strcmp(argv[i], "--stencil"))
+            app.stencil = true;
+        else if (!strcmp(argv[i], "--ray-tracing"))
+            app.rayTracing = true;
+        else if (!strcmp(argv[i], "--static-blas"))
+            app.staticBlas = true;
+        else if (!strcmp(argv[i], "--second-device"))
+            app.side = App::Side::Device;
+        else if (!strcmp(argv[i], "--second-queue"))
+            app.side = App::Side::Queue;
+        else if (!strcmp(argv[i], "--persistent"))
+            app.persistent = true;
+        else if (!strcmp(argv[i], "--heavy"))
+            app.heavy = true;
+        else if (!strcmp(argv[i], "--msaa"))
+            app.samples = VK_SAMPLE_COUNT_4_BIT;
+        else if (!strcmp(argv[i], "--offscreen"))
+        {
             app.offscreen = true;
 #ifdef _WIN32
             timeBeginPeriod(1);   // 1 ms scheduler granularity for the frame pacing
@@ -2657,11 +2968,13 @@ int RunApp(int argc, char** argv) {
 }
 
 #if defined(_WIN32)
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
     return RunApp(__argc, __argv);
 }
 #else
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     return RunApp(argc, argv);
 }
 #endif

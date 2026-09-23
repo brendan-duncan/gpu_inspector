@@ -18,16 +18,17 @@
 
 #import <Metal/Metal.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * JSON of a render pipeline's reflection: an object keyed by stage ("vertex", "fragment",
  * "tile", "object", "mesh"), each with `buffers`, `textures`, `samplers` and `threadgroup`
  * arrays. "" for nil.
  */
-std::string RenderReflectionJson(MTLRenderPipelineReflection *reflection);
+std::string RenderReflectionJson(MTLRenderPipelineReflection* reflection);
 
 /** As above for a compute pipeline, keyed by "compute". */
-std::string ComputeReflectionJson(MTLComputePipelineReflection *reflection);
+std::string ComputeReflectionJson(MTLComputePipelineReflection* reflection);
 
 }  // namespace mtlinsp

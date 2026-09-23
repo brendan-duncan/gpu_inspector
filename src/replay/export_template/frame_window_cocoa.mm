@@ -11,22 +11,26 @@
 @end
 
 @implementation FrameWindowDelegate
-- (BOOL)windowShouldClose:(NSWindow*)sender {
+- (BOOL)windowShouldClose:(NSWindow*)sender
+{
     (void)sender;
     self.closed = YES;
     return NO;   // the program closes it, once its loop has seen this
 }
 @end
 
-struct FrameWindow {
+struct FrameWindow
+{
     NSWindow* window = nil;
     CAMetalLayer* layer = nil;
     FrameWindowDelegate* delegate = nil;
     bool closed = false;
 };
 
-FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height) {
-    @autoreleasepool {
+FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
+{
+    @autoreleasepool
+    {
         [NSApplication sharedApplication];
         // A program started from a terminal is no application to AppKit until it says so.
         [NSApp setActivationPolicy:NSApplicationActivationPolicyRegular];
@@ -38,7 +42,8 @@ FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
         // Not resizable: the swap chain is made once, for this size.
         const NSWindowStyleMask style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskMiniaturizable;
         NSWindow* nsWindow = [[NSWindow alloc] initWithContentRect:rect styleMask:style backing:NSBackingStoreBuffered defer:NO];
-        if (!nsWindow) return nullptr;
+        if (!nsWindow)
+            return nullptr;
 
         CAMetalLayer* layer = [CAMetalLayer layer];
         layer.contentsScale = scale;
@@ -63,33 +68,46 @@ FrameWindow* OpenFrameWindow(const char* title, uint32_t width, uint32_t height)
     }
 }
 
-bool PumpFrameWindow(FrameWindow* window) {
-    if (!window) return false;
-    @autoreleasepool {
-        for (;;) {
+bool PumpFrameWindow(FrameWindow* window)
+{
+    if (!window)
+        return false;
+    @autoreleasepool
+    {
+        for (;;)
+        {
             NSEvent* event = [NSApp nextEventMatchingMask:NSEventMaskAny untilDate:nil inMode:NSDefaultRunLoopMode dequeue:YES];
-            if (!event) break;
-            if (event.type == NSEventTypeKeyDown && event.keyCode == 53) {   // Escape
+            if (!event)
+                break;
+            if (event.type == NSEventTypeKeyDown && event.keyCode == 53)
+            {   // Escape
                 window->closed = true;
                 continue;
             }
             [NSApp sendEvent:event];
         }
-        if (window->delegate.closed) window->closed = true;
+        if (window->delegate.closed)
+            window->closed = true;
     }
     return !window->closed;
 }
 
-void SetFrameWindowTitle(FrameWindow* window, const char* title) {
-    if (!window) return;
-    @autoreleasepool {
+void SetFrameWindowTitle(FrameWindow* window, const char* title)
+{
+    if (!window)
+        return;
+    @autoreleasepool
+    {
         window->window.title = [NSString stringWithUTF8String:title ? title : ""];
     }
 }
 
-void CloseFrameWindow(FrameWindow* window) {
-    if (!window) return;
-    @autoreleasepool {
+void CloseFrameWindow(FrameWindow* window)
+{
+    if (!window)
+        return;
+    @autoreleasepool
+    {
         window->window.delegate = nil;
         [window->window close];
     }

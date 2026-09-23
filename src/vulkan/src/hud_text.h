@@ -19,11 +19,13 @@
 #include <cstring>
 #include <vector>
 
-namespace gpuhud {
+namespace gpuhud
+{
 
 // One rectangle in pixels from the top-left of the target, with a straight (non-premultiplied)
 // color. The backends' vertex buffers are arrays of this.
-struct Rect {
+struct Rect
+{
     float x = 0, y = 0, w = 0, h = 0;
     float r = 1, g = 1, b = 1, a = 1;
 };
@@ -34,7 +36,8 @@ constexpr int kGlyphW = 5;
 constexpr int kGlyphH = 7;
 constexpr int kGlyphAdvance = 6;   // one blank column between glyphs
 
-struct Glyph {
+struct Glyph
+{
     char c;
     uint8_t rows[kGlyphH];
 };
@@ -97,44 +100,62 @@ constexpr Glyph kFont[] = {
 
 constexpr int kFontCount = (int)(sizeof(kFont) / sizeof(kFont[0]));
 
-inline const Glyph* FindGlyph(char c) {
-    if (c >= 'a' && c <= 'z') c = (char)(c - 'a' + 'A');
+inline const Glyph* FindGlyph(char c)
+{
+    if (c >= 'a' && c <= 'z')
+        c = (char)(c - 'a' + 'A');
     for (int i = 0; i < kFontCount; ++i)
-        if (kFont[i].c == c) return &kFont[i];
+        if (kFont[i].c == c)
+            return &kFont[i];
     return &kFont[0];   // space
 }
 
 // Width in pixels of `text` drawn at `scale`, without the trailing advance gap.
-inline float TextWidth(const char* text, float scale) {
+inline float TextWidth(const char* text, float scale)
+{
     const size_t n = text ? strlen(text) : 0;
-    if (!n) return 0;
+    if (!n)
+        return 0;
     return (float)((n - 1) * kGlyphAdvance + kGlyphW) * scale;
 }
 
 inline float TextHeight(float scale) { return kGlyphH * scale; }
 
 inline void AppendRect(std::vector<Rect>& out, float x, float y, float w, float h,
-                       float r, float g, float b, float a) {
-    if (w <= 0 || h <= 0 || a <= 0) return;
+    float r, float g, float b, float a)
+{
+    if (w <= 0 || h <= 0 || a <= 0)
+        return;
     out.push_back(Rect{x, y, w, h, r, g, b, a});
 }
 
 // One rectangle per lit pixel. Runs of lit pixels in a row are merged into a single rectangle,
 // which roughly halves the count on the digits and costs one comparison per pixel.
 inline void AppendText(std::vector<Rect>& out, float x, float y, float scale, const char* text,
-                       float r, float g, float b, float a) {
-    if (!text) return;
+    float r, float g, float b, float a)
+{
+    if (!text)
+        return;
     float penX = x;
-    for (const char* p = text; *p; ++p, penX += kGlyphAdvance * scale) {
+    for (const char* p = text; *p; ++p, penX += kGlyphAdvance * scale)
+    {
         const Glyph* glyph = FindGlyph(*p);
-        for (int row = 0; row < kGlyphH; ++row) {
+        for (int row = 0; row < kGlyphH; ++row)
+        {
             const uint8_t bits = glyph->rows[row];
-            if (!bits) continue;
+            if (!bits)
+                continue;
             int col = 0;
-            while (col < kGlyphW) {
-                if (!(bits & (1u << (kGlyphW - 1 - col)))) { ++col; continue; }
+            while (col < kGlyphW)
+            {
+                if (!(bits & (1u << (kGlyphW - 1 - col))))
+                {
+                    ++col;
+                    continue;
+                }
                 int run = 1;
-                while (col + run < kGlyphW && (bits & (1u << (kGlyphW - 1 - (col + run))))) ++run;
+                while (col + run < kGlyphW && (bits & (1u << (kGlyphW - 1 - (col + run)))))
+                    ++run;
                 AppendRect(out, penX + col * scale, y + row * scale, run * scale, scale, r, g, b, a);
                 col += run;
             }
@@ -149,7 +170,8 @@ inline void AppendText(std::vector<Rect>& out, float x, float y, float scale, co
 // change to the layout happens once. The backend fills this in from what it already measures for
 // the UI's frame-time meter.
 
-struct HudState {
+struct HudState
+{
     double frameMs = 0;        // smoothed frame interval
     double minMs = 0;          // shortest and longest of the recent window
     double maxMs = 0;
@@ -169,7 +191,8 @@ struct HudState {
 // and a fourth line while paused or capturing. `scale` is the size of one font pixel; the caller
 // picks it from the target's size so the HUD stays readable at 4K without swamping a small window.
 inline void BuildHud(std::vector<Rect>& out, const HudState& s, uint32_t targetWidth,
-                     uint32_t targetHeight, float scale) {
+    uint32_t targetHeight, float scale)
+{
     (void)targetHeight;
     char line1[64], line2[64], line3[96], line4[64];
     snprintf(line1, sizeof(line1), "GPU INSPECTOR - %s", s.backend ? s.backend : "");
@@ -180,8 +203,10 @@ inline void BuildHud(std::vector<Rect>& out, const HudState& s, uint32_t targetW
     else
         snprintf(line3, sizeof(line3), "MIN %.2f  MAX %.2f", s.minMs, s.maxMs);
     line4[0] = 0;
-    if (s.paused) snprintf(line4, sizeof(line4), "PAUSED AT FRAME %llu", (unsigned long long)s.frame);
-    else if (s.capturing) snprintf(line4, sizeof(line4), "CAPTURING FRAME %llu", (unsigned long long)s.frame);
+    if (s.paused)
+        snprintf(line4, sizeof(line4), "PAUSED AT FRAME %llu", (unsigned long long)s.frame);
+    else if (s.capturing)
+        snprintf(line4, sizeof(line4), "CAPTURING FRAME %llu", (unsigned long long)s.frame);
 
     const char* lines[4] = {line1, line2, line3, line4[0] ? line4 : nullptr};
     const float pad = 4 * scale;
@@ -189,9 +214,11 @@ inline void BuildHud(std::vector<Rect>& out, const HudState& s, uint32_t targetW
 
     float widest = 0;
     int count = 0;
-    for (int i = 0; i < 4 && lines[i]; ++i, ++count) {
+    for (int i = 0; i < 4 && lines[i]; ++i, ++count)
+    {
         const float w = TextWidth(lines[i], scale);
-        if (w > widest) widest = w;
+        if (w > widest)
+            widest = w;
     }
 
     const float originX = pad;
@@ -202,24 +229,43 @@ inline void BuildHud(std::vector<Rect>& out, const HudState& s, uint32_t targetW
     // The panel: dark and mostly opaque, so the text stays legible over a bright frame. Clamped to
     // the target in case a tiny window cannot hold it.
     AppendRect(out, originX, originY,
-               panelW < (float)targetWidth ? panelW : (float)targetWidth,
-               panelH, 0.04f, 0.05f, 0.07f, 0.78f);
+        panelW < (float)targetWidth ? panelW : (float)targetWidth,
+        panelH, 0.04f, 0.05f, 0.07f, 0.78f);
 
-    for (int i = 0; i < count; ++i) {
+    for (int i = 0; i < count; ++i)
+    {
         const float ty = originY + pad + i * lineStep;
         float r = 0.90f, g = 0.92f, b = 0.95f;
-        if (i == 0) { r = 0.36f; g = 0.66f; b = 1.00f; }            // the title, in the app's blue
-        else if (i == 3 && s.paused) { r = 1.00f; g = 0.78f; b = 0.25f; }   // paused: amber
-        else if (i == 3) { r = 0.40f; g = 0.90f; b = 0.50f; }               // capturing: green
+        if (i == 0)
+        {
+            r = 0.36f;
+            g = 0.66f;
+            b = 1.00f;
+        }            // the title, in the app's blue
+        else if (i == 3 && s.paused)
+        {
+            r = 1.00f;
+            g = 0.78f;
+            b = 0.25f;
+        }   // paused: amber
+        else if (i == 3)
+        {
+            r = 0.40f;
+            g = 0.90f;
+            b = 0.50f;
+        }               // capturing: green
         AppendText(out, originX + pad, ty, scale, lines[i], r, g, b, 1.0f);
     }
 }
 
 // The font pixel size for a target of this width: 1 up to 720p, 2 to 1440p, 3 beyond, so the HUD
 // is about the same physical size on any display.
-inline float HudScale(uint32_t targetWidth) {
-    if (targetWidth >= 2560) return 3.0f;
-    if (targetWidth >= 1280) return 2.0f;
+inline float HudScale(uint32_t targetWidth)
+{
+    if (targetWidth >= 2560)
+        return 3.0f;
+    if (targetWidth >= 1280)
+        return 2.0f;
     return 1.0f;
 }
 

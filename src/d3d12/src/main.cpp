@@ -16,7 +16,8 @@
 #include <cwchar>
 #include <string>
 
-namespace {
+namespace
+{
 
 bool g_initialized = false;
 
@@ -30,21 +31,27 @@ bool g_initialized = false;
  * Nothing is logged here: the log reads its own settings on its first line, so the whole block has
  * to be in place before that (the names applied are returned for the caller to log).
  */
-std::string ApplySettings(const wchar_t* block) {
+std::string ApplySettings(const wchar_t* block)
+{
     std::string applied;
-    if (!block) return applied;
+    if (!block)
+        return applied;
     // A malformed block would run off the end of the allocation: 64 entries and 32 KB are far more
     // than the handful of variables the library reads.
     constexpr size_t kMaxEntries = 64;
     constexpr size_t kMaxChars = 16 * 1024;
     size_t chars = 0;
-    for (size_t n = 0; n < kMaxEntries && *block; ++n) {
+    for (size_t n = 0; n < kMaxEntries && *block; ++n)
+    {
         size_t length = wcsnlen(block, kMaxChars - chars);
-        if (length == 0 || length >= kMaxChars - chars) break;
+        if (length == 0 || length >= kMaxChars - chars)
+            break;
         const wchar_t* equals = wcschr(block, L'=');
-        if (equals && equals != block) {
+        if (equals && equals != block)
+        {
             dxinsp::SetConfigValue(dxinsp::Narrow(block, equals - block).c_str(), dxinsp::Narrow(equals + 1).c_str());
-            if (!applied.empty()) applied += " ";
+            if (!applied.empty())
+                applied += " ";
             applied += dxinsp::Narrow(block, length);
         }
         block += length + 1;
@@ -55,29 +62,35 @@ std::string ApplySettings(const wchar_t* block) {
 
 }  // namespace
 
-extern "C" __declspec(dllexport) DWORD WINAPI DxinspInitialize(LPVOID settings) {
-    if (g_initialized) return 0;
+extern "C" __declspec(dllexport) DWORD WINAPI DxinspInitialize(LPVOID settings)
+{
+    if (g_initialized)
+        return 0;
     g_initialized = true;
     // Before the first log line: the log's own variables are read once, on first use.
     const std::string applied = ApplySettings((const wchar_t*)settings);
     // The command line as well as the pid: one target can be a tree of processes (a browser's
     // renderers and its GPU process), and the log is otherwise a column of numbers.
     dxinsp::LogAlways("loaded into pid %lu: %s", GetCurrentProcessId(), dxinsp::Narrow(GetCommandLineW()).c_str());
-    if (!applied.empty()) dxinsp::LogAlways("settings from the launcher: %s", applied.c_str());
+    if (!applied.empty())
+        dxinsp::LogAlways("settings from the launcher: %s", applied.c_str());
     // The listener comes up before the application has a device, so the UI can be waiting when the
     // process starts, or attach later and get a snapshot either way. It starts listening only once
     // a D3D12 device exists (ui_messages.cpp), so a Vulkan application launched the same way, with
     // this library along for the ride, leaves the port to the Vulkan layer. That is also what tells
     // a waiting inspector whether the injection was in time: a process whose device was already
     // made never opens the port, since the hooks are on the calls that make one.
-    if (!dxinsp::InstallEntryPointHooks()) {
+    if (!dxinsp::InstallEntryPointHooks())
+    {
         dxinsp::LogAlways("the D3D12 entry points could not be hooked: no D3D12 capture in this process");
         return 1;
     }
     return 0;
 }
 
-BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID) {
-    if (reason == DLL_PROCESS_ATTACH) DisableThreadLibraryCalls(instance);
+BOOL WINAPI DllMain(HINSTANCE instance, DWORD reason, LPVOID)
+{
+    if (reason == DLL_PROCESS_ATTACH)
+        DisableThreadLibraryCalls(instance);
     return TRUE;
 }

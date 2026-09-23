@@ -18,7 +18,13 @@ extern ID3D12Device* device;
 /** Prints what failed and exits with code 2. */
 [[noreturn]] void Fail(const char* what, HRESULT result);
 [[noreturn]] void Fail(const std::string& message);
-#define DX_CHECK(call) do { const HRESULT dx_result_ = (call); if (FAILED(dx_result_)) Fail(#call, dx_result_); } while (0)
+#define DX_CHECK(call)                     \
+    do                                     \
+    {                                      \
+        const HRESULT dx_result_ = (call); \
+        if (FAILED(dx_result_))            \
+            Fail(#call, dx_result_);       \
+    } while (0)
 
 // The data file: shader bytecode, texture and buffer contents, and the captured targets, by offset.
 bool LoadData(const std::string& path);
@@ -33,9 +39,11 @@ ID3D12GraphicsCommandList* CreateClosedCommandList(D3D12_COMMAND_LIST_TYPE type)
 
 /** A later interface of a command list; the program stops where this runtime does not have it. */
 template <typename T>
-T* As(ID3D12GraphicsCommandList* list) {
+T* As(ID3D12GraphicsCommandList* list)
+{
     T* out = nullptr;
-    if (FAILED(list->QueryInterface(IID_PPV_ARGS(&out))) || !out) Fail("this runtime lacks a command list interface the frame uses");
+    if (FAILED(list->QueryInterface(IID_PPV_ARGS(&out))) || !out)
+        Fail("this runtime lacks a command list interface the frame uses");
     out->Release();   // the list itself keeps the object alive
     return out;
 }
@@ -49,7 +57,8 @@ void EndOneTime(ID3D12GraphicsCommandList* list);
 void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, UINT subresource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after);
 
 /** Tight rows of one subresource in an upload's data: bytes per row, rows, and slices of a volume. */
-struct TextureRegion {
+struct TextureRegion
+{
     UINT subresource;
     UINT64 rowBytes;
     UINT rows;
@@ -66,8 +75,8 @@ void UploadBuffer(ID3D12Resource* buffer, UINT64 offset, const void* data, UINT6
  * resolved first. `aspect`: 0 color, 1 depth, 2 stencil.
  */
 void ReadbackTexture(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, const char* name, UINT firstSubresource, UINT count,
-                     D3D12_RESOURCE_STATES state, DXGI_FORMAT resolveFormat, DXGI_FORMAT format, int aspect, UINT width, UINT height,
-                     UINT64 rowBytes, UINT rows, const void* captured, UINT64 capturedSize);
+    D3D12_RESOURCE_STATES state, DXGI_FORMAT resolveFormat, DXGI_FORMAT format, int aspect, UINT width, UINT height,
+    UINT64 rowBytes, UINT rows, const void* captured, UINT64 capturedSize);
 void ExecuteAndWait(ID3D12CommandQueue* queue, ID3D12CommandList* const* lists, UINT count);
 /** Compares the submission's read-backs with the capture's copies. */
 void CompleteReadbacks();

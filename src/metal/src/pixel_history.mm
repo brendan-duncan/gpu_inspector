@@ -39,10 +39,12 @@
 #include <string>
 #include <vector>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /** A pixel followed through one pass: where, and the copies of its attachments it is drawn into. */
-struct HistoryPass {
+struct HistoryPass
+{
     /** The texture followed: the request's, or the drawable the frame rendered into instead. */
     uint64_t texture = 0;
     uint32_t x = 0;
@@ -53,7 +55,8 @@ struct HistoryPass {
     int target = -1;
     /** Why the pass is not followed. */
     std::string note;
-    struct Attachment {
+    struct Attachment
+    {
         id<MTLTexture> shadow = nil;   // retained
         /**
          * Single-sample copy of `shadow`, for a multisampled attachment the pixel is read from:
@@ -76,8 +79,13 @@ struct HistoryPass {
     Attachment stencil;
     bool combined = false;
 
-    ~HistoryPass() {
-        for (Attachment &a : colors) { [a.shadow release]; [a.resolve release]; }
+    ~HistoryPass()
+    {
+        for (Attachment& a : colors)
+        {
+            [a.shadow release];
+            [a.resolve release];
+        }
         [depth.shadow release];
         [depth.resolve release];
         [stencil.shadow release];
@@ -85,13 +93,15 @@ struct HistoryPass {
     }
 };
 
-namespace {
+namespace
+{
 
 constexpr int kVariants = 6;
 /** Draws followed per pass: two encoders each, in the application's command buffer. */
 constexpr uint32_t kMaxDraws = 1024;
 
-struct PendingEvent {
+struct PendingEvent
+{
     std::string kind;
     std::string method;
     std::string detail;
@@ -107,7 +117,8 @@ struct PendingEvent {
 };
 
 /** One followed pass drawn into a command buffer, waiting for it to complete. */
-struct PendingHistory {
+struct PendingHistory
+{
     uint64_t texture = 0;
     std::vector<PendingEvent> events;
     std::vector<std::string> notes;
@@ -139,49 +150,57 @@ std::vector<PendingHistory> g_pending;
  * (OpKey). Issued at a draw, they leave an encoder of the library's own in the state the
  * application's was in there, without every call before it.
  */
-class StateSnapshot {
+class StateSnapshot
+{
 public:
-    void Apply(const LoggedOp &op) {
-        const OpKey &k = op.key;
+    void Apply(const LoggedOp& op)
+    {
+        const OpKey& k = op.key;
         auto drop = [&](auto undone) {
-            for (auto it = ops_.begin(); it != ops_.end();) {
-                if (undone((*it)->key)) it = ops_.erase(it);
-                else ++it;
+            for (auto it = ops_.begin(); it != ops_.end();)
+            {
+                if (undone((*it)->key))
+                    it = ops_.erase(it);
+                else
+                    ++it;
             }
         };
-        switch (k.policy) {
+        switch (k.policy)
+        {
             case OpPolicy::Draw:
                 return;
             case OpPolicy::Replace:
-                drop([&](const OpKey &o) { return o.policy == OpPolicy::Replace && o.name == k.name; });
+                drop([&](const OpKey& o) { return o.policy == OpPolicy::Replace && o.name == k.name; });
                 break;
             case OpPolicy::Slot:
-                drop([&](const OpKey &o) {
+                drop([&](const OpKey& o) {
                     return (o.policy == OpPolicy::Slot || o.policy == OpPolicy::SlotOffset) && o.name == k.name && o.location == k.location;
                 });
                 break;
             case OpPolicy::SlotOffset:
-                drop([&](const OpKey &o) { return o.policy == OpPolicy::SlotOffset && o.name == k.name && o.location == k.location; });
+                drop([&](const OpKey& o) { return o.policy == OpPolicy::SlotOffset && o.name == k.name && o.location == k.location; });
                 break;
             case OpPolicy::Range:
-                drop([&](const OpKey &o) {
-                    if (o.name != k.name) return false;
-                    if (o.policy == OpPolicy::Range) return o.location == k.location && o.length == k.length;
-                    return (o.policy == OpPolicy::Slot || o.policy == OpPolicy::SlotOffset) && o.location >= k.location
-                        && o.location < k.location + k.length;
+                drop([&](const OpKey& o) {
+                    if (o.name != k.name)
+                        return false;
+                    if (o.policy == OpPolicy::Range)
+                        return o.location == k.location && o.length == k.length;
+                    return (o.policy == OpPolicy::Slot || o.policy == OpPolicy::SlotOffset) && o.location >= k.location && o.location < k.location + k.length;
                 });
                 break;
         }
         ops_.push_back(&op);
     }
-    const std::list<const LoggedOp *> &ops() const { return ops_; }
+    const std::list<const LoggedOp*>& ops() const { return ops_; }
 
 private:
-    std::list<const LoggedOp *> ops_;
+    std::list<const LoggedOp*> ops_;
 };
 
 /** The pixel history's encoder, as the recorded calls see it: the state they set is noted, and a draw is kept rather than issued. */
-class HistoryReplay final : public OverdrawReplay {
+class HistoryReplay final : public OverdrawReplay
+{
 public:
     id pipeline = nil;
     id depthStencil = nil;
@@ -191,32 +210,40 @@ public:
     std::function<void(id<MTLRenderCommandEncoder>)> draw;
     bool skipped = false;
 
-    void BindPipeline(id<MTLRenderCommandEncoder> encoder, id state) override {
+    void BindPipeline(id<MTLRenderCommandEncoder> encoder, id state) override
+    {
         pipeline = state;
-        if (state != nil) [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)state];
+        if (state != nil)
+            [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)state];
     }
-    void SetDepthStencilState(id<MTLRenderCommandEncoder> encoder, id state) override {
+    void SetDepthStencilState(id<MTLRenderCommandEncoder> encoder, id state) override
+    {
         depthStencil = state;
         [encoder setDepthStencilState:(id<MTLDepthStencilState>)state];
     }
-    void SetCullMode(id<MTLRenderCommandEncoder> encoder, NSUInteger mode) override {
+    void SetCullMode(id<MTLRenderCommandEncoder> encoder, NSUInteger mode) override
+    {
         cullMode = mode;
         [encoder setCullMode:(MTLCullMode)mode];
     }
     /** Noted only: the history's scissor is the pixel. */
-    void SetScissorRects(id<MTLRenderCommandEncoder>, const MTLScissorRect *rects, NSUInteger count) override {
+    void SetScissorRects(id<MTLRenderCommandEncoder>, const MTLScissorRect* rects, NSUInteger count) override
+    {
         hasScissor = count > 0 && rects != nullptr;
-        if (hasScissor) scissor = rects[0];
+        if (hasScissor)
+            scissor = rects[0];
     }
-    void IssueDraw(id<MTLRenderCommandEncoder>, const std::function<void(id<MTLRenderCommandEncoder>)> &d) override { draw = d; }
+    void IssueDraw(id<MTLRenderCommandEncoder>, const std::function<void(id<MTLRenderCommandEncoder>)>& d) override { draw = d; }
     void Skip() override { skipped = true; }
 };
 
-std::string Hex(const uint8_t *bytes, size_t size) {
+std::string Hex(const uint8_t* bytes, size_t size)
+{
     static const char digits[] = "0123456789abcdef";
     std::string out;
     out.reserve(size * 2);
-    for (size_t i = 0; i < size; i++) {
+    for (size_t i = 0; i < size; i++)
+    {
         out += digits[bytes[i] >> 4];
         out += digits[bytes[i] & 15];
     }
@@ -227,7 +254,8 @@ std::string Hex(const uint8_t *bytes, size_t size) {
 
 // --------------------------------------------------------------------------------------------
 
-void StartPixelHistoryCapture(const PixelHistoryRequest &request) {
+void StartPixelHistoryCapture(const PixelHistoryRequest& request)
+{
     std::vector<PendingHistory> pending;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -238,17 +266,21 @@ void StartPixelHistoryCapture(const PixelHistoryRequest &request) {
         g_resolved = false;
         g_anyDrawable = false;
     }
-    for (PendingHistory &h : pending) {
+    for (PendingHistory& h : pending)
+    {
         [h.staging release];
-        for (id<MTLBuffer> b : h.visibility) [b release];
+        for (id<MTLBuffer> b : h.visibility)
+            [b release];
     }
-    if (request.enabled) {
+    if (request.enabled)
+    {
         Log("pixel history: following pixel (%u, %u) of texture %llu, level %u, slice %u", request.x, request.y,
             (unsigned long long)request.texture, request.level, request.slice);
     }
 }
 
-int MatchPixelHistoryAttachment(MTLRenderPassDescriptor *descriptor) {
+int MatchPixelHistoryAttachment(MTLRenderPassDescriptor* descriptor)
+{
     PixelHistoryRequest request;
     bool resolved = false;
     {
@@ -256,8 +288,10 @@ int MatchPixelHistoryAttachment(MTLRenderPassDescriptor *descriptor) {
         request = g_request;
         resolved = g_resolved;
     }
-    if (!request.enabled || descriptor == nil) return -1;
-    if (!resolved) {
+    if (!request.enabled || descriptor == nil)
+        return -1;
+    if (!resolved)
+    {
         // A texture the frame no longer has, or a drawable: the frame renders into a drawable of its
         // own, which is the one to follow.
         id texture = request.texture != 0 ? LiveObject(request.texture) : nil;
@@ -271,20 +305,25 @@ int MatchPixelHistoryAttachment(MTLRenderPassDescriptor *descriptor) {
         std::lock_guard<std::mutex> lock(g_mutex);
         anyDrawable = g_anyDrawable;
     }
-    for (NSUInteger i = 0; i < 8; i++) {
-        MTLRenderPassColorAttachmentDescriptor *a = descriptor.colorAttachments[i];
+    for (NSUInteger i = 0; i < 8; i++)
+    {
+        MTLRenderPassColorAttachmentDescriptor* a = descriptor.colorAttachments[i];
         id<MTLTexture> t = a.texture;
-        if (t == nil) continue;
+        if (t == nil)
+            continue;
         const bool same = request.texture != 0 && IdOf(t) == request.texture;
-        if (!same && !(anyDrawable && IsDrawableTexture(t))) continue;
+        if (!same && !(anyDrawable && IsDrawableTexture(t)))
+            continue;
         const NSUInteger slice = t.textureType == MTLTextureType3D ? a.depthPlane : a.slice;
-        if (a.level != request.level || slice != request.slice) continue;
+        if (a.level != request.level || slice != request.slice)
+            continue;
         return (int)i;
     }
     return -1;
 }
 
-void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDescriptor *descriptor, int attachment) {
+void PreparePixelHistory(OverdrawPass& pass, id commandBuffer, MTLRenderPassDescriptor* descriptor, int attachment)
+{
     PixelHistoryRequest request;
     {
         std::lock_guard<std::mutex> lock(g_mutex);
@@ -295,15 +334,17 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
     h->target = attachment;
     h->x = request.x;
     h->y = request.y;
-    MTLRenderPassColorAttachmentDescriptor *target = descriptor.colorAttachments[attachment];
+    MTLRenderPassColorAttachmentDescriptor* target = descriptor.colorAttachments[attachment];
     h->texture = IdOf(target.texture);
     h->width = (uint32_t)std::max<NSUInteger>(1, target.texture.width >> target.level);
     h->height = (uint32_t)std::max<NSUInteger>(1, target.texture.height >> target.level);
-    if (h->x >= h->width || h->y >= h->height) {
+    if (h->x >= h->width || h->y >= h->height)
+    {
         h->note = "the pixel is outside the pass's render target";
         return;
     }
-    if (pass.layered) {
+    if (pass.layered)
+    {
         h->note = "a layered pass is not followed yet";
         return;
     }
@@ -314,10 +355,11 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
     id<MTLBlitCommandEncoder> blit = nil;
     const MTLOrigin pixel = MTLOriginMake(h->x, h->y, 0);
     // A copy of an attachment the size of the pass, holding its pixel from before the pass when it loads.
-    auto shadow = [&](MTLRenderPassAttachmentDescriptor *a, HistoryPass::Attachment &out) -> bool {
+    auto shadow = [&](MTLRenderPassAttachmentDescriptor* a, HistoryPass::Attachment& out) -> bool {
         const uint32_t width = (uint32_t)std::max<NSUInteger>(1, a.texture.width >> a.level);
         const uint32_t height = (uint32_t)std::max<NSUInteger>(1, a.texture.height >> a.level);
-        if (width != h->width || height != h->height) {
+        if (width != h->width || height != h->height)
+        {
             h->note = "the pass's attachments differ in size";
             return false;
         }
@@ -325,15 +367,18 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
         out.loadAction = a.loadAction;
         out.sampleCount = (uint32_t)std::max<NSUInteger>(1, a.texture.sampleCount);
         out.shadow = NewRenderTexture(device, out.format, width, height, out.sampleCount);
-        if (out.shadow == nil) {
+        if (out.shadow == nil)
+        {
             h->note = "no memory for copies of the pass's attachments";
             return false;
         }
         // A multisampled shadow cannot be blitted out of, so the attachments whose pixel is read
         // back get a single-sample texture to resolve into (FollowPixel's readback).
         out.loads = a.loadAction == MTLLoadActionLoad && a.texture.storageMode != MTLStorageModeMemoryless;
-        if (out.loads) {
-            if (blit == nil) {
+        if (out.loads)
+        {
+            if (blit == nil)
+            {
                 blit = [cb blitCommandEncoder];
                 blit.label = @"gpu-inspector pixel history start";
             }
@@ -349,19 +394,25 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
         }
         return true;
     };
-    for (NSUInteger i = 0; i < 8; i++) {
-        MTLRenderPassColorAttachmentDescriptor *a = descriptor.colorAttachments[i];
-        if (a.texture == nil) continue;
+    for (NSUInteger i = 0; i < 8; i++)
+    {
+        MTLRenderPassColorAttachmentDescriptor* a = descriptor.colorAttachments[i];
+        if (a.texture == nil)
+            continue;
         h->colors[i].clearColor = a.clearColor;
-        if (!shadow(a, h->colors[i])) break;
+        if (!shadow(a, h->colors[i]))
+            break;
     }
-    if (h->note.empty() && descriptor.depthAttachment.texture != nil) {
+    if (h->note.empty() && descriptor.depthAttachment.texture != nil)
+    {
         h->depth.clearDepth = descriptor.depthAttachment.clearDepth;
         shadow(descriptor.depthAttachment, h->depth);
     }
-    if (h->note.empty() && descriptor.stencilAttachment.texture != nil) {
-        MTLRenderPassStencilAttachmentDescriptor *s = descriptor.stencilAttachment;
-        if (s.texture == descriptor.depthAttachment.texture && h->depth.shadow != nil) {
+    if (h->note.empty() && descriptor.stencilAttachment.texture != nil)
+    {
+        MTLRenderPassStencilAttachmentDescriptor* s = descriptor.stencilAttachment;
+        if (s.texture == descriptor.depthAttachment.texture && h->depth.shadow != nil)
+        {
             // One texture for both: the depth's copy holds the stencil too.
             h->combined = true;
             h->stencil.shadow = [h->depth.shadow retain];
@@ -369,274 +420,336 @@ void PreparePixelHistory(OverdrawPass &pass, id commandBuffer, MTLRenderPassDesc
             h->stencil.loadAction = s.loadAction;
             h->stencil.loads = h->depth.loads && s.loadAction == MTLLoadActionLoad;
             h->stencil.clearStencil = s.clearStencil;
-        } else {
+        }
+        else
+        {
             h->stencil.clearStencil = s.clearStencil;
             shadow(s, h->stencil);
         }
     }
     // The two attachments the pixel is read from need somewhere to resolve into when the pass is
     // multisampled. The others do not: nothing is ever copied out of them.
-    auto resolveTarget = [&](HistoryPass::Attachment &out) {
-        if (out.shadow == nil || out.sampleCount <= 1 || !h->note.empty()) return;
+    auto resolveTarget = [&](HistoryPass::Attachment& out) {
+        if (out.shadow == nil || out.sampleCount <= 1 || !h->note.empty())
+            return;
         out.resolve = NewRenderTexture(device, out.format, h->width, h->height);
-        if (out.resolve == nil) h->note = "no memory for the resolve of the pass's multisampled attachments";
+        if (out.resolve == nil)
+            h->note = "no memory for the resolve of the pass's multisampled attachments";
     };
     resolveTarget(h->colors[h->target]);
     resolveTarget(h->depth);
     [blit endEncoding];
 }
 
-void FollowPixel(OverdrawPass &pass) {
-    HistoryPass &h = *pass.history;
+void FollowPixel(OverdrawPass& pass)
+{
+    HistoryPass& h = *pass.history;
     const std::string where = "command buffer " + std::to_string(pass.commandBufferId) + ", pass " + std::to_string(pass.passIndex);
     PendingHistory out;
     out.texture = h.texture;
-    if (!h.note.empty()) {
+    if (!h.note.empty())
+    {
         out.notes.push_back(where + ": " + h.note);
         std::lock_guard<std::mutex> lock(g_mutex);
         g_pending.push_back(std::move(out));
         return;
     }
-  @autoreleasepool {
-    Internal internal;
-    id<MTLCommandBuffer> commandBuffer = (id<MTLCommandBuffer>)pass.commandBuffer;
-    id<MTLDevice> device = commandBuffer.device;
-    out.device = device.name.UTF8String ?: "";
-    for (HistoryPass::Attachment &a : h.colors) {
-        if (a.shadow != nil) out.keep.emplace_back(a.shadow);
-    }
-    if (h.depth.shadow != nil) out.keep.emplace_back(h.depth.shadow);
-    if (h.stencil.shadow != nil) out.keep.emplace_back(h.stencil.shadow);
+    @autoreleasepool
+    {
+        Internal internal;
+        id<MTLCommandBuffer> commandBuffer = (id<MTLCommandBuffer>)pass.commandBuffer;
+        id<MTLDevice> device = commandBuffer.device;
+        out.device = device.name.UTF8String ?: "";
+        for (HistoryPass::Attachment& a : h.colors)
+        {
+            if (a.shadow != nil)
+                out.keep.emplace_back(a.shadow);
+        }
+        if (h.depth.shadow != nil)
+            out.keep.emplace_back(h.depth.shadow);
+        if (h.stencil.shadow != nil)
+            out.keep.emplace_back(h.stencil.shadow);
 
     // What the pixel reads as: the target's format, and the depth aspect of the depth attachment.
-    const HistoryPass::Attachment &target = h.colors[h.target];
-    const PixelFormatInfo colorInfo = PixelFormatDetails(target.format);
-    if (colorInfo.name != nullptr && colorInfo.name[0] != '\0' && colorInfo.blockWidth == 1 && colorInfo.blockHeight == 1) {
-        out.pixelFormat = colorInfo.name;
-        out.colorBytes = colorInfo.blockBytes;
-    } else {
-        out.notes.push_back(where + std::string(": the render target's format ") + PixelFormatEnumName(target.format) + " cannot be read back");
-    }
-    MTLBlitOption depthOption = MTLBlitOptionNone;
-    if (h.depth.shadow != nil) {
-        const PixelFormatInfo depthInfo = DepthReadbackDetails(h.depth.format, &depthOption);
-        if (depthInfo.name != nullptr && depthInfo.name[0] != '\0') {
-            out.depthFormat = depthInfo.name;
-            out.depthBytes = depthInfo.blockBytes;
+        const HistoryPass::Attachment& target = h.colors[h.target];
+        const PixelFormatInfo colorInfo = PixelFormatDetails(target.format);
+        if (colorInfo.name != nullptr && colorInfo.name[0] != '\0' && colorInfo.blockWidth == 1 && colorInfo.blockHeight == 1)
+        {
+            out.pixelFormat = colorInfo.name;
+            out.colorBytes = colorInfo.blockBytes;
         }
-    }
+        else
+        {
+            out.notes.push_back(where + std::string(": the render target's format ") + PixelFormatEnumName(target.format) + " cannot be read back");
+        }
+        MTLBlitOption depthOption = MTLBlitOptionNone;
+        if (h.depth.shadow != nil)
+        {
+            const PixelFormatInfo depthInfo = DepthReadbackDetails(h.depth.format, &depthOption);
+            if (depthInfo.name != nullptr && depthInfo.name[0] != '\0')
+            {
+                out.depthFormat = depthInfo.name;
+                out.depthBytes = depthInfo.blockBytes;
+            }
+        }
 
-    uint32_t draws = 0;
-    for (const OverdrawPass::Segment &segment : pass.segments) {
-        for (const LoggedOp &op : segment.ops) draws += op.key.policy == OpPolicy::Draw ? 1 : 0;
-    }
-    if (draws > kMaxDraws) {
-        out.notes.push_back(where + ": only the first " + std::to_string(kMaxDraws) + " of its " + std::to_string(draws) + " draws are followed");
-        draws = kMaxDraws;
-    }
-    const uint32_t slotBytes = out.colorBytes + out.depthBytes;
-    out.staging = [device newBufferWithLength:std::max<NSUInteger>(1, (NSUInteger)(draws + 1) * slotBytes) options:MTLResourceStorageModeShared];
-    if (out.staging == nil) {
-        out.notes.push_back(where + ": no staging memory for the pixel's values");
-        std::lock_guard<std::mutex> lock(g_mutex);
-        g_pending.push_back(std::move(out));
-        return;
-    }
+        uint32_t draws = 0;
+        for (const OverdrawPass::Segment& segment : pass.segments)
+        {
+            for (const LoggedOp& op : segment.ops)
+                draws += op.key.policy == OpPolicy::Draw ? 1 : 0;
+        }
+        if (draws > kMaxDraws)
+        {
+            out.notes.push_back(where + ": only the first " + std::to_string(kMaxDraws) + " of its " + std::to_string(draws) + " draws are followed");
+            draws = kMaxDraws;
+        }
+        const uint32_t slotBytes = out.colorBytes + out.depthBytes;
+        out.staging = [device newBufferWithLength:std::max<NSUInteger>(1, (NSUInteger)(draws + 1) * slotBytes) options:MTLResourceStorageModeShared];
+        if (out.staging == nil)
+        {
+            out.notes.push_back(where + ": no staging memory for the pixel's values");
+            std::lock_guard<std::mutex> lock(g_mutex);
+            g_pending.push_back(std::move(out));
+            return;
+        }
 
-    auto descriptorFor = [&](bool start, id<MTLBuffer> visibility) {
-        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
-        for (NSUInteger i = 0; i < 8; i++) {
-            const HistoryPass::Attachment &a = h.colors[i];
-            if (a.shadow == nil) continue;
-            rp.colorAttachments[i].texture = a.shadow;
-            rp.colorAttachments[i].loadAction = !start || a.loads ? MTLLoadActionLoad : MTLLoadActionClear;
-            rp.colorAttachments[i].clearColor = a.loadAction == MTLLoadActionClear ? a.clearColor : MTLClearColorMake(0, 0, 0, 0);
-            rp.colorAttachments[i].storeAction = MTLStoreActionStore;
-        }
-        if (h.depth.shadow != nil) {
-            rp.depthAttachment.texture = h.depth.shadow;
-            rp.depthAttachment.loadAction = !start || h.depth.loads ? MTLLoadActionLoad : MTLLoadActionClear;
-            rp.depthAttachment.clearDepth = h.depth.clearDepth;
-            rp.depthAttachment.storeAction = MTLStoreActionStore;
-        }
-        if (h.stencil.shadow != nil) {
-            rp.stencilAttachment.texture = h.stencil.shadow;
-            rp.stencilAttachment.loadAction = !start || h.stencil.loads ? MTLLoadActionLoad : MTLLoadActionClear;
-            rp.stencilAttachment.clearStencil = h.stencil.clearStencil;
-            rp.stencilAttachment.storeAction = MTLStoreActionStore;
-        }
-        if (visibility != nil) rp.visibilityResultBuffer = visibility;
-        return rp;
-    };
+        auto descriptorFor = [&](bool start, id<MTLBuffer> visibility) {
+            MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            for (NSUInteger i = 0; i < 8; i++)
+            {
+                const HistoryPass::Attachment& a = h.colors[i];
+                if (a.shadow == nil)
+                    continue;
+                rp.colorAttachments[i].texture = a.shadow;
+                rp.colorAttachments[i].loadAction = !start || a.loads ? MTLLoadActionLoad : MTLLoadActionClear;
+                rp.colorAttachments[i].clearColor = a.loadAction == MTLLoadActionClear ? a.clearColor : MTLClearColorMake(0, 0, 0, 0);
+                rp.colorAttachments[i].storeAction = MTLStoreActionStore;
+            }
+            if (h.depth.shadow != nil)
+            {
+                rp.depthAttachment.texture = h.depth.shadow;
+                rp.depthAttachment.loadAction = !start || h.depth.loads ? MTLLoadActionLoad : MTLLoadActionClear;
+                rp.depthAttachment.clearDepth = h.depth.clearDepth;
+                rp.depthAttachment.storeAction = MTLStoreActionStore;
+            }
+            if (h.stencil.shadow != nil)
+            {
+                rp.stencilAttachment.texture = h.stencil.shadow;
+                rp.stencilAttachment.loadAction = !start || h.stencil.loads ? MTLLoadActionLoad : MTLLoadActionClear;
+                rp.stencilAttachment.clearStencil = h.stencil.clearStencil;
+                rp.stencilAttachment.storeAction = MTLStoreActionStore;
+            }
+            if (visibility != nil)
+                rp.visibilityResultBuffer = visibility;
+            return rp;
+        };
     // Nothing can be copied out of a multisampled texture, so a multisampled shadow is resolved
     // into the single-sample copy beside it first: a render pass that draws nothing, keeping the
     // samples (the next event draws into them again) and resolving them as it stores. The color
     // is resolved the way the hardware would have; the depth is sample 0, since averaging depths
     // would invent a value no fragment wrote.
-    auto resolveShadows = [&]() {
-        const bool colorMs = target.resolve != nil;
-        const bool depthMs = h.depth.resolve != nil && out.depthBytes;
-        if (!colorMs && !depthMs) return;
-        MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
-        if (colorMs) {
-            rp.colorAttachments[0].texture = target.shadow;
-            rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
-            rp.colorAttachments[0].resolveTexture = target.resolve;
-            rp.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
-        }
-        if (depthMs) {
-            rp.depthAttachment.texture = h.depth.shadow;
-            rp.depthAttachment.loadAction = MTLLoadActionLoad;
-            rp.depthAttachment.resolveTexture = h.depth.resolve;
-            rp.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
-            rp.depthAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
-        }
-        id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:rp];
-        encoder.label = @"gpu-inspector pixel history resolve";
-        [encoder endEncoding];
-    };
+        auto resolveShadows = [&]() {
+            const bool colorMs = target.resolve != nil;
+            const bool depthMs = h.depth.resolve != nil && out.depthBytes;
+            if (!colorMs && !depthMs)
+                return;
+            MTLRenderPassDescriptor* rp = [MTLRenderPassDescriptor renderPassDescriptor];
+            if (colorMs)
+            {
+                rp.colorAttachments[0].texture = target.shadow;
+                rp.colorAttachments[0].loadAction = MTLLoadActionLoad;
+                rp.colorAttachments[0].resolveTexture = target.resolve;
+                rp.colorAttachments[0].storeAction = MTLStoreActionStoreAndMultisampleResolve;
+            }
+            if (depthMs)
+            {
+                rp.depthAttachment.texture = h.depth.shadow;
+                rp.depthAttachment.loadAction = MTLLoadActionLoad;
+                rp.depthAttachment.resolveTexture = h.depth.resolve;
+                rp.depthAttachment.depthResolveFilter = MTLMultisampleDepthResolveFilterSample0;
+                rp.depthAttachment.storeAction = MTLStoreActionStoreAndMultisampleResolve;
+            }
+            id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:rp];
+            encoder.label = @"gpu-inspector pixel history resolve";
+            [encoder endEncoding];
+        };
     // The pixel, and the depth under it, into the staging buffer after an encoder has ended.
-    auto readback = [&](int64_t slot) {
-        if (slotBytes == 0) return;
-        resolveShadows();
-        id<MTLTexture> colorFrom = target.resolve != nil ? target.resolve : target.shadow;
-        id<MTLTexture> depthFrom = h.depth.resolve != nil ? h.depth.resolve : h.depth.shadow;
-        id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
-        blit.label = @"gpu-inspector pixel history readback";
-        const NSUInteger offset = (NSUInteger)slot * slotBytes;
-        if (out.colorBytes) {
-            [blit copyFromTexture:colorFrom sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
-                       sourceSize:MTLSizeMake(1, 1, 1) toBuffer:out.staging destinationOffset:offset
-           destinationBytesPerRow:out.colorBytes destinationBytesPerImage:out.colorBytes];
-        }
-        if (out.depthBytes) {
-            [blit copyFromTexture:depthFrom sourceSlice:0 sourceLevel:0 sourceOrigin:MTLOriginMake(h.x, h.y, 0)
-                       sourceSize:MTLSizeMake(1, 1, 1) toBuffer:out.staging destinationOffset:offset + out.colorBytes
-           destinationBytesPerRow:out.depthBytes destinationBytesPerImage:out.depthBytes options:depthOption];
-        }
-        [blit endEncoding];
-    };
+        auto readback = [&](int64_t slot) {
+            if (slotBytes == 0)
+                return;
+            resolveShadows();
+            id<MTLTexture> colorFrom = target.resolve != nil ? target.resolve : target.shadow;
+            id<MTLTexture> depthFrom = h.depth.resolve != nil ? h.depth.resolve : h.depth.shadow;
+            id<MTLBlitCommandEncoder> blit = [commandBuffer blitCommandEncoder];
+            blit.label = @"gpu-inspector pixel history readback";
+            const NSUInteger offset = (NSUInteger)slot * slotBytes;
+            if (out.colorBytes)
+            {
+                [blit copyFromTexture:colorFrom
+                                 sourceSlice:0
+                                 sourceLevel:0
+                                sourceOrigin:MTLOriginMake(h.x, h.y, 0)
+                                  sourceSize:MTLSizeMake(1, 1, 1)
+                                    toBuffer:out.staging
+                           destinationOffset:offset
+                      destinationBytesPerRow:out.colorBytes
+                    destinationBytesPerImage:out.colorBytes];
+            }
+            if (out.depthBytes)
+            {
+                [blit copyFromTexture:depthFrom
+                                 sourceSlice:0
+                                 sourceLevel:0
+                                sourceOrigin:MTLOriginMake(h.x, h.y, 0)
+                                  sourceSize:MTLSizeMake(1, 1, 1)
+                                    toBuffer:out.staging
+                           destinationOffset:offset + out.colorBytes
+                      destinationBytesPerRow:out.depthBytes
+                    destinationBytesPerImage:out.depthBytes
+                                     options:depthOption];
+            }
+            [blit endEncoding];
+        };
 
     // The pass's start: the attachments loaded or cleared the way the pass's were.
-    id<MTLRenderCommandEncoder> start = [commandBuffer renderCommandEncoderWithDescriptor:descriptorFor(true, nil)];
-    start.label = @"gpu-inspector pixel history start";
-    [start endEncoding];
-    readback(0);
-    PendingEvent load;
-    load.kind = "load";
-    load.command = pass.beginCommand;
-    load.method = RecordedCommandMethod(pass.beginCommand);
-    load.detail = LoadActionEnumName(target.loadAction);
-    load.commandBuffer = pass.commandBufferId;
-    load.frame = pass.frame;
-    load.passIndex = pass.passIndex;
-    load.slot = 0;
-    out.events.push_back(load);
+        id<MTLRenderCommandEncoder> start = [commandBuffer renderCommandEncoderWithDescriptor:descriptorFor(true, nil)];
+        start.label = @"gpu-inspector pixel history start";
+        [start endEncoding];
+        readback(0);
+        PendingEvent load;
+        load.kind = "load";
+        load.command = pass.beginCommand;
+        load.method = RecordedCommandMethod(pass.beginCommand);
+        load.detail = LoadActionEnumName(target.loadAction);
+        load.commandBuffer = pass.commandBufferId;
+        load.frame = pass.frame;
+        load.passIndex = pass.passIndex;
+        load.slot = 0;
+        out.events.push_back(load);
 
-    id<MTLFunction> cover = LibraryFunction(device, "gpu_inspector_pixel_cover",
-                                            @"#include <metal_stdlib>\nfragment void gpu_inspector_pixel_cover() {}\n");
-    id none = DepthStencilCopy(device, nil, DepthStencilVariant::None);
-    const MTLScissorRect pixel = {h.x, h.y, 1, 1};
-    std::vector<const void *> kept;
-    auto keep = [&](id object) {
-        if (object == nil || std::find(kept.begin(), kept.end(), (__bridge const void *)object) != kept.end()) return;
-        kept.push_back((__bridge const void *)object);
-        out.keep.emplace_back(object);
-    };
-    bool noteIndirect = false;
-    std::string copyError;
-    uint32_t drawIndex = 0;
-    for (const OverdrawPass::Segment &segment : pass.segments) {
-        StateSnapshot snapshot;   // each encoder starts from Metal's default state
-        for (const LoggedOp &op : segment.ops) {
-            if (op.key.policy != OpPolicy::Draw) {
-                snapshot.Apply(op);
-                continue;
-            }
-            if (drawIndex >= draws) break;
-            PendingEvent e;
-            e.kind = "draw";
-            e.command = op.command;
-            e.method = RecordedCommandMethod(op.command);
-            e.commandBuffer = pass.commandBufferId;
-            e.frame = pass.frame;
-            e.passIndex = pass.passIndex;
-
-            id<MTLBuffer> visibility = [device newBufferWithLength:kVariants * 8 options:MTLResourceStorageModeShared];
-            if (visibility == nil) {
-                out.notes.push_back(where + ": no memory for the draws' sample counts");
-                break;
-            }
-            const int64_t query = (int64_t)out.visibility.size();
-            out.visibility.push_back(visibility);
-            id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptorFor(false, visibility)];
-            if (encoder == nil) {
-                out.notes.push_back(where + ": could not open an encoder to follow the pixel");
-                break;
-            }
-            encoder.label = @"gpu-inspector pixel history";
-            HistoryReplay replay;
-            for (const LoggedOp *state : snapshot.ops()) state->op(encoder, replay);
-            [encoder setScissorRect:pixel];
-            op.op(encoder, replay);   // keeps the draw
-            e.pipeline = replay.pipeline != nil ? IdOf(replay.pipeline) : 0;
-            const bool inside = !replay.hasScissor
-                || (h.x >= replay.scissor.x && h.x < replay.scissor.x + replay.scissor.width
-                    && h.y >= replay.scissor.y && h.y < replay.scissor.y + replay.scissor.height);
-            if (replay.skipped) {
-                noteIndirect = true;
-            } else if (!inside) {
-                e.scissored = true;
-            } else if (replay.draw && replay.pipeline != nil) {
-                e.query = query;
-                const DerivedPipeline coverCopy = PipelineCopy(device, replay.pipeline, PipelineVariant::HistoryCover, cover);
-                const DerivedPipeline noWrite = PipelineCopy(device, replay.pipeline, PipelineVariant::HistoryNoWrite, nil);
-                keep(coverCopy.pipeline);
-                keep(noWrite.pipeline);
-                if (copyError.empty() && !coverCopy.error.empty()) copyError = coverCopy.error;
-                if (copyError.empty() && !noWrite.error.empty()) copyError = noWrite.error;
-                auto query = [&](int variant, id pipeline, NSUInteger cull, id depthStencil) {
-                    if (pipeline == nil || depthStencil == nil) return;
-                    [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)pipeline];
-                    [encoder setCullMode:(MTLCullMode)cull];
-                    [encoder setDepthStencilState:(id<MTLDepthStencilState>)depthStencil];
-                    [encoder setVisibilityResultMode:MTLVisibilityResultModeCounting offset:(NSUInteger)variant * 8];
-                    replay.draw(encoder);
-                    [encoder setVisibilityResultMode:MTLVisibilityResultModeDisabled offset:0];
-                    e.testsMeasured |= 1u << variant;
-                };
-                if (!coverCopy.rasterless && cover != nil && none != nil) {
-                    query(0, coverCopy.pipeline, MTLCullModeNone, none);
-                    query(1, coverCopy.pipeline, replay.cullMode, none);
-                    query(2, noWrite.pipeline, replay.cullMode, none);
-                    const id depthOnly = DepthStencilCopy(device, replay.depthStencil, DepthStencilVariant::DepthOnly);
-                    const id stencilOnly = DepthStencilCopy(device, replay.depthStencil, DepthStencilVariant::StencilOnly);
-                    const id both = DepthStencilCopy(device, replay.depthStencil, DepthStencilVariant::Both);
-                    query(3, noWrite.pipeline, replay.cullMode, depthOnly);
-                    query(4, noWrite.pipeline, replay.cullMode, stencilOnly);
-                    query(5, noWrite.pipeline, replay.cullMode, both);
+        id<MTLFunction> cover = LibraryFunction(device, "gpu_inspector_pixel_cover",
+            @"#include <metal_stdlib>\nfragment void gpu_inspector_pixel_cover() {}\n");
+        id none = DepthStencilCopy(device, nil, DepthStencilVariant::None);
+        const MTLScissorRect pixel = {h.x, h.y, 1, 1};
+        std::vector<const void*> kept;
+        auto keep = [&](id object) {
+            if (object == nil || std::find(kept.begin(), kept.end(), (__bridge const void*)object) != kept.end())
+                return;
+            kept.push_back((__bridge const void*)object);
+            out.keep.emplace_back(object);
+        };
+        bool noteIndirect = false;
+        std::string copyError;
+        uint32_t drawIndex = 0;
+        for (const OverdrawPass::Segment& segment : pass.segments)
+        {
+            StateSnapshot snapshot;   // each encoder starts from Metal's default state
+            for (const LoggedOp& op : segment.ops)
+            {
+                if (op.key.policy != OpPolicy::Draw)
+                {
+                    snapshot.Apply(op);
+                    continue;
                 }
+                if (drawIndex >= draws)
+                    break;
+                PendingEvent e;
+                e.kind = "draw";
+                e.command = op.command;
+                e.method = RecordedCommandMethod(op.command);
+                e.commandBuffer = pass.commandBufferId;
+                e.frame = pass.frame;
+                e.passIndex = pass.passIndex;
+
+                id<MTLBuffer> visibility = [device newBufferWithLength:kVariants * 8 options:MTLResourceStorageModeShared];
+                if (visibility == nil)
+                {
+                    out.notes.push_back(where + ": no memory for the draws' sample counts");
+                    break;
+                }
+                const int64_t query = (int64_t)out.visibility.size();
+                out.visibility.push_back(visibility);
+                id<MTLRenderCommandEncoder> encoder = [commandBuffer renderCommandEncoderWithDescriptor:descriptorFor(false, visibility)];
+                if (encoder == nil)
+                {
+                    out.notes.push_back(where + ": could not open an encoder to follow the pixel");
+                    break;
+                }
+                encoder.label = @"gpu-inspector pixel history";
+                HistoryReplay replay;
+                for (const LoggedOp* state : snapshot.ops())
+                    state->op(encoder, replay);
+                [encoder setScissorRect:pixel];
+                op.op(encoder, replay);   // keeps the draw
+                e.pipeline = replay.pipeline != nil ? IdOf(replay.pipeline) : 0;
+                const bool inside = !replay.hasScissor || (h.x >= replay.scissor.x && h.x < replay.scissor.x + replay.scissor.width && h.y >= replay.scissor.y && h.y < replay.scissor.y + replay.scissor.height);
+                if (replay.skipped)
+                {
+                    noteIndirect = true;
+                }
+                else if (!inside)
+                {
+                    e.scissored = true;
+                }
+                else if (replay.draw && replay.pipeline != nil)
+                {
+                    e.query = query;
+                    const DerivedPipeline coverCopy = PipelineCopy(device, replay.pipeline, PipelineVariant::HistoryCover, cover);
+                    const DerivedPipeline noWrite = PipelineCopy(device, replay.pipeline, PipelineVariant::HistoryNoWrite, nil);
+                    keep(coverCopy.pipeline);
+                    keep(noWrite.pipeline);
+                    if (copyError.empty() && !coverCopy.error.empty())
+                        copyError = coverCopy.error;
+                    if (copyError.empty() && !noWrite.error.empty())
+                        copyError = noWrite.error;
+                    auto query = [&](int variant, id pipeline, NSUInteger cull, id depthStencil) {
+                        if (pipeline == nil || depthStencil == nil)
+                            return;
+                        [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)pipeline];
+                        [encoder setCullMode:(MTLCullMode)cull];
+                        [encoder setDepthStencilState:(id<MTLDepthStencilState>)depthStencil];
+                        [encoder setVisibilityResultMode:MTLVisibilityResultModeCounting offset:(NSUInteger)variant * 8];
+                        replay.draw(encoder);
+                        [encoder setVisibilityResultMode:MTLVisibilityResultModeDisabled offset:0];
+                        e.testsMeasured |= 1u << variant;
+                    };
+                    if (!coverCopy.rasterless && cover != nil && none != nil)
+                    {
+                        query(0, coverCopy.pipeline, MTLCullModeNone, none);
+                        query(1, coverCopy.pipeline, replay.cullMode, none);
+                        query(2, noWrite.pipeline, replay.cullMode, none);
+                        const id depthOnly = DepthStencilCopy(device, replay.depthStencil, DepthStencilVariant::DepthOnly);
+                        const id stencilOnly = DepthStencilCopy(device, replay.depthStencil, DepthStencilVariant::StencilOnly);
+                        const id both = DepthStencilCopy(device, replay.depthStencil, DepthStencilVariant::Both);
+                        query(3, noWrite.pipeline, replay.cullMode, depthOnly);
+                        query(4, noWrite.pipeline, replay.cullMode, stencilOnly);
+                        query(5, noWrite.pipeline, replay.cullMode, both);
+                    }
                 // The draw itself, with the application's state.
-                [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)replay.pipeline];
-                [encoder setCullMode:(MTLCullMode)replay.cullMode];
-                [encoder setDepthStencilState:(id<MTLDepthStencilState>)(replay.depthStencil != nil ? replay.depthStencil : none)];
-                replay.draw(encoder);
+                    [encoder setRenderPipelineState:(id<MTLRenderPipelineState>)replay.pipeline];
+                    [encoder setCullMode:(MTLCullMode)replay.cullMode];
+                    [encoder setDepthStencilState:(id<MTLDepthStencilState>)(replay.depthStencil != nil ? replay.depthStencil : none)];
+                    replay.draw(encoder);
+                }
+                [encoder endEncoding];
+                readback(drawIndex + 1);
+                e.slot = drawIndex + 1;
+                out.events.push_back(std::move(e));
+                drawIndex++;
             }
-            [encoder endEncoding];
-            readback(drawIndex + 1);
-            e.slot = drawIndex + 1;
-            out.events.push_back(std::move(e));
-            drawIndex++;
         }
+        if (noteIndirect)
+            out.notes.push_back(where + ": indirect command buffers' draws are not followed; the values after them may be missing their writes");
+        if (!copyError.empty())
+            out.notes.push_back(where + ": some draws were not measured: " + copyError);
+        std::lock_guard<std::mutex> lock(g_mutex);
+        g_pending.push_back(std::move(out));
     }
-    if (noteIndirect) out.notes.push_back(where + ": indirect command buffers' draws are not followed; the values after them may be missing their writes");
-    if (!copyError.empty()) out.notes.push_back(where + ": some draws were not measured: " + copyError);
-    std::lock_guard<std::mutex> lock(g_mutex);
-    g_pending.push_back(std::move(out));
-  }
 }
 
-void SendPixelHistory() {
+void SendPixelHistory()
+{
     PixelHistoryRequest request;
     std::vector<PendingHistory> pending;
     {
@@ -645,80 +758,125 @@ void SendPixelHistory() {
         pending.swap(g_pending);
         g_request = PixelHistoryRequest();
     }
-    if (!request.enabled) return;
+    if (!request.enabled)
+        return;
 
     std::string device;
     std::string pixelFormat;
     std::string depthFormat;
     uint64_t texture = 0;
-    for (const PendingHistory &h : pending) {
-        if (texture == 0) texture = h.texture;
-        if (device.empty()) device = h.device;
-        if (pixelFormat.empty()) pixelFormat = h.pixelFormat;
-        if (depthFormat.empty()) depthFormat = h.depthFormat;
+    for (const PendingHistory& h : pending)
+    {
+        if (texture == 0)
+            texture = h.texture;
+        if (device.empty())
+            device = h.device;
+        if (pixelFormat.empty())
+            pixelFormat = h.pixelFormat;
+        if (depthFormat.empty())
+            depthFormat = h.depthFormat;
     }
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("CapturePixelHistory");
-    w.Key("history"); w.BeginObject();
-    w.Key("format"); w.String("gpu-inspector-pixel-history");
-    w.Key("version"); w.Uint(1);
-    w.Key("device"); w.String(device);
-    w.Key("image"); w.Uint(texture != 0 ? texture : request.texture);
-    w.Key("requestedImage"); w.Uint(request.texture);
-    w.Key("x"); w.Uint(request.x);
-    w.Key("y"); w.Uint(request.y);
-    w.Key("mip"); w.Uint(request.level);
-    w.Key("layer"); w.Uint(request.slice);
-    w.Key("pixelFormat"); w.String(pixelFormat);
-    w.Key("depthFormat"); w.String(depthFormat);
-    w.Key("events"); w.BeginArray();
+    w.Key("action");
+    w.String("CapturePixelHistory");
+    w.Key("history");
+    w.BeginObject();
+    w.Key("format");
+    w.String("gpu-inspector-pixel-history");
+    w.Key("version");
+    w.Uint(1);
+    w.Key("device");
+    w.String(device);
+    w.Key("image");
+    w.Uint(texture != 0 ? texture : request.texture);
+    w.Key("requestedImage");
+    w.Uint(request.texture);
+    w.Key("x");
+    w.Uint(request.x);
+    w.Key("y");
+    w.Uint(request.y);
+    w.Key("mip");
+    w.Uint(request.level);
+    w.Key("layer");
+    w.Uint(request.slice);
+    w.Key("pixelFormat");
+    w.String(pixelFormat);
+    w.Key("depthFormat");
+    w.String(depthFormat);
+    w.Key("events");
+    w.BeginArray();
     size_t events = 0;
-    for (const PendingHistory &h : pending) {
-        const uint8_t *staging = h.staging != nil ? static_cast<const uint8_t *>(h.staging.contents) : nullptr;
+    for (const PendingHistory& h : pending)
+    {
+        const uint8_t* staging = h.staging != nil ? static_cast<const uint8_t*>(h.staging.contents) : nullptr;
         const uint32_t slotBytes = h.colorBytes + h.depthBytes;
-        for (const PendingEvent &e : h.events) {
+        for (const PendingEvent& e : h.events)
+        {
             w.BeginObject();
-            w.Key("kind"); w.String(e.kind);
-            w.Key("command"); w.Uint(e.command);
-            w.Key("method"); w.String(e.method);
-            w.Key("detail"); w.String(e.detail);
-            w.Key("commandBuffer"); w.Uint(e.commandBuffer);
-            w.Key("frame"); w.Uint(e.frame);
-            w.Key("passIndex"); w.Uint(e.passIndex);
-            w.Key("pipeline"); w.Uint(e.pipeline);
-            w.Key("scissored"); w.Boolean(e.scissored);
-            w.Key("testsMeasured"); w.Uint(e.testsMeasured);
-            static const char *const kCounts[kVariants] = {"covered", "facing", "shaded", "depthPassed", "stencilPassed", "passed"};
-            const uint64_t *counts = e.query >= 0 && (size_t)e.query < h.visibility.size()
-                ? static_cast<const uint64_t *>(h.visibility[(size_t)e.query].contents) : nullptr;
-            for (int v = 0; v < kVariants; v++) {
+            w.Key("kind");
+            w.String(e.kind);
+            w.Key("command");
+            w.Uint(e.command);
+            w.Key("method");
+            w.String(e.method);
+            w.Key("detail");
+            w.String(e.detail);
+            w.Key("commandBuffer");
+            w.Uint(e.commandBuffer);
+            w.Key("frame");
+            w.Uint(e.frame);
+            w.Key("passIndex");
+            w.Uint(e.passIndex);
+            w.Key("pipeline");
+            w.Uint(e.pipeline);
+            w.Key("scissored");
+            w.Boolean(e.scissored);
+            w.Key("testsMeasured");
+            w.Uint(e.testsMeasured);
+            static const char* const kCounts[kVariants] = {"covered", "facing", "shaded", "depthPassed", "stencilPassed", "passed"};
+            const uint64_t* counts = e.query >= 0 && (size_t)e.query < h.visibility.size()
+                ? static_cast<const uint64_t*>(h.visibility[(size_t)e.query].contents)
+                : nullptr;
+            for (int v = 0; v < kVariants; v++)
+            {
                 const bool measured = counts != nullptr && (e.testsMeasured & (1u << v)) != 0;
-                w.Key(kCounts[v]); w.Uint(measured ? counts[v] : 0);
+                w.Key(kCounts[v]);
+                w.Uint(measured ? counts[v] : 0);
             }
             const bool read = staging != nullptr && e.slot >= 0;
-            w.Key("value"); w.String(read && h.colorBytes ? Hex(staging + e.slot * slotBytes, h.colorBytes) : "");
-            w.Key("depth"); w.String(read && h.depthBytes ? Hex(staging + e.slot * slotBytes + h.colorBytes, h.depthBytes) : "");
+            w.Key("value");
+            w.String(read && h.colorBytes ? Hex(staging + e.slot * slotBytes, h.colorBytes) : "");
+            w.Key("depth");
+            w.String(read && h.depthBytes ? Hex(staging + e.slot * slotBytes + h.colorBytes, h.depthBytes) : "");
             w.EndObject();
             events++;
         }
     }
     w.EndArray();
-    w.Key("notes"); w.BeginArray();
-    if (pending.empty()) {
+    w.Key("notes");
+    w.BeginArray();
+    if (pending.empty())
+    {
         w.String("No render pass of the capture rendered to the texture at that level and slice.");
     }
-    for (const PendingHistory &h : pending) {
-        for (const std::string &n : h.notes) w.String(n);
+    for (const PendingHistory& h : pending)
+    {
+        for (const std::string& n : h.notes)
+            w.String(n);
     }
     w.EndArray();
-    w.Key("problems"); w.BeginArray(); w.EndArray();
+    w.Key("problems");
+    w.BeginArray();
+    w.EndArray();
     w.EndObject();
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
-    for (PendingHistory &h : pending) {
+    for (PendingHistory& h : pending)
+    {
         [h.staging release];
-        for (id<MTLBuffer> b : h.visibility) [b release];
+        for (id<MTLBuffer> b : h.visibility)
+            [b release];
     }
     Log("pixel history: %zu event(s) over %zu pass(es) sent", events, pending.size());
 }

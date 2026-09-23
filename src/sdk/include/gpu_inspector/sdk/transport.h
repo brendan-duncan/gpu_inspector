@@ -66,13 +66,15 @@
 #endif
 #endif
 
-namespace gpuinsp::sdk {
+namespace gpuinsp::sdk
+{
 
 /** The ports capture libraries share when the inspector named none: the attach list probes these. */
 static const uint16_t kFirstPort = 47531;
 static const uint16_t kLastPort = kFirstPort + 7;
 
-namespace detail {
+namespace detail
+{
 
 #if defined(_WIN32)
 using socket_t = SOCKET;
@@ -88,13 +90,15 @@ inline int LastSocketError() { return errno; }
 inline bool AddressInUse(int e) { return e == EADDRINUSE; }
 #endif
 
-inline std::string ExecutablePath() {
+inline std::string ExecutablePath()
+{
 #if defined(_WIN32)
     char buf[MAX_PATH];
     DWORD n = GetModuleFileNameA(nullptr, buf, (DWORD)sizeof(buf));
     return n > 0 && n < sizeof(buf) ? std::string(buf, n) : std::string();
 #elif defined(__ANDROID__)
-    if (FILE* f = fopen("/proc/self/cmdline", "rb")) {
+    if (FILE* f = fopen("/proc/self/cmdline", "rb"))
+    {
         char cmd[256] = {};
         size_t got = fread(cmd, 1, sizeof(cmd) - 1, f);
         fclose(f);
@@ -113,13 +117,15 @@ inline std::string ExecutablePath() {
 #endif
 }
 
-inline std::string ExecutableName() {
+inline std::string ExecutableName()
+{
     const std::string full = ExecutablePath();
     const size_t slash = full.find_last_of("/\\");
     return slash == std::string::npos ? full : full.substr(slash + 1);
 }
 
-inline uint32_t ProcessId() {
+inline uint32_t ProcessId()
+{
 #if defined(_WIN32)
     return (uint32_t)GetCurrentProcessId();
 #else
@@ -133,17 +139,23 @@ inline uint32_t ProcessId() {
  * (src/vulkan/src/target_probe.h has the whole story); elsewhere a bind without SO_REUSEADDR decides.
  * Never a connect: that would be answered by the very server being looked for.
  */
-inline bool PortIsServed(uint16_t port) {
+inline bool PortIsServed(uint16_t port)
+{
 #if defined(_WIN32)
     ULONG size = 0;
-    if (GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != ERROR_INSUFFICIENT_BUFFER) return false;
+    if (GetExtendedTcpTable(nullptr, &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != ERROR_INSUFFICIENT_BUFFER)
+        return false;
     std::vector<char> buffer(size);
-    if (GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR) return false;
+    if (GetExtendedTcpTable(buffer.data(), &size, FALSE, AF_INET, TCP_TABLE_OWNER_PID_LISTENER, 0) != NO_ERROR)
+        return false;
     const MIB_TCPTABLE_OWNER_PID* table = reinterpret_cast<const MIB_TCPTABLE_OWNER_PID*>(buffer.data());
-    for (DWORD i = 0; i < table->dwNumEntries; ++i) {
+    for (DWORD i = 0; i < table->dwNumEntries; ++i)
+    {
         const MIB_TCPROW_OWNER_PID& row = table->table[i];
-        if ((row.dwLocalPort & 0xFFFF) != (ULONG)htons(port)) continue;
-        if (row.dwLocalAddr == (ULONG)htonl(INADDR_LOOPBACK) || row.dwLocalAddr == 0) return true;
+        if ((row.dwLocalPort & 0xFFFF) != (ULONG)htons(port))
+            continue;
+        if (row.dwLocalAddr == (ULONG)htonl(INADDR_LOOPBACK) || row.dwLocalAddr == 0)
+            return true;
     }
     return false;
 #elif defined(__ANDROID__)
@@ -151,7 +163,8 @@ inline bool PortIsServed(uint16_t port) {
     return false;
 #else
     int s = socket(AF_INET, SOCK_STREAM, 0);
-    if (s < 0) return false;
+    if (s < 0)
+        return false;
     sockaddr_in addr{};
     addr.sin_family = AF_INET;
     addr.sin_port = htons(port);
@@ -162,7 +175,8 @@ inline bool PortIsServed(uint16_t port) {
 #endif
 }
 
-inline void AppendHeader(std::string& frame, uint32_t len, uint8_t kind) {
+inline void AppendHeader(std::string& frame, uint32_t len, uint8_t kind)
+{
     frame.push_back((char)(len & 0xff));
     frame.push_back((char)((len >> 8) & 0xff));
     frame.push_back((char)((len >> 16) & 0xff));
@@ -172,7 +186,8 @@ inline void AppendHeader(std::string& frame, uint32_t len, uint8_t kind) {
 
 }  // namespace detail
 
-struct ServerOptions {
+struct ServerOptions
+{
     /** The API as the attach list names it: "OpenGL ES". */
     std::string api;
     /** Android's abstract socket name starts with this: "glesinsp". */
@@ -183,17 +198,21 @@ struct ServerOptions {
     std::function<void(const std::string&)> log;
 };
 
-class Server {
+class Server
+{
 public:
-    static Server& Get() {
+    static Server& Get()
+    {
         static Server* instance = new Server();
         return *instance;
     }
 
     /** Starts listening, on threads of its own. Only the first call does anything. */
-    void Start(ServerOptions options) {
+    void Start(ServerOptions options)
+    {
         std::lock_guard lock(_startMutex);
-        if (_started) return;
+        if (_started)
+            return;
         _started = true;
         _options = std::move(options);
         _portFromConfig = _options.port != 0;
@@ -210,20 +229,35 @@ public:
     uint16_t Port() const { return _port; }
 
     /** Called on the listener thread for each new client, before anything it sends is handled: send the state here. */
-    void OnConnect(std::function<void()> f) { std::lock_guard lock(_handlerMutex); _onConnect = std::move(f); }
+    void OnConnect(std::function<void()> f)
+    {
+        std::lock_guard lock(_handlerMutex);
+        _onConnect = std::move(f);
+    }
     /** Called on the receiver thread for each JSON message the client sends. */
-    void OnMessage(std::function<void(const std::string&)> f) { std::lock_guard lock(_handlerMutex); _onMessage = std::move(f); }
+    void OnMessage(std::function<void(const std::string&)> f)
+    {
+        std::lock_guard lock(_handlerMutex);
+        _onMessage = std::move(f);
+    }
     /** Called when the client goes away. */
-    void OnDisconnect(std::function<void()> f) { std::lock_guard lock(_handlerMutex); _onDisconnect = std::move(f); }
+    void OnDisconnect(std::function<void()> f)
+    {
+        std::lock_guard lock(_handlerMutex);
+        _onDisconnect = std::move(f);
+    }
 
     /** What the application calls itself, for the attach list (empty: its executable's name). */
-    void SetTargetName(std::string name) {
+    void SetTargetName(std::string name)
+    {
         std::lock_guard lock(_nameMutex);
         _targetName = std::move(name);
     }
 
-    void SendJson(const std::string& json) {
-        if (!_connected) return;
+    void SendJson(const std::string& json)
+    {
+        if (!_connected)
+            return;
         std::string frame;
         frame.reserve(json.size() + 5);
         detail::AppendHeader(frame, (uint32_t)json.size(), 0);
@@ -231,8 +265,10 @@ public:
         Enqueue(std::move(frame));
     }
 
-    void SendBinary(const std::string& headerJson, const void* data, size_t size) {
-        if (!_connected) return;
+    void SendBinary(const std::string& headerJson, const void* data, size_t size)
+    {
+        if (!_connected)
+            return;
         std::string frame;
         frame.reserve(headerJson.size() + size + 9);
         detail::AppendHeader(frame, (uint32_t)(4 + headerJson.size() + size), 1);
@@ -242,12 +278,14 @@ public:
         frame.push_back((char)((hl >> 16) & 0xff));
         frame.push_back((char)((hl >> 24) & 0xff));
         frame += headerJson;
-        if (size) frame.append(static_cast<const char*>(data), size);
+        if (size)
+            frame.append(static_cast<const char*>(data), size);
         Enqueue(std::move(frame));
     }
 
     /** Bytes waiting to be written: a library streaming a large capture may wait for this to fall. */
-    size_t QueuedBytes() {
+    size_t QueuedBytes()
+    {
         std::lock_guard lock(_queueMutex);
         return _queuedBytes;
     }
@@ -255,39 +293,50 @@ public:
 private:
     Server() = default;
 
-    void Log(const std::string& s) {
-        if (_options.log) _options.log(s);
+    void Log(const std::string& s)
+    {
+        if (_options.log)
+            _options.log(s);
     }
 
-    void Enqueue(std::string frame) {
+    void Enqueue(std::string frame)
+    {
         std::lock_guard lock(_queueMutex);
-        if (!_connected) return;
+        if (!_connected)
+            return;
         _queuedBytes += frame.size();
         _queue.push_back(std::move(frame));
         _queueCv.notify_one();
     }
 
-    static bool SendAll(detail::socket_t s, const char* data, size_t size) {
-        while (size > 0) {
+    static bool SendAll(detail::socket_t s, const char* data, size_t size)
+    {
+        while (size > 0)
+        {
             int n = send(s, data, (int)std::min<size_t>(size, 1 << 20), 0);
-            if (n <= 0) return false;
+            if (n <= 0)
+                return false;
             data += n;
             size -= (size_t)n;
         }
         return true;
     }
 
-    static bool RecvAll(detail::socket_t s, char* data, size_t size) {
-        while (size > 0) {
+    static bool RecvAll(detail::socket_t s, char* data, size_t size)
+    {
+        while (size > 0)
+        {
             int n = recv(s, data, (int)std::min<size_t>(size, 1 << 20), 0);
-            if (n <= 0) return false;
+            if (n <= 0)
+                return false;
             data += n;
             size -= (size_t)n;
         }
         return true;
     }
 
-    static void SetRecvTimeout(detail::socket_t s, int ms) {
+    static void SetRecvTimeout(detail::socket_t s, int ms)
+    {
 #if defined(_WIN32)
         DWORD t = (DWORD)ms;
         setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&t, sizeof(t));
@@ -299,11 +348,13 @@ private:
 #endif
     }
 
-    static bool RecvFrame(detail::socket_t s, std::string& payload, uint8_t& kind, int timeoutMs) {
+    static bool RecvFrame(detail::socket_t s, std::string& payload, uint8_t& kind, int timeoutMs)
+    {
         SetRecvTimeout(s, timeoutMs);
         uint8_t hdr[5];
         bool ok = RecvAll(s, (char*)hdr, 5);
-        if (ok) {
+        if (ok)
+        {
             const uint32_t len = hdr[0] | (hdr[1] << 8) | (hdr[2] << 16) | ((uint32_t)hdr[3] << 24);
             kind = hdr[4];
             payload.assign(len, '\0');
@@ -313,7 +364,8 @@ private:
         return ok;
     }
 
-    std::string ProbeReply() {
+    std::string ProbeReply()
+    {
         std::string name;
         {
             std::lock_guard lock(_nameMutex);
@@ -321,26 +373,36 @@ private:
         }
         JsonWriter w;
         w.BeginObject();
-        w.Key("action"); w.String("Target");
-        w.Key("api"); w.String(_options.api);
-        w.Key("name"); w.String(name);
-        w.Key("exe"); w.String(detail::ExecutableName());
-        w.Key("pid"); w.Uint(detail::ProcessId());
-        w.Key("port"); w.Uint(_port);
-        w.Key("busy"); w.Boolean(_connected);
+        w.Key("action");
+        w.String("Target");
+        w.Key("api");
+        w.String(_options.api);
+        w.Key("name");
+        w.String(name);
+        w.Key("exe");
+        w.String(detail::ExecutableName());
+        w.Key("pid");
+        w.Uint(detail::ProcessId());
+        w.Key("port");
+        w.Uint(_port);
+        w.Key("busy");
+        w.Boolean(_connected);
         w.EndObject();
         std::string frame;
         detail::AppendHeader(frame, (uint32_t)w.str().size(), 0);
         return frame + w.str();
     }
 
-    void SenderLoop() {
-        for (;;) {
+    void SenderLoop()
+    {
+        for (;;)
+        {
             std::string frame;
             {
                 std::unique_lock lock(_queueMutex);
                 _queueCv.wait(lock, [&] { return !_queue.empty() || !_connected; });
-                if (!_connected) {
+                if (!_connected)
+                {
                     _queue.clear();
                     _queuedBytes = 0;
                     _queueCv.wait(lock, [&] { return _connected.load(); });
@@ -350,90 +412,137 @@ private:
                 _queue.pop_front();
                 _queuedBytes -= frame.size();
             }
-            if (!SendAll(_client, frame.data(), frame.size())) {
+            if (!SendAll(_client, frame.data(), frame.size()))
+            {
                 Log("send failed; disconnecting");
                 Disconnect();
             }
         }
     }
 
-    void Dispatch(const std::string& json) {
+    void Dispatch(const std::string& json)
+    {
         std::function<void(const std::string&)> h;
         {
             std::lock_guard lock(_handlerMutex);
             h = _onMessage;
         }
-        if (h) h(json);
+        if (h)
+            h(json);
     }
 
-    void ReceiverLoop(detail::socket_t s) {
-        while (_connected && _client == s) {
+    void ReceiverLoop(detail::socket_t s)
+    {
+        while (_connected && _client == s)
+        {
             std::string payload;
             uint8_t kind = 0;
-            if (!RecvFrame(s, payload, kind, 0)) break;
-            if (kind == 0) Dispatch(payload);
+            if (!RecvFrame(s, payload, kind, 0))
+                break;
+            if (kind == 0)
+                Dispatch(payload);
         }
         Disconnect();
     }
 
-    void Disconnect() {
-        if (!_connected.exchange(false)) return;
+    void Disconnect()
+    {
+        if (!_connected.exchange(false))
+            return;
         detail::socket_t s = _client;
         _client = detail::kInvalidSocket;
-        if (s != detail::kInvalidSocket) detail::CloseSocket(s);
+        if (s != detail::kInvalidSocket)
+            detail::CloseSocket(s);
         _queueCv.notify_all();
         std::function<void()> h;
         {
             std::lock_guard lock(_handlerMutex);
             h = _onDisconnect;
         }
-        if (h) h();
+        if (h)
+            h();
         Log("client disconnected");
     }
 
-    bool BindWithRetry(detail::socket_t s, const sockaddr* addr, socklen_t len, const std::string& name) {
+    bool BindWithRetry(detail::socket_t s, const sockaddr* addr, socklen_t len, const std::string& name)
+    {
         int err = 0;
-        for (int attempt = 0; attempt < 120; ++attempt) {   // 30 s: a previous instance may still be dying
-            if (bind(s, addr, len) == 0) return true;
+        for (int attempt = 0; attempt < 120; ++attempt)
+        {   // 30 s: a previous instance may still be dying
+            if (bind(s, addr, len) == 0)
+                return true;
             err = detail::LastSocketError();
-            if (!detail::AddressInUse(err)) break;
+            if (!detail::AddressInUse(err))
+                break;
             std::this_thread::sleep_for(std::chrono::milliseconds(250));
         }
         Log("bind(" + name + ") failed (" + std::to_string(err) + ")");
         return false;
     }
 
-    void ListenerLoop() {
+    void ListenerLoop()
+    {
 #if defined(__ANDROID__)
         detail::socket_t listenSock = socket(AF_UNIX, SOCK_STREAM, 0);
-        if (listenSock == detail::kInvalidSocket) { Log("socket() failed"); return; }
+        if (listenSock == detail::kInvalidSocket)
+        {
+            Log("socket() failed");
+            return;
+        }
         sockaddr_un addr{};
         addr.sun_family = AF_UNIX;
         std::string name = _options.socketPrefix + ":" + std::to_string(_port);
         std::string package = detail::ExecutablePath();
-        if (size_t colon = package.find(':'); colon != std::string::npos) package.resize(colon);
-        if (!package.empty()) name += ":" + package;
-        if (name.size() > sizeof(addr.sun_path) - 2) name.resize(sizeof(addr.sun_path) - 2);
+        if (size_t colon = package.find(':'); colon != std::string::npos)
+            package.resize(colon);
+        if (!package.empty())
+            name += ":" + package;
+        if (name.size() > sizeof(addr.sun_path) - 2)
+            name.resize(sizeof(addr.sun_path) - 2);
         memcpy(addr.sun_path + 1, name.data(), name.size());   // sun_path[0] == 0: the abstract namespace
         const socklen_t addrLen = (socklen_t)(offsetof(sockaddr_un, sun_path) + 1 + name.size());
-        if (!BindWithRetry(listenSock, (sockaddr*)&addr, addrLen, name)) { detail::CloseSocket(listenSock); return; }
-        if (listen(listenSock, 1) != 0) { Log("listen failed"); detail::CloseSocket(listenSock); return; }
+        if (!BindWithRetry(listenSock, (sockaddr*)&addr, addrLen, name))
+        {
+            detail::CloseSocket(listenSock);
+            return;
+        }
+        if (listen(listenSock, 1) != 0)
+        {
+            Log("listen failed");
+            detail::CloseSocket(listenSock);
+            return;
+        }
         Log("listening on the abstract socket @" + name);
 #else
-        if (detail::PortIsServed(_port)) {
-            if (_portFromConfig) {
+        if (detail::PortIsServed(_port))
+        {
+            if (_portFromConfig)
+            {
                 Log("127.0.0.1:" + std::to_string(_port) + " is already served by another inspected application");
                 return;
             }
             uint16_t free = 0;
-            for (uint16_t p = (uint16_t)(_port + 1); p <= kLastPort; ++p) {
-                if (!detail::PortIsServed(p)) { free = p; break; }
+            for (uint16_t p = (uint16_t)(_port + 1); p <= kLastPort; ++p)
+            {
+                if (!detail::PortIsServed(p))
+                {
+                    free = p;
+                    break;
+                }
             }
-            if (!free) { Log("every port of the shared range is served by another inspected application"); return; }
+            if (!free)
+            {
+                Log("every port of the shared range is served by another inspected application");
+                return;
+            }
             _port = free;
         }
         detail::socket_t listenSock = socket(AF_INET, SOCK_STREAM, 0);
-        if (listenSock == detail::kInvalidSocket) { Log("socket() failed"); return; }
+        if (listenSock == detail::kInvalidSocket)
+        {
+            Log("socket() failed");
+            return;
+        }
         int one = 1;
         setsockopt(listenSock, SOL_SOCKET, SO_REUSEADDR, (const char*)&one, sizeof(one));
         sockaddr_in addr{};
@@ -441,32 +550,47 @@ private:
         addr.sin_port = htons(_port);
         addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
         const std::string name = "127.0.0.1:" + std::to_string(_port);
-        if (!BindWithRetry(listenSock, (sockaddr*)&addr, (socklen_t)sizeof(addr), name)) { detail::CloseSocket(listenSock); return; }
-        if (listen(listenSock, 1) != 0) { Log("listen failed"); detail::CloseSocket(listenSock); return; }
+        if (!BindWithRetry(listenSock, (sockaddr*)&addr, (socklen_t)sizeof(addr), name))
+        {
+            detail::CloseSocket(listenSock);
+            return;
+        }
+        if (listen(listenSock, 1) != 0)
+        {
+            Log("listen failed");
+            detail::CloseSocket(listenSock);
+            return;
+        }
         Log("listening on " + name);
 #endif
-        for (;;) {
+        for (;;)
+        {
             detail::socket_t s = accept(listenSock, nullptr, nullptr);
-            if (s == detail::kInvalidSocket) continue;
+            if (s == detail::kInvalidSocket)
+                continue;
             int nodelay = 1;
             setsockopt(s, IPPROTO_TCP, TCP_NODELAY, (const char*)&nodelay, sizeof(nodelay));
             // Not a client until its first frame says so: a Probe is answered and dropped.
             std::string first;
             uint8_t kind = 0;
-            if (!RecvFrame(s, first, kind, 2000)) {
+            if (!RecvFrame(s, first, kind, 2000))
+            {
                 detail::CloseSocket(s);
                 continue;
             }
             JsonValue msg;
-            if (kind == 0 && ParseJson(first, msg) && msg.GetString("action") == "Probe") {
+            if (kind == 0 && ParseJson(first, msg) && msg.GetString("action") == "Probe")
+            {
                 const std::string reply = ProbeReply();
                 SendAll(s, reply.data(), reply.size());
                 detail::CloseSocket(s);
                 continue;
             }
-            if (_connected) {
+            if (_connected)
+            {
                 Disconnect();
-                if (_receiver.joinable()) _receiver.join();
+                if (_receiver.joinable())
+                    _receiver.join();
             }
             {
                 std::lock_guard lock(_queueMutex);
@@ -480,9 +604,12 @@ private:
                 std::lock_guard lock(_handlerMutex);
                 connect = _onConnect;
             }
-            if (connect) connect();
-            if (kind == 0) Dispatch(first);
-            if (_receiver.joinable()) _receiver.join();
+            if (connect)
+                connect();
+            if (kind == 0)
+                Dispatch(first);
+            if (_receiver.joinable())
+                _receiver.join();
             _receiver = std::thread([this, s] { ReceiverLoop(s); });
         }
     }

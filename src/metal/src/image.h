@@ -13,7 +13,8 @@
 
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /** Answers the UI's `RequestImage` with an `ImageData` message, pixels or error. */
 void SendImageData(uint64_t objectId, uint32_t mip, uint32_t layer);

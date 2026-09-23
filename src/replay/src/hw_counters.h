@@ -14,11 +14,13 @@
 #include <utility>
 #include <vector>
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 struct HwCounterInfo;
 
-namespace nvperf {
+namespace nvperf
+{
 
 /** Finds and initializes the SDK's library; false, with why, when it is not built in or not found. */
 bool Load(std::string& note);
@@ -33,7 +35,8 @@ void InstanceExtensions(uint32_t apiVersion, std::vector<const char*>& out);
 void DeviceExtensions(VkInstance instance, VkPhysicalDevice physical, PFN_vkGetInstanceProcAddr gipa, std::vector<const char*>& out);
 
 /** One range-profiling session on a queue: the counters are collected over as many passes as they need. */
-class Session {
+class Session
+{
 public:
     Session();
     ~Session();
@@ -45,7 +48,7 @@ public:
      * list metrics; collecting them also needs Begin. False with why in `note`.
      */
     bool Init(VkInstance instance, VkPhysicalDevice physical, VkDevice device, VkQueue queue, uint32_t queueFamily,
-              PFN_vkGetInstanceProcAddr gipa, PFN_vkGetDeviceProcAddr gdpa, std::string& note);
+        PFN_vkGetInstanceProcAddr gipa, PFN_vkGetDeviceProcAddr gdpa, std::string& note);
     /**
      * Begins the profiling session, which needs GPU performance-counter access enabled;
      * `maxRanges` bounds how many ranges a pass may push. Call after Init. False with why in `note`.
@@ -60,7 +63,7 @@ public:
      * scheduled, are left out with a note; `chosen` lists the rest, in `names` order.
      */
     bool Configure(const std::vector<std::string>& names, uint16_t nestingLevels, std::vector<HwCounterInfo>& chosen,
-                   std::vector<std::string>& notes);
+        std::vector<std::string>& notes);
     /** Collection passes the configuration needs at one nesting level; each replay of the frame is one. */
     size_t Passes() const;
     bool BeginPass();

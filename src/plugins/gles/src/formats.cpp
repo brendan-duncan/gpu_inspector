@@ -2,11 +2,14 @@
 
 #include "../gen/gles_constants.gen.h"
 
-namespace glesinsp {
+namespace glesinsp
+{
 
-namespace {
+namespace
+{
 
-FormatInfo Color(const char* vk, ReadClass read, bool srgb = false) {
+FormatInfo Color(const char* vk, ReadClass read, bool srgb = false)
+{
     FormatInfo f;
     f.vk = vk;
     f.read = read;
@@ -14,7 +17,8 @@ FormatInfo Color(const char* vk, ReadClass read, bool srgb = false) {
     return f;
 }
 
-FormatInfo DepthStencil(const char* vk, bool depth, bool stencil) {
+FormatInfo DepthStencil(const char* vk, bool depth, bool stencil)
+{
     FormatInfo f;
     f.vk = vk;
     f.depth = depth;
@@ -22,7 +26,8 @@ FormatInfo DepthStencil(const char* vk, bool depth, bool stencil) {
     return f;
 }
 
-FormatInfo Compressed(const char* vk, int bw, int bh, int bytes, bool srgb = false) {
+FormatInfo Compressed(const char* vk, int bw, int bh, int bytes, bool srgb = false)
+{
     FormatInfo f;
     f.vk = vk;
     f.compressed = true;
@@ -54,8 +59,10 @@ const int kAstcBlocks[][2] = {{4, 4}, {5, 4}, {5, 5}, {6, 5}, {6, 6}, {8, 5}, {8
 
 }  // namespace
 
-FormatInfo FormatOf(GLenum f) {
-    switch (f) {
+FormatInfo FormatOf(GLenum f)
+{
+    switch (f)
+    {
         // Normalized color.
         case GL_RGBA8: return Color("VK_FORMAT_R8G8B8A8_UNORM", ReadClass::Unorm);
         case GL_RGB8: return Color("VK_FORMAT_R8G8B8_UNORM", ReadClass::Unorm);
@@ -141,21 +148,26 @@ FormatInfo FormatOf(GLenum f) {
         case 0x8DBE: return Compressed("VK_FORMAT_BC5_SNORM_BLOCK", 4, 4, 16);
         default: break;
     }
-    if (f >= 0x93B0 && f <= 0x93BD) {
+    if (f >= 0x93B0 && f <= 0x93BD)
+    {
         const int i = (int)(f - 0x93B0);
         return Compressed(kAstc[i][0], kAstcBlocks[i][0], kAstcBlocks[i][1], 16);
     }
-    if (f >= 0x93D0 && f <= 0x93DD) {
+    if (f >= 0x93D0 && f <= 0x93DD)
+    {
         const int i = (int)(f - 0x93D0);
         return Compressed(kAstc[i][1], kAstcBlocks[i][0], kAstcBlocks[i][1], 16, true);
     }
     return FormatInfo();
 }
 
-GLenum SizedFormat(GLenum internalFormat, GLenum format, GLenum type) {
-    switch (internalFormat) {
+GLenum SizedFormat(GLenum internalFormat, GLenum format, GLenum type)
+{
+    switch (internalFormat)
+    {
         case GL_RGBA:
-            switch (type) {
+            switch (type)
+            {
                 case GL_UNSIGNED_SHORT_4_4_4_4: return GL_RGBA4;
                 case GL_UNSIGNED_SHORT_5_5_5_1: return GL_RGB5_A1;
                 case GL_FLOAT: return GL_RGBA32F;
@@ -164,7 +176,8 @@ GLenum SizedFormat(GLenum internalFormat, GLenum format, GLenum type) {
                 default: return GL_RGBA8;
             }
         case GL_RGB:
-            switch (type) {
+            switch (type)
+            {
                 case GL_UNSIGNED_SHORT_5_6_5: return GL_RGB565;
                 case GL_FLOAT: return GL_RGB32F;
                 case GL_HALF_FLOAT:
@@ -174,9 +187,11 @@ GLenum SizedFormat(GLenum internalFormat, GLenum format, GLenum type) {
         // Luminance and alpha read as the one or two channels they are; the viewer shows red (and green).
         case GL_LUMINANCE:
         case GL_ALPHA:
-            return type == GL_FLOAT ? GL_R32F : (type == GL_HALF_FLOAT || type == GL_HALF_FLOAT_OES) ? GL_R16F : GL_R8;
+            return type == GL_FLOAT ? GL_R32F : (type == GL_HALF_FLOAT || type == GL_HALF_FLOAT_OES) ? GL_R16F
+                                                                                                     : GL_R8;
         case GL_LUMINANCE_ALPHA:
-            return type == GL_FLOAT ? GL_RG32F : (type == GL_HALF_FLOAT || type == GL_HALF_FLOAT_OES) ? GL_RG16F : GL_RG8;
+            return type == GL_FLOAT ? GL_RG32F : (type == GL_HALF_FLOAT || type == GL_HALF_FLOAT_OES) ? GL_RG16F
+                                                                                                      : GL_RG8;
         case GL_BGRA_EXT: return GL_BGRA8_EXT;
         case GL_RED: return type == GL_FLOAT ? GL_R32F : GL_R8;
         case GL_RG: return type == GL_FLOAT ? GL_RG32F : GL_RG8;
@@ -186,8 +201,10 @@ GLenum SizedFormat(GLenum internalFormat, GLenum format, GLenum type) {
     }
 }
 
-ReadFormat ReadFormatOf(const FormatInfo& f) {
-    switch (f.read) {
+ReadFormat ReadFormatOf(const FormatInfo& f)
+{
+    switch (f.read)
+    {
         case ReadClass::Unorm: return {GL_RGBA, GL_UNSIGNED_BYTE, 4, f.srgb ? "VK_FORMAT_R8G8B8A8_SRGB" : "VK_FORMAT_R8G8B8A8_UNORM"};
         case ReadClass::Float: return {GL_RGBA, GL_FLOAT, 16, "VK_FORMAT_R32G32B32A32_SFLOAT"};
         case ReadClass::Int: return {GL_RGBA_INTEGER, GL_INT, 16, "VK_FORMAT_R32G32B32A32_SINT"};
@@ -196,8 +213,10 @@ ReadFormat ReadFormatOf(const FormatInfo& f) {
     }
 }
 
-size_t CompressedBytes(const FormatInfo& f, int width, int height) {
-    if (!f.compressed) return 0;
+size_t CompressedBytes(const FormatInfo& f, int width, int height)
+{
+    if (!f.compressed)
+        return 0;
     const size_t bx = (size_t)((width + f.blockWidth - 1) / f.blockWidth);
     const size_t by = (size_t)((height + f.blockHeight - 1) / f.blockHeight);
     return bx * by * (size_t)f.blockBytes;

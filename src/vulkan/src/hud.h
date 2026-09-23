@@ -34,11 +34,13 @@
 
 #include "hud_text.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 
-class Hud {
+class Hud
+{
 public:
     static Hud& Get();
 
@@ -58,7 +60,7 @@ public:
      * frame.
      */
     bool Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPresentInfoKHR& out,
-              std::vector<VkSemaphore>& waits);
+        std::vector<VkSemaphore>& waits);
 
     /** The swapchain's images, in index order, from vkGetSwapchainImagesKHR. */
     void OnSwapchainImages(VkDevice device, VkSwapchainKHR swapchain, uint32_t count, const VkImage* images);
@@ -68,7 +70,8 @@ public:
 
 private:
     // Everything needed to draw into one swapchain: recreated when the swapchain is.
-    struct SwapchainResources {
+    struct SwapchainResources
+    {
         VkSwapchainKHR swapchain = VK_NULL_HANDLE;
         VkFormat format = VK_FORMAT_UNDEFINED;
         VkExtent2D extent{};
@@ -83,7 +86,8 @@ private:
 
     // One in-flight overlay submission. Four of them: enough that the CPU never waits on a fence
     // in practice, since the overlay of frame N has long finished by the time frame N+4 presents.
-    struct Frame {
+    struct Frame
+    {
         VkCommandBuffer cb = VK_NULL_HANDLE;
         VkFence fence = VK_NULL_HANDLE;
         VkSemaphore done = VK_NULL_HANDLE;
@@ -94,7 +98,8 @@ private:
         bool submitted = false;
     };
 
-    struct DeviceResources {
+    struct DeviceResources
+    {
         VkDevice device = VK_NULL_HANDLE;
         VkShaderModule vert = VK_NULL_HANDLE;
         VkShaderModule frag = VK_NULL_HANDLE;

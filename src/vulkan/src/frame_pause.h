@@ -24,11 +24,14 @@
 #include <cstdint>
 #include <mutex>
 
-namespace gpuinsp {
+namespace gpuinsp
+{
 
-class FramePause {
+class FramePause
+{
 public:
-    static FramePause& Get() {
+    static FramePause& Get()
+    {
         static FramePause* instance = new FramePause();
         return *instance;
     }
@@ -45,7 +48,8 @@ public:
      * frame would leave the user looking at one with no PAUSED on it. Granting a step means the
      * next frame is drawn knowing it is paused, carries the badge, and is the one left on screen.
      */
-    void SetPaused(bool paused) {
+    void SetPaused(bool paused)
+    {
         {
             std::lock_guard<std::mutex> lock(_mutex);
             _paused.store(paused, std::memory_order_relaxed);
@@ -65,8 +69,10 @@ public:
      * Lets `frames` more frames through and stays paused, which is how a single frame is stepped.
      * Requesting a step while running does nothing, since nothing is waiting.
      */
-    void Step(uint32_t frames) {
-        if (!frames) return;
+    void Step(uint32_t frames)
+    {
+        if (!frames)
+            return;
         {
             std::lock_guard<std::mutex> lock(_mutex);
             _steps += frames;
@@ -78,15 +84,19 @@ public:
      * Called at the frame boundary, after the frame has been presented: blocks while paused, unless
      * a step is owed, in which case it takes one and lets this frame through.
      */
-    void Wait() {
+    void Wait()
+    {
         std::unique_lock<std::mutex> lock(_mutex);
         bool blocked = false;
-        while (_paused.load(std::memory_order_relaxed) && _steps == 0) {
+        while (_paused.load(std::memory_order_relaxed) && _steps == 0)
+        {
             blocked = true;
             _cv.wait(lock);
         }
-        if (_steps > 0) --_steps;
-        if (blocked) _generation.fetch_add(1, std::memory_order_relaxed);
+        if (_steps > 0)
+            --_steps;
+        if (blocked)
+            _generation.fetch_add(1, std::memory_order_relaxed);
     }
 
 private:

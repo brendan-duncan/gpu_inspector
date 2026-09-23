@@ -4,11 +4,14 @@
 
 #include <cstdio>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-namespace {
+namespace
+{
 
-struct Entry {
+struct Entry
+{
     DXGI_FORMAT format;
     const char* protocolName;   // nullptr: not decodable by the UI
     uint32_t bytes;
@@ -123,18 +126,22 @@ const Entry kFormats[] = {
     {DXGI_FORMAT_B4G4R4A4_UNORM, "VK_FORMAT_A4R4G4B4_UNORM_PACK16", 2, 1, false, false},
 };
 
-const Entry* Lookup(DXGI_FORMAT format) {
+const Entry* Lookup(DXGI_FORMAT format)
+{
     for (const Entry& e : kFormats)
-        if (e.format == format) return &e;
+        if (e.format == format)
+            return &e;
     return nullptr;
 }
 
 }  // namespace
 
-FormatInfo FormatOf(DXGI_FORMAT format) {
+FormatInfo FormatOf(DXGI_FORMAT format)
+{
     FormatInfo info;
     const Entry* e = Lookup(format);
-    if (!e) return info;
+    if (!e)
+        return info;
     info.protocolName = e->protocolName;
     info.bytes = e->bytes;
     info.blockWidth = info.blockHeight = e->block;
@@ -144,15 +151,19 @@ FormatInfo FormatOf(DXGI_FORMAT format) {
     return info;
 }
 
-const char* FormatName(DXGI_FORMAT format) {
-    if (const char* name = ToString_DXGI_FORMAT((int64_t)format)) return name;
+const char* FormatName(DXGI_FORMAT format)
+{
+    if (const char* name = ToString_DXGI_FORMAT((int64_t)format))
+        return name;
     static thread_local char buf[32];
     snprintf(buf, sizeof(buf), "DXGI_FORMAT(%d)", (int)format);
     return buf;
 }
 
-DXGI_FORMAT TypedFormat(DXGI_FORMAT format, bool asDepth) {
-    switch (format) {
+DXGI_FORMAT TypedFormat(DXGI_FORMAT format, bool asDepth)
+{
+    switch (format)
+    {
         case DXGI_FORMAT_R32G32B32A32_TYPELESS: return DXGI_FORMAT_R32G32B32A32_FLOAT;
         case DXGI_FORMAT_R32G32B32_TYPELESS: return DXGI_FORMAT_R32G32B32_FLOAT;
         case DXGI_FORMAT_R16G16B16A16_TYPELESS: return DXGI_FORMAT_R16G16B16A16_FLOAT;
@@ -181,8 +192,10 @@ DXGI_FORMAT TypedFormat(DXGI_FORMAT format, bool asDepth) {
     }
 }
 
-DXGI_FORMAT DepthCopyFormat(DXGI_FORMAT format) {
-    switch (format) {
+DXGI_FORMAT DepthCopyFormat(DXGI_FORMAT format)
+{
+    switch (format)
+    {
         case DXGI_FORMAT_D24_UNORM_S8_UINT:
         case DXGI_FORMAT_R24G8_TYPELESS: return DXGI_FORMAT_R24_UNORM_X8_TYPELESS;
         case DXGI_FORMAT_D32_FLOAT_S8X24_UINT:
@@ -195,13 +208,16 @@ DXGI_FORMAT DepthCopyFormat(DXGI_FORMAT format) {
     }
 }
 
-uint64_t RowBytes(const FormatInfo& f, uint32_t width) {
-    if (!f.bytes) return 0;
+uint64_t RowBytes(const FormatInfo& f, uint32_t width)
+{
+    if (!f.bytes)
+        return 0;
     uint64_t blocks = (width + f.blockWidth - 1) / f.blockWidth;
     return blocks * f.bytes;
 }
 
-uint32_t RowCount(const FormatInfo& f, uint32_t height) {
+uint32_t RowCount(const FormatInfo& f, uint32_t height)
+{
     return (height + f.blockHeight - 1) / f.blockHeight;
 }
 

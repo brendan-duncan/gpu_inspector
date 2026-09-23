@@ -15,9 +15,11 @@
 
 #include "decode.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
-class SourceWriter {
+class SourceWriter
+{
 public:
     /** The variable spelling a handle of `type` ("VkImage", aliases resolved), or empty when it has none. */
     std::function<std::string(const char* type, uint64_t handle)> handle;
@@ -93,39 +95,52 @@ std::string EmitArrayLocal(SourceWriter& w, const char* type, const char* hint, 
 
 /** An array of structs as a local array (elements spelled by `element`), or nullptr when empty. */
 template <typename T, typename F>
-std::string EmitStructArray(SourceWriter& w, const char* hint, const char* type, const T* items, size_t count, F element) {
-    if (!items || !count) return "nullptr";
+std::string EmitStructArray(SourceWriter& w, const char* hint, const char* type, const T* items, size_t count, F element)
+{
+    if (!items || !count)
+        return "nullptr";
     std::string body;
     const std::string pad((size_t)(w.indent + 1) * 4, ' ');
-    for (size_t i = 0; i < count; ++i) body += pad + element(items[i]) + ",\n";
+    for (size_t i = 0; i < count; ++i)
+        body += pad + element(items[i]) + ",\n";
     return EmitArrayLocal(w, type, hint, "\n" + body + std::string((size_t)w.indent * 4, ' '));
 }
 
 /** An array of scalars, enums or handles as a local array; a long one goes to the data file instead. */
 template <typename T, typename F>
-std::string EmitScalarArray(SourceWriter& w, const char* hint, const char* type, const T* items, size_t count, F element) {
-    if (!items || !count) return "nullptr";
-    if (count > SourceWriter::kInlineArrayLimit) return "(const " + std::string(type) + "*)" + w.Bytes(items, count * sizeof(T));
+std::string EmitScalarArray(SourceWriter& w, const char* hint, const char* type, const T* items, size_t count, F element)
+{
+    if (!items || !count)
+        return "nullptr";
+    if (count > SourceWriter::kInlineArrayLimit)
+        return "(const " + std::string(type) + "*)" + w.Bytes(items, count * sizeof(T));
     std::string body;
-    for (size_t i = 0; i < count; ++i) body += (i ? ", " : "") + element(items[i]);
+    for (size_t i = 0; i < count; ++i)
+        body += (i ? ", " : "") + element(items[i]);
     return EmitArrayLocal(w, type, hint, body);
 }
 
 /** An array of handles as a local array, however long: a handle is a run-time value, so it cannot come from the data file. */
 template <typename T, typename F>
-std::string EmitHandleArray(SourceWriter& w, const char* hint, const char* type, const T* items, size_t count, F element) {
-    if (!items || !count) return "nullptr";
+std::string EmitHandleArray(SourceWriter& w, const char* hint, const char* type, const T* items, size_t count, F element)
+{
+    if (!items || !count)
+        return "nullptr";
     std::string body;
-    for (size_t i = 0; i < count; ++i) body += (i ? ", " : "") + element(items[i]);
+    for (size_t i = 0; i < count; ++i)
+        body += (i ? ", " : "") + element(items[i]);
     return EmitArrayLocal(w, type, hint, body);
 }
 
 /** An array of pointers to structs as a local array of pointers, each a local of its own. */
 template <typename T, typename F>
-std::string EmitPointerArray(SourceWriter& w, const char* hint, const char* type, const T* const* items, size_t count, F element) {
-    if (!items || !count) return "nullptr";
+std::string EmitPointerArray(SourceWriter& w, const char* hint, const char* type, const T* const* items, size_t count, F element)
+{
+    if (!items || !count)
+        return "nullptr";
     std::string body;
-    for (size_t i = 0; i < count; ++i) body += (i ? ", " : "") + element(items[i]);
+    for (size_t i = 0; i < count; ++i)
+        body += (i ? ", " : "") + element(items[i]);
     return EmitArrayLocal(w, (std::string("const ") + type + "*").c_str(), hint, body);
 }
 

@@ -19,16 +19,19 @@
 
 #include "metal_enums.gen.h"
 
-namespace mtlreplay {
+namespace mtlreplay
+{
 
 /** A table and its length, as the MTL_TABLE macro of mtl_reflect.h passes them. */
-struct EnumTable {
+struct EnumTable
+{
     const mtlinsp::EnumEntry* entries;
     size_t count;
     const char* type;
 };
 
-class Source {
+class Source
+{
 public:
     /** The variable an object is spelled as ("texture_12"), or "" for one the export has no name for. */
     std::function<std::string(id object)> objectName;
@@ -42,17 +45,27 @@ public:
     void Line(const std::string& statement);
     void Comment(const std::string& c) { Line("// " + c); }
     void Blank() { text += "\n"; }
-    void Note(const std::string& n) { if (notes.size() < 1000) notes.push_back(n); }
+    void Note(const std::string& n)
+    {
+        if (notes.size() < 1000)
+            notes.push_back(n);
+    }
     /** A fresh local name from a hint ("descriptor" -> "descriptor3"). */
     std::string Local(const std::string& hint);
     size_t Lines() const { return _lines; }
     size_t Statements() const { return _statements; }
-    void ResetPart() { text.clear(); _lines = _statements = 0; _locals = 0; }
+    void ResetPart()
+    {
+        text.clear();
+        _lines = _statements = 0;
+        _locals = 0;
+    }
     void Append(const Source& other);
 
     /** An object as the variable the exporter named it; "nil", with a note, for one it did not. */
     std::string Object(id object);
-    std::string Data(const void* bytes, size_t size) const {
+    std::string Data(const void* bytes, size_t size) const
+    {
         return bytes && size && data ? data(bytes, size) : std::string("nullptr");
     }
 
@@ -84,33 +97,50 @@ private:
  * application sets a handful; writing all of them would bury what the frame actually asked for,
  * which is the thing a bug report is trying to show.
  */
-class EmitVisitor {
+class EmitVisitor
+{
 public:
     EmitVisitor(Source& w, std::string path) : _w(w), _path(std::move(path)) {}
 
-    void Uint(const char* n, uint64_t value, uint64_t dflt, void (^)(uint64_t)) {
-        if (value != dflt) Set(n, Source::Uint(value));
+    void Uint(const char* n, uint64_t value, uint64_t dflt, void (^)(uint64_t))
+    {
+        if (value != dflt)
+            Set(n, Source::Uint(value));
     }
-    void Int(const char* n, int64_t value, int64_t dflt, void (^)(int64_t)) {
-        if (value != dflt) Set(n, Source::Int(value));
+    void Int(const char* n, int64_t value, int64_t dflt, void (^)(int64_t))
+    {
+        if (value != dflt)
+            Set(n, Source::Int(value));
     }
-    void Float(const char* n, double value, double dflt, void (^)(double)) {
-        if (value != dflt) Set(n, Source::Float(value));
+    void Float(const char* n, double value, double dflt, void (^)(double))
+    {
+        if (value != dflt)
+            Set(n, Source::Float(value));
     }
-    void Bool(const char* n, bool value, bool dflt, void (^)(bool)) {
-        if (value != dflt) Set(n, Source::Bool(value));
+    void Bool(const char* n, bool value, bool dflt, void (^)(bool))
+    {
+        if (value != dflt)
+            Set(n, Source::Bool(value));
     }
-    void Enum(const char* n, int64_t value, int64_t dflt, const EnumTable& table, void (^)(int64_t)) {
-        if (value != dflt) Set(n, Source::Enum(table, value));
+    void Enum(const char* n, int64_t value, int64_t dflt, const EnumTable& table, void (^)(int64_t))
+    {
+        if (value != dflt)
+            Set(n, Source::Enum(table, value));
     }
-    void Flags(const char* n, uint64_t value, uint64_t dflt, const EnumTable& table, void (^)(uint64_t)) {
-        if (value != dflt) Set(n, Source::Flags(table, value));
+    void Flags(const char* n, uint64_t value, uint64_t dflt, const EnumTable& table, void (^)(uint64_t))
+    {
+        if (value != dflt)
+            Set(n, Source::Flags(table, value));
     }
-    void Object(const char* n, id value, void (^)(id)) {
-        if (value != nil) Set(n, _w.Object(value));
+    void Object(const char* n, id value, void (^)(id))
+    {
+        if (value != nil)
+            Set(n, _w.Object(value));
     }
-    void Label(NSString* value, void (^)(NSString*)) {
-        if (value != nil) Set("label", Source::NSString(value.UTF8String, true));
+    void Label(NSString* value, void (^)(NSString*))
+    {
+        if (value != nil)
+            Set("label", Source::NSString(value.UTF8String, true));
     }
 
 private:

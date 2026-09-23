@@ -10,7 +10,8 @@
 #include <cstdint>
 #include <vector>
 
-namespace gles_scene {
+namespace gles_scene
+{
 
 inline const char* kSceneVs = R"(#version 300 es
 layout(location = 0) in vec3 position;
@@ -47,13 +48,15 @@ out vec4 color;
 void main() { color = texture(image, vUv); }
 )";
 
-inline GLuint Compile(GLenum type, const char* source) {
+inline GLuint Compile(GLenum type, const char* source)
+{
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &source, nullptr);
     glCompileShader(s);
     GLint ok = 0;
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
+    if (!ok)
+    {
         char log[1024];
         glGetShaderInfoLog(s, sizeof(log), nullptr, log);
         GLES_SCENE_LOG("shader: %s", log);
@@ -61,7 +64,8 @@ inline GLuint Compile(GLenum type, const char* source) {
     return s;
 }
 
-inline GLuint Link(const char* vs, const char* fs, const char* label) {
+inline GLuint Link(const char* vs, const char* fs, const char* label)
+{
     GLuint p = glCreateProgram();
     GLuint v = Compile(GL_VERTEX_SHADER, vs), f = Compile(GL_FRAGMENT_SHADER, fs);
     glAttachShader(p, v);
@@ -73,19 +77,23 @@ inline GLuint Link(const char* vs, const char* fs, const char* label) {
     return p;
 }
 
-struct Mat4 {
+struct Mat4
+{
     float m[16];
 };
 
-inline Mat4 Multiply(const Mat4& a, const Mat4& b) {
+inline Mat4 Multiply(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
         for (int row = 0; row < 4; ++row)
-            for (int k = 0; k < 4; ++k) r.m[c * 4 + row] += a.m[k * 4 + row] * b.m[c * 4 + k];
+            for (int k = 0; k < 4; ++k)
+                r.m[c * 4 + row] += a.m[k * 4 + row] * b.m[c * 4 + k];
     return r;
 }
 
-inline Mat4 Mvp(float t, float aspect) {
+inline Mat4 Mvp(float t, float aspect)
+{
     const float f = 1.0f / std::tan(0.6f), n = 0.1f, fa = 10.0f;
     Mat4 proj{{f / aspect, 0, 0, 0, 0, f, 0, 0, 0, 0, (fa + n) / (n - fa), -1, 0, 0, 2 * fa * n / (n - fa), 0}};
     const float cy = std::cos(t), sy = std::sin(t), cx = std::cos(t * 0.7f), sx = std::sin(t * 0.7f);
@@ -95,12 +103,14 @@ inline Mat4 Mvp(float t, float aspect) {
     return Multiply(proj, Multiply(view, Multiply(rx, ry)));
 }
 
-struct Scene {
+struct Scene
+{
     GLuint scene = 0, blit = 0, vao = 0, vbo = 0, ibo = 0, ubo = 0;
     GLuint checker = 0, detail = 0, target = 0, depth = 0, fbo = 0, blitVao = 0;
     static constexpr int kTarget = 256;
 
-    void Create() {
+    void Create()
+    {
         GLES_SCENE_LOG("%s, %s", (const char*)glGetString(GL_RENDERER), (const char*)glGetString(GL_VERSION));
         scene = Link(kSceneVs, kSceneFs, "Scene");
         blit = Link(kBlitVs, kBlitFs, "Blit");
@@ -115,11 +125,13 @@ struct Scene {
         std::vector<float> v;
         std::vector<uint16_t> idx;
         const int faces[6][3] = {{0, 1, 2}, {0, 1, 2}, {1, 2, 0}, {1, 2, 0}, {2, 0, 1}, {2, 0, 1}};
-        for (int face = 0; face < 6; ++face) {
+        for (int face = 0; face < 6; ++face)
+        {
             const float s = (face & 1) ? -1.0f : 1.0f;
             const int* a = faces[face];
             const uint16_t base = (uint16_t)(v.size() / 5);
-            for (int corner = 0; corner < 4; ++corner) {
+            for (int corner = 0; corner < 4; ++corner)
+            {
                 const float u = (corner & 1) ? 1.0f : 0.0f, w = (corner & 2) ? 1.0f : 0.0f;
                 float p[3];
                 p[a[0]] = s;
@@ -154,10 +166,14 @@ struct Scene {
         // A 64x64 checker board, immutable and mipmapped.
         std::vector<uint8_t> px(64 * 64 * 4);
         for (int y = 0; y < 64; ++y)
-            for (int x = 0; x < 64; ++x) {
+            for (int x = 0; x < 64; ++x)
+            {
                 const bool on = ((x / 8) + (y / 8)) & 1;
                 uint8_t* p = &px[(y * 64 + x) * 4];
-                p[0] = on ? 240 : 40; p[1] = on ? 190 : 60; p[2] = on ? 40 : 200; p[3] = 255;
+                p[0] = on ? 240 : 40;
+                p[1] = on ? 190 : 60;
+                p[2] = on ? 40 : 200;
+                p[3] = 255;
             }
         glGenTextures(1, &checker);
         glBindTexture(GL_TEXTURE_2D, checker);
@@ -169,7 +185,8 @@ struct Scene {
 
         // A 16x16 ETC2 texture: 4x4 blocks of flat color (individual mode, table 0, all indices 0).
         uint8_t blocks[16 * 8] = {};
-        for (int b = 0; b < 16; ++b) {
+        for (int b = 0; b < 16; ++b)
+        {
             const uint8_t r = (b & 1) ? 0xF : 0x6, g = (b & 2) ? 0xE : 0x5, bl = (b & 4) ? 0xD : 0x7;
             uint8_t* p = &blocks[b * 8];
             p[0] = (uint8_t)(r << 4 | r);
@@ -201,7 +218,8 @@ struct Scene {
     }
 
     /** One frame at time `t`, into a default framebuffer of `w` x `h`; the caller swaps. */
-    void Render(float t, int w, int h) {
+    void Render(float t, int w, int h)
+    {
 
         glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "Offscreen cube");
         glBindFramebuffer(GL_FRAMEBUFFER, fbo);
@@ -210,7 +228,12 @@ struct Scene {
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         glEnable(GL_DEPTH_TEST);
         glEnable(GL_CULL_FACE);
-        struct { Mat4 mvp; float tint; float pad[3]; } block{Mvp(t, 1.0f), 0.6f, {}};
+        struct
+        {
+            Mat4 mvp;
+            float tint;
+            float pad[3];
+        } block{Mvp(t, 1.0f), 0.6f, {}};
         glBindBuffer(GL_UNIFORM_BUFFER, ubo);
         glBufferSubData(GL_UNIFORM_BUFFER, 0, sizeof(block), &block);
         glBindBufferBase(GL_UNIFORM_BUFFER, 0, ubo);

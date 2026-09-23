@@ -16,14 +16,16 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 class CommandRecorder;
 
 /** Takes a command's snapshot (its descriptors, the contents of the buffers it binds) again, queued on the list given. */
 using ExtraRefresh = std::function<std::string(CommandRecorder*)>;
 
-struct RecordedCommand {
+struct RecordedCommand
+{
     std::string method;
     std::string args;      // JSON object with the command's arguments, or empty
     std::string extra;     // pre-separated member list merged into the entry: ,"descriptors":{...},"stack":[...]
@@ -37,7 +39,8 @@ struct RecordedCommand {
 using CommandList = std::vector<RecordedCommand>;
 
 /** A render target bound by OMSetRenderTargets / BeginRenderPass, resolved to what the read-back needs. */
-struct BoundTarget {
+struct BoundTarget
+{
     ID3D12Resource* resource = nullptr;   // not AddRef'd
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;   // the view's format (the resource's when the view had none)
     uint32_t mip = 0;
@@ -59,7 +62,8 @@ struct BoundTarget {
 };
 
 /** The render pass open in the list, synthesized from OMSetRenderTargets or a real BeginRenderPass. */
-struct ActivePass {
+struct ActivePass
+{
     bool active = false;
     bool renderPassApi = false;           // BeginRenderPass/EndRenderPass rather than OMSetRenderTargets
     /**
@@ -85,14 +89,16 @@ struct ActivePass {
 };
 
 /** A run of dispatches outside a render pass, timed as a compute pass. */
-struct ActiveComputePass {
+struct ActiveComputePass
+{
     bool active = false;
     uint32_t index = 0;
     uint32_t timestampQuery = UINT32_MAX;
 };
 
 /** What the list has bound, for snapshots and the pass read-back. */
-struct ListState {
+struct ListState
+{
     ID3D12PipelineState* pipeline = nullptr;
     /** SetPipelineState1: the state object a trace runs, which is whose shader identifiers its binding table holds. */
     ID3D12StateObject* stateObject = nullptr;
@@ -106,28 +112,39 @@ struct ListState {
     uint32_t appQueryDepth = 0;
 };
 
-class CommandRecorder {
+class CommandRecorder
+{
 public:
     CommandRecorder(ID3D12Device* device, ID3D12GraphicsCommandList* list, D3D12_COMMAND_LIST_TYPE type, bool bundle)
         : _device(device), _list(list), _type(type), _bundle(bundle) {}
 
     /** Appends a command; returns its slot (position in the recording). */
-    uint32_t Record(const char* method, std::string args) {
+    uint32_t Record(const char* method, std::string args)
+    {
         _commands->push_back({method, std::move(args), _captureStacks ? StackExtraJson(CaptureStack(1)) : std::string()});
         return (uint32_t)_commands->size() - 1;
     }
     /** Appends extra JSON (a pre-separated member list) to the most recently recorded command. */
-    void SetExtraOnLast(std::string extra) {
-        if (!_commands->empty()) _commands->back().extra += extra;
+    void SetExtraOnLast(std::string extra)
+    {
+        if (!_commands->empty())
+            _commands->back().extra += extra;
     }
     /** The same for a snapshot, `take(recorder)`: a bundle keeps how to take it again (RecordedCommand::refresh), which costs the others nothing. */
-    template <typename F> void SetSnapshotOnLast(F&& take) {
-        if (!_commands->empty()) SetSnapshotOn(_commands->size() - 1, take);
+    template <typename F>
+    void SetSnapshotOnLast(F&& take)
+    {
+        if (!_commands->empty())
+            SetSnapshotOn(_commands->size() - 1, take);
     }
-    template <typename F> void SetSnapshotOn(size_t slot, F&& take) {
-        if (slot >= _commands->size()) return;
+    template <typename F>
+    void SetSnapshotOn(size_t slot, F&& take)
+    {
+        if (slot >= _commands->size())
+            return;
         RecordedCommand& c = (*_commands)[slot];
-        if (_bundle && !c.refresh) {
+        if (_bundle && !c.refresh)
+        {
             c.refreshFrom = c.extra.size();
             c.refresh = std::make_shared<const ExtraRefresh>(take);
         }
@@ -139,18 +156,26 @@ public:
      * an engine binds the table and then writes its descriptors (Unity does, every draw), so a
      * snapshot taken at the bind holds what the slots had the frame before.
      */
-    void DeferSnapshot(bool compute, ExtraRefresh take) {
-        if (!_commands->empty()) _deferred.push_back({_commands->size() - 1, compute, std::move(take)});
+    void DeferSnapshot(bool compute, ExtraRefresh take)
+    {
+        if (!_commands->empty())
+            _deferred.push_back({_commands->size() - 1, compute, std::move(take)});
     }
     /** Takes the held snapshots: before a draw (graphics), a dispatch (compute), or what may be either. */
-    void FlushSnapshots(bool graphics, bool compute) {
-        if (_deferred.empty()) return;
+    void FlushSnapshots(bool graphics, bool compute)
+    {
+        if (_deferred.empty())
+            return;
         size_t kept = 0;
-        for (size_t i = 0; i < _deferred.size(); ++i) {
+        for (size_t i = 0; i < _deferred.size(); ++i)
+        {
             DeferredSnapshot& d = _deferred[i];
-            if (d.compute ? compute : graphics) SetSnapshotOn(d.slot, d.take);
-            else if (kept != i) _deferred[kept++] = std::move(d);
-            else ++kept;
+            if (d.compute ? compute : graphics)
+                SetSnapshotOn(d.slot, d.take);
+            else if (kept != i)
+                _deferred[kept++] = std::move(d);
+            else
+                ++kept;
         }
         _deferred.resize(kept);
     }
@@ -160,7 +185,8 @@ public:
     std::shared_ptr<const CommandList> Snapshot() const { return _commands; }
     size_t commandCount() const { return _commands->size(); }
 
-    void Reset() {
+    void Reset()
+    {
         _commands = std::make_shared<CommandList>();
         _pass = ActivePass{};
         _passCount = 0;
@@ -204,7 +230,8 @@ private:
     ActiveComputePass _compute;
     uint32_t _computeCount = 0;
     ListState _state;
-    struct DeferredSnapshot {
+    struct DeferredSnapshot
+    {
         size_t slot;
         bool compute;
         ExtraRefresh take;
@@ -220,7 +247,8 @@ private:
  * (validation.h): the hooks open one at entry when the list has a recorder, and the slot is the
  * recorder's count at that moment, which is what the command will be recorded at.
  */
-struct CommandScope {
+struct CommandScope
+{
     explicit CommandScope(CommandRecorder* rec);
     ~CommandScope();
     /** The list id and slot of the command in flight on this thread; false when none. */

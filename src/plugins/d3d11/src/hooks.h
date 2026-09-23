@@ -12,7 +12,8 @@
 
 #include <initializer_list>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
 /** MinHook on D3D11CreateDevice and D3D11CreateDeviceAndSwapChain (platform_win32.cpp calls this once). */
 bool InstallEntryPointHooks(HMODULE d3d11);

@@ -15,8 +15,10 @@
 #include <mutex>
 #include <unordered_set>
 
-namespace mtlinsp {
-namespace {
+namespace mtlinsp
+{
+namespace
+{
 
 // --------------------------------------------------------------------------------------------
 // MTLCommandQueue
@@ -27,12 +29,15 @@ namespace {
 // same thing — the unretained-references form keeps its unretained references. Apple documents a
 // small cost to the option, which is why it is only paid with someone watching.
 
-id Q_commandBuffer(id self, SEL _cmd) {
+id Q_commandBuffer(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
     id commandBuffer = nil;
-    if (reentry.outermost() && Transport::Get().Connected()) {
-        if (@available(macOS 11.0, *)) {
-            MTLCommandBufferDescriptor *d = [[MTLCommandBufferDescriptor alloc] init];
+    if (reentry.outermost() && Transport::Get().Connected())
+    {
+        if (@available(macOS 11.0, *))
+        {
+            MTLCommandBufferDescriptor* d = [[MTLCommandBufferDescriptor alloc] init];
             d.retainedReferences = !sel_isEqual(_cmd, @selector(commandBufferWithUnretainedReferences));
             d.errorOptions = MTLCommandBufferErrorOptionEncoderExecutionStatus;
             // Through the hook for that selector, which is nested and so only forwards.
@@ -40,8 +45,10 @@ id Q_commandBuffer(id self, SEL _cmd) {
             [d release];
         }
     }
-    if (commandBuffer == nil) commandBuffer = ORIG(id (*)(id, SEL))(self, _cmd);
-    if (reentry.outermost()) {
+    if (commandBuffer == nil)
+        commandBuffer = ORIG(id(*)(id, SEL))(self, _cmd);
+    if (reentry.outermost())
+    {
         Log("queue.%s -> %s", sel_getName(_cmd), ClassName(commandBuffer));
         WatchCommandBuffer(commandBuffer);
     }
@@ -49,19 +56,24 @@ id Q_commandBuffer(id self, SEL _cmd) {
     return commandBuffer;
 }
 
-id Q_commandBufferWithDescriptor(id self, SEL _cmd, id descriptor) {
+id Q_commandBufferWithDescriptor(id self, SEL _cmd, id descriptor)
+{
     Reentry reentry(self, _cmd);
     id commandBuffer = nil;
-    if (reentry.outermost() && descriptor != nil && Transport::Get().Connected()) {
-        if (@available(macOS 11.0, *)) {
-            MTLCommandBufferDescriptor *d = [(MTLCommandBufferDescriptor *)descriptor copy];
+    if (reentry.outermost() && descriptor != nil && Transport::Get().Connected())
+    {
+        if (@available(macOS 11.0, *))
+        {
+            MTLCommandBufferDescriptor* d = [(MTLCommandBufferDescriptor*)descriptor copy];
             d.errorOptions = d.errorOptions | MTLCommandBufferErrorOptionEncoderExecutionStatus;
-            commandBuffer = ORIG(id (*)(id, SEL, id))(self, _cmd, d);
+            commandBuffer = ORIG(id(*)(id, SEL, id))(self, _cmd, d);
             [d release];
         }
     }
-    if (commandBuffer == nil) commandBuffer = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
-    if (reentry.outermost()) {
+    if (commandBuffer == nil)
+        commandBuffer = ORIG(id(*)(id, SEL, id))(self, _cmd, descriptor);
+    if (reentry.outermost())
+    {
         Log("queue.commandBufferWithDescriptor: -> %s", ClassName(commandBuffer));
         WatchCommandBuffer(commandBuffer);
     }
@@ -79,24 +91,30 @@ id Q_commandBufferWithDescriptor(id self, SEL _cmd, id descriptor) {
  * possible: a memoryless attachment cannot be stored, a multisample one is read through its
  * resolve, and an Unknown action is decided later by the encoder.
  */
-void ForceStore(MTLRenderPassAttachmentDescriptor *a) {
-    if (a == nil || a.texture == nil || a.storeAction != MTLStoreActionDontCare) return;
-    if (a.texture.storageMode == MTLStorageModeMemoryless || a.texture.sampleCount > 1) return;
+void ForceStore(MTLRenderPassAttachmentDescriptor* a)
+{
+    if (a == nil || a.texture == nil || a.storeAction != MTLStoreActionDontCare)
+        return;
+    if (a.texture.storageMode == MTLStorageModeMemoryless || a.texture.sampleCount > 1)
+        return;
     a.storeAction = MTLStoreActionStore;
 }
 
-id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor, Reentry &reentry,
-                       const char *method, bool parallel) {
+id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor* descriptor, Reentry& reentry,
+    const char* method, bool parallel)
+{
     const bool outermost = reentry.outermost();
     const bool rec = outermost && Recording();
     // The application's own descriptor is left alone: it owns and reuses that object. The copy
     // is what carries the forced stores and the timestamp attachment.
-    MTLRenderPassDescriptor *pass = descriptor;
+    MTLRenderPassDescriptor* pass = descriptor;
     PassTimingSlot timing;
     std::shared_ptr<OverdrawPass> overdraw;
-    if (rec && descriptor != nil) {
+    if (rec && descriptor != nil)
+    {
         pass = [descriptor copy];
-        for (NSUInteger i = 0; i < 8; i++) ForceStore(pass.colorAttachments[i]);
+        for (NSUInteger i = 0; i < 8; i++)
+            ForceStore(pass.colorAttachments[i]);
         ForceStore(pass.depthAttachment);
         // The stencil too, or its read-back reads whatever the tile memory was left holding: an
         // application that tests stencil but never reads it back sets DontCare, which is most of
@@ -106,64 +124,85 @@ id CreateRenderEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor, R
         // The depth and stencil the pass starts from, copied while the command buffer is free.
         overdraw = PrepareOverdrawPass(self, pass);
     }
-    id encoder = ORIG(id (*)(id, SEL, MTLRenderPassDescriptor *))(self, _cmd, pass);
-    if (outermost) {
+    id encoder = ORIG(id(*)(id, SEL, MTLRenderPassDescriptor*))(self, _cmd, pass);
+    if (outermost)
+    {
         g_encodersThisFrame++;
         RegisterEncoder(encoder, self,
-                        parallel ? "MTLParallelRenderCommandEncoder" : "MTLRenderCommandEncoder",
-                        nil);
+            parallel ? "MTLParallelRenderCommandEncoder" : "MTLRenderCommandEncoder",
+            nil);
         // Recording or not: which command buffer draws into the drawable decides where a frame
         // ends for an application that presents the drawable itself.
-        for (NSUInteger i = 0; i < 8 && descriptor != nil; i++) {
+        for (NSUInteger i = 0; i < 8 && descriptor != nil; i++)
+        {
             id texture = descriptor.colorAttachments[i].texture;
-            if (texture != nil) OnRenderTarget(self, texture);
+            if (texture != nil)
+                OnRenderTarget(self, texture);
         }
         const uint32_t passIndex = BeginPass(encoder, self, PassKind::Render, timing);
-        if (overdraw) BeginOverdrawPass(encoder, overdraw, passIndex);
-        if (rec) {
-            for (NSUInteger i = 0; i < 8; i++) {
-                if (pass.colorAttachments[i].texture != nil) {
+        if (overdraw)
+            BeginOverdrawPass(encoder, overdraw, passIndex);
+        if (rec)
+        {
+            for (NSUInteger i = 0; i < 8; i++)
+            {
+                if (pass.colorAttachments[i].texture != nil)
+                {
                     AddPassAttachment(encoder, pass.colorAttachments[i], (uint32_t)i, PassAspect::Color);
                 }
             }
-            if (pass.depthAttachment.texture != nil) {
+            if (pass.depthAttachment.texture != nil)
+            {
                 AddPassAttachment(encoder, pass.depthAttachment, 0, PassAspect::Depth);
             }
             // The stencil half, read separately: one blit cannot fetch both aspects of a combined
             // format (capture.h). An application using a combined format sets both attachments to
             // the same texture, which is then read once per aspect, as it should be.
-            if (pass.stencilAttachment.texture != nil) {
+            if (pass.stencilAttachment.texture != nil)
+            {
                 AddPassAttachment(encoder, pass.stencilAttachment, 0, PassAspect::Stencil);
             }
             RecordCommand(method, encoder, RenderPassArgs(descriptor));
-            if (overdraw) NotePassBeginCommand(encoder, LastRecordedCommand());
+            if (overdraw)
+                NotePassBeginCommand(encoder, LastRecordedCommand());
         }
-        if (LogEnabled() && descriptor != nil) {
-            MTLRenderPassColorAttachmentDescriptor *color = descriptor.colorAttachments[0];
+        if (LogEnabled() && descriptor != nil)
+        {
+            MTLRenderPassColorAttachmentDescriptor* color = descriptor.colorAttachments[0];
             Log("commandBuffer.%s load=%lu store=%lu texture=%s -> %s", method,
                 (unsigned long)color.loadAction, (unsigned long)color.storeAction,
                 ClassName(color.texture), ClassName(encoder));
         }
     }
-    if (pass != descriptor) [pass release];
-    if (parallel) HookParallelEncoderClass(encoder);
-    else HookRenderEncoderClass(encoder);
+    if (pass != descriptor)
+        [pass release];
+    if (parallel)
+        HookParallelEncoderClass(encoder);
+    else
+        HookRenderEncoderClass(encoder);
     return encoder;
 }
 
-id CB_renderCommandEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor) {
+id CB_renderCommandEncoder(id self, SEL _cmd, MTLRenderPassDescriptor* descriptor)
+{
     Reentry reentry(self, _cmd);
     return CreateRenderEncoder(self, _cmd, descriptor, reentry, "renderCommandEncoderWithDescriptor:",
-                               false);
+        false);
 }
 
-id CB_parallelRenderCommandEncoder(id self, SEL _cmd, MTLRenderPassDescriptor *descriptor) {
+id CB_parallelRenderCommandEncoder(id self, SEL _cmd, MTLRenderPassDescriptor* descriptor)
+{
     Reentry reentry(self, _cmd);
     return CreateRenderEncoder(self, _cmd, descriptor, reentry,
-                               "parallelRenderCommandEncoderWithDescriptor:", true);
+        "parallelRenderCommandEncoderWithDescriptor:", true);
 }
 
-enum class ComputeForm { Plain, DispatchType, Descriptor };
+enum class ComputeForm
+{
+    Plain,
+    DispatchType,
+    Descriptor
+};
 
 /**
  * The three ways to open a compute encoder, with one twist while recording: a compute pass takes
@@ -172,53 +211,67 @@ enum class ComputeForm { Plain, DispatchType, Descriptor };
  * computeCommandEncoderWithDescriptor: with a descriptor saying the same thing plus the samples.
  * The command is recorded under the selector the application called.
  */
-id CreateComputeEncoder(id self, SEL _cmd, Reentry &reentry, ComputeForm form,
-                        MTLDispatchType dispatchType, id descriptor) {
+id CreateComputeEncoder(id self, SEL _cmd, Reentry& reentry, ComputeForm form,
+    MTLDispatchType dispatchType, id descriptor)
+{
     const bool outermost = reentry.outermost();
     const bool rec = outermost && Recording();
     PassTimingSlot timing;
     id encoder = nil;
     id ours = nil;
-    if (rec) {
-        if (@available(macOS 11.0, *)) {
-            MTLComputePassDescriptor *pass = nil;
-            if (form == ComputeForm::Descriptor) {
-                pass = [(MTLComputePassDescriptor *)descriptor copy];
-            } else {
+    if (rec)
+    {
+        if (@available(macOS 11.0, *))
+        {
+            MTLComputePassDescriptor* pass = nil;
+            if (form == ComputeForm::Descriptor)
+            {
+                pass = [(MTLComputePassDescriptor*)descriptor copy];
+            }
+            else
+            {
                 pass = [[MTLComputePassDescriptor alloc] init];
                 pass.dispatchType = form == ComputeForm::DispatchType ? dispatchType : MTLDispatchTypeSerial;
             }
             ours = pass;
             timing = ReserveComputePassTiming(self, pass);
-            if (form == ComputeForm::Descriptor) {
-                encoder = ORIG(id (*)(id, SEL, MTLComputePassDescriptor *))(self, _cmd, pass);
-            } else if (timing.sampleBuffer != nil && !timing.onEncoder) {
+            if (form == ComputeForm::Descriptor)
+            {
+                encoder = ORIG(id(*)(id, SEL, MTLComputePassDescriptor*))(self, _cmd, pass);
+            }
+            else if (timing.sampleBuffer != nil && !timing.onEncoder)
+            {
                 // Through the hook for that selector, which is nested and so only forwards.
                 encoder = [(id<MTLCommandBuffer>)self computeCommandEncoderWithDescriptor:pass];
             }
         }
     }
-    if (encoder == nil) {
-        switch (form) {
+    if (encoder == nil)
+    {
+        switch (form)
+        {
             case ComputeForm::Plain:
-                encoder = ORIG(id (*)(id, SEL))(self, _cmd);
+                encoder = ORIG(id(*)(id, SEL))(self, _cmd);
                 break;
             case ComputeForm::DispatchType:
-                encoder = ORIG(id (*)(id, SEL, MTLDispatchType))(self, _cmd, dispatchType);
+                encoder = ORIG(id(*)(id, SEL, MTLDispatchType))(self, _cmd, dispatchType);
                 break;
             case ComputeForm::Descriptor:
-                encoder = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
+                encoder = ORIG(id(*)(id, SEL, id))(self, _cmd, descriptor);
                 break;
         }
     }
     [ours release];
-    if (outermost) {
+    if (outermost)
+    {
         g_encodersThisFrame++;
         RegisterEncoder(encoder, self, "MTLComputeCommandEncoder", nil);
         BeginPass(encoder, self, PassKind::Compute, timing);
-        if (rec) {
+        if (rec)
+        {
             Args a;
-            if (form != ComputeForm::Plain) a.u("dispatchType", (uint64_t)dispatchType);
+            if (form != ComputeForm::Plain)
+                a.u("dispatchType", (uint64_t)dispatchType);
             RecordCommand(sel_getName(_cmd), encoder, a.str());
         }
         Log("commandBuffer.%s -> %s", sel_getName(_cmd), ClassName(encoder));
@@ -227,91 +280,112 @@ id CreateComputeEncoder(id self, SEL _cmd, Reentry &reentry, ComputeForm form,
     return encoder;
 }
 
-id CB_computeCommandEncoder(id self, SEL _cmd) {
+id CB_computeCommandEncoder(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
     return CreateComputeEncoder(self, _cmd, reentry, ComputeForm::Plain, MTLDispatchTypeSerial, nil);
 }
 
-id CB_computeCommandEncoderWithDispatchType(id self, SEL _cmd, MTLDispatchType dispatchType) {
+id CB_computeCommandEncoderWithDispatchType(id self, SEL _cmd, MTLDispatchType dispatchType)
+{
     Reentry reentry(self, _cmd);
     return CreateComputeEncoder(self, _cmd, reentry, ComputeForm::DispatchType, dispatchType, nil);
 }
 
-id CB_computeCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor) {
+id CB_computeCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor)
+{
     Reentry reentry(self, _cmd);
     MTLDispatchType type = MTLDispatchTypeSerial;
-    if (@available(macOS 11.0, *)) {
-        if (descriptor != nil) type = ((MTLComputePassDescriptor *)descriptor).dispatchType;
+    if (@available(macOS 11.0, *))
+    {
+        if (descriptor != nil)
+            type = ((MTLComputePassDescriptor*)descriptor).dispatchType;
     }
     return CreateComputeEncoder(self, _cmd, reentry, ComputeForm::Descriptor, type, descriptor);
 }
 
-id CreateBlitEncoder(id self, SEL _cmd, Reentry &reentry, bool withDescriptor, id descriptor) {
+id CreateBlitEncoder(id self, SEL _cmd, Reentry& reentry, bool withDescriptor, id descriptor)
+{
     const bool outermost = reentry.outermost();
     const bool rec = outermost && Recording();
     PassTimingSlot timing;
     id encoder = nil;
     id ours = nil;
-    if (rec) {
-        if (@available(macOS 11.0, *)) {
-            MTLBlitPassDescriptor *pass = withDescriptor ? [(MTLBlitPassDescriptor *)descriptor copy]
+    if (rec)
+    {
+        if (@available(macOS 11.0, *))
+        {
+            MTLBlitPassDescriptor* pass = withDescriptor ? [(MTLBlitPassDescriptor*)descriptor copy]
                                                          : [[MTLBlitPassDescriptor alloc] init];
             ours = pass;
             timing = ReserveBlitPassTiming(self, pass);
-            if (withDescriptor) {
-                encoder = ORIG(id (*)(id, SEL, MTLBlitPassDescriptor *))(self, _cmd, pass);
-            } else if (timing.sampleBuffer != nil && !timing.onEncoder) {
+            if (withDescriptor)
+            {
+                encoder = ORIG(id(*)(id, SEL, MTLBlitPassDescriptor*))(self, _cmd, pass);
+            }
+            else if (timing.sampleBuffer != nil && !timing.onEncoder)
+            {
                 encoder = [(id<MTLCommandBuffer>)self blitCommandEncoderWithDescriptor:pass];
             }
         }
     }
-    if (encoder == nil) {
-        encoder = withDescriptor ? ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor)
-                                 : ORIG(id (*)(id, SEL))(self, _cmd);
+    if (encoder == nil)
+    {
+        encoder = withDescriptor ? ORIG(id(*)(id, SEL, id))(self, _cmd, descriptor)
+                                 : ORIG(id(*)(id, SEL))(self, _cmd);
     }
     [ours release];
-    if (outermost) {
+    if (outermost)
+    {
         g_encodersThisFrame++;
         RegisterEncoder(encoder, self, "MTLBlitCommandEncoder", nil);
         BeginPass(encoder, self, PassKind::Blit, timing);
-        if (rec) RecordCommand(sel_getName(_cmd), encoder, {});
+        if (rec)
+            RecordCommand(sel_getName(_cmd), encoder, {});
         Log("commandBuffer.%s -> %s", sel_getName(_cmd), ClassName(encoder));
     }
     HookBlitEncoderClass(encoder);
     return encoder;
 }
 
-id CB_blitCommandEncoder(id self, SEL _cmd) {
+id CB_blitCommandEncoder(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
     return CreateBlitEncoder(self, _cmd, reentry, false, nil);
 }
 
-id CB_blitCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor) {
+id CB_blitCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor)
+{
     Reentry reentry(self, _cmd);
     return CreateBlitEncoder(self, _cmd, reentry, true, descriptor);
 }
 
 /** A resource state encoder: a pass, without recorded commands. */
-id CreateOtherEncoder(id self, SEL _cmd, Reentry &reentry, id encoder, const char *type) {
-    if (reentry.outermost()) {
+id CreateOtherEncoder(id self, SEL _cmd, Reentry& reentry, id encoder, const char* type)
+{
+    if (reentry.outermost())
+    {
         g_encodersThisFrame++;
         RegisterEncoder(encoder, self, type, nil);
         BeginPass(encoder, self, PassKind::Other, PassTimingSlot());
-        if (Recording()) RecordCommand(sel_getName(_cmd), encoder, {});
+        if (Recording())
+            RecordCommand(sel_getName(_cmd), encoder, {});
     }
     HookOtherEncoderClass(encoder);
     return encoder;
 }
 
-id CB_resourceStateCommandEncoder(id self, SEL _cmd) {
+id CB_resourceStateCommandEncoder(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
-    id encoder = ORIG(id (*)(id, SEL))(self, _cmd);
+    id encoder = ORIG(id(*)(id, SEL))(self, _cmd);
     return CreateOtherEncoder(self, _cmd, reentry, encoder, "MTLResourceStateCommandEncoder");
 }
 
-id CB_resourceStateCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor) {
+id CB_resourceStateCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor)
+{
     Reentry reentry(self, _cmd);
-    id encoder = ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor);
+    id encoder = ORIG(id(*)(id, SEL, id))(self, _cmd, descriptor);
     return CreateOtherEncoder(self, _cmd, reentry, encoder, "MTLResourceStateCommandEncoder");
 }
 
@@ -325,54 +399,67 @@ id CB_resourceStateCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor
  * cost is otherwise unmeasurable on the form almost every application uses
  * (`test/path_tracer/metal` does).
  */
-id CreateAccelerationStructureEncoder(id self, SEL _cmd, Reentry &reentry, bool withDescriptor,
-                                      id descriptor) {
+id CreateAccelerationStructureEncoder(id self, SEL _cmd, Reentry& reentry, bool withDescriptor,
+    id descriptor)
+{
     const bool outermost = reentry.outermost();
     const bool rec = outermost && Recording();
     PassTimingSlot timing;
     id encoder = nil;
     id ours = nil;
-    if (rec) {
+    if (rec)
+    {
         // The descriptor form — and so an attachable sample buffer — is macOS 13. Before that the
         // only timing there is comes from the encoder's own boundaries, which needs no descriptor,
         // so the reservation happens either way and only the descriptor is guarded.
-        if (@available(macOS 13.0, *)) {
-            MTLAccelerationStructurePassDescriptor *pass = withDescriptor
-                ? [(MTLAccelerationStructurePassDescriptor *)descriptor copy]
+        if (@available(macOS 13.0, *))
+        {
+            MTLAccelerationStructurePassDescriptor* pass = withDescriptor
+                ? [(MTLAccelerationStructurePassDescriptor*)descriptor copy]
                 : [[MTLAccelerationStructurePassDescriptor alloc] init];
             ours = pass;
             timing = ReserveAccelerationStructurePassTiming(self, pass);
-            if (withDescriptor) {
-                encoder = ORIG(id (*)(id, SEL, MTLAccelerationStructurePassDescriptor *))(self, _cmd, pass);
-            } else if (timing.sampleBuffer != nil && !timing.onEncoder) {
+            if (withDescriptor)
+            {
+                encoder = ORIG(id(*)(id, SEL, MTLAccelerationStructurePassDescriptor*))(self, _cmd, pass);
+            }
+            else if (timing.sampleBuffer != nil && !timing.onEncoder)
+            {
                 encoder = [(id<MTLCommandBuffer>)self accelerationStructureCommandEncoderWithDescriptor:pass];
             }
-        } else {
+        }
+        else
+        {
             timing = ReserveAccelerationStructurePassTiming(self, nil);
         }
     }
-    if (encoder == nil) {
-        encoder = withDescriptor ? ORIG(id (*)(id, SEL, id))(self, _cmd, descriptor)
-                                 : ORIG(id (*)(id, SEL))(self, _cmd);
+    if (encoder == nil)
+    {
+        encoder = withDescriptor ? ORIG(id(*)(id, SEL, id))(self, _cmd, descriptor)
+                                 : ORIG(id(*)(id, SEL))(self, _cmd);
     }
     [ours release];
-    if (outermost) {
+    if (outermost)
+    {
         g_encodersThisFrame++;
         RegisterEncoder(encoder, self, "MTLAccelerationStructureCommandEncoder", nil);
         BeginPass(encoder, self, PassKind::Other, timing);
-        if (rec) RecordCommand(sel_getName(_cmd), encoder, {});
+        if (rec)
+            RecordCommand(sel_getName(_cmd), encoder, {});
         Log("commandBuffer.%s -> %s", sel_getName(_cmd), ClassName(encoder));
     }
     HookAccelerationStructureEncoderClass(encoder);
     return encoder;
 }
 
-id CB_accelerationStructureCommandEncoder(id self, SEL _cmd) {
+id CB_accelerationStructureCommandEncoder(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
     return CreateAccelerationStructureEncoder(self, _cmd, reentry, false, nil);
 }
 
-id CB_accelerationStructureCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor) {
+id CB_accelerationStructureCommandEncoderWithDescriptor(id self, SEL _cmd, id descriptor)
+{
     Reentry reentry(self, _cmd);
     return CreateAccelerationStructureEncoder(self, _cmd, reentry, true, descriptor);
 }
@@ -380,7 +467,8 @@ id CB_accelerationStructureCommandEncoderWithDescriptor(id self, SEL _cmd, id de
 // --------------------------------------------------------------------------------------------
 // MTLCommandBuffer: presenting, committing, and the rest
 
-void LogFrame(id self, id drawable, const char *how) {
+void LogFrame(id self, id drawable, const char* how)
+{
     Log("--- frame %llu: %u encoders, %u draws, %u dispatches (%s presents %s, %s) ---",
         (unsigned long long)g_frame++, g_encodersThisFrame.exchange(0),
         g_drawsThisFrame.exchange(0), g_dispatchesThisFrame.exchange(0), ClassName(self),
@@ -388,15 +476,19 @@ void LogFrame(id self, id drawable, const char *how) {
 }
 
 /** The presented texture, so the UI's present row resolves to the image the frame ended on. */
-std::string PresentArgs(id drawable, double timeValue, const char *timeKey) {
+std::string PresentArgs(id drawable, double timeValue, const char* timeKey)
+{
     Args a;
     id texture = [drawable respondsToSelector:@selector(texture)]
-        ? [drawable performSelector:@selector(texture)] : nil;
+        ? [drawable performSelector:@selector(texture)]
+        : nil;
     a.ref("texture", texture, "MTLTexture");
-    if ([drawable respondsToSelector:@selector(drawableID)]) {
+    if ([drawable respondsToSelector:@selector(drawableID)])
+    {
         a.u("drawableID", (uint64_t)[(id<MTLDrawable>)drawable drawableID]);
     }
-    if (timeKey != nullptr) a.d(timeKey, timeValue);
+    if (timeKey != nullptr)
+        a.d(timeKey, timeValue);
     return a.str();
 }
 
@@ -404,64 +496,81 @@ std::string PresentArgs(id drawable, double timeValue, const char *timeKey) {
 // a frame boundary (live pause waits there). A set rather than a thread-local: nothing says the
 // commit has to happen on the thread that encoded the present.
 std::mutex g_presentingMutex;
-std::unordered_set<const void *> g_presenting;
+std::unordered_set<const void*> g_presenting;
 
-void NotePresenting(id commandBuffer) {
+void NotePresenting(id commandBuffer)
+{
     std::lock_guard<std::mutex> lock(g_presentingMutex);
-    g_presenting.insert((__bridge const void *)commandBuffer);
+    g_presenting.insert((__bridge const void*)commandBuffer);
 }
 
-bool TakePresenting(id commandBuffer) {
+bool TakePresenting(id commandBuffer)
+{
     std::lock_guard<std::mutex> lock(g_presentingMutex);
-    return g_presenting.erase((__bridge const void *)commandBuffer) != 0;
+    return g_presenting.erase((__bridge const void*)commandBuffer) != 0;
 }
 
-void CB_presentDrawable(id self, SEL _cmd, id drawable) {
+void CB_presentDrawable(id self, SEL _cmd, id drawable)
+{
     Reentry reentry(self, _cmd);
-    if (reentry.outermost()) {
+    if (reentry.outermost())
+    {
         LogFrame(self, drawable, "presentDrawable:");
-        if (Recording()) RecordCommand("presentDrawable:", self, PresentArgs(drawable, 0, nullptr));
+        if (Recording())
+            RecordCommand("presentDrawable:", self, PresentArgs(drawable, 0, nullptr));
         // Not the frame boundary itself: the commit that follows is. See OnCommit.
         OnPresentDrawable(self, drawable);
         NotePresenting(self);
         Hud::Get().DrawInto(self, drawable);
     }
-    ORIG(void (*)(id, SEL, id))(self, _cmd, drawable);
+    ORIG(void (*)(id, SEL, id))
+    (self, _cmd, drawable);
 }
 
-void CB_presentDrawableAtTime(id self, SEL _cmd, id drawable, CFTimeInterval time) {
+void CB_presentDrawableAtTime(id self, SEL _cmd, id drawable, CFTimeInterval time)
+{
     Reentry reentry(self, _cmd);
-    if (reentry.outermost()) {
+    if (reentry.outermost())
+    {
         LogFrame(self, drawable, "presentDrawable:atTime:");
-        if (Recording()) {
+        if (Recording())
+        {
             RecordCommand("presentDrawable:atTime:", self, PresentArgs(drawable, time, "presentationTime"));
         }
         OnPresentDrawable(self, drawable);
         NotePresenting(self);
         Hud::Get().DrawInto(self, drawable);
     }
-    ORIG(void (*)(id, SEL, id, CFTimeInterval))(self, _cmd, drawable, time);
+    ORIG(void (*)(id, SEL, id, CFTimeInterval))
+    (self, _cmd, drawable, time);
 }
 
-void CB_presentDrawableAfterMinimumDuration(id self, SEL _cmd, id drawable, CFTimeInterval duration) {
+void CB_presentDrawableAfterMinimumDuration(id self, SEL _cmd, id drawable, CFTimeInterval duration)
+{
     Reentry reentry(self, _cmd);
-    if (reentry.outermost()) {
+    if (reentry.outermost())
+    {
         LogFrame(self, drawable, "presentDrawable:afterMinimumDuration:");
-        if (Recording()) {
+        if (Recording())
+        {
             RecordCommand("presentDrawable:afterMinimumDuration:", self,
-                          PresentArgs(drawable, duration, "duration"));
+                PresentArgs(drawable, duration, "duration"));
         }
         OnPresentDrawable(self, drawable);
         NotePresenting(self);
         Hud::Get().DrawInto(self, drawable);
     }
-    ORIG(void (*)(id, SEL, id, CFTimeInterval))(self, _cmd, drawable, duration);
+    ORIG(void (*)(id, SEL, id, CFTimeInterval))
+    (self, _cmd, drawable, duration);
 }
 
-void CB_commit(id self, SEL _cmd) {
+void CB_commit(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
-    if (!reentry.outermost()) {
-        ORIG(void (*)(id, SEL))(self, _cmd);
+    if (!reentry.outermost())
+    {
+        ORIG(void (*)(id, SEL))
+        (self, _cmd);
         return;
     }
     Log("commandBuffer.commit label=\"%s\"", LabelOf(self));
@@ -472,72 +581,97 @@ void CB_commit(id self, SEL _cmd) {
     // one span of the capture's CPU timeline (cpu_timeline.h).
     const auto begin = std::chrono::steady_clock::now();
     const uint64_t cpuEvent = CpuEventBegin();
-    ORIG(void (*)(id, SEL))(self, _cmd);
+    ORIG(void (*)(id, SEL))
+    (self, _cmd);
     CpuEventEnd(cpuEvent, CpuCategory::Submit);
     AddSubmitTime((uint64_t)std::chrono::duration_cast<std::chrono::nanoseconds>(
-                      std::chrono::steady_clock::now() - begin).count());
+        std::chrono::steady_clock::now() - begin)
+                      .count());
     // Live pause, at the frame boundary (frame_pause.h). Only a commit that presents is one.
-    if (TakePresenting(self)) {
+    if (TakePresenting(self))
+    {
         // presentDrawable: does not present until this command buffer completes, so freezing
         // straight after the commit would leave the previous frame on the screen. Waiting costs
         // the application a stall, which is why it only happens when the pause is about to take
         // effect anyway.
-        if (gpuinsp::FramePause::Get().Paused()) [(id<MTLCommandBuffer>)self waitUntilCompleted];
+        if (gpuinsp::FramePause::Get().Paused())
+            [(id<MTLCommandBuffer>)self waitUntilCompleted];
         gpuinsp::FramePause::Get().Wait();
     }
 }
 
-void CB_enqueue(id self, SEL _cmd) {
+void CB_enqueue(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) RecordCommand("enqueue", self, {});
-    ORIG(void (*)(id, SEL))(self, _cmd);
+    if (Rec(reentry))
+        RecordCommand("enqueue", self, {});
+    ORIG(void (*)(id, SEL))
+    (self, _cmd);
 }
 
-void CB_waitUntilScheduled(id self, SEL _cmd) {
+void CB_waitUntilScheduled(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) RecordCommand("waitUntilScheduled", self, {});
+    if (Rec(reentry))
+        RecordCommand("waitUntilScheduled", self, {});
     const uint64_t cpuEvent = reentry.outermost() ? CpuEventBegin() : 0;
-    ORIG(void (*)(id, SEL))(self, _cmd);
+    ORIG(void (*)(id, SEL))
+    (self, _cmd);
     CpuEventEnd(cpuEvent, CpuCategory::WaitFences);
 }
 
-void CB_waitUntilCompleted(id self, SEL _cmd) {
+void CB_waitUntilCompleted(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) RecordCommand("waitUntilCompleted", self, {});
+    if (Rec(reentry))
+        RecordCommand("waitUntilCompleted", self, {});
     // Blocked until the GPU catches up: the span that says a frame is GPU bound.
     const uint64_t cpuEvent = reentry.outermost() ? CpuEventBegin() : 0;
-    ORIG(void (*)(id, SEL))(self, _cmd);
+    ORIG(void (*)(id, SEL))
+    (self, _cmd);
     CpuEventEnd(cpuEvent, CpuCategory::WaitFences);
 }
 
-void CB_encodeWaitForEvent(id self, SEL _cmd, id event, uint64_t value) {
+void CB_encodeWaitForEvent(id self, SEL _cmd, id event, uint64_t value)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) {
+    if (Rec(reentry))
+    {
         RecordCommand("encodeWaitForEvent:value:", self,
-                      Args().ref("event", event, "MTLEvent").u("value", value).str());
+            Args().ref("event", event, "MTLEvent").u("value", value).str());
     }
-    ORIG(void (*)(id, SEL, id, uint64_t))(self, _cmd, event, value);
+    ORIG(void (*)(id, SEL, id, uint64_t))
+    (self, _cmd, event, value);
 }
 
-void CB_encodeSignalEvent(id self, SEL _cmd, id event, uint64_t value) {
+void CB_encodeSignalEvent(id self, SEL _cmd, id event, uint64_t value)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) {
+    if (Rec(reentry))
+    {
         RecordCommand("encodeSignalEvent:value:", self,
-                      Args().ref("event", event, "MTLEvent").u("value", value).str());
+            Args().ref("event", event, "MTLEvent").u("value", value).str());
     }
-    ORIG(void (*)(id, SEL, id, uint64_t))(self, _cmd, event, value);
+    ORIG(void (*)(id, SEL, id, uint64_t))
+    (self, _cmd, event, value);
 }
 
-void CB_pushDebugGroup(id self, SEL _cmd, NSString *name) {
+void CB_pushDebugGroup(id self, SEL _cmd, NSString* name)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) RecordCommand("pushDebugGroup:", self, Args().s("label", name).str());
-    ORIG(void (*)(id, SEL, NSString *))(self, _cmd, name);
+    if (Rec(reentry))
+        RecordCommand("pushDebugGroup:", self, Args().s("label", name).str());
+    ORIG(void (*)(id, SEL, NSString*))
+    (self, _cmd, name);
 }
 
-void CB_popDebugGroup(id self, SEL _cmd) {
+void CB_popDebugGroup(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) RecordCommand("popDebugGroup", self, {});
-    ORIG(void (*)(id, SEL))(self, _cmd);
+    if (Rec(reentry))
+        RecordCommand("popDebugGroup", self, {});
+    ORIG(void (*)(id, SEL))
+    (self, _cmd);
 }
 
 // --------------------------------------------------------------------------------------------
@@ -547,14 +681,17 @@ void CB_popDebugGroup(id self, SEL _cmd) {
 // creation and end are recorded as ordinary commands rather than as passes, and the read-back
 // happens when the parallel encoder itself ends.
 
-id P_renderCommandEncoder(id self, SEL _cmd) {
+id P_renderCommandEncoder(id self, SEL _cmd)
+{
     Reentry reentry(self, _cmd);
-    id encoder = ORIG(id (*)(id, SEL))(self, _cmd);
-    if (reentry.outermost()) {
+    id encoder = ORIG(id(*)(id, SEL))(self, _cmd);
+    if (reentry.outermost())
+    {
         bool secondary = false;
         id commandBuffer = EncoderCommandBuffer(self, &secondary);
         RegisterEncoder(encoder, commandBuffer, "MTLRenderCommandEncoder", self);
-        if (Recording()) {
+        if (Recording())
+        {
             RecordCommand("renderCommandEncoder", encoder, {});
             NoteOverdrawSubEncoder(self, encoder);
         }
@@ -563,42 +700,53 @@ id P_renderCommandEncoder(id self, SEL _cmd) {
     return encoder;
 }
 
-void P_setColorStoreAction(id self, SEL _cmd, MTLStoreAction action, NSUInteger index) {
+void P_setColorStoreAction(id self, SEL _cmd, MTLStoreAction action, NSUInteger index)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) {
+    if (Rec(reentry))
+    {
         RecordCommand("setColorStoreAction:atIndex:", self,
-                      Args().e("storeAction", StoreActionEnumName(action), (uint64_t)action)
-                            .u("index", index).str());
+            Args().e("storeAction", StoreActionEnumName(action), (uint64_t)action).u("index", index).str());
     }
-    ORIG(void (*)(id, SEL, MTLStoreAction, NSUInteger))(self, _cmd, action, index);
+    ORIG(void (*)(id, SEL, MTLStoreAction, NSUInteger))
+    (self, _cmd, action, index);
 }
 
-void P_setDepthStoreAction(id self, SEL _cmd, MTLStoreAction action) {
+void P_setDepthStoreAction(id self, SEL _cmd, MTLStoreAction action)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) {
+    if (Rec(reentry))
+    {
         RecordCommand("setDepthStoreAction:", self,
-                      Args().e("storeAction", StoreActionEnumName(action), (uint64_t)action).str());
+            Args().e("storeAction", StoreActionEnumName(action), (uint64_t)action).str());
     }
-    ORIG(void (*)(id, SEL, MTLStoreAction))(self, _cmd, action);
+    ORIG(void (*)(id, SEL, MTLStoreAction))
+    (self, _cmd, action);
 }
 
-void P_setStencilStoreAction(id self, SEL _cmd, MTLStoreAction action) {
+void P_setStencilStoreAction(id self, SEL _cmd, MTLStoreAction action)
+{
     Reentry reentry(self, _cmd);
-    if (Rec(reentry)) {
+    if (Rec(reentry))
+    {
         RecordCommand("setStencilStoreAction:", self,
-                      Args().e("storeAction", StoreActionEnumName(action), (uint64_t)action).str());
+            Args().e("storeAction", StoreActionEnumName(action), (uint64_t)action).str());
     }
-    ORIG(void (*)(id, SEL, MTLStoreAction))(self, _cmd, action);
+    ORIG(void (*)(id, SEL, MTLStoreAction))
+    (self, _cmd, action);
 }
 
 }  // namespace
 
 // --------------------------------------------------------------------------------------------
 
-void HookCommandQueueClass(id queue) {
-    if (queue == nil) return;
+void HookCommandQueueClass(id queue)
+{
+    if (queue == nil)
+        return;
     Class cls = object_getClass(queue);
-    if (!FirstSighting(cls)) return;
+    if (!FirstSighting(cls))
+        return;
     Log("hooking command queue class %s", class_getName(cls));
     Hook(cls, @selector(commandBuffer), (IMP)Q_commandBuffer);
     // Engines commonly take the unretained form for its lower overhead; without this nothing
@@ -607,32 +755,35 @@ void HookCommandQueueClass(id queue) {
     Hook(cls, @selector(commandBufferWithDescriptor:), (IMP)Q_commandBufferWithDescriptor);
 }
 
-void HookCommandBufferClass(id commandBuffer) {
-    if (commandBuffer == nil) return;
+void HookCommandBufferClass(id commandBuffer)
+{
+    if (commandBuffer == nil)
+        return;
     Class cls = object_getClass(commandBuffer);
-    if (!FirstSighting(cls)) return;
+    if (!FirstSighting(cls))
+        return;
     Log("hooking command buffer class %s", class_getName(cls));
     Hook(cls, @selector(renderCommandEncoderWithDescriptor:), (IMP)CB_renderCommandEncoder);
     Hook(cls, @selector(parallelRenderCommandEncoderWithDescriptor:),
-         (IMP)CB_parallelRenderCommandEncoder);
+        (IMP)CB_parallelRenderCommandEncoder);
     Hook(cls, @selector(computeCommandEncoder), (IMP)CB_computeCommandEncoder);
     Hook(cls, @selector(computeCommandEncoderWithDispatchType:),
-         (IMP)CB_computeCommandEncoderWithDispatchType);
+        (IMP)CB_computeCommandEncoderWithDispatchType);
     Hook(cls, @selector(computeCommandEncoderWithDescriptor:),
-         (IMP)CB_computeCommandEncoderWithDescriptor);
+        (IMP)CB_computeCommandEncoderWithDescriptor);
     Hook(cls, @selector(blitCommandEncoder), (IMP)CB_blitCommandEncoder);
     Hook(cls, @selector(blitCommandEncoderWithDescriptor:), (IMP)CB_blitCommandEncoderWithDescriptor);
     Hook(cls, @selector(resourceStateCommandEncoder), (IMP)CB_resourceStateCommandEncoder);
     Hook(cls, @selector(resourceStateCommandEncoderWithDescriptor:),
-         (IMP)CB_resourceStateCommandEncoderWithDescriptor);
+        (IMP)CB_resourceStateCommandEncoderWithDescriptor);
     Hook(cls, @selector(accelerationStructureCommandEncoder),
-         (IMP)CB_accelerationStructureCommandEncoder);
+        (IMP)CB_accelerationStructureCommandEncoder);
     Hook(cls, sel_registerName("accelerationStructureCommandEncoderWithDescriptor:"),
-         (IMP)CB_accelerationStructureCommandEncoderWithDescriptor);
+        (IMP)CB_accelerationStructureCommandEncoderWithDescriptor);
     Hook(cls, @selector(presentDrawable:), (IMP)CB_presentDrawable);
     Hook(cls, @selector(presentDrawable:atTime:), (IMP)CB_presentDrawableAtTime);
     Hook(cls, @selector(presentDrawable:afterMinimumDuration:),
-         (IMP)CB_presentDrawableAfterMinimumDuration);
+        (IMP)CB_presentDrawableAfterMinimumDuration);
     Hook(cls, @selector(commit), (IMP)CB_commit);
     Hook(cls, @selector(enqueue), (IMP)CB_enqueue);
     Hook(cls, @selector(waitUntilScheduled), (IMP)CB_waitUntilScheduled);
@@ -644,10 +795,13 @@ void HookCommandBufferClass(id commandBuffer) {
     Hook(cls, @selector(setLabel:), (IMP)Replaced_setLabel);
 }
 
-void HookParallelEncoderClass(id encoder) {
-    if (encoder == nil) return;
+void HookParallelEncoderClass(id encoder)
+{
+    if (encoder == nil)
+        return;
     Class cls = object_getClass(encoder);
-    if (!FirstSighting(cls)) return;
+    if (!FirstSighting(cls))
+        return;
     Log("hooking parallel render encoder class %s", class_getName(cls));
     Hook(cls, @selector(renderCommandEncoder), (IMP)P_renderCommandEncoder);
     Hook(cls, @selector(setColorStoreAction:atIndex:), (IMP)P_setColorStoreAction);

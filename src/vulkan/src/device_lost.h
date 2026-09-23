@@ -21,13 +21,15 @@
 #include <string>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 struct InstanceData;
 
 /** What a device asked for at creation, decided before vkCreateDevice (see PlanBreadcrumbs). */
-struct BreadcrumbSetup {
+struct BreadcrumbSetup
+{
     /** Our copy of the device's extension list, when the layer had to extend it. */
     std::vector<const char*> extensionNames;
     /** The application asked for breadcrumbs and the device can write buffer markers. */

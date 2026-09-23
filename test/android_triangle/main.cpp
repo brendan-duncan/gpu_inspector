@@ -21,36 +21,54 @@
 #define TAG "android_triangle"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
-#define VK_CHECK(x) do { VkResult r_ = (x); if (r_ != VK_SUCCESS) { LOGE("%s failed: %d", #x, (int)r_); abort(); } } while (0)
+#define VK_CHECK(x)                             \
+    do                                          \
+    {                                           \
+        VkResult r_ = (x);                      \
+        if (r_ != VK_SUCCESS)                   \
+        {                                       \
+            LOGE("%s failed: %d", #x, (int)r_); \
+            abort();                            \
+        }                                       \
+    } while (0)
 
-namespace {
+namespace
+{
 
 constexpr uint32_t kTriangles = 48;   // the ring (kTriangles in tri.vert)
 constexpr int kFramesInFlight = 2;
 
 // ------------------------------------------------------------------------------------ math
 
-struct Mat4 { float m[16]; };   // column-major
+struct Mat4
+{
+    float m[16];
+};   // column-major
 
-Mat4 Identity() {
+Mat4 Identity()
+{
     Mat4 r{};
     r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1.0f;
     return r;
 }
 
-Mat4 Multiply(const Mat4& a, const Mat4& b) {
+Mat4 Multiply(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
-        for (int rr = 0; rr < 4; ++rr) {
+        for (int rr = 0; rr < 4; ++rr)
+        {
             float s = 0;
-            for (int k = 0; k < 4; ++k) s += a.m[k * 4 + rr] * b.m[c * 4 + k];
+            for (int k = 0; k < 4; ++k)
+                s += a.m[k * 4 + rr] * b.m[c * 4 + k];
             r.m[c * 4 + rr] = s;
         }
     return r;
 }
 
 // A symmetric perspective for Vulkan clip space (depth 0..1, y down).
-Mat4 Perspective(float fovY, float aspect, float nearZ, float farZ) {
+Mat4 Perspective(float fovY, float aspect, float nearZ, float farZ)
+{
     const float f = 1.0f / tanf(fovY * 0.5f);
     Mat4 p{};
     p.m[0] = f / aspect;
@@ -61,23 +79,30 @@ Mat4 Perspective(float fovY, float aspect, float nearZ, float farZ) {
     return p;
 }
 
-Mat4 RotationY(float a) {
+Mat4 RotationY(float a)
+{
     Mat4 r = Identity();
-    r.m[0] = cosf(a); r.m[8] = sinf(a);
-    r.m[2] = -sinf(a); r.m[10] = cosf(a);
+    r.m[0] = cosf(a);
+    r.m[8] = sinf(a);
+    r.m[2] = -sinf(a);
+    r.m[10] = cosf(a);
     return r;
 }
 
-Mat4 RotationZ(float a) {
+Mat4 RotationZ(float a)
+{
     Mat4 r = Identity();
-    r.m[0] = cosf(a); r.m[4] = -sinf(a);
-    r.m[1] = sinf(a); r.m[5] = cosf(a);
+    r.m[0] = cosf(a);
+    r.m[4] = -sinf(a);
+    r.m[1] = sinf(a);
+    r.m[5] = cosf(a);
     return r;
 }
 
 // ------------------------------------------------------------------------------------ app
 
-struct App {
+struct App
+{
     android_app* android = nullptr;
     bool resumed = false;
     ANativeWindow* window = nullptr;
@@ -115,7 +140,8 @@ struct App {
 
     // -------------------------------------------------------------------------- instance / device
 
-    void CreateVulkan() {
+    void CreateVulkan()
+    {
         VkApplicationInfo ai{VK_STRUCTURE_TYPE_APPLICATION_INFO};
         ai.pApplicationName = "android_triangle";
         ai.pEngineName = "none";
@@ -125,7 +151,9 @@ struct App {
         vkEnumerateInstanceExtensionProperties(nullptr, &count, nullptr);
         std::vector<VkExtensionProperties> available(count);
         vkEnumerateInstanceExtensionProperties(nullptr, &count, available.data());
-        for (auto& e : available) if (!strcmp(e.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME)) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
+        for (auto& e : available)
+            if (!strcmp(e.extensionName, VK_EXT_DEBUG_UTILS_EXTENSION_NAME))
+                extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
         VkInstanceCreateInfo ici{VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO};
         ici.pApplicationInfo = &ai;
         ici.enabledExtensionCount = (uint32_t)extensions.size();
@@ -139,7 +167,11 @@ struct App {
         VK_CHECK(vkEnumeratePhysicalDevices(instance, &gpuCount, nullptr));
         std::vector<VkPhysicalDevice> gpus(gpuCount);
         VK_CHECK(vkEnumeratePhysicalDevices(instance, &gpuCount, gpus.data()));
-        if (gpus.empty()) { LOGE("no Vulkan device"); abort(); }
+        if (gpus.empty())
+        {
+            LOGE("no Vulkan device");
+            abort();
+        }
         gpu = gpus[0];
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(gpu, &props);
@@ -150,7 +182,11 @@ struct App {
         std::vector<VkQueueFamilyProperties> families(familyCount);
         vkGetPhysicalDeviceQueueFamilyProperties(gpu, &familyCount, families.data());
         for (uint32_t i = 0; i < familyCount; ++i)
-            if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) { queueFamily = i; break; }
+            if (families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)
+            {
+                queueFamily = i;
+                break;
+            }
 
         float priority = 1.0f;
         VkDeviceQueueCreateInfo qci{VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO};
@@ -177,7 +213,8 @@ struct App {
         cai.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
         cai.commandBufferCount = kFramesInFlight;
         VK_CHECK(vkAllocateCommandBuffers(device, &cai, commandBuffers));
-        for (int i = 0; i < kFramesInFlight; ++i) {
+        for (int i = 0; i < kFramesInFlight; ++i)
+        {
             VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
             VK_CHECK(vkCreateSemaphore(device, &sci, nullptr, &imageAvailable[i]));
             VK_CHECK(vkCreateSemaphore(device, &sci, nullptr, &renderFinished[i]));
@@ -192,8 +229,10 @@ struct App {
         VK_CHECK(vkCreatePipelineLayout(device, &plci, nullptr, &pipelineLayout));
     }
 
-    void Name(VkObjectType type, uint64_t handle, const char* name) {
-        if (!setName) return;
+    void Name(VkObjectType type, uint64_t handle, const char* name)
+    {
+        if (!setName)
+            return;
         VkDebugUtilsObjectNameInfoEXT ni{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
         ni.objectType = type;
         ni.objectHandle = handle;
@@ -201,15 +240,18 @@ struct App {
         setName(device, &ni);
     }
 
-    int32_t TryFindMemoryType(uint32_t bits, VkMemoryPropertyFlags props) {
+    int32_t TryFindMemoryType(uint32_t bits, VkMemoryPropertyFlags props)
+    {
         VkPhysicalDeviceMemoryProperties mp;
         vkGetPhysicalDeviceMemoryProperties(gpu, &mp);
         for (uint32_t i = 0; i < mp.memoryTypeCount; ++i)
-            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props) return (int32_t)i;
+            if ((bits & (1u << i)) && (mp.memoryTypes[i].propertyFlags & props) == props)
+                return (int32_t)i;
         return -1;
     }
 
-    VkShaderModule Module(const uint32_t* code, size_t bytes) {
+    VkShaderModule Module(const uint32_t* code, size_t bytes)
+    {
         VkShaderModuleCreateInfo ci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
         ci.codeSize = bytes;
         ci.pCode = code;
@@ -220,13 +262,18 @@ struct App {
 
     // -------------------------------------------------------------------------- swapchain
 
-    void CreateSwapchain() {
+    void CreateSwapchain()
+    {
         VkAndroidSurfaceCreateInfoKHR sci{VK_STRUCTURE_TYPE_ANDROID_SURFACE_CREATE_INFO_KHR};
         sci.window = window;
         VK_CHECK(vkCreateAndroidSurfaceKHR(instance, &sci, nullptr, &surface));
         VkBool32 supported = VK_FALSE;
         vkGetPhysicalDeviceSurfaceSupportKHR(gpu, queueFamily, surface, &supported);
-        if (!supported) { LOGE("the graphics queue cannot present"); abort(); }
+        if (!supported)
+        {
+            LOGE("the graphics queue cannot present");
+            abort();
+        }
 
         VkSurfaceCapabilitiesKHR caps;
         VK_CHECK(vkGetPhysicalDeviceSurfaceCapabilitiesKHR(gpu, surface, &caps));
@@ -235,16 +282,24 @@ struct App {
         std::vector<VkSurfaceFormatKHR> formats(formatCount);
         vkGetPhysicalDeviceSurfaceFormatsKHR(gpu, surface, &formatCount, formats.data());
         VkSurfaceFormatKHR chosen = formats[0];
-        for (auto& f : formats) if (f.format == VK_FORMAT_R8G8B8A8_SRGB || f.format == VK_FORMAT_B8G8R8A8_SRGB) { chosen = f; break; }
+        for (auto& f : formats)
+            if (f.format == VK_FORMAT_R8G8B8A8_SRGB || f.format == VK_FORMAT_B8G8R8A8_SRGB)
+            {
+                chosen = f;
+                break;
+            }
         format = chosen.format;
         extent = caps.currentExtent;
-        if (extent.width == 0xFFFFFFFF) extent = {(uint32_t)ANativeWindow_getWidth(window), (uint32_t)ANativeWindow_getHeight(window)};
+        if (extent.width == 0xFFFFFFFF)
+            extent = {(uint32_t)ANativeWindow_getWidth(window), (uint32_t)ANativeWindow_getHeight(window)};
         // Rendering in the display's native orientation avoids a rotation pass in the compositor:
         // the swapchain takes the surface's transform and the projection turns to match (see Mvp).
         transform = caps.currentTransform;
-        if (transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)) std::swap(extent.width, extent.height);
+        if (transform & (VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR | VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR))
+            std::swap(extent.width, extent.height);
         uint32_t imageCount = caps.minImageCount + 1;
-        if (caps.maxImageCount && imageCount > caps.maxImageCount) imageCount = caps.maxImageCount;
+        if (caps.maxImageCount && imageCount > caps.maxImageCount)
+            imageCount = caps.maxImageCount;
 
         VkSwapchainCreateInfoKHR swci{VK_STRUCTURE_TYPE_SWAPCHAIN_CREATE_INFO_KHR};
         swci.surface = surface;
@@ -267,12 +322,15 @@ struct App {
         vkGetSwapchainImagesKHR(device, swapchain, &got, images.data());
         LOGI("swapchain: %u images, %ux%u, format %d, transform %d", got, extent.width, extent.height, (int)format, (int)transform);
 
-        if (!renderPass) CreateRenderPass();
-        if (!pipeline) CreatePipeline();
+        if (!renderPass)
+            CreateRenderPass();
+        if (!pipeline)
+            CreatePipeline();
         CreateDepth();
         views.resize(got);
         framebuffers.resize(got);
-        for (uint32_t i = 0; i < got; ++i) {
+        for (uint32_t i = 0; i < got; ++i)
+        {
             char name[32];
             snprintf(name, sizeof(name), "Swapchain image %u", i);
             Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)images[i], name);
@@ -294,24 +352,36 @@ struct App {
         }
     }
 
-    void DestroySwapchain() {
-        if (device) vkDeviceWaitIdle(device);
-        for (auto fb : framebuffers) vkDestroyFramebuffer(device, fb, nullptr);
-        for (auto v : views) vkDestroyImageView(device, v, nullptr);
+    void DestroySwapchain()
+    {
+        if (device)
+            vkDeviceWaitIdle(device);
+        for (auto fb : framebuffers)
+            vkDestroyFramebuffer(device, fb, nullptr);
+        for (auto v : views)
+            vkDestroyImageView(device, v, nullptr);
         framebuffers.clear();
         views.clear();
         images.clear();
-        if (depthView) vkDestroyImageView(device, depthView, nullptr);
-        if (depthImage) vkDestroyImage(device, depthImage, nullptr);
-        if (depthMemory) vkFreeMemory(device, depthMemory, nullptr);
-        depthView = VK_NULL_HANDLE; depthImage = VK_NULL_HANDLE; depthMemory = VK_NULL_HANDLE;
-        if (swapchain) vkDestroySwapchainKHR(device, swapchain, nullptr);
-        if (surface) vkDestroySurfaceKHR(instance, surface, nullptr);
+        if (depthView)
+            vkDestroyImageView(device, depthView, nullptr);
+        if (depthImage)
+            vkDestroyImage(device, depthImage, nullptr);
+        if (depthMemory)
+            vkFreeMemory(device, depthMemory, nullptr);
+        depthView = VK_NULL_HANDLE;
+        depthImage = VK_NULL_HANDLE;
+        depthMemory = VK_NULL_HANDLE;
+        if (swapchain)
+            vkDestroySwapchainKHR(device, swapchain, nullptr);
+        if (surface)
+            vkDestroySurfaceKHR(instance, surface, nullptr);
         swapchain = VK_NULL_HANDLE;
         surface = VK_NULL_HANDLE;
     }
 
-    void CreateRenderPass() {
+    void CreateRenderPass()
+    {
         VkAttachmentDescription atts[2]{};
         atts[0].format = format;
         atts[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -353,7 +423,8 @@ struct App {
         Name(VK_OBJECT_TYPE_RENDER_PASS, (uint64_t)renderPass, "Main pass");
     }
 
-    void CreateDepth() {
+    void CreateDepth()
+    {
         // Neither loaded nor stored: a transient attachment in lazily allocated memory when the
         // device has such memory, so a tiled GPU keeps it in tile memory only.
         VkImageCreateInfo ici{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
@@ -373,7 +444,8 @@ struct App {
         mai.allocationSize = req.size;
         int32_t lazy = TryFindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_LAZILY_ALLOCATED_BIT);
         int32_t local = TryFindMemoryType(req.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
-        mai.memoryTypeIndex = (uint32_t)(lazy >= 0 ? lazy : local >= 0 ? local : 0);
+        mai.memoryTypeIndex = (uint32_t)(lazy >= 0 ? lazy : local >= 0 ? local
+                                                                       : 0);
         VK_CHECK(vkAllocateMemory(device, &mai, nullptr, &depthMemory));
         VK_CHECK(vkBindImageMemory(device, depthImage, depthMemory, 0));
         VkImageViewCreateInfo vci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
@@ -385,7 +457,8 @@ struct App {
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Depth buffer");
     }
 
-    void CreatePipeline() {
+    void CreatePipeline()
+    {
         VkShaderModule vs = Module(kVertSpv, sizeof(kVertSpv));
         VkShaderModule fs = Module(kFragSpv, sizeof(kFragSpv));
         VkPipelineShaderStageCreateInfo stages[2]{};
@@ -443,37 +516,51 @@ struct App {
 
     // -------------------------------------------------------------------------- frame
 
-    Mat4 Mvp(float seconds) {
+    Mat4 Mvp(float seconds)
+    {
         // The ring spins in its own plane and nods, two meters ahead.
         Mat4 model = Multiply(RotationY(0.6f * sinf(seconds * 0.4f)), RotationZ(seconds * 0.5f));
         model.m[14] = -2.5f;
         // The displayed orientation: undo the surface's rotation in clip space.
         float turn = 0.0f;
-        if (transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR) turn = -(float)M_PI_2;
-        else if (transform == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR) turn = (float)M_PI;
-        else if (transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR) turn = (float)M_PI_2;
+        if (transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR)
+            turn = -(float)M_PI_2;
+        else if (transform == VK_SURFACE_TRANSFORM_ROTATE_180_BIT_KHR)
+            turn = (float)M_PI;
+        else if (transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR)
+            turn = (float)M_PI_2;
         const bool sideways = transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR || transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR;
         const float aspect = sideways ? (float)extent.height / (float)extent.width : (float)extent.width / (float)extent.height;
         return Multiply(Multiply(RotationZ(turn), Perspective(1.1f, aspect, 0.1f, 100.0f)), model);
     }
 
-    void RenderFrame(float seconds) {
+    void RenderFrame(float seconds)
+    {
         VkFence fence = inFlight[frameSlot];
         VK_CHECK(vkWaitForFences(device, 1, &fence, VK_TRUE, UINT64_MAX));
         uint32_t imageIndex = 0;
         VkResult ar = vkAcquireNextImageKHR(device, swapchain, UINT64_MAX, imageAvailable[frameSlot], VK_NULL_HANDLE, &imageIndex);
-        if (ar == VK_ERROR_OUT_OF_DATE_KHR) { recreate = true; return; }
-        if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR) VK_CHECK(ar);
+        if (ar == VK_ERROR_OUT_OF_DATE_KHR)
+        {
+            recreate = true;
+            return;
+        }
+        if (ar != VK_SUCCESS && ar != VK_SUBOPTIMAL_KHR)
+            VK_CHECK(ar);
         VK_CHECK(vkResetFences(device, 1, &fence));
 
         VkCommandBuffer cb = commandBuffers[frameSlot];
         VkCommandBufferBeginInfo bi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
         bi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
         VK_CHECK(vkBeginCommandBuffer(cb, &bi));
-        if (beginLabel) {
+        if (beginLabel)
+        {
             VkDebugUtilsLabelEXT label{VK_STRUCTURE_TYPE_DEBUG_UTILS_LABEL_EXT};
             label.pLabelName = "Scene";
-            label.color[0] = 0.2f; label.color[1] = 0.8f; label.color[2] = 0.4f; label.color[3] = 1.0f;
+            label.color[0] = 0.2f;
+            label.color[1] = 0.8f;
+            label.color[2] = 0.4f;
+            label.color[3] = 1.0f;
             beginLabel(cb, &label);
         }
         VkClearValue clears[2]{};
@@ -495,7 +582,8 @@ struct App {
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(mvp), &mvp);
         vkCmdDraw(cb, 3, kTriangles, 0, 0);   // the whole ring, instanced
         vkCmdEndRenderPass(cb);
-        if (endLabel) endLabel(cb);
+        if (endLabel)
+            endLabel(cb);
         VK_CHECK(vkEndCommandBuffer(cb));
 
         VkPipelineStageFlags waitStage = VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT;
@@ -516,35 +604,52 @@ struct App {
         pi.pSwapchains = &swapchain;
         pi.pImageIndices = &imageIndex;
         VkResult pr = vkQueuePresentKHR(queue, &pi);
-        if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) recreate = true;
-        else if (pr != VK_SUCCESS) VK_CHECK(pr);
+        if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR)
+            recreate = true;
+        else if (pr != VK_SUCCESS)
+            VK_CHECK(pr);
         frameSlot = (frameSlot + 1) % kFramesInFlight;
         frameCount++;
     }
 
-    void Shutdown() {
-        if (device) vkDeviceWaitIdle(device);
+    void Shutdown()
+    {
+        if (device)
+            vkDeviceWaitIdle(device);
         DestroySwapchain();
-        if (pipeline) vkDestroyPipeline(device, pipeline, nullptr);
-        if (pipelineLayout) vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-        if (renderPass) vkDestroyRenderPass(device, renderPass, nullptr);
-        for (int i = 0; i < kFramesInFlight; ++i) {
-            if (imageAvailable[i]) vkDestroySemaphore(device, imageAvailable[i], nullptr);
-            if (renderFinished[i]) vkDestroySemaphore(device, renderFinished[i], nullptr);
-            if (inFlight[i]) vkDestroyFence(device, inFlight[i], nullptr);
+        if (pipeline)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        if (pipelineLayout)
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        if (renderPass)
+            vkDestroyRenderPass(device, renderPass, nullptr);
+        for (int i = 0; i < kFramesInFlight; ++i)
+        {
+            if (imageAvailable[i])
+                vkDestroySemaphore(device, imageAvailable[i], nullptr);
+            if (renderFinished[i])
+                vkDestroySemaphore(device, renderFinished[i], nullptr);
+            if (inFlight[i])
+                vkDestroyFence(device, inFlight[i], nullptr);
         }
-        if (commandPool) vkDestroyCommandPool(device, commandPool, nullptr);
-        if (device) vkDestroyDevice(device, nullptr);
-        if (instance) vkDestroyInstance(instance, nullptr);
+        if (commandPool)
+            vkDestroyCommandPool(device, commandPool, nullptr);
+        if (device)
+            vkDestroyDevice(device, nullptr);
+        if (instance)
+            vkDestroyInstance(instance, nullptr);
     }
 };
 
-void OnAppCommand(android_app* app, int32_t cmd) {
+void OnAppCommand(android_app* app, int32_t cmd)
+{
     App* self = (App*)app->userData;
-    switch (cmd) {
+    switch (cmd)
+    {
         case APP_CMD_INIT_WINDOW:
             self->window = app->window;
-            if (!self->instance) self->CreateVulkan();
+            if (!self->instance)
+                self->CreateVulkan();
             self->DestroySwapchain();
             self->CreateSwapchain();
             break;
@@ -564,7 +669,8 @@ void OnAppCommand(android_app* app, int32_t cmd) {
 
 }  // namespace
 
-void android_main(android_app* app) {
+void android_main(android_app* app)
+{
     App self;
     self.android = app;
     app->userData = &self;
@@ -572,22 +678,30 @@ void android_main(android_app* app) {
 
     timespec start{};
     clock_gettime(CLOCK_MONOTONIC, &start);
-    while (!app->destroyRequested) {
-        for (;;) {
+    while (!app->destroyRequested)
+    {
+        for (;;)
+        {
             int events = 0;
             android_poll_source* source = nullptr;
             const bool rendering = self.resumed && self.swapchain;
-            if (ALooper_pollOnce(rendering ? 0 : -1, nullptr, &events, (void**)&source) < 0) break;
-            if (source) source->process(app, source);
-            if (app->destroyRequested) break;
+            if (ALooper_pollOnce(rendering ? 0 : -1, nullptr, &events, (void**)&source) < 0)
+                break;
+            if (source)
+                source->process(app, source);
+            if (app->destroyRequested)
+                break;
         }
-        if (app->destroyRequested) break;
-        if (self.recreate && self.window) {
+        if (app->destroyRequested)
+            break;
+        if (self.recreate && self.window)
+        {
             self.recreate = false;
             self.DestroySwapchain();
             self.CreateSwapchain();
         }
-        if (self.resumed && self.swapchain) {
+        if (self.resumed && self.swapchain)
+        {
             timespec now{};
             clock_gettime(CLOCK_MONOTONIC, &now);
             const float seconds = (float)(now.tv_sec - start.tv_sec) + (float)(now.tv_nsec - start.tv_nsec) * 1e-9f;

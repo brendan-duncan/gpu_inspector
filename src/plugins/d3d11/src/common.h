@@ -21,7 +21,8 @@
 #include <cstdio>
 #include <string>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
 using gpuinsp::sdk::JsonWriter;
 
@@ -45,7 +46,8 @@ void LogAlways(const char* fmt, ...);
 bool Internal();
 
 /** Marks the scope as the library's own. Nests. */
-struct ScopedInternal {
+struct ScopedInternal
+{
     ScopedInternal();
     ~ScopedInternal();
     ScopedInternal(const ScopedInternal&) = delete;
@@ -55,7 +57,8 @@ struct ScopedInternal {
 // ---------------------------------------------------------------------------------------------
 // Helpers
 
-inline std::string Hex(uint64_t v) {
+inline std::string Hex(uint64_t v)
+{
     char buf[24];
     snprintf(buf, sizeof(buf), "0x%llx", (unsigned long long)v);
     return buf;
@@ -67,8 +70,10 @@ std::string Narrow(const wchar_t* s, size_t length);
 
 /** Releases and nulls a COM pointer. */
 template <typename T>
-inline void SafeRelease(T*& p) {
-    if (p) {
+inline void SafeRelease(T*& p)
+{
+    if (p)
+    {
         p->Release();
         p = nullptr;
     }
@@ -76,27 +81,69 @@ inline void SafeRelease(T*& p) {
 
 /** A COM pointer that releases on scope exit, for the library's own objects. */
 template <typename T>
-class ComPtr {
+class ComPtr
+{
 public:
     ComPtr() = default;
     explicit ComPtr(T* p) : _p(p) {}
-    ComPtr(const ComPtr& o) : _p(o._p) { if (_p) _p->AddRef(); }
+    ComPtr(const ComPtr& o) : _p(o._p)
+    {
+        if (_p)
+            _p->AddRef();
+    }
     ComPtr(ComPtr&& o) noexcept : _p(o._p) { o._p = nullptr; }
-    ~ComPtr() { if (_p) _p->Release(); }
-    ComPtr& operator=(const ComPtr& o) {
-        if (this != &o) { if (o._p) o._p->AddRef(); if (_p) _p->Release(); _p = o._p; }
+    ~ComPtr()
+    {
+        if (_p)
+            _p->Release();
+    }
+    ComPtr& operator=(const ComPtr& o)
+    {
+        if (this != &o)
+        {
+            if (o._p)
+                o._p->AddRef();
+            if (_p)
+                _p->Release();
+            _p = o._p;
+        }
         return *this;
     }
-    ComPtr& operator=(ComPtr&& o) noexcept {
-        if (this != &o) { if (_p) _p->Release(); _p = o._p; o._p = nullptr; }
+    ComPtr& operator=(ComPtr&& o) noexcept
+    {
+        if (this != &o)
+        {
+            if (_p)
+                _p->Release();
+            _p = o._p;
+            o._p = nullptr;
+        }
         return *this;
     }
     T* get() const { return _p; }
     T* operator->() const { return _p; }
-    T** put() { if (_p) { _p->Release(); _p = nullptr; } return &_p; }
+    T** put()
+    {
+        if (_p)
+        {
+            _p->Release();
+            _p = nullptr;
+        }
+        return &_p;
+    }
     void** putVoid() { return reinterpret_cast<void**>(put()); }
-    T* detach() { T* p = _p; _p = nullptr; return p; }
-    void reset(T* p = nullptr) { if (_p) _p->Release(); _p = p; }
+    T* detach()
+    {
+        T* p = _p;
+        _p = nullptr;
+        return p;
+    }
+    void reset(T* p = nullptr)
+    {
+        if (_p)
+            _p->Release();
+        _p = p;
+    }
     explicit operator bool() const { return _p != nullptr; }
 
 private:

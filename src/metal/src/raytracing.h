@@ -38,7 +38,8 @@
 #import <Metal/Metal.h>
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 // ---------------------------------------------------------------------------------------------
 // Acceleration structures
@@ -57,8 +58,8 @@ namespace mtlinsp {
  * argument: an MTLAccelerationStructure is an MTLResource, so WriteMemoryInfo reports its
  * `allocatedSize`, `heap` and `heapOffset` the same way it does a buffer's.
  */
-void NoteAccelerationStructure(id structure, id parent, const char *cmd,
-                               MTLAccelerationStructureDescriptor *descriptor);
+void NoteAccelerationStructure(id structure, id parent, const char* cmd,
+    MTLAccelerationStructureDescriptor* descriptor);
 
 /**
  * Records a build or refit on the structure it wrote, queues the buffers it read, and returns the
@@ -82,9 +83,9 @@ void NoteAccelerationStructure(id structure, id parent, const char *cmd,
  * The same descriptor also goes onto the structure as its `build` update, so a structure the
  * capture holds no build command for still says what it is.
  */
-std::string NoteAccelerationStructureBuild(id encoder, const char *method, id destination,
-                                           MTLAccelerationStructureDescriptor *descriptor,
-                                           id scratch, NSUInteger scratchOffset, id source);
+std::string NoteAccelerationStructureBuild(id encoder, const char* method, id destination,
+    MTLAccelerationStructureDescriptor* descriptor,
+    id scratch, NSUInteger scratchOffset, id source);
 
 /**
  * A copy or compacting copy between structures, as the command's arguments.
@@ -93,8 +94,8 @@ std::string NoteAccelerationStructureBuild(id encoder, const char *method, id de
  * what is in it — the same reasoning as NoteAccelerationStructureCopy in the D3D12 library. Called
  * whether or not a capture is recording, for the reason above.
  */
-std::string NoteAccelerationStructureCopy(const char *method, id source, id destination,
-                                          id buffer, NSUInteger offset);
+std::string NoteAccelerationStructureCopy(const char* method, id source, id destination,
+    id buffer, NSUInteger offset);
 
 /**
  * Reads back what every known structure's last build read, once per capture, behind `encoder`.
@@ -123,8 +124,8 @@ bool HasAccelerationStructures(void);
 // carries its own `name`, so an entry names the function directly with no side table to keep.
 
 /** Registers a table a pipeline handed out, with the entry count its descriptor asked for. */
-void NoteFunctionTable(id table, id pipeline, const char *type, const char *cmd,
-                       NSUInteger functionCount);
+void NoteFunctionTable(id table, id pipeline, const char* type, const char* cmd,
+    NSUInteger functionCount);
 
 /**
  * One entry of an intersection or visible function table, as an `ObjectUpdate` on the table.
@@ -136,7 +137,7 @@ void NoteFunctionTable(id table, id pipeline, const char *type, const char *cmd,
 void NoteTableFunction(id table, NSUInteger index, id handle);
 
 /** `setOpaqueTriangleIntersectionFunctionWithSignature:` and the curve form: a built-in, not a function. */
-void NoteTableOpaqueFunction(id table, NSUInteger index, NSUInteger signature, const char *what);
+void NoteTableOpaqueFunction(id table, NSUInteger index, NSUInteger signature, const char* what);
 
 /** A buffer bound to a table's own argument slots, which its intersection functions read through. */
 void NoteTableBuffer(id table, NSUInteger index, id buffer, NSUInteger offset);
@@ -162,6 +163,6 @@ void HookFunctionTableClass(id table);
  * Called from Track for every pipeline state, since a pipeline is the only thing that hands a
  * function table out and the application may ask for one at any time after creating it.
  */
-void HookPipelineStateClass(id state, const char *type);
+void HookPipelineStateClass(id state, const char* type);
 
 }  // namespace mtlinsp

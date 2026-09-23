@@ -48,16 +48,19 @@
 
 using Microsoft::WRL::ComPtr;
 
-#define CHECK(x)                                                                              \
-    do {                                                                                      \
-        HRESULT hr_ = (x);                                                                    \
-        if (FAILED(hr_)) {                                                                    \
+#define CHECK(x)                                                                                         \
+    do                                                                                                   \
+    {                                                                                                    \
+        HRESULT hr_ = (x);                                                                               \
+        if (FAILED(hr_))                                                                                 \
+        {                                                                                                \
             fprintf(stderr, "%s failed: 0x%08lx (%s:%d)\n", #x, (unsigned long)hr_, __FILE__, __LINE__); \
-            exit(1);                                                                          \
-        }                                                                                     \
+            exit(1);                                                                                     \
+        }                                                                                                \
     } while (0)
 
-namespace {
+namespace
+{
 
 const char kUsage[] =
     "Usage: d3d11insp_triangle [--frames N] [--width W] [--height H] [--capture-at N] [--msaa] "
@@ -136,29 +139,35 @@ void CSMain(uint3 id : SV_DispatchThreadID) {
 
 // ------------------------------------------------------------------------------------------------
 
-struct Vertex {
+struct Vertex
+{
     float pos[3];
     float normal[3];
     float uv[2];
 };
 
 // Column-major: element (row, column) is m[column * 4 + row].
-struct Mat4 {
+struct Mat4
+{
     float m[16];
 };
 
-Mat4 Mul(const Mat4& a, const Mat4& b) {
+Mat4 Mul(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
-        for (int row = 0; row < 4; ++row) {
+        for (int row = 0; row < 4; ++row)
+        {
             float s = 0;
-            for (int k = 0; k < 4; ++k) s += a.m[k * 4 + row] * b.m[c * 4 + k];
+            for (int k = 0; k < 4; ++k)
+                s += a.m[k * 4 + row] * b.m[c * 4 + k];
             r.m[c * 4 + row] = s;
         }
     return r;
 }
 
-Mat4 Perspective(float fovy, float aspect, float zn, float zf) {
+Mat4 Perspective(float fovy, float aspect, float zn, float zf)
+{
     float f = 1.0f / tanf(fovy / 2);
     Mat4 r{};
     r.m[0] = f / aspect;
@@ -169,33 +178,50 @@ Mat4 Perspective(float fovy, float aspect, float zn, float zf) {
     return r;
 }
 
-Mat4 Translate(float x, float y, float z) {
+Mat4 Translate(float x, float y, float z)
+{
     Mat4 r{};
     r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1;
-    r.m[12] = x; r.m[13] = y; r.m[14] = z;
+    r.m[12] = x;
+    r.m[13] = y;
+    r.m[14] = z;
     return r;
 }
 
-Mat4 RotateY(float a) {
+Mat4 RotateY(float a)
+{
     Mat4 r{};
-    r.m[0] = cosf(a); r.m[2] = -sinf(a); r.m[5] = 1; r.m[8] = sinf(a); r.m[10] = cosf(a); r.m[15] = 1;
+    r.m[0] = cosf(a);
+    r.m[2] = -sinf(a);
+    r.m[5] = 1;
+    r.m[8] = sinf(a);
+    r.m[10] = cosf(a);
+    r.m[15] = 1;
     return r;
 }
 
-Mat4 RotateX(float a) {
+Mat4 RotateX(float a)
+{
     Mat4 r{};
-    r.m[0] = 1; r.m[5] = cosf(a); r.m[6] = sinf(a); r.m[9] = -sinf(a); r.m[10] = cosf(a); r.m[15] = 1;
+    r.m[0] = 1;
+    r.m[5] = cosf(a);
+    r.m[6] = sinf(a);
+    r.m[9] = -sinf(a);
+    r.m[10] = cosf(a);
+    r.m[15] = 1;
     return r;
 }
 
 // The transpose of a rotation applied to a direction: world to object space, for the light.
-void RotateInto(const Mat4& rotation, const float dir[3], float out[3]) {
+void RotateInto(const Mat4& rotation, const float dir[3], float out[3])
+{
     for (int row = 0; row < 3; ++row)
         out[row] = rotation.m[row * 4 + 0] * dir[0] + rotation.m[row * 4 + 1] * dir[1] + rotation.m[row * 4 + 2] * dir[2];
 }
 
 // The cube's cbuffer. 80 bytes, a multiple of the 16 a constant buffer's size must be.
-struct CubeConstants {
+struct CubeConstants
+{
     Mat4 mvp;
     float lightDir[4];
 };
@@ -211,7 +237,8 @@ constexpr uint8_t kCheckerA[3] = {240, 200, 80};
 constexpr uint8_t kCheckerB[3] = {40, 60, 160};
 constexpr float kClearColor[4] = {0.1f, 0.12f, 0.2f, 1.0f};
 
-uint16_t Rgb565(const uint8_t* c) {
+uint16_t Rgb565(const uint8_t* c)
+{
     return (uint16_t)(((c[0] >> 3) << 11) | ((c[1] >> 2) << 5) | (c[2] >> 3));
 }
 
@@ -220,67 +247,85 @@ uint16_t Rgb565(const uint8_t* c) {
 // The cells halve with each level; once they would be under a pixel the level is the average of
 // the two colors, which is what filtering a checkerboard down gives. A level smaller than a block
 // (2x2, 1x1) is still one whole block.
-std::vector<uint8_t> EncodeCheckerBC1(uint32_t level) {
+std::vector<uint8_t> EncodeCheckerBC1(uint32_t level)
+{
     const uint32_t size = std::max(1u, kTextureSize >> level);
     const uint32_t blocks = std::max(1u, size / 4);
     const uint32_t cell = kCheckerCell >> level;
     std::vector<uint8_t> data(blocks * blocks * 8);
     for (uint32_t by = 0; by < blocks; ++by)
-        for (uint32_t bx = 0; bx < blocks; ++bx) {
+        for (uint32_t bx = 0; bx < blocks; ++bx)
+        {
             uint8_t* block = &data[(by * blocks + bx) * 8];
             uint16_t c0 = Rgb565(kCheckerA), c1 = Rgb565(kCheckerB);
             uint32_t indices = 0;   // 2 bits per pixel, row-major, pixel 0 in the low bits
-            if (cell == 0) {
+            if (cell == 0)
+            {
                 uint8_t mid[3];
-                for (int k = 0; k < 3; ++k) mid[k] = (uint8_t)((kCheckerA[k] + kCheckerB[k]) / 2);
+                for (int k = 0; k < 3; ++k)
+                    mid[k] = (uint8_t)((kCheckerA[k] + kCheckerB[k]) / 2);
                 c0 = c1 = Rgb565(mid);
-            } else {
+            }
+            else
+            {
                 for (uint32_t y = 0; y < 4; ++y)
-                    for (uint32_t x = 0; x < 4; ++x) {
+                    for (uint32_t x = 0; x < 4; ++x)
+                    {
                         const uint32_t px = bx * 4 + x, py = by * 4 + y;
-                        if (((px / cell) ^ (py / cell)) & 1) indices |= 1u << (2 * (y * 4 + x));
+                        if (((px / cell) ^ (py / cell)) & 1)
+                            indices |= 1u << (2 * (y * 4 + x));
                     }
             }
             block[0] = (uint8_t)c0;
             block[1] = (uint8_t)(c0 >> 8);
             block[2] = (uint8_t)c1;
             block[3] = (uint8_t)(c1 >> 8);
-            for (uint32_t k = 0; k < 4; ++k) block[4 + k] = (uint8_t)(indices >> (8 * k));
+            for (uint32_t k = 0; k < 4; ++k)
+                block[4 + k] = (uint8_t)(indices >> (8 * k));
         }
     return data;
 }
 
 // A debug name, on anything with SetPrivateData: D3D11 objects, the device and DXGI objects alike.
 template <typename T>
-void Name(T* object, const char* name) {
-    if (object) object->SetPrivateData(WKPDID_D3DDebugObjectName, (UINT)strlen(name), name);
+void Name(T* object, const char* name)
+{
+    if (object)
+        object->SetPrivateData(WKPDID_D3DDebugObjectName, (UINT)strlen(name), name);
 }
 
 // A context with the interfaces the passes want from it: the immediate context, or the deferred
 // one with --deferred. Both are optional (Windows 8 and the platform update brought them) and
 // are left null where they are missing.
-struct Context {
+struct Context
+{
     ComPtr<ID3D11DeviceContext> ctx;
     ComPtr<ID3D11DeviceContext1> ctx1;                 // --discard: DiscardView
     ComPtr<ID3DUserDefinedAnnotation> annotation;      // BeginEvent / EndEvent around each pass
 
-    void Init(ID3D11DeviceContext* context, const char* name) {
+    void Init(ID3D11DeviceContext* context, const char* name)
+    {
         ctx = context;
         Name(ctx.Get(), name);
         ctx.As(&ctx1);
         ctx.As(&annotation);
     }
 
-    void BeginEvent(const wchar_t* name) {
-        if (annotation) annotation->BeginEvent(name);
+    void BeginEvent(const wchar_t* name)
+    {
+        if (annotation)
+            annotation->BeginEvent(name);
     }
 
-    void EndEvent() {
-        if (annotation) annotation->EndEvent();
+    void EndEvent()
+    {
+        if (annotation)
+            annotation->EndEvent();
     }
 };
 
-struct App {
+struct App
+{
     uint32_t width = 640, height = 480;
     uint32_t maxFrames = 0;   // 0: until the window is closed
     uint64_t captureAt = 0;   // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
@@ -336,18 +381,24 @@ struct App {
     ComPtr<ID3D11BlendState> noBlend;
 
     // --------------------------------------------------------------------------------- window
-    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l)
+    {
         App* app = (App*)GetWindowLongPtrA(h, GWLP_USERDATA);
-        if (msg == WM_CLOSE || msg == WM_DESTROY) {
-            if (app) app->quit = true;
+        if (msg == WM_CLOSE || msg == WM_DESTROY)
+        {
+            if (app)
+                app->quit = true;
             return 0;
         }
-        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app) app->quit = true;
-        if (msg == WM_SIZE && app) app->resized = true;
+        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app)
+            app->quit = true;
+        if (msg == WM_SIZE && app)
+            app->resized = true;
         return DefWindowProcA(h, msg, w, l);
     }
 
-    void CreateWindowNative() {
+    void CreateWindowNative()
+    {
         WNDCLASSA wc{};
         wc.lpfnWndProc = WndProc;
         wc.hInstance = GetModuleHandleA(nullptr);
@@ -357,48 +408,56 @@ struct App {
         RECT r{0, 0, (LONG)width, (LONG)height};
         AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
         hwnd = CreateWindowA(wc.lpszClassName, "GPU Inspector test: D3D11 cube", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
-                             wc.hInstance, nullptr);
+            CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
+            wc.hInstance, nullptr);
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)this);
         resized = false;   // the WM_SIZE of creation
     }
 
-    void PumpEvents() {
+    void PumpEvents()
+    {
         MSG msg;
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
     }
 
     // --------------------------------------------------------------------------------- setup
-    void InitDevice() {
+    void InitDevice()
+    {
         UINT flags = D3D11_CREATE_DEVICE_BGRA_SUPPORT;
-        if (debugLayer) flags |= D3D11_CREATE_DEVICE_DEBUG;
+        if (debugLayer)
+            flags |= D3D11_CREATE_DEVICE_DEBUG;
         const D3D_FEATURE_LEVEL wanted = D3D_FEATURE_LEVEL_11_0;
         D3D_FEATURE_LEVEL got = D3D_FEATURE_LEVEL_9_1;
         ComPtr<ID3D11DeviceContext> context;
         HRESULT hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, &wanted, 1, D3D11_SDK_VERSION,
-                                       &device, &got, &context);
-        if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING && debugLayer) {
+            &device, &got, &context);
+        if (hr == DXGI_ERROR_SDK_COMPONENT_MISSING && debugLayer)
+        {
             fprintf(stderr, "--debug-layer: the D3D11 debug layer is not installed (Windows' Graphics Tools); running without\n");
             flags &= ~D3D11_CREATE_DEVICE_DEBUG;
             hr = D3D11CreateDevice(nullptr, D3D_DRIVER_TYPE_HARDWARE, nullptr, flags, &wanted, 1, D3D11_SDK_VERSION,
-                                   &device, &got, &context);
+                &device, &got, &context);
         }
-        if (FAILED(hr)) {
+        if (FAILED(hr))
+        {
             fprintf(stderr, "no Direct3D 11 hardware device at feature level 11.0: 0x%08lx\n", (unsigned long)hr);
             exit(1);
         }
         Name(device.Get(), "Device");
         immediate.Init(context.Get(), "Immediate context");
 
-        if (deferred) {
+        if (deferred)
+        {
             ComPtr<ID3D11DeviceContext> d;
             CHECK(device->CreateDeferredContext(0, &d));
             deferredCtx.Init(d.Get(), "Deferred context");
         }
-        if (discard && !(deferred ? deferredCtx : immediate).ctx1) {
+        if (discard && !(deferred ? deferredCtx : immediate).ctx1)
+        {
             fprintf(stderr, "--discard: ID3D11DeviceContext1 is not available (Windows 8 or newer)\n");
             exit(1);
         }
@@ -412,7 +471,8 @@ struct App {
         CHECK(adapter->GetParent(IID_PPV_ARGS(&factory)));
     }
 
-    void CreateSwapChain() {
+    void CreateSwapChain()
+    {
         DXGI_SWAP_CHAIN_DESC1 sd{};
         sd.Width = width;
         sd.Height = height;
@@ -429,7 +489,8 @@ struct App {
 
     // The back buffer's RTV, the offscreen color texture with its views, the depth buffer and
     // (--msaa) the multisampled color target, for the current window size.
-    void CreateSizedResources() {
+    void CreateSizedResources()
+    {
         ComPtr<ID3D11Texture2D> backBuffer;
         CHECK(swapChain->GetBuffer(0, IID_PPV_ARGS(&backBuffer)));
         Name(backBuffer.Get(), "Back buffer");
@@ -460,7 +521,8 @@ struct App {
         CHECK(device->CreateDepthStencilView(sceneDepth.Get(), nullptr, &sceneDsv));
         Name(sceneDsv.Get(), "Scene depth DSV");
 
-        if (msaa) {
+        if (msaa)
+        {
             td.Format = kColorFormat;
             td.BindFlags = D3D11_BIND_RENDER_TARGET;
             CHECK(device->CreateTexture2D(&td, nullptr, &msaaColor));
@@ -470,7 +532,8 @@ struct App {
         }
     }
 
-    void ReleaseSizedResources() {
+    void ReleaseSizedResources()
+    {
         backBufferRtv.Reset();
         sceneColor.Reset();
         sceneRtv.Reset();
@@ -483,13 +546,16 @@ struct App {
 
     // Recreates the swap chain's buffers and the offscreen targets for the window's client area.
     // Returns false when there is nothing to draw into (minimized).
-    bool Resize() {
+    bool Resize()
+    {
         resized = false;
         RECT r;
         GetClientRect(hwnd, &r);
         uint32_t w = (uint32_t)(r.right - r.left), h = (uint32_t)(r.bottom - r.top);
-        if (w == 0 || h == 0) return false;
-        if (w == width && h == height) return true;
+        if (w == 0 || h == 0)
+            return false;
+        if (w == width && h == height)
+            return true;
         // ResizeBuffers refuses while anything still references the back buffer: the output
         // merger's binding and the RTV.
         immediate.ctx->OMSetRenderTargets(0, nullptr, nullptr);
@@ -503,18 +569,21 @@ struct App {
 
     // Run-time compilation with debug information, so the bytecode carries the source and the
     // inspector can show it. `file` is the name the debug information records.
-    ComPtr<ID3DBlob> Compile(const char* source, const char* file, const char* entry, const char* target) {
+    ComPtr<ID3DBlob> Compile(const char* source, const char* file, const char* entry, const char* target)
+    {
         ComPtr<ID3DBlob> code, errors;
         HRESULT hr = D3DCompile(source, strlen(source), file, nullptr, nullptr, entry, target, D3DCOMPILE_DEBUG, 0,
-                                &code, &errors);
-        if (FAILED(hr)) {
+            &code, &errors);
+        if (FAILED(hr))
+        {
             fprintf(stderr, "%s (%s): %s\n", file, entry, errors ? (const char*)errors->GetBufferPointer() : "?");
             exit(1);
         }
         return code;
     }
 
-    void CreateShaders() {
+    void CreateShaders()
+    {
         ComPtr<ID3DBlob> vs = Compile(kCubeHlsl, "cube.hlsl", "VSMain", "vs_5_0");
         ComPtr<ID3DBlob> ps = Compile(kCubeHlsl, "cube.hlsl", "PSMain", "ps_5_0");
         CHECK(device->CreateVertexShader(vs->GetBufferPointer(), vs->GetBufferSize(), nullptr, &cubeVs));
@@ -538,14 +607,16 @@ struct App {
         CHECK(device->CreatePixelShader(ps->GetBufferPointer(), ps->GetBufferSize(), nullptr, &presentPs));
         Name(presentPs.Get(), "Present PS");
 
-        if (compute) {
+        if (compute)
+        {
             ComPtr<ID3DBlob> cs = Compile(kWaveHlsl, "wave.hlsl", "CSMain", "cs_5_0");
             CHECK(device->CreateComputeShader(cs->GetBufferPointer(), cs->GetBufferSize(), nullptr, &waveCs));
             Name(waveCs.Get(), "Wave CS");
         }
     }
 
-    void CreateResources() {
+    void CreateResources()
+    {
         // Cube geometry: six quads with their face normal, wound counter-clockwise seen from
         // outside.
         const float p = 0.5f;
@@ -553,14 +624,17 @@ struct App {
         uint16_t indices[36];
         const float faces[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
         int v = 0, ix = 0;
-        for (int f = 0; f < 6; ++f) {
+        for (int f = 0; f < 6; ++f)
+        {
             const float* n = faces[f];
             float u[3] = {n[1], n[2], n[0]};
             float w[3] = {n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]};
-            for (int c = 0; c < 4; ++c) {
+            for (int c = 0; c < 4; ++c)
+            {
                 float su = (c == 1 || c == 2) ? 1.f : -1.f;
                 float sv = (c >= 2) ? 1.f : -1.f;
-                for (int k = 0; k < 3; ++k) verts[v].pos[k] = p * (n[k] + su * u[k] + sv * w[k]);
+                for (int k = 0; k < 3; ++k)
+                    verts[v].pos[k] = p * (n[k] + su * u[k] + sv * w[k]);
                 memcpy(verts[v].normal, n, sizeof(verts[v].normal));
                 verts[v].uv[0] = su * 0.5f + 0.5f;
                 verts[v].uv[1] = sv * 0.5f + 0.5f;
@@ -568,7 +642,8 @@ struct App {
             }
             uint16_t b = (uint16_t)(f * 4);
             uint16_t quad[6] = {b, (uint16_t)(b + 1), (uint16_t)(b + 2), b, (uint16_t)(b + 2), (uint16_t)(b + 3)};
-            for (int k = 0; k < 6; ++k) indices[ix++] = quad[k];
+            for (int k = 0; k < 6; ++k)
+                indices[ix++] = quad[k];
         }
 
         D3D11_BUFFER_DESC bd{};
@@ -594,7 +669,8 @@ struct App {
         CHECK(device->CreateBuffer(&bd, nullptr, &constantBuffer));
         Name(constantBuffer.Get(), "Cube constants");
 
-        if (compute) {
+        if (compute)
+        {
             bd = {};
             bd.ByteWidth = kWaveCount * sizeof(float);
             bd.Usage = D3D11_USAGE_DEFAULT;
@@ -663,10 +739,12 @@ struct App {
 
     // The 64x64 BC1 checkerboard with every mip level, encoded on the CPU and handed to
     // CreateTexture2D as initial data, one subresource per level.
-    void CreateTexture() {
+    void CreateTexture()
+    {
         std::vector<uint8_t> levels[kTextureMips];
         D3D11_SUBRESOURCE_DATA init[kTextureMips]{};
-        for (uint32_t level = 0; level < kTextureMips; ++level) {
+        for (uint32_t level = 0; level < kTextureMips; ++level)
+        {
             levels[level] = EncodeCheckerBC1(level);
             const uint32_t blocks = std::max(1u, std::max(1u, kTextureSize >> level) / 4);
             init[level].pSysMem = levels[level].data();
@@ -690,7 +768,8 @@ struct App {
     // --------------------------------------------------------------------------------- frame
     // Pass 1, on whichever context records it: the cube into the offscreen target. Sets every
     // piece of state it uses, since a deferred context has none to begin with.
-    void RecordScene(Context& c, float t) {
+    void RecordScene(Context& c, float t)
+    {
         c.BeginEvent(L"Scene");
 
         Mat4 proj = Perspective(1.0f, (float)width / (float)height, 0.1f, 20.0f);
@@ -735,15 +814,18 @@ struct App {
 
         // The depth is not needed after the draw (--discard); the multisampled color is resolved
         // into the texture the next pass samples (--msaa).
-        if (discard && c.ctx1) c.ctx1->DiscardView(sceneDsv.Get());
+        if (discard && c.ctx1)
+            c.ctx1->DiscardView(sceneDsv.Get());
         c.ctx->OMSetRenderTargets(0, nullptr, nullptr);
-        if (msaa) c.ctx->ResolveSubresource(sceneColor.Get(), 0, msaaColor.Get(), 0, kColorFormat);
+        if (msaa)
+            c.ctx->ResolveSubresource(sceneColor.Get(), 0, msaaColor.Get(), 0, kColorFormat);
 
         c.EndEvent();
     }
 
     // --compute, between the passes: a dispatch into the structured buffer, unbound again after.
-    void RunCompute() {
+    void RunCompute()
+    {
         ID3D11DeviceContext* ctx = immediate.ctx.Get();
         immediate.BeginEvent(L"Wave");
         ctx->CSSetShader(waveCs.Get(), nullptr, 0);
@@ -758,7 +840,8 @@ struct App {
 
     // Pass 2, always on the immediate context: the offscreen image onto the back buffer with a
     // fullscreen triangle, no depth, no vertex buffer.
-    void DrawPresent() {
+    void DrawPresent()
+    {
         ID3D11DeviceContext* ctx = immediate.ctx.Get();
         immediate.BeginEvent(L"Present");
         ID3D11RenderTargetView* rtv = backBufferRtv.Get();
@@ -790,19 +873,25 @@ struct App {
         immediate.EndEvent();
     }
 
-    bool DrawFrame(float t) {
-        if (resized && !Resize()) return false;
+    bool DrawFrame(float t)
+    {
+        if (resized && !Resize())
+            return false;
 
-        if (deferred) {
+        if (deferred)
+        {
             RecordScene(deferredCtx, t);
             ComPtr<ID3D11CommandList> list;
             CHECK(deferredCtx.ctx->FinishCommandList(FALSE, &list));
             Name(list.Get(), "Scene command list");
             immediate.ctx->ExecuteCommandList(list.Get(), FALSE);
-        } else {
+        }
+        else
+        {
             RecordScene(immediate, t);
         }
-        if (compute) RunCompute();
+        if (compute)
+            RunCompute();
         DrawPresent();
 
         CHECK(swapChain->Present(1, 0));
@@ -810,17 +899,21 @@ struct App {
         return true;
     }
 
-    void Cleanup() {
+    void Cleanup()
+    {
         immediate.ctx->ClearState();
         immediate.ctx->Flush();
         // --debug-layer: what the layer had to say, which otherwise only a debugger sees.
         ComPtr<ID3D11InfoQueue> queue;
-        if (debugLayer && SUCCEEDED(device.As(&queue))) {
+        if (debugLayer && SUCCEEDED(device.As(&queue)))
+        {
             const UINT64 count = queue->GetNumStoredMessages();
             std::vector<char> buffer;
-            for (UINT64 i = 0; i < count; ++i) {
+            for (UINT64 i = 0; i < count; ++i)
+            {
                 SIZE_T length = 0;
-                if (FAILED(queue->GetMessage(i, nullptr, &length)) || length == 0) continue;
+                if (FAILED(queue->GetMessage(i, nullptr, &length)) || length == 0)
+                    continue;
                 buffer.resize(length);
                 D3D11_MESSAGE* message = (D3D11_MESSAGE*)buffer.data();
                 if (SUCCEEDED(queue->GetMessage(i, message, &length)))
@@ -830,25 +923,30 @@ struct App {
         // Everything else is released by the members' destructors, the device last.
     }
 
-    int Run() {
+    int Run()
+    {
         CreateWindowNative();
         InitDevice();
         CreateSwapChain();
         CreateShaders();
         CreateResources();
         auto start = std::chrono::steady_clock::now();
-        while (!quit && (maxFrames == 0 || frameCount < maxFrames)) {
+        while (!quit && (maxFrames == 0 || frameCount < maxFrames))
+        {
             PumpEvents();
-            if (quit) break;
+            if (quit)
+                break;
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
             // Asked again each frame until somebody is there to hear it: the inspector connects a
             // few frames after the device is made.
-            if (captureAt && frameCount >= captureAt && !captureAsked) {
+            if (captureAt && frameCount >= captureAt && !captureAsked)
+            {
                 char label[48];
                 snprintf(label, sizeof label, "asked at frame %llu", (unsigned long long)captureAt);   // the tab's name
                 captureAsked = gpu_inspector_capture_named(1, label) != 0;
             }
-            if (!DrawFrame(t)) Sleep(16);
+            if (!DrawFrame(t))
+                Sleep(16);
         }
         Cleanup();
         return 0;
@@ -857,38 +955,56 @@ struct App {
 
 } // namespace
 
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
     // A windowed application has no console of its own; when started from one, its usage and
     // errors go there. A stream the parent redirected to a file or a pipe is left alone.
     const bool ownStdout = GetStdHandle(STD_OUTPUT_HANDLE) == nullptr;
     const bool ownStderr = GetStdHandle(STD_ERROR_HANDLE) == nullptr;
-    if (AttachConsole(ATTACH_PARENT_PROCESS)) {
+    if (AttachConsole(ATTACH_PARENT_PROCESS))
+    {
         FILE* f = nullptr;
-        if (ownStdout) freopen_s(&f, "CONOUT$", "w", stdout);
-        if (ownStderr) freopen_s(&f, "CONOUT$", "w", stderr);
+        if (ownStdout)
+            freopen_s(&f, "CONOUT$", "w", stdout);
+        if (ownStderr)
+            freopen_s(&f, "CONOUT$", "w", stderr);
     }
     App app;
     int argc = __argc;
     char** argv = __argv;
-    for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--frames") && i + 1 < argc) app.maxFrames = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc) app.captureAt = (uint64_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--msaa")) app.msaa = true;
-        else if (!strcmp(argv[i], "--deferred")) app.deferred = true;
-        else if (!strcmp(argv[i], "--compute")) app.compute = true;
-        else if (!strcmp(argv[i], "--discard")) app.discard = true;
-        else if (!strcmp(argv[i], "--debug-layer")) app.debugLayer = true;
-        else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!strcmp(argv[i], "--frames") && i + 1 < argc)
+            app.maxFrames = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--width") && i + 1 < argc)
+            app.width = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--height") && i + 1 < argc)
+            app.height = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc)
+            app.captureAt = (uint64_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--msaa"))
+            app.msaa = true;
+        else if (!strcmp(argv[i], "--deferred"))
+            app.deferred = true;
+        else if (!strcmp(argv[i], "--compute"))
+            app.compute = true;
+        else if (!strcmp(argv[i], "--discard"))
+            app.discard = true;
+        else if (!strcmp(argv[i], "--debug-layer"))
+            app.debugLayer = true;
+        else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h"))
+        {
             fputs(kUsage, stdout);
             return 2;
-        } else {
+        }
+        else
+        {
             fprintf(stderr, "unknown option %s\n%s", argv[i], kUsage);
             return 2;
         }
     }
-    if (app.width == 0 || app.height == 0) {
+    if (app.width == 0 || app.height == 0)
+    {
         fprintf(stderr, "--width and --height must be positive\n%s", kUsage);
         return 2;
     }

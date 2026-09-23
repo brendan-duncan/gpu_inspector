@@ -39,79 +39,93 @@
 #endif
 
 #ifdef __cplusplus
-extern "C" {
+extern "C"
+{
 #endif
 
-typedef int (*gpu_inspector_pfn_capture)(uint32_t);
-typedef int (*gpu_inspector_pfn_capture_named)(uint32_t, const char*);
-typedef int (*gpu_inspector_pfn_connected)(void);
+    typedef int (*gpu_inspector_pfn_capture)(uint32_t);
+    typedef int (*gpu_inspector_pfn_capture_named)(uint32_t, const char*);
+    typedef int (*gpu_inspector_pfn_connected)(void);
 
 /*
  * An entry point of whichever capture library is in this process, or null. Several can be loaded
  * at once (GPU Inspector starts a Windows application with all of them, since it cannot know the
  * API in advance); the ones not in use answer "not connected" and are passed over.
  */
-static inline void* gpu_inspector_symbol(const char* name) {
+    static inline void* gpu_inspector_symbol(const char* name)
+    {
 #if defined(_WIN32)
-    static const char* const modules[] = {
-        "dxinsp_capture.dll", "VkLayer_inspector_capture.dll", "d3d11insp_capture.dll", "glesinsp_capture.dll" };
-    int i;
-    for (i = 0; i < 4; ++i) {
-        HMODULE module = GetModuleHandleA(modules[i]);
-        gpu_inspector_pfn_connected connected;
-        if (!module) continue;
-        connected = (gpu_inspector_pfn_connected)(void*)GetProcAddress(module, "GpuInspectorConnected");
-        if (!connected || !connected()) continue;
-        return (void*)GetProcAddress(module, name);
-    }
-    return 0;
+        static const char* const modules[] = {
+            "dxinsp_capture.dll", "VkLayer_inspector_capture.dll", "d3d11insp_capture.dll", "glesinsp_capture.dll"};
+        int i;
+        for (i = 0; i < 4; ++i)
+        {
+            HMODULE module = GetModuleHandleA(modules[i]);
+            gpu_inspector_pfn_connected connected;
+            if (!module)
+                continue;
+            connected = (gpu_inspector_pfn_connected)(void*)GetProcAddress(module, "GpuInspectorConnected");
+            if (!connected || !connected())
+                continue;
+            return (void*)GetProcAddress(module, name);
+        }
+        return 0;
 #elif defined(__APPLE__)
     /* dlopen matches a loaded image by its path, and the library was inserted by one the
      * application does not know; the loaded images are walked for its leaf name instead. */
     static const char* const leaf = "libmtlinsp_capture.dylib";
     uint32_t count = _dyld_image_count(), i;
-    for (i = 0; i < count; ++i) {
+    for (i = 0; i < count; ++i)
+    {
         const char* path = _dyld_get_image_name(i);
         const char* slash;
         void* module;
         void* symbol;
         gpu_inspector_pfn_connected connected;
-        if (!path) continue;
+        if (!path)
+            continue;
         slash = strrchr(path, '/');
-        if (strcmp(slash ? slash + 1 : path, leaf) != 0) continue;
+        if (strcmp(slash ? slash + 1 : path, leaf) != 0)
+            continue;
         /* RTLD_NOLOAD: a handle to the image already in, never a second copy. */
         module = dlopen(path, RTLD_NOW | RTLD_NOLOAD);
-        if (!module) continue;
+        if (!module)
+            continue;
         connected = (gpu_inspector_pfn_connected)dlsym(module, "GpuInspectorConnected");
         symbol = connected && connected() ? dlsym(module, name) : 0;
         dlclose(module);
-        if (symbol) return symbol;
+        if (symbol)
+            return symbol;
     }
     return 0;
 #else
     /* Linux and Android: the Vulkan layer, or the OpenGL ES library (preloaded, or Android's
      * OpenGL ES layer). RTLD_NOLOAD: only if the loader already brought it in. */
-    static const char* const modules[] = { "libVkLayer_inspector_capture.so", "libglesinsp_capture.so" };
+    static const char* const modules[] = {"libVkLayer_inspector_capture.so", "libglesinsp_capture.so"};
     int i;
-    for (i = 0; i < 2; ++i) {
+    for (i = 0; i < 2; ++i)
+    {
         void* module = dlopen(modules[i], RTLD_NOW | RTLD_NOLOAD);
         void* symbol;
         gpu_inspector_pfn_connected connected;
-        if (!module) continue;
+        if (!module)
+            continue;
         connected = (gpu_inspector_pfn_connected)dlsym(module, "GpuInspectorConnected");
         symbol = connected && connected() ? dlsym(module, name) : 0;
         dlclose(module);
-        if (symbol) return symbol;
+        if (symbol)
+            return symbol;
     }
     return 0;
 #endif
-}
+    }
 
 /* 1 when a capture library is in the process and an inspector is connected to it. */
-static inline int gpu_inspector_connected(void) {
-    gpu_inspector_pfn_connected fn = (gpu_inspector_pfn_connected)gpu_inspector_symbol("GpuInspectorConnected");
-    return fn ? fn() : 0;
-}
+    static inline int gpu_inspector_connected(void)
+    {
+        gpu_inspector_pfn_connected fn = (gpu_inspector_pfn_connected)gpu_inspector_symbol("GpuInspectorConnected");
+        return fn ? fn() : 0;
+    }
 
 /*
  * Asks the inspector to capture `frame_count` frames (0 means 1), starting at the next frame
@@ -120,19 +134,22 @@ static inline int gpu_inspector_connected(void) {
  * saved file's. Returns 1 when the request was sent, 0 when there is nobody to send it to.
  * Safe from any thread. A request made while a capture is already being taken is ignored.
  */
-static inline int gpu_inspector_capture_named(uint32_t frame_count, const char* label) {
-    gpu_inspector_pfn_capture_named named = (gpu_inspector_pfn_capture_named)gpu_inspector_symbol("GpuInspectorCaptureNamed");
-    gpu_inspector_pfn_capture fn;
-    if (named) return named(frame_count, label);
+    static inline int gpu_inspector_capture_named(uint32_t frame_count, const char* label)
+    {
+        gpu_inspector_pfn_capture_named named = (gpu_inspector_pfn_capture_named)gpu_inspector_symbol("GpuInspectorCaptureNamed");
+        gpu_inspector_pfn_capture fn;
+        if (named)
+            return named(frame_count, label);
     /* A capture library from before labels: the capture without one. */
-    fn = (gpu_inspector_pfn_capture)gpu_inspector_symbol("GpuInspectorCapture");
-    return fn ? fn(frame_count) : 0;
-}
+        fn = (gpu_inspector_pfn_capture)gpu_inspector_symbol("GpuInspectorCapture");
+        return fn ? fn(frame_count) : 0;
+    }
 
 /* The same capture, with no label: the tab is named by its frame number. */
-static inline int gpu_inspector_capture(uint32_t frame_count) {
-    return gpu_inspector_capture_named(frame_count, 0);
-}
+    static inline int gpu_inspector_capture(uint32_t frame_count)
+    {
+        return gpu_inspector_capture_named(frame_count, 0);
+    }
 
 #ifdef __cplusplus
 }

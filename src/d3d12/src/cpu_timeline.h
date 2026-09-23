@@ -24,10 +24,12 @@
 
 #include <cstdint>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /** What a CPU event was, in the words the timeline shows. The names match the Vulkan layer's. */
-enum class CpuCategory : uint16_t {
+enum class CpuCategory : uint16_t
+{
     Submit = 0,     // ExecuteCommandLists: handing work to the GPU
     Present,        // IDXGISwapChain::Present
     WaitFences,     // waiting on a fence's event: blocked until the GPU caught up
@@ -74,7 +76,8 @@ void SendCpuTimeline();
 // and in every wait on a fence, and the library's whole cost when idle is one relaxed atomic read.
 
 /** One frame: how long it took, and where its CPU time went. */
-struct FrameTiming {
+struct FrameTiming
+{
     uint32_t frame = 0;
     float durationMs = 0;
     float categoryMs[(size_t)CpuCategory::Count] = {};
@@ -152,7 +155,7 @@ void SendMemoryBudget(ID3D12Device* device);
  * whose own size is already counted, and counting both would double every placed byte.
  */
 void NoteCommittedAllocation(ID3D12Device* device, ID3D12Resource* resource, const D3D12_RESOURCE_DESC& desc,
-                             D3D12_HEAP_TYPE heapType);
+    D3D12_HEAP_TYPE heapType);
 
 // ---------------------------------------------------------------------------------------------
 // Memory over time.

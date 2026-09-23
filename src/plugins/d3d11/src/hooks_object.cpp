@@ -14,52 +14,68 @@
 
 #include <vector>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
-namespace {
+namespace
+{
 
-ULONG STDMETHODCALLTYPE Hook_Release(IUnknown* This) {
+ULONG STDMETHODCALLTYPE Hook_Release(IUnknown* This)
+{
     // Whether it is tracked is looked up before the call: once the count is zero the object is gone.
     // A swap chain's back buffer is not: its count reaches zero as soon as the application lets
     // its own reference go, and the swap chain keeps it alive; it goes with the swap chain
     // (hooks_dxgi.cpp) or its ResizeBuffers.
     bool tracked = false, backBuffer = false;
-    if (!Internal()) {
-        if (Object* o = Find(This)) {
+    if (!Internal())
+    {
+        if (Object* o = Find(This))
+        {
             tracked = true;
             backBuffer = o->swapChain != 0;
         }
     }
     ULONG count = Orig<PFN_ID3D11DeviceChild_Release>(This, slot::ID3D11DeviceChild_Release)((ID3D11DeviceChild*)This);
-    if (count == 0 && tracked && !backBuffer) OnObjectReleased(This);
+    if (count == 0 && tracked && !backBuffer)
+        OnObjectReleased(This);
     return count;
 }
 
-void NameFromPrivateData(void* object, REFGUID guid, UINT size, const void* data) {
-    if (Internal() || !data || !size) return;
-    if (guid == WKPDID_D3DDebugObjectName) {
+void NameFromPrivateData(void* object, REFGUID guid, UINT size, const void* data)
+{
+    if (Internal() || !data || !size)
+        return;
+    if (guid == WKPDID_D3DDebugObjectName)
+    {
         OnObjectNamed(object, std::string((const char*)data, size && ((const char*)data)[size - 1] == 0 ? size - 1 : size));
-    } else if (guid == WKPDID_D3DDebugObjectNameW) {
+    }
+    else if (guid == WKPDID_D3DDebugObjectNameW)
+    {
         OnObjectNamed(object, Narrow((const wchar_t*)data, size / sizeof(wchar_t)));
     }
 }
 
-HRESULT STDMETHODCALLTYPE Hook_SetPrivateData(ID3D11DeviceChild* This, REFGUID guid, UINT size, const void* data) {
+HRESULT STDMETHODCALLTYPE Hook_SetPrivateData(ID3D11DeviceChild* This, REFGUID guid, UINT size, const void* data)
+{
     HRESULT hr = Orig<PFN_ID3D11DeviceChild_SetPrivateData>(This, slot::ID3D11DeviceChild_SetPrivateData)(This, guid, size, data);
-    if (SUCCEEDED(hr)) NameFromPrivateData(This, guid, size, data);
+    if (SUCCEEDED(hr))
+        NameFromPrivateData(This, guid, size, data);
     return hr;
 }
 
 // IDXGIObject: QueryInterface 0, AddRef 1, Release 2, SetPrivateData 3, SetPrivateDataInterface 4, GetPrivateData 5, GetParent 6.
-HRESULT STDMETHODCALLTYPE Hook_DxgiSetPrivateData(IDXGIObject* This, REFGUID guid, UINT size, const void* data) {
+HRESULT STDMETHODCALLTYPE Hook_DxgiSetPrivateData(IDXGIObject* This, REFGUID guid, UINT size, const void* data)
+{
     HRESULT hr = Orig<PFN_IDXGISwapChain4_SetPrivateData>(This, slot::IDXGISwapChain4_SetPrivateData)((IDXGISwapChain4*)This, guid, size, data);
-    if (SUCCEEDED(hr)) NameFromPrivateData(This, guid, size, data);
+    if (SUCCEEDED(hr))
+        NameFromPrivateData(This, guid, size, data);
     return hr;
 }
 
 }  // namespace
 
-bool HookDeviceChild(void* object, const char* interfaceName, uint32_t count, std::initializer_list<SlotHook> hooks) {
+bool HookDeviceChild(void* object, const char* interfaceName, uint32_t count, std::initializer_list<SlotHook> hooks)
+{
     std::vector<SlotHook> all = {
         {slot::ID3D11DeviceChild_Release, (void*)&Hook_Release},
         {slot::ID3D11DeviceChild_SetPrivateData, (void*)&Hook_SetPrivateData},
@@ -68,7 +84,8 @@ bool HookDeviceChild(void* object, const char* interfaceName, uint32_t count, st
     return HookVtable(object, interfaceName, count, std::initializer_list<SlotHook>(all.data(), all.data() + all.size()));
 }
 
-bool HookDxgiObject(void* object, const char* interfaceName, uint32_t count, std::initializer_list<SlotHook> hooks) {
+bool HookDxgiObject(void* object, const char* interfaceName, uint32_t count, std::initializer_list<SlotHook> hooks)
+{
     std::vector<SlotHook> all = {
         {slot::IDXGISwapChain4_Release, (void*)&Hook_Release},
         {slot::IDXGISwapChain4_SetPrivateData, (void*)&Hook_DxgiSetPrivateData},
@@ -77,16 +94,21 @@ bool HookDxgiObject(void* object, const char* interfaceName, uint32_t count, std
     return HookVtable(object, interfaceName, count, std::initializer_list<SlotHook>(all.data(), all.data() + all.size()));
 }
 
-void OnObjectReleased(void* object) {
-    if (Object* o = Find(object)) {
-        if (o->kind == ObjKind::SwapChain) UntrackBackBuffers(o->id);
+void OnObjectReleased(void* object)
+{
+    if (Object* o = Find(object))
+    {
+        if (o->kind == ObjKind::SwapChain)
+            UntrackBackBuffers(o->id);
     }
     OnObjectDestroyed(object);
     Untrack(object);
 }
 
-void OnObjectNamed(void* object, const std::string& name) {
-    if (Object* o = Find(object)) SetLabel(*o, name);
+void OnObjectNamed(void* object, const std::string& name)
+{
+    if (Object* o = Find(object))
+        SetLabel(*o, name);
 }
 
 }  // namespace d3d11insp

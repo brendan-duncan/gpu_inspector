@@ -22,10 +22,12 @@ struct ID3D12Device;
 struct ID3D12CommandQueue;
 struct ID3D12GraphicsCommandList;
 
-namespace dxreplay {
+namespace dxreplay
+{
 
 /** One metric the GPU can report, as the UI lists it (the Vulkan replay's HwCounterInfo). */
-struct DxCounterInfo {
+struct DxCounterInfo
+{
     std::string name;
     std::string description;
     /** The hardware unit it belongs to ("sm", "dram"), for grouping. */
@@ -33,7 +35,8 @@ struct DxCounterInfo {
     std::string unit;
 };
 
-namespace nvperf {
+namespace nvperf
+{
 
 /** Finds and initializes the SDK's library; false, with why, when it is not built in or not found. */
 bool Load(std::string& note);
@@ -67,7 +70,8 @@ bool ProfilingPermitted(std::string& note);
 bool ProfilingPermitted(std::string& note);
 
 /** One range-profiling session on a queue: the counters are collected over as many passes as they need. */
-class Session {
+class Session
+{
 public:
     Session();
     ~Session();
@@ -93,7 +97,7 @@ public:
      * scheduled, are left out with a note; `chosen` lists the rest, in `names` order.
      */
     bool Configure(const std::vector<std::string>& names, uint16_t nestingLevels, std::vector<DxCounterInfo>& chosen,
-                   std::vector<std::string>& notes);
+        std::vector<std::string>& notes);
     /** Collection passes the configuration needs at one nesting level; each replay of the frame is one. */
     size_t Passes() const;
     bool BeginPass();

@@ -50,28 +50,30 @@ typedef void (*EGLFuncPtr)(void);
 #define EGL_BACK_BUFFER 0x3084
 #define EGL_SINGLE_BUFFER 0x3085
 
-typedef EGLFuncPtr (EGLAPIENTRY* PFN_eglGetProcAddress)(const char* name);
-typedef EGLContext (EGLAPIENTRY* PFN_eglCreateContext)(EGLDisplay, EGLConfig, EGLContext, const EGLint*);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglDestroyContext)(EGLDisplay, EGLContext);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglMakeCurrent)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglSwapBuffers)(EGLDisplay, EGLSurface);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglSwapBuffersWithDamageKHR)(EGLDisplay, EGLSurface, const EGLint*, EGLint);
-typedef EGLSurface (EGLAPIENTRY* PFN_eglCreateWindowSurface)(EGLDisplay, EGLConfig, EGLNativeWindowType, const EGLint*);
-typedef EGLSurface (EGLAPIENTRY* PFN_eglCreatePlatformWindowSurface)(EGLDisplay, EGLConfig, void*, const EGLAttrib*);
-typedef EGLSurface (EGLAPIENTRY* PFN_eglCreatePlatformWindowSurfaceEXT)(EGLDisplay, EGLConfig, void*, const EGLint*);
-typedef EGLSurface (EGLAPIENTRY* PFN_eglCreatePbufferSurface)(EGLDisplay, EGLConfig, const EGLint*);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglDestroySurface)(EGLDisplay, EGLSurface);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint*);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglQueryContext)(EGLDisplay, EGLContext, EGLint, EGLint*);
-typedef EGLBoolean (EGLAPIENTRY* PFN_eglGetConfigAttrib)(EGLDisplay, EGLConfig, EGLint, EGLint*);
-typedef EGLContext (EGLAPIENTRY* PFN_eglGetCurrentContext)(void);
-typedef EGLSurface (EGLAPIENTRY* PFN_eglGetCurrentSurface)(EGLint);
-typedef EGLDisplay (EGLAPIENTRY* PFN_eglGetCurrentDisplay)(void);
-typedef EGLenum (EGLAPIENTRY* PFN_eglQueryAPI)(void);
+typedef EGLFuncPtr(EGLAPIENTRY* PFN_eglGetProcAddress)(const char* name);
+typedef EGLContext(EGLAPIENTRY* PFN_eglCreateContext)(EGLDisplay, EGLConfig, EGLContext, const EGLint*);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglDestroyContext)(EGLDisplay, EGLContext);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglMakeCurrent)(EGLDisplay, EGLSurface, EGLSurface, EGLContext);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglSwapBuffers)(EGLDisplay, EGLSurface);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglSwapBuffersWithDamageKHR)(EGLDisplay, EGLSurface, const EGLint*, EGLint);
+typedef EGLSurface(EGLAPIENTRY* PFN_eglCreateWindowSurface)(EGLDisplay, EGLConfig, EGLNativeWindowType, const EGLint*);
+typedef EGLSurface(EGLAPIENTRY* PFN_eglCreatePlatformWindowSurface)(EGLDisplay, EGLConfig, void*, const EGLAttrib*);
+typedef EGLSurface(EGLAPIENTRY* PFN_eglCreatePlatformWindowSurfaceEXT)(EGLDisplay, EGLConfig, void*, const EGLint*);
+typedef EGLSurface(EGLAPIENTRY* PFN_eglCreatePbufferSurface)(EGLDisplay, EGLConfig, const EGLint*);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglDestroySurface)(EGLDisplay, EGLSurface);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglQuerySurface)(EGLDisplay, EGLSurface, EGLint, EGLint*);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglQueryContext)(EGLDisplay, EGLContext, EGLint, EGLint*);
+typedef EGLBoolean(EGLAPIENTRY* PFN_eglGetConfigAttrib)(EGLDisplay, EGLConfig, EGLint, EGLint*);
+typedef EGLContext(EGLAPIENTRY* PFN_eglGetCurrentContext)(void);
+typedef EGLSurface(EGLAPIENTRY* PFN_eglGetCurrentSurface)(EGLint);
+typedef EGLDisplay(EGLAPIENTRY* PFN_eglGetCurrentDisplay)(void);
+typedef EGLenum(EGLAPIENTRY* PFN_eglQueryAPI)(void);
 
-namespace glesinsp {
+namespace glesinsp
+{
 
-struct EglDispatch {
+struct EglDispatch
+{
     PFN_eglGetProcAddress eglGetProcAddress;
     PFN_eglCreateContext eglCreateContext;
     PFN_eglDestroyContext eglDestroyContext;
@@ -96,7 +98,8 @@ struct EglDispatch {
 extern EglDispatch g_egl;
 
 /** An EGL entry point we hook: its name, our replacement, and where its real entry point goes. */
-struct EglHookEntry {
+struct EglHookEntry
+{
     const char* name;
     void* hook;
     void** real;
@@ -105,7 +108,8 @@ extern const EglHookEntry kEglHooks[];
 extern const size_t kEglHookCount;
 
 /** The EGL functions the library only calls (eglQuerySurface and the rest), by name, and where they go. */
-struct EglImport {
+struct EglImport
+{
     const char* name;
     void** slot;
 };

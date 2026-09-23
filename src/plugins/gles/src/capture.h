@@ -27,9 +27,11 @@
 
 #include <string>
 
-namespace glesinsp {
+namespace glesinsp
+{
 
-struct CaptureOptions {
+struct CaptureOptions
+{
     uint32_t frameCount = 1;
     /** The swap count to start at; -1 for the next frame. */
     int64_t atFrame = -1;
@@ -53,7 +55,8 @@ void BeforeSwap(Context* c, EGLDisplay display, EGLSurface surface, const char* 
 void AfterSwap(Context* c);
 
 /** What a draw call draws, for the snapshot's read-backs (how many vertices and indices it reads). */
-struct DrawParams {
+struct DrawParams
+{
     GLenum mode = 0;
     GLint first = 0;
     GLsizei count = 0;

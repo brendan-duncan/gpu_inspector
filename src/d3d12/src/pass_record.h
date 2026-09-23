@@ -11,20 +11,23 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /** A pixel followed through a pass (pixel_history.cpp). */
 struct HistoryPass;
 
 /** A kept call: what it does, what state it sets, and the command the capture recorded it as. */
-struct LoggedOp {
+struct LoggedOp
+{
     PassOp op;
     OpKey key;
     uint32_t command = 0;
 };
 
 /** The calls of one command list kept while a measured capture records. */
-struct ListOps {
+struct ListOps
+{
     std::vector<LoggedOp> ops;
     /** Where the open pass's own calls begin; everything before it is the state it started from. */
     size_t passFirst = 0;
@@ -33,7 +36,8 @@ struct ListOps {
 };
 
 /** One attachment of a measured pass. */
-struct PassAttachment {
+struct PassAttachment
+{
     ID3D12Resource* resource = nullptr;   // the application's, not AddRef'd
     DXGI_FORMAT format = DXGI_FORMAT_UNKNOWN;   // the view's format, typed
     uint32_t mip = 0;
@@ -47,7 +51,8 @@ struct PassAttachment {
 };
 
 /** A render pass the capture measures: where it is, what it starts from, and what it needs. */
-struct MeasuredPass {
+struct MeasuredPass
+{
     ID3D12Device* device = nullptr;
     ID3D12GraphicsCommandList* list = nullptr;
     uint64_t listId = 0;
@@ -76,8 +81,10 @@ struct MeasuredPass {
 using KeepList = std::vector<ComPtr<IUnknown>>;
 
 template <typename T>
-inline void KeepObject(KeepList& keep, T* object) {
-    if (!object) return;
+inline void KeepObject(KeepList& keep, T* object)
+{
+    if (!object)
+        return;
     object->AddRef();
     keep.emplace_back(ComPtr<IUnknown>(static_cast<IUnknown*>(object)));
 }
@@ -90,12 +97,12 @@ float HalfToFloat(uint16_t h);
 
 /** A resource barrier on one subresource, for the copies a measurement reads back. */
 void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES from,
-                D3D12_RESOURCE_STATES to);
+    D3D12_RESOURCE_STATES to);
 
 /** A texture of the measurement's own, in `state`; null when it could not be created. */
 ComPtr<ID3D12Resource> NewMeasurementTexture(ID3D12Device* device, DXGI_FORMAT format, uint32_t width, uint32_t height,
-                                             uint32_t layers, bool depthStencil, D3D12_RESOURCE_STATES state,
-                                             const D3D12_CLEAR_VALUE* clear);
+    uint32_t layers, bool depthStencil, D3D12_RESOURCE_STATES state,
+    const D3D12_CLEAR_VALUE* clear);
 
 /** A readback buffer of the measurement's own. */
 ComPtr<ID3D12Resource> NewMeasurementReadback(ID3D12Device* device, uint64_t size);
@@ -116,7 +123,8 @@ const D3D12_SHADER_BYTECODE* CoverPixelShader(bool dxil, std::string& error);
 const D3D12_SHADER_BYTECODE* BackFacePixelShader(bool dxil, std::string& error);
 
 /** The copies of the application's pipelines the measurements draw with, as they are cached. */
-enum class VariantKind : uint64_t {
+enum class VariantKind : uint64_t
+{
     Count = 0,     // overdraw: the counting pixel shader into one R16_FLOAT target, blended ONE + ONE
     Cover = 1,     // pixel history: a pixel shader that writes nothing, no culling, no tests
     Facing = 2,    // ... with the pipeline's culling
@@ -127,7 +135,8 @@ enum class VariantKind : uint64_t {
 };
 
 /** The cache key: what was changed, and the depth-stencil format the copy is built for. */
-inline uint64_t VariantKey(VariantKind kind, DXGI_FORMAT depthFormat) {
+inline uint64_t VariantKey(VariantKind kind, DXGI_FORMAT depthFormat)
+{
     return (uint64_t)kind | ((uint64_t)(uint32_t)depthFormat << 8);
 }
 

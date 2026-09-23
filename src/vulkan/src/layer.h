@@ -17,7 +17,10 @@
 
 #include "vk_dispatch.gen.h"
 
-namespace vkinsp { class CommandRecorder; }
+namespace vkinsp
+{
+class CommandRecorder;
+}
 
 #if defined(_WIN32)
 // Exports are listed in layer.def (vk_layer.h already declares the negotiate prototype).
@@ -30,9 +33,11 @@ namespace vkinsp { class CommandRecorder; }
 #define VKINSP_LAYER_DESCRIPTION "GPU Inspector Vulkan capture layer"
 #define VKINSP_LAYER_IMPL_VERSION 1
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-struct InstanceData {
+struct InstanceData
+{
     VkInstance instance = VK_NULL_HANDLE;
     InstanceDispatch dispatch;
     PFN_vkGetInstanceProcAddr nextGetInstanceProcAddr = nullptr;
@@ -49,7 +54,8 @@ struct InstanceData {
     bool oldValidationLayer = false;
 };
 
-struct DeviceData {
+struct DeviceData
+{
     VkDevice device = VK_NULL_HANDLE;
     VkPhysicalDevice physicalDevice = VK_NULL_HANDLE;
     InstanceData* instance = nullptr;
@@ -99,7 +105,13 @@ struct DeviceData {
     // that never presents (OpenXR: the runtime composites) gets its frames from its own
     // vkWaitForFences after a submission, or from every submission when it never waits; chosen
     // once submissions pile up without a present, or set by VKINSP_FRAME_BOUNDARY.
-    enum class FrameBoundary { Auto, Present, Wait, Submit };
+    enum class FrameBoundary
+    {
+        Auto,
+        Present,
+        Wait,
+        Submit
+    };
     FrameBoundary frameBoundary = FrameBoundary::Auto;
     std::atomic<bool> presentSeen{false};
     std::atomic<uint32_t> submitsSinceFrame{0};
@@ -164,15 +176,18 @@ void OnWaitForFrames(DeviceData* data);
 const char* FrameBoundaryName(DeviceData::FrameBoundary b);
 CommandRecorder* LookupRecorder(DeviceData* dev, VkCommandBuffer cb);
 
-inline CommandRecorder* DeviceData::RecorderFor(VkCommandBuffer cb) {
-    if (!g_captureActive.load(std::memory_order_relaxed)) return nullptr;
+inline CommandRecorder* DeviceData::RecorderFor(VkCommandBuffer cb)
+{
+    if (!g_captureActive.load(std::memory_order_relaxed))
+        return nullptr;
     return LookupRecorder(this, cb);
 }
 
 // The loader stores a pointer to its dispatch table as the first word of every dispatchable
 // object. All objects belonging to the same instance (VkInstance, VkPhysicalDevice) share one
 // key, and all objects of the same device (VkDevice, VkQueue, VkCommandBuffer) share another.
-inline void* DispatchKey(const void* dispatchableHandle) {
+inline void* DispatchKey(const void* dispatchableHandle)
+{
     return *reinterpret_cast<void* const*>(dispatchableHandle);
 }
 
@@ -186,22 +201,26 @@ void UnregisterDevice(void* key);
 uint32_t DeviceCount();
 
 template <typename H>
-inline InstanceData* GetInstanceData(H handle) {
+inline InstanceData* GetInstanceData(H handle)
+{
     return FindInstance(DispatchKey(handle));
 }
 
 template <typename H>
-inline DeviceData* GetDeviceData(H handle) {
+inline DeviceData* GetDeviceData(H handle)
+{
     return FindDevice(DispatchKey(handle));
 }
 
 template <typename H>
-inline InstanceDispatch* GetInstanceDispatch(H handle) {
+inline InstanceDispatch* GetInstanceDispatch(H handle)
+{
     return &GetInstanceData(handle)->dispatch;
 }
 
 template <typename H>
-inline DeviceDispatch* GetDeviceDispatch(H handle) {
+inline DeviceDispatch* GetDeviceDispatch(H handle)
+{
     return &GetDeviceData(handle)->dispatch;
 }
 

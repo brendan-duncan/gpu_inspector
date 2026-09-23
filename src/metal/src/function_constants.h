@@ -21,7 +21,8 @@
 
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * Hooks `MTLFunctionConstantValues`, once. Called when a library class is first hooked, which is

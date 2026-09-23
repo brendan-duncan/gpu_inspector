@@ -6,7 +6,8 @@
 #endif
 #include <windows.h>
 
-namespace glesinsp {
+namespace glesinsp
+{
 
 /** Patches `name` in `module` to jump to `hook`; `real` gets the trampoline. False when the module lacks it. */
 bool HookExport(HMODULE module, const char* name, void* hook, void** real);

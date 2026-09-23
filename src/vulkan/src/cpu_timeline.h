@@ -23,13 +23,15 @@
 #include <string>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct DeviceData;
 struct InstanceData;
 
 /** What a CPU event was, in the words the timeline shows. */
-enum class CpuCategory : uint16_t {
+enum class CpuCategory : uint16_t
+{
     Submit = 0,     // vkQueueSubmit and friends: handing work to the GPU
     Present,        // vkQueuePresentKHR
     WaitFences,     // vkWaitForFences: blocked until the GPU caught up
@@ -46,7 +48,8 @@ enum class CpuCategory : uint16_t {
 extern const char* const kCpuCategoryNames[(size_t)CpuCategory::Count];
 
 /** What a device asked for at creation, decided before vkCreateDevice. */
-struct CpuTimelineSetup {
+struct CpuTimelineSetup
+{
     std::vector<const char*> extensionNames;
     /** The layer added VK_EXT_memory_budget, so the driver's residency view is available. */
     bool memoryBudget = false;
@@ -93,7 +96,8 @@ void BeginCpuTimeline();
 // a feature few runs use would be the wrong trade.
 
 /** One frame: how long it took, and where its CPU time went. */
-struct FrameTiming {
+struct FrameTiming
+{
     uint32_t frame = 0;
     float durationMs = 0;
     float categoryMs[(size_t)CpuCategory::Count] = {};

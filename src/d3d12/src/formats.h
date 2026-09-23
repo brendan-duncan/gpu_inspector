@@ -9,9 +9,11 @@
 
 #include "common.h"
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-struct FormatInfo {
+struct FormatInfo
+{
     /** The protocol's name for pixel data of this format, or nullptr when the UI cannot decode it. */
     const char* protocolName = nullptr;
     /** Bytes per pixel, or per block for a block-compressed format. */

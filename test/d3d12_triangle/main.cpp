@@ -32,40 +32,49 @@
 
 using Microsoft::WRL::ComPtr;
 
-#define CHECK(x)                                                                              \
-    do {                                                                                      \
-        HRESULT hr_ = (x);                                                                    \
-        if (FAILED(hr_)) {                                                                    \
+#define CHECK(x)                                                                                         \
+    do                                                                                                   \
+    {                                                                                                    \
+        HRESULT hr_ = (x);                                                                               \
+        if (FAILED(hr_))                                                                                 \
+        {                                                                                                \
             fprintf(stderr, "%s failed: 0x%08lx (%s:%d)\n", #x, (unsigned long)hr_, __FILE__, __LINE__); \
-            exit(1);                                                                          \
-        }                                                                                     \
+            exit(1);                                                                                     \
+        }                                                                                                \
     } while (0)
 
-namespace {
+namespace
+{
 
-struct Vertex {
+struct Vertex
+{
     float pos[3];
     float color[3];
     float uv[2];
 };
 
 // Column-major, like cube.hlsl's default float4x4 packing: mul(M, v) is M * v.
-struct Mat4 {
+struct Mat4
+{
     float m[16];
 };
 
-Mat4 Mul(const Mat4& a, const Mat4& b) {
+Mat4 Mul(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
-        for (int row = 0; row < 4; ++row) {
+        for (int row = 0; row < 4; ++row)
+        {
             float s = 0;
-            for (int k = 0; k < 4; ++k) s += a.m[k * 4 + row] * b.m[c * 4 + k];
+            for (int k = 0; k < 4; ++k)
+                s += a.m[k * 4 + row] * b.m[c * 4 + k];
             r.m[c * 4 + row] = s;
         }
     return r;
 }
 
-Mat4 Perspective(float fovy, float aspect, float zn, float zf) {
+Mat4 Perspective(float fovy, float aspect, float zn, float zf)
+{
     float f = 1.0f / tanf(fovy / 2);
     Mat4 r{};
     r.m[0] = f / aspect;
@@ -76,28 +85,45 @@ Mat4 Perspective(float fovy, float aspect, float zn, float zf) {
     return r;
 }
 
-Mat4 Translate(float x, float y, float z) {
+Mat4 Translate(float x, float y, float z)
+{
     Mat4 r{};
     r.m[0] = r.m[5] = r.m[10] = r.m[15] = 1;
-    r.m[12] = x; r.m[13] = y; r.m[14] = z;
+    r.m[12] = x;
+    r.m[13] = y;
+    r.m[14] = z;
     return r;
 }
 
-Mat4 RotateY(float a) {
+Mat4 RotateY(float a)
+{
     Mat4 r{};
-    r.m[0] = cosf(a); r.m[2] = -sinf(a); r.m[5] = 1; r.m[8] = sinf(a); r.m[10] = cosf(a); r.m[15] = 1;
+    r.m[0] = cosf(a);
+    r.m[2] = -sinf(a);
+    r.m[5] = 1;
+    r.m[8] = sinf(a);
+    r.m[10] = cosf(a);
+    r.m[15] = 1;
     return r;
 }
 
-Mat4 RotateX(float a) {
+Mat4 RotateX(float a)
+{
     Mat4 r{};
-    r.m[0] = 1; r.m[5] = cosf(a); r.m[6] = sinf(a); r.m[9] = -sinf(a); r.m[10] = cosf(a); r.m[15] = 1;
+    r.m[0] = 1;
+    r.m[5] = cosf(a);
+    r.m[6] = sinf(a);
+    r.m[9] = -sinf(a);
+    r.m[10] = cosf(a);
+    r.m[15] = 1;
     return r;
 }
 
-std::vector<char> ReadFile(const std::string& path) {
+std::vector<char> ReadFile(const std::string& path)
+{
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) {
+    if (!f)
+    {
         fprintf(stderr, "cannot open %s\n", path.c_str());
         exit(1);
     }
@@ -107,7 +133,8 @@ std::vector<char> ReadFile(const std::string& path) {
     return data;
 }
 
-std::string ExeDir() {
+std::string ExeDir()
+{
     char buf[MAX_PATH];
     GetModuleFileNameA(nullptr, buf, MAX_PATH);
     std::string s(buf);
@@ -116,14 +143,16 @@ std::string ExeDir() {
 
 // cube.hlsl's cbuffer Cube. Each frame slot's copy sits at a 256-byte offset, the alignment a CBV
 // needs.
-struct CubeConstants {
+struct CubeConstants
+{
     Mat4 viewProj;
     Mat4 model;
 };
 constexpr uint32_t kConstantSlot = 256;
 
 // Root parameter 1 of both root signatures: two 32-bit root constants.
-struct RootConstants {
+struct RootConstants
+{
     float time;
     uint32_t value;   // cube.hlsl: flags; wave.hlsl: count
 };
@@ -152,7 +181,8 @@ constexpr uint32_t kRtInstances = 2;
 // which is exactly the sort of thing a replay turns into a picture that is nearly right.
 constexpr uint32_t kRtInstanceSlot = kRtInstances;
 
-struct App {
+struct App
+{
     uint32_t width = 640, height = 480;
     uint32_t maxFrames = 0;   // 0: until the window is closed
     uint64_t captureAt = 0;   // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
@@ -260,7 +290,8 @@ struct App {
     // --ray-tracing. A D3D12 acceleration structure is not an object: it is a range inside a UAV
     // buffer, and everything names it by the GPU address a build wrote it to, which is why these
     // are buffers rather than handles.
-    struct RayTracing {
+    struct RayTracing
+    {
         ComPtr<ID3D12Device5> device5;
         ComPtr<ID3D12StateObject> stateObject;
         ComPtr<ID3D12RootSignature> rootSignature;
@@ -275,18 +306,24 @@ struct App {
     } rt;
 
     // --------------------------------------------------------------------------------- window
-    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l)
+    {
         App* app = (App*)GetWindowLongPtrA(h, GWLP_USERDATA);
-        if (msg == WM_CLOSE || msg == WM_DESTROY) {
-            if (app) app->quit = true;
+        if (msg == WM_CLOSE || msg == WM_DESTROY)
+        {
+            if (app)
+                app->quit = true;
             return 0;
         }
-        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app) app->quit = true;
-        if (msg == WM_SIZE && app) app->resized = true;
+        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app)
+            app->quit = true;
+        if (msg == WM_SIZE && app)
+            app->resized = true;
         return DefWindowProcA(h, msg, w, l);
     }
 
-    void CreateWindowNative() {
+    void CreateWindowNative()
+    {
         WNDCLASSA wc{};
         wc.lpfnWndProc = WndProc;
         wc.hInstance = GetModuleHandleA(nullptr);
@@ -296,40 +333,46 @@ struct App {
         RECT r{0, 0, (LONG)width, (LONG)height};
         AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
         hwnd = CreateWindowA(wc.lpszClassName, "GPU Inspector test: D3D12 cube", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
-                             wc.hInstance, nullptr);
+            CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
+            wc.hInstance, nullptr);
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)this);
         resized = false;   // the WM_SIZE of creation
     }
 
-    void PumpEvents() {
+    void PumpEvents()
+    {
         MSG msg;
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
     }
 
     // --------------------------------------------------------------------------------- helpers
-    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle(uint32_t index) {
+    D3D12_CPU_DESCRIPTOR_HANDLE RtvHandle(uint32_t index)
+    {
         D3D12_CPU_DESCRIPTOR_HANDLE h = rtvHeap->GetCPUDescriptorHandleForHeapStart();
         h.ptr += (SIZE_T)index * rtvSize;
         return h;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE SrvCpuHandle(uint32_t index) {
+    D3D12_CPU_DESCRIPTOR_HANDLE SrvCpuHandle(uint32_t index)
+    {
         D3D12_CPU_DESCRIPTOR_HANDLE h = srvHeap->GetCPUDescriptorHandleForHeapStart();
         h.ptr += (SIZE_T)index * srvSize;
         return h;
     }
 
-    D3D12_GPU_DESCRIPTOR_HANDLE SrvGpuHandle(uint32_t index) {
+    D3D12_GPU_DESCRIPTOR_HANDLE SrvGpuHandle(uint32_t index)
+    {
         D3D12_GPU_DESCRIPTOR_HANDLE h = srvHeap->GetGPUDescriptorHandleForHeapStart();
         h.ptr += (UINT64)index * srvSize;
         return h;
     }
 
-    static D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+    static D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+    {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition.pResource = resource;
@@ -340,7 +383,8 @@ struct App {
     }
 
     ComPtr<ID3D12Resource> CreateBuffer(D3D12_HEAP_TYPE heap, uint64_t size, D3D12_RESOURCE_STATES state,
-                                        D3D12_RESOURCE_FLAGS flags, const wchar_t* name) {
+        D3D12_RESOURCE_FLAGS flags, const wchar_t* name)
+    {
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = heap;
         D3D12_RESOURCE_DESC rd{};
@@ -363,11 +407,12 @@ struct App {
     // created in COMMON (the runtime ignores any other initial state) and the copy promotes it to
     // COPY_DEST, which is what the barrier transitions from.
     ComPtr<ID3D12Resource> CreateBufferWithData(const void* data, uint64_t size, D3D12_RESOURCE_STATES state,
-                                                const wchar_t* name) {
+        const wchar_t* name)
+    {
         ComPtr<ID3D12Resource> buffer = CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, size, D3D12_RESOURCE_STATE_COMMON,
-                                                     D3D12_RESOURCE_FLAG_NONE, name);
+            D3D12_RESOURCE_FLAG_NONE, name);
         ComPtr<ID3D12Resource> staging = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, size, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                      D3D12_RESOURCE_FLAG_NONE, L"Upload staging");
+            D3D12_RESOURCE_FLAG_NONE, L"Upload staging");
         void* mapped = nullptr;
         CHECK(staging->Map(0, nullptr, &mapped));
         memcpy(mapped, data, (size_t)size);
@@ -379,12 +424,14 @@ struct App {
         return buffer;
     }
 
-    void BeginUpload() {
+    void BeginUpload()
+    {
         CHECK(allocators[0]->Reset());
         CHECK(list->Reset(allocators[0].Get(), nullptr));
     }
 
-    void EndUpload() {
+    void EndUpload()
+    {
         CHECK(list->Close());
         ID3D12CommandList* lists[] = {list.Get()};
         queue->ExecuteCommandLists(1, lists);
@@ -392,7 +439,8 @@ struct App {
         uploads.clear();
     }
 
-    void WaitForGpu() {
+    void WaitForGpu()
+    {
         CHECK(queue->Signal(fence.Get(), nextFenceValue));
         CHECK(fence->SetEventOnCompletion(nextFenceValue, fenceEvent));
         WaitForSingleObject(fenceEvent, INFINITE);
@@ -400,22 +448,29 @@ struct App {
     }
 
     // Blocks until the frame that last used this frame slot has finished on the GPU.
-    void WaitForFrame(uint32_t slot) {
-        if (fence->GetCompletedValue() < fenceValues[slot]) {
+    void WaitForFrame(uint32_t slot)
+    {
+        if (fence->GetCompletedValue() < fenceValues[slot])
+        {
             CHECK(fence->SetEventOnCompletion(fenceValues[slot], fenceEvent));
             WaitForSingleObject(fenceEvent, INFINITE);
         }
     }
 
     // --------------------------------------------------------------------------------- setup
-    void InitDevice() {
+    void InitDevice()
+    {
         UINT factoryFlags = 0;
-        if (debugLayer) {
+        if (debugLayer)
+        {
             ComPtr<ID3D12Debug> debug;
-            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+            {
                 debug->EnableDebugLayer();
                 factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-            } else {
+            }
+            else
+            {
                 fprintf(stderr, "--debug-layer: the D3D12 debug layer is not installed (Windows' Graphics Tools)\n");
             }
         }
@@ -425,21 +480,26 @@ struct App {
         // the factory can order them.
         ComPtr<IDXGIFactory6> factory6;
         factory.As(&factory6);
-        for (UINT i = 0;; ++i) {
+        for (UINT i = 0;; ++i)
+        {
             ComPtr<IDXGIAdapter1> candidate;
             HRESULT hr = factory6 ? factory6->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&candidate))
                                   : factory->EnumAdapters1(i, &candidate);
-            if (hr == DXGI_ERROR_NOT_FOUND) break;
+            if (hr == DXGI_ERROR_NOT_FOUND)
+                break;
             CHECK(hr);
             DXGI_ADAPTER_DESC1 desc;
             candidate->GetDesc1(&desc);
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
-            if (SUCCEEDED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device)))) {
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+                continue;
+            if (SUCCEEDED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_11_0, IID_PPV_ARGS(&device))))
+            {
                 adapter = candidate;
                 break;
             }
         }
-        if (!device) {
+        if (!device)
+        {
             fprintf(stderr, "no Direct3D 12 adapter\n");
             exit(1);
         }
@@ -450,7 +510,8 @@ struct App {
         CHECK(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)));
         queue->SetName(L"Direct queue");
 
-        for (uint32_t i = 0; i < kFrameCount; ++i) {
+        for (uint32_t i = 0; i < kFrameCount; ++i)
+        {
             CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocators[i])));
             wchar_t name[32];
             swprintf(name, 32, L"Frame allocator %u", i);
@@ -460,7 +521,8 @@ struct App {
         CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocators[0].Get(), nullptr, IID_PPV_ARGS(&list)));
         CHECK(list->Close());
         list->SetName(L"Frame command list");
-        if (renderPass && FAILED(list.As(&list4))) {
+        if (renderPass && FAILED(list.As(&list4)))
+        {
             fprintf(stderr, "--render-pass: ID3D12GraphicsCommandList4 is not available (Windows 10 1809 or newer)\n");
             exit(1);
         }
@@ -487,12 +549,14 @@ struct App {
         srvSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
-    void CreateSwapChain() {
+    void CreateSwapChain()
+    {
         // --offscreen renders into its own textures and never presents, the way Chrome's Dawn
         // WebGPU device on D3D12 renders into textures the compositor presents rather than
         // presenting itself. There is no swap chain and no IDXGISwapChain::Present, so the
         // inspector's frame boundary falls back to the per-frame ExecuteCommandLists.
-        if (offscreen) {
+        if (offscreen)
+        {
             frameIndex = 0;
             CreateSizedResources();
             return;
@@ -517,9 +581,12 @@ struct App {
 
     // The back buffers' RTVs, the depth buffer and (--msaa) the multisampled color target, for
     // the current window size.
-    void CreateSizedResources() {
-        for (uint32_t i = 0; i < kFrameCount; ++i) {
-            if (offscreen) {
+    void CreateSizedResources()
+    {
+        for (uint32_t i = 0; i < kFrameCount; ++i)
+        {
+            if (offscreen)
+            {
                 // The counterpart of a swap-chain back buffer, held in RENDER_TARGET the whole
                 // time since it is never presented.
                 D3D12_HEAP_PROPERTIES hp{};
@@ -537,8 +604,10 @@ struct App {
                 clear.Format = kColorFormat;
                 memcpy(clear.Color, kClearColor, sizeof(kClearColor));
                 CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
-                                                      IID_PPV_ARGS(&backBuffers[i])));
-            } else {
+                    IID_PPV_ARGS(&backBuffers[i])));
+            }
+            else
+            {
                 CHECK(swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i])));
             }
             wchar_t name[32];
@@ -562,38 +631,45 @@ struct App {
         clear.Format = depthFormat;
         clear.DepthStencil.Depth = 1.0f;
         CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
-                                              IID_PPV_ARGS(&depthBuffer)));
+            IID_PPV_ARGS(&depthBuffer)));
         depthBuffer->SetName(L"Depth buffer");
         device->CreateDepthStencilView(depthBuffer.Get(), nullptr, dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
-        if (msaa) {
+        if (msaa)
+        {
             rd.Format = kColorFormat;
             rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET;
             clear.Format = kColorFormat;
             memcpy(clear.Color, kClearColor, sizeof(kClearColor));
             CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_RENDER_TARGET, &clear,
-                                                  IID_PPV_ARGS(&msaaTarget)));
+                IID_PPV_ARGS(&msaaTarget)));
             msaaTarget->SetName(L"MSAA color target");
             device->CreateRenderTargetView(msaaTarget.Get(), nullptr, RtvHandle(kFrameCount));
         }
     }
 
-    void ReleaseSizedResources() {
-        for (auto& b : backBuffers) b.Reset();
+    void ReleaseSizedResources()
+    {
+        for (auto& b : backBuffers)
+            b.Reset();
         depthBuffer.Reset();
         msaaTarget.Reset();
     }
 
     // Recreates the swap chain's buffers for the window's client area. Returns false when there
     // is nothing to draw into (minimized).
-    bool Resize() {
+    bool Resize()
+    {
         resized = false;
-        if (offscreen) return true;   // no swap chain to resize; the offscreen targets keep their size
+        if (offscreen)
+            return true;   // no swap chain to resize; the offscreen targets keep their size
         RECT r;
         GetClientRect(hwnd, &r);
         uint32_t w = (uint32_t)(r.right - r.left), h = (uint32_t)(r.bottom - r.top);
-        if (w == 0 || h == 0) return false;
-        if (w == width && h == height) return true;
+        if (w == 0 || h == 0)
+            return false;
+        if (w == width && h == height)
+            return true;
         // ResizeBuffers refuses while anything still references the buffers.
         WaitForGpu();
         ReleaseSizedResources();
@@ -605,7 +681,8 @@ struct App {
         return true;
     }
 
-    void CreatePipelines() {
+    void CreatePipelines()
+    {
         // Graphics root signature: [0] a table {CBV b0, SRV t0}, [1] root constants b1, and a
         // static point sampler s0.
         D3D12_DESCRIPTOR_RANGE1 ranges[2]{};
@@ -672,7 +749,8 @@ struct App {
         pd.DepthStencilState.DepthEnable = TRUE;
         pd.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         pd.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
-        if (stencil) {
+        if (stencil)
+        {
             // Every fragment that passes writes the stencil reference (1, OMSetStencilRef) into the stencil buffer.
             D3D12_DEPTH_STENCILOP_DESC op{D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_KEEP, D3D12_STENCIL_OP_REPLACE, D3D12_COMPARISON_FUNC_ALWAYS};
             pd.DepthStencilState.StencilEnable = TRUE;
@@ -705,10 +783,12 @@ struct App {
         commandSignature->SetName(L"Draw indexed signature");
     }
 
-    ComPtr<ID3D12RootSignature> MakeRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& desc, const wchar_t* name) {
+    ComPtr<ID3D12RootSignature> MakeRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& desc, const wchar_t* name)
+    {
         ComPtr<ID3DBlob> blob, error;
         HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &blob, &error);
-        if (FAILED(hr)) {
+        if (FAILED(hr))
+        {
             fprintf(stderr, "root signature: %s\n", error ? (const char*)error->GetBufferPointer() : "?");
             exit(1);
         }
@@ -718,7 +798,8 @@ struct App {
         return rs;
     }
 
-    void CreateResources() {
+    void CreateResources()
+    {
         // Cube geometry: six quads, each with its own color, wound counter-clockwise seen from
         // outside.
         const float p = 0.5f;
@@ -727,14 +808,17 @@ struct App {
         const float faces[6][3] = {{1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
         const float colors[6][3] = {{1, 0.3f, 0.3f}, {0.3f, 1, 0.3f}, {0.3f, 0.3f, 1}, {1, 1, 0.3f}, {1, 0.3f, 1}, {0.3f, 1, 1}};
         int v = 0, ix = 0;
-        for (int f = 0; f < 6; ++f) {
+        for (int f = 0; f < 6; ++f)
+        {
             const float* n = faces[f];
             float u[3] = {n[1], n[2], n[0]};
             float w[3] = {n[1] * u[2] - n[2] * u[1], n[2] * u[0] - n[0] * u[2], n[0] * u[1] - n[1] * u[0]};
-            for (int c = 0; c < 4; ++c) {
+            for (int c = 0; c < 4; ++c)
+            {
                 float su = (c == 1 || c == 2) ? 1.f : -1.f;
                 float sv = (c >= 2) ? 1.f : -1.f;
-                for (int k = 0; k < 3; ++k) verts[v].pos[k] = p * (n[k] + su * u[k] + sv * w[k]);
+                for (int k = 0; k < 3; ++k)
+                    verts[v].pos[k] = p * (n[k] + su * u[k] + sv * w[k]);
                 memcpy(verts[v].color, colors[f], sizeof(verts[v].color));
                 verts[v].uv[0] = su * 0.5f + 0.5f;
                 verts[v].uv[1] = sv * 0.5f + 0.5f;
@@ -742,13 +826,15 @@ struct App {
             }
             uint16_t b = (uint16_t)(f * 4);
             uint16_t quad[6] = {b, (uint16_t)(b + 1), (uint16_t)(b + 2), b, (uint16_t)(b + 2), (uint16_t)(b + 3)};
-            for (int k = 0; k < 6; ++k) indices[ix++] = quad[k];
+            for (int k = 0; k < 6; ++k)
+                indices[ix++] = quad[k];
         }
         D3D12_DRAW_INDEXED_ARGUMENTS drawArgs{36, 2, 0, 0, 0};
 
         BeginUpload();
         vertexBuffer = CreateBufferWithData(verts, sizeof(verts), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, L"Cube vertices");
-        if (evictMode) evictable = CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, 32 * 1024 * 1024, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_NONE, L"Evict: paged out and back");
+        if (evictMode)
+            evictable = CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, 32 * 1024 * 1024, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_NONE, L"Evict: paged out and back");
         indexBuffer = CreateBufferWithData(indices, sizeof(indices), D3D12_RESOURCE_STATE_INDEX_BUFFER, L"Cube indices");
         indirectArgs = CreateBufferWithData(&drawArgs, sizeof(drawArgs), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, L"Draw arguments");
         CreateTexture();
@@ -759,14 +845,15 @@ struct App {
         // The constant buffer stays mapped: an upload heap is written by the CPU every frame,
         // one slot per frame in flight.
         constantBuffer = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, kConstantSlot * kFrameCount, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                      D3D12_RESOURCE_FLAG_NONE, L"Cube constants");
+            D3D12_RESOURCE_FLAG_NONE, L"Cube constants");
         CHECK(constantBuffer->Map(0, nullptr, (void**)&constantMapped));
 
         // Promoted to UNORDERED_ACCESS by the dispatch, back to COMMON when the frame's lists finish.
         waveBuffer = CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, kWaveCount * sizeof(float), D3D12_RESOURCE_STATE_COMMON,
-                                  D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"Wave buffer");
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"Wave buffer");
 
-        if (leak) CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, 4096, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, L"Leaked buffer").Detach();
+        if (leak)
+            CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, 4096, D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, L"Leaked buffer").Detach();
 
         // Views into the shader-visible heap.
         D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
@@ -774,7 +861,8 @@ struct App {
         srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         srv.Texture2D.MipLevels = kTextureMips;
-        for (uint32_t i = 0; i < kFrameCount; ++i) {
+        for (uint32_t i = 0; i < kFrameCount; ++i)
+        {
             D3D12_CONSTANT_BUFFER_VIEW_DESC cbv{};
             cbv.BufferLocation = constantBuffer->GetGPUVirtualAddress() + i * kConstantSlot;
             cbv.SizeInBytes = kConstantSlot;
@@ -792,25 +880,30 @@ struct App {
 
     // An 8x8 RGBA8 checkerboard with a mip chain, every level box-filtered from the one above on
     // the CPU and uploaded through one staging buffer with a CopyTextureRegion per level.
-    void CreateTexture() {
+    void CreateTexture()
+    {
         std::vector<uint8_t> levels[kTextureMips];
         levels[0].resize(kTextureSize * kTextureSize * 4);
         for (uint32_t y = 0; y < kTextureSize; ++y)
-            for (uint32_t x = 0; x < kTextureSize; ++x) {
+            for (uint32_t x = 0; x < kTextureSize; ++x)
+            {
                 uint8_t c = ((x + y) & 1) ? 255 : 90;
                 uint8_t* px = &levels[0][(y * kTextureSize + x) * 4];
                 px[0] = px[1] = px[2] = c;
                 px[3] = 255;
             }
-        for (uint32_t level = 1; level < kTextureMips; ++level) {
+        for (uint32_t level = 1; level < kTextureMips; ++level)
+        {
             uint32_t src = kTextureSize >> (level - 1), dst = kTextureSize >> level;
             levels[level].resize(dst * dst * 4);
             for (uint32_t y = 0; y < dst; ++y)
                 for (uint32_t x = 0; x < dst; ++x)
-                    for (uint32_t k = 0; k < 4; ++k) {
+                    for (uint32_t k = 0; k < 4; ++k)
+                    {
                         uint32_t sum = 0;
                         for (uint32_t dy = 0; dy < 2; ++dy)
-                            for (uint32_t dx = 0; dx < 2; ++dx) sum += levels[level - 1][((2 * y + dy) * src + 2 * x + dx) * 4 + k];
+                            for (uint32_t dx = 0; dx < 2; ++dx)
+                                sum += levels[level - 1][((2 * y + dy) * src + 2 * x + dx) * 4 + k];
                         levels[level][(y * dst + x) * 4 + k] = (uint8_t)(sum / 4);
                     }
         }
@@ -826,7 +919,7 @@ struct App {
         td.Format = kColorFormat;
         td.SampleDesc.Count = 1;
         CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
-                                              IID_PPV_ARGS(&texture)));
+            IID_PPV_ARGS(&texture)));
         texture->SetName(L"Checker texture");
 
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT layouts[kTextureMips];
@@ -834,15 +927,16 @@ struct App {
         UINT64 rowSizes[kTextureMips], total;
         device->GetCopyableFootprints(&td, 0, kTextureMips, 0, layouts, rows, rowSizes, &total);
         ComPtr<ID3D12Resource> staging = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, total, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                      D3D12_RESOURCE_FLAG_NONE, L"Texture staging");
+            D3D12_RESOURCE_FLAG_NONE, L"Texture staging");
         uint8_t* mapped = nullptr;
         CHECK(staging->Map(0, nullptr, (void**)&mapped));
         for (uint32_t level = 0; level < kTextureMips; ++level)
             for (UINT y = 0; y < rows[level]; ++y)
                 memcpy(mapped + layouts[level].Offset + y * layouts[level].Footprint.RowPitch,
-                       &levels[level][y * rowSizes[level]], (size_t)rowSizes[level]);
+                    &levels[level][y * rowSizes[level]], (size_t)rowSizes[level]);
         staging->Unmap(0, nullptr);
-        for (uint32_t level = 0; level < kTextureMips; ++level) {
+        for (uint32_t level = 0; level < kTextureMips; ++level)
+        {
             D3D12_TEXTURE_COPY_LOCATION dst{};
             dst.pResource = texture.Get();
             dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
@@ -855,19 +949,21 @@ struct App {
         }
         // The table that binds it is visible to every stage, so both shader-resource states.
         D3D12_RESOURCE_BARRIER b = Transition(texture.Get(), D3D12_RESOURCE_STATE_COPY_DEST,
-                                              D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
         list->ResourceBarrier(1, &b);
         uploads.push_back(staging);
     }
 
     // --bundle: the draw with everything it binds, once per frame slot (each slot has its own
     // constant buffer view). A bundle that sets a root signature must set its root arguments too.
-    void RecordBundles() {
+    void RecordBundles()
+    {
         CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&bundleAllocator)));
         bundleAllocator->SetName(L"Bundle allocator");
-        for (uint32_t i = 0; i < kFrameCount; ++i) {
+        for (uint32_t i = 0; i < kFrameCount; ++i)
+        {
             CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_BUNDLE, bundleAllocator.Get(), pipeline.Get(),
-                                            IID_PPV_ARGS(&bundles[i])));
+                IID_PPV_ARGS(&bundles[i])));
             wchar_t name[32];
             swprintf(name, 32, L"Cube bundle %u", i);
             bundles[i]->SetName(name);
@@ -916,11 +1012,13 @@ struct App {
         D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
 
     /** A UAV buffer an acceleration structure or a build's scratch lives in. */
-    ComPtr<ID3D12Resource> CreateUavBuffer(uint64_t size, D3D12_RESOURCE_STATES state, const wchar_t* name) {
+    ComPtr<ID3D12Resource> CreateUavBuffer(uint64_t size, D3D12_RESOURCE_STATES state, const wchar_t* name)
+    {
         return CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, size, state, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, name);
     }
 
-    static D3D12_RESOURCE_BARRIER UavBarrier(ID3D12Resource* resource) {
+    static D3D12_RESOURCE_BARRIER UavBarrier(ID3D12Resource* resource)
+    {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         b.UAV.pResource = resource;
@@ -928,7 +1026,8 @@ struct App {
     }
 
     /** The inputs of the top level build, which both the size query and the build itself need. */
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS TlasInputs() {
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS TlasInputs()
+    {
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{};
         in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
         in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
@@ -940,7 +1039,8 @@ struct App {
         return in;
     }
 
-    D3D12_RAYTRACING_GEOMETRY_DESC TriangleGeometry() {
+    D3D12_RAYTRACING_GEOMETRY_DESC TriangleGeometry()
+    {
         D3D12_RAYTRACING_GEOMETRY_DESC g{};
         g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES;
         g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
@@ -951,15 +1051,19 @@ struct App {
         return g;
     }
 
-    void CreateRayTracing() {
-        if (!rayTracing) return;
-        if (FAILED(device.As(&rt.device5))) {
+    void CreateRayTracing()
+    {
+        if (!rayTracing)
+            return;
+        if (FAILED(device.As(&rt.device5)))
+        {
             fprintf(stderr, "--ray-tracing: ID3D12Device5 is not available\n");
             exit(1);
         }
         D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
         if (FAILED(rt.device5->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) ||
-            options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0) {
+            options5.RaytracingTier < D3D12_RAYTRACING_TIER_1_0)
+        {
             fprintf(stderr, "--ray-tracing: this device has no DXR\n");
             exit(1);
         }
@@ -994,7 +1098,8 @@ struct App {
      * signature. The library's exports are left for the runtime to take wholesale (NumExports 0),
      * which is the case a capture cannot enumerate from the description alone.
      */
-    void CreateStateObject() {
+    void CreateStateObject()
+    {
         static std::vector<char> library = ReadFile(ExeDir() + "raytrace.cso");
 
         D3D12_DXIL_LIBRARY_DESC lib{};
@@ -1033,12 +1138,13 @@ struct App {
         rt.stateObject->SetName(L"Ray tracing state object");
     }
 
-    void CreateRayTracingResources() {
+    void CreateRayTracingResources()
+    {
         // The one triangle, in a buffer the build reads by address.
         const float triangle[9] = {-0.4f, -0.4f, 0.0f, 0.4f, -0.4f, 0.0f, 0.0f, 0.4f, 0.0f};
         BeginUpload();
         rt.vertices = CreateBufferWithData(triangle, sizeof(triangle),
-                                           D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, L"RT triangle");
+            D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, L"RT triangle");
         EndUpload();
 
         // How big each level and the scratch have to be, which only the runtime can say.
@@ -1055,7 +1161,7 @@ struct App {
         // The instances, mapped and rewritten every frame so the two triangles turn.
         const size_t instanceBytes = (size_t)kFrameCount * kRtInstanceSlot * sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
         rt.instances = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, instanceBytes,
-                                    D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, L"RT instances");
+            D3D12_RESOURCE_STATE_GENERIC_READ, D3D12_RESOURCE_FLAG_NONE, L"RT instances");
         CHECK(rt.instances->Map(0, nullptr, (void**)&rt.instancesMapped));
         memset(rt.instancesMapped, 0, instanceBytes);
 
@@ -1064,11 +1170,12 @@ struct App {
         rt.device5->GetRaytracingAccelerationStructurePrebuildInfo(&tlasInputs, &tlasInfo);
 
         rt.blas = CreateUavBuffer(blasInfo.ResultDataMaxSizeInBytes,
-                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RT triangle BLAS");
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RT triangle BLAS");
         rt.tlas = CreateUavBuffer(tlasInfo.ResultDataMaxSizeInBytes,
-                                  D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RT scene TLAS");
+            D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE, L"RT scene TLAS");
         const uint64_t scratchSize = blasInfo.ScratchDataSizeInBytes > tlasInfo.ScratchDataSizeInBytes
-                                   ? blasInfo.ScratchDataSizeInBytes : tlasInfo.ScratchDataSizeInBytes;
+            ? blasInfo.ScratchDataSizeInBytes
+            : tlasInfo.ScratchDataSizeInBytes;
         rt.scratch = CreateUavBuffer(scratchSize, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, L"RT build scratch");
 
         // The image the rays write. Nothing reads it: a capture is what looks at it.
@@ -1084,7 +1191,7 @@ struct App {
         td.SampleDesc.Count = 1;
         td.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                              nullptr, IID_PPV_ARGS(&rt.target)));
+            nullptr, IID_PPV_ARGS(&rt.target)));
         rt.target->SetName(L"RT traced image");
 
         // The scene's SRV: a view with no resource, naming the top level by address, and the
@@ -1107,7 +1214,8 @@ struct App {
         cubeSrv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         cubeSrv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
         cubeSrv.Texture2D.MipLevels = 1;
-        for (uint32_t i = 0; i < kFrameCount; ++i) {
+        for (uint32_t i = 0; i < kFrameCount; ++i)
+        {
             device->CreateShaderResourceView(rt.target.Get(), &cubeSrv, SrvCpuHandle(2 * i + 1));
         }
     }
@@ -1118,19 +1226,21 @@ struct App {
      * decided entirely by these bytes and by the offsets a trace passes, which is why a capture
      * that cannot read this buffer can say nothing about what ran.
      */
-    void WriteBindingTable() {
+    void WriteBindingTable()
+    {
         ComPtr<ID3D12StateObjectProperties> properties;
         CHECK(rt.stateObject.As(&properties));
 
         rt.bindingTable = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, kTableSize, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                       D3D12_RESOURCE_FLAG_NONE, L"RT shader binding table");
+            D3D12_RESOURCE_FLAG_NONE, L"RT shader binding table");
         rt.tableAddress = rt.bindingTable->GetGPUVirtualAddress();
         uint8_t* mapped = nullptr;
         CHECK(rt.bindingTable->Map(0, nullptr, (void**)&mapped));
         memset(mapped, 0, kTableSize);
         auto put = [&](uint32_t offset, const wchar_t* exportName) {
             void* identifier = properties->GetShaderIdentifier(exportName);
-            if (!identifier) {
+            if (!identifier)
+            {
                 fprintf(stderr, "--ray-tracing: the state object has no export to put in the table\n");
                 exit(1);
             }
@@ -1149,13 +1259,17 @@ struct App {
      * unordered access, and without them the trace can run against a structure that is not there
      * yet (test/triangle's Vulkan version had exactly that defect, and every ray missed).
      */
-    void RecordRayTracing(float t) {
-        if (!rayTracing) return;
+    void RecordRayTracing(float t)
+    {
+        if (!rayTracing)
+            return;
         ComPtr<ID3D12GraphicsCommandList4> rtList;
-        if (FAILED(list.As(&rtList))) return;
+        if (FAILED(list.As(&rtList)))
+            return;
 
         D3D12_RAYTRACING_GEOMETRY_DESC geometry = TriangleGeometry();
-        if (!rt.built) {
+        if (!rt.built)
+        {
             D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC build{};
             build.DestAccelerationStructureData = rt.blas->GetGPUVirtualAddress();
             build.ScratchAccelerationStructureData = rt.scratch->GetGPUVirtualAddress();
@@ -1173,14 +1287,24 @@ struct App {
         // The two instances, moved apart and turning. The second one contributes 1 to the hit
         // group index, so its rays run the second record of the table and come out a flat color.
         const D3D12_GPU_VIRTUAL_ADDRESS blasAddress = rt.blas->GetGPUVirtualAddress();
-        for (uint32_t i = 0; i < kRtInstances; ++i) {
+        for (uint32_t i = 0; i < kRtInstances; ++i)
+        {
             D3D12_RAYTRACING_INSTANCE_DESC& instance = rt.instancesMapped[frameIndex * kRtInstanceSlot + i];
             const float angle = t * (i ? -0.8f : 0.6f);
             const float c = cosf(angle), sn = sinf(angle);
             // Row-major 3x4, the same layout as Vulkan's VkAccelerationStructureInstanceKHR.
-            instance.Transform[0][0] = c;  instance.Transform[0][1] = -sn; instance.Transform[0][2] = 0; instance.Transform[0][3] = i ? 0.45f : -0.45f;
-            instance.Transform[1][0] = sn; instance.Transform[1][1] = c;   instance.Transform[1][2] = 0; instance.Transform[1][3] = 0;
-            instance.Transform[2][0] = 0;  instance.Transform[2][1] = 0;   instance.Transform[2][2] = 1; instance.Transform[2][3] = 0;
+            instance.Transform[0][0] = c;
+            instance.Transform[0][1] = -sn;
+            instance.Transform[0][2] = 0;
+            instance.Transform[0][3] = i ? 0.45f : -0.45f;
+            instance.Transform[1][0] = sn;
+            instance.Transform[1][1] = c;
+            instance.Transform[1][2] = 0;
+            instance.Transform[1][3] = 0;
+            instance.Transform[2][0] = 0;
+            instance.Transform[2][1] = 0;
+            instance.Transform[2][2] = 1;
+            instance.Transform[2][3] = 0;
             instance.InstanceID = i;
             instance.InstanceMask = 0xFF;
             instance.InstanceContributionToHitGroupIndex = i;
@@ -1210,7 +1334,7 @@ struct App {
 
         // The cubes sample what the rays wrote, so the image has to leave unordered access.
         D3D12_RESOURCE_BARRIER toRead = Transition(rt.target.Get(), D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
-                                                   kShaderRead);
+            kShaderRead);
         list->ResourceBarrier(1, &toRead);
 
         // The graphics pipeline the rest of the frame draws with: SetPipelineState1 replaced it.
@@ -1218,18 +1342,22 @@ struct App {
     }
 
     /** Puts the traced image back where the next frame's rays expect it, after the draw has read it. */
-    void EndRayTracing() {
-        if (!rayTracing || !rt.target) return;
+    void EndRayTracing()
+    {
+        if (!rayTracing || !rt.target)
+            return;
         D3D12_RESOURCE_BARRIER toWrite = Transition(rt.target.Get(), kShaderRead,
-                                                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
         list->ResourceBarrier(1, &toWrite);
     }
 
     // --------------------------------------------------------------------------------- frame
     static constexpr float kClearColor[4] = {0.1f, 0.1f, 0.15f, 1.0f};
 
-    bool DrawFrame(float t) {
-        if (resized && !Resize()) return false;
+    bool DrawFrame(float t)
+    {
+        if (resized && !Resize())
+            return false;
         WaitForFrame(frameIndex);
 
         Mat4 proj = Perspective(1.0f, (float)width / (float)height, 0.1f, 20.0f);
@@ -1246,7 +1374,8 @@ struct App {
         RecordRayTracing(t);
 
         // The wave dispatch, before the render targets are touched: a compute pass of its own.
-        if (compute) {
+        if (compute)
+        {
             list->SetComputeRootSignature(computeRootSignature.Get());
             list->SetPipelineState(computePipeline.Get());
             list->SetComputeRootDescriptorTable(0, SrvGpuHandle(kHeapUav));
@@ -1266,14 +1395,16 @@ struct App {
         const D3D12_RESOURCE_STATES idleState = offscreen ? D3D12_RESOURCE_STATE_RENDER_TARGET : D3D12_RESOURCE_STATE_PRESENT;
         // With MSAA the back buffer is only ever the resolve destination.
         D3D12_RESOURCE_STATES backBufferState = msaa ? D3D12_RESOURCE_STATE_RESOLVE_DEST : D3D12_RESOURCE_STATE_RENDER_TARGET;
-        if (idleState != backBufferState) {
+        if (idleState != backBufferState)
+        {
             D3D12_RESOURCE_BARRIER toTarget = Transition(backBuffer, idleState, backBufferState);
             list->ResourceBarrier(1, &toTarget);
         }
 
         D3D12_CPU_DESCRIPTOR_HANDLE rtv = RtvHandle(msaa ? kFrameCount : frameIndex);
         D3D12_CPU_DESCRIPTOR_HANDLE dsv = dsvHeap->GetCPUDescriptorHandleForHeapStart();
-        if (renderPass) {
+        if (renderPass)
+        {
             D3D12_RENDER_PASS_RENDER_TARGET_DESC rt{};
             rt.cpuDescriptor = rtv;
             rt.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR;
@@ -1290,12 +1421,15 @@ struct App {
             ds.DepthEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
             ds.StencilEndingAccess.Type = stencil ? D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE : D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS;
             list4->BeginRenderPass(1, &rt, &ds, D3D12_RENDER_PASS_FLAG_NONE);
-        } else {
+        }
+        else
+        {
             list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
             list->ClearRenderTargetView(rtv, kClearColor, 0, nullptr);
             list->ClearDepthStencilView(dsv, stencil ? D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL : D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         }
-        if (stencil) list->OMSetStencilRef(1);
+        if (stencil)
+            list->OMSetStencilRef(1);
 
         D3D12_VIEWPORT viewport{0, 0, (float)width, (float)height, 0, 1};
         D3D12_RECT scissor{0, 0, (LONG)width, (LONG)height};
@@ -1305,9 +1439,12 @@ struct App {
         list->SetGraphicsRootDescriptorTable(0, SrvGpuHandle(2 * frameIndex));
         RootConstants frame{t, 0u};
         list->SetGraphicsRoot32BitConstants(1, sizeof(frame) / 4, &frame, 0);
-        if (bundle) {
+        if (bundle)
+        {
             list->ExecuteBundle(bundles[frameIndex].Get());
-        } else {
+        }
+        else
+        {
             list->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             list->IASetVertexBuffers(0, 1, &vertexBufferView);
             list->IASetIndexBuffer(&indexBufferView);
@@ -1316,9 +1453,11 @@ struct App {
             else
                 list->DrawIndexedInstanced(36, 2, 0, 0, 0);
         }
-        if (renderPass) list4->EndRenderPass();
+        if (renderPass)
+            list4->EndRenderPass();
 
-        if (msaa) {
+        if (msaa)
+        {
             D3D12_RESOURCE_BARRIER toResolve = Transition(msaaTarget.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
             list->ResourceBarrier(1, &toResolve);
             list->ResolveSubresource(backBuffer, 0, msaaTarget.Get(), 0, kColorFormat);
@@ -1327,7 +1466,9 @@ struct App {
                 Transition(backBuffer, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_PRESENT),
             };
             list->ResourceBarrier(2, after);
-        } else if (idleState != D3D12_RESOURCE_STATE_RENDER_TARGET) {
+        }
+        else if (idleState != D3D12_RESOURCE_STATE_RENDER_TARGET)
+        {
             D3D12_RESOURCE_BARRIER toPresent = Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, idleState);
             list->ResourceBarrier(1, &toPresent);
         }
@@ -1336,7 +1477,8 @@ struct App {
         CHECK(list->Close());
         ID3D12CommandList* lists[] = {list.Get()};
         queue->ExecuteCommandLists(1, lists);
-        if (!offscreen) CHECK(swapChain->Present(1, 0));
+        if (!offscreen)
+            CHECK(swapChain->Present(1, 0));
         CHECK(queue->Signal(fence.Get(), nextFenceValue));
         fenceValues[frameIndex] = nextFenceValue++;
         frameIndex = offscreen ? (frameIndex + 1) % kFrameCount : swapChain->GetCurrentBackBufferIndex();
@@ -1344,7 +1486,8 @@ struct App {
         return true;
     }
 
-    void Cleanup() {
+    void Cleanup()
+    {
         WaitForGpu();
         churnRecent.clear();
         churnKept.clear();
@@ -1354,53 +1497,70 @@ struct App {
         // Everything else is released by the members' destructors, the device last.
     }
 
-    int Run() {
+    int Run()
+    {
         CreateWindowNative();
         InitDevice();
         CreateSwapChain();
         CreatePipelines();
         CreateResources();
         CreateRayTracing();
-        if (bundle) RecordBundles();
+        if (bundle)
+            RecordBundles();
         auto start = std::chrono::steady_clock::now();
         auto nextFrame = start;
-        while (!quit && (maxFrames == 0 || frameCount < maxFrames)) {
+        while (!quit && (maxFrames == 0 || frameCount < maxFrames))
+        {
             PumpEvents();
-            if (quit) break;
+            if (quit)
+                break;
             float t = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
-            if (stallMs) Sleep(stallMs);
-            if (hitchEvery && frameCount > 0 && frameCount % hitchEvery == 0) Sleep(100);
+            if (stallMs)
+                Sleep(stallMs);
+            if (hitchEvery && frameCount > 0 && frameCount % hitchEvery == 0)
+                Sleep(100);
             // Asked again each frame until somebody is there to hear it: the inspector connects a
             // few frames after the device is made.
-            if (captureAt && frameCount >= captureAt && !captureAsked) {
+            if (captureAt && frameCount >= captureAt && !captureAsked)
+            {
                 char label[48];
                 snprintf(label, sizeof label, "asked at frame %llu", (unsigned long long)captureAt);   // the tab's name
                 captureAsked = gpu_inspector_capture_named(1, label) != 0;
             }
-            if (evictMode && evictable && frameCount > 0) {
+            if (evictMode && evictable && frameCount > 0)
+            {
                 // Never drawn from, so evicting it is safe at any point of the frame.
                 ID3D12Pageable* pageable = evictable.Get();
-                if (frameCount % 120 == 0) device->Evict(1, &pageable);
-                else if (frameCount % 120 == 60) device->MakeResident(1, &pageable);
+                if (frameCount % 120 == 0)
+                    device->Evict(1, &pageable);
+                else if (frameCount % 120 == 60)
+                    device->MakeResident(1, &pageable);
             }
-            if (churn) {
+            if (churn)
+            {
                 churnRecent.push_back(CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, 64 * 1024, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                   D3D12_RESOURCE_FLAG_NONE, L"Churn: per-frame scratch"));
-                if (churnRecent.size() > 2) churnRecent.erase(churnRecent.begin());
-                if (frameCount % 30 == 0) {
+                    D3D12_RESOURCE_FLAG_NONE, L"Churn: per-frame scratch"));
+                if (churnRecent.size() > 2)
+                    churnRecent.erase(churnRecent.begin());
+                if (frameCount % 30 == 0)
+                {
                     churnKept.push_back(CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, 1024 * 1024, D3D12_RESOURCE_STATE_COMMON,
-                                                     D3D12_RESOURCE_FLAG_NONE, L"Churn: kept forever"));
+                        D3D12_RESOURCE_FLAG_NONE, L"Churn: kept forever"));
                 }
             }
-            if (!DrawFrame(t)) Sleep(16);
+            if (!DrawFrame(t))
+                Sleep(16);
             // A swap chain paces the loop to the display; an offscreen renderer has nothing to
             // wait on and would spin a core at thousands of fps, so it is paced to ~60 the way a
             // real WebGPU application is driven by requestAnimationFrame.
-            if (offscreen) {
+            if (offscreen)
+            {
                 nextFrame += std::chrono::microseconds(16667);
                 auto now = std::chrono::steady_clock::now();
-                if (nextFrame > now) std::this_thread::sleep_for(nextFrame - now);
-                else nextFrame = now;
+                if (nextFrame > now)
+                    std::this_thread::sleep_for(nextFrame - now);
+                else
+                    nextFrame = now;
             }
         }
         Cleanup();
@@ -1410,32 +1570,61 @@ struct App {
 
 } // namespace
 
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
     App app;
     int argc = __argc;
     char** argv = __argv;
-    for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--frames") && i + 1 < argc) app.maxFrames = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--stall") && i + 1 < argc) app.stallMs = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc) app.hitchEvery = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc) app.captureAt = (uint64_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--msaa")) app.msaa = true;
-        else if (!strcmp(argv[i], "--bundle")) app.bundle = true;
-        else if (!strcmp(argv[i], "--indirect")) app.indirect = true;
-        else if (!strcmp(argv[i], "--render-pass")) app.renderPass = true;
-        else if (!strcmp(argv[i], "--compute")) app.compute = true;
-        else if (!strcmp(argv[i], "--offscreen")) app.offscreen = true;
-        else if (!strcmp(argv[i], "--leak")) app.leak = true;
-        else if (!strcmp(argv[i], "--churn")) app.churn = true;
-        else if (!strcmp(argv[i], "--evict")) app.evictMode = true;
-        else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
-        else if (!strcmp(argv[i], "--ray-tracing")) app.rayTracing = true;
-        else if (!strcmp(argv[i], "--rebuild-blas")) { app.rayTracing = true; app.rebuildBlas = true; }
-        else if (!strcmp(argv[i], "--debug-layer")) app.debugLayer = true;
-        else if (!strcmp(argv[i], "--stencil")) { app.stencil = true; app.depthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT; }
-        else {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!strcmp(argv[i], "--frames") && i + 1 < argc)
+            app.maxFrames = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--width") && i + 1 < argc)
+            app.width = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--height") && i + 1 < argc)
+            app.height = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--stall") && i + 1 < argc)
+            app.stallMs = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc)
+            app.hitchEvery = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--capture-at") && i + 1 < argc)
+            app.captureAt = (uint64_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--msaa"))
+            app.msaa = true;
+        else if (!strcmp(argv[i], "--bundle"))
+            app.bundle = true;
+        else if (!strcmp(argv[i], "--indirect"))
+            app.indirect = true;
+        else if (!strcmp(argv[i], "--render-pass"))
+            app.renderPass = true;
+        else if (!strcmp(argv[i], "--compute"))
+            app.compute = true;
+        else if (!strcmp(argv[i], "--offscreen"))
+            app.offscreen = true;
+        else if (!strcmp(argv[i], "--leak"))
+            app.leak = true;
+        else if (!strcmp(argv[i], "--churn"))
+            app.churn = true;
+        else if (!strcmp(argv[i], "--evict"))
+            app.evictMode = true;
+        else if (!strcmp(argv[i], "--heavy"))
+            app.heavy = true;
+        else if (!strcmp(argv[i], "--ray-tracing"))
+            app.rayTracing = true;
+        else if (!strcmp(argv[i], "--rebuild-blas"))
+        {
+            app.rayTracing = true;
+            app.rebuildBlas = true;
+        }
+        else if (!strcmp(argv[i], "--debug-layer"))
+            app.debugLayer = true;
+        else if (!strcmp(argv[i], "--stencil"))
+        {
+            app.stencil = true;
+            app.depthFormat = DXGI_FORMAT_D24_UNORM_S8_UINT;
+        }
+        else
+        {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return 1;
         }

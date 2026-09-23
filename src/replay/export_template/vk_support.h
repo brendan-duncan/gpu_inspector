@@ -25,7 +25,13 @@ extern VkQueue queue;
 /** Prints what failed and exits with code 2. */
 [[noreturn]] void Fail(const char* what, VkResult result);
 [[noreturn]] void Fail(const std::string& message);
-#define VK_CHECK(call) do { const VkResult vk_result_ = (call); if (vk_result_ < 0) Fail(#call, vk_result_); } while (0)
+#define VK_CHECK(call)                      \
+    do                                      \
+    {                                       \
+        const VkResult vk_result_ = (call); \
+        if (vk_result_ < 0)                 \
+            Fail(#call, vk_result_);        \
+    } while (0)
 
 // The data file: SPIR-V, image and buffer contents, and the captured targets, by offset.
 bool LoadData(const std::string& path);
@@ -73,8 +79,8 @@ void UploadBuffer(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t
  * vkCmdResolveImage, depth by sample zero. Its layout is put back after.
  */
 void ReadbackImage(VkCommandBuffer cb, VkImage image, const char* name, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer,
-                   uint32_t layers, VkExtent2D extent, VkImageLayout layout, VkSampleCountFlagBits samples, VkFormat format,
-                   const void* captured, size_t capturedSize);
+    uint32_t layers, VkExtent2D extent, VkImageLayout layout, VkSampleCountFlagBits samples, VkFormat format,
+    const void* captured, size_t capturedSize);
 /** vkQueueSubmit of the command buffers, without semaphores or a fence, then vkQueueWaitIdle. */
 void SubmitAndWait(VkQueue queue, const VkCommandBuffer* commandBuffers, uint32_t count);
 /** Compares the submission's read-backs with the capture's copies. */
@@ -83,7 +89,8 @@ void CompleteReadbacks();
 int ReportResults(const std::string& directory, bool writeImages);
 // The window (the default; --batch compares the targets instead). The frame runs again and again,
 // and what it leaves on screen is blitted to a swapchain of the support's own and presented.
-struct FrameOutputInfo {
+struct FrameOutputInfo
+{
     VkImage image = VK_NULL_HANDLE;
     VkImageLayout layout = VK_IMAGE_LAYOUT_UNDEFINED;   // where the frame leaves it
     VkFormat format = VK_FORMAT_UNDEFINED;

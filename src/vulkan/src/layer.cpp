@@ -47,18 +47,21 @@
 #include <sys/system_properties.h>
 #endif
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 // ---------------------------------------------------------------------------------------------
 // Configuration
 
-std::string ConfigValue(const char* envName) {
+std::string ConfigValue(const char* envName)
+{
 #if defined(__ANDROID__)
     // VKINSP_PORT -> debug.vkinsp.port. "debug." properties can be set from `adb shell` without
     // root, which is how RenderDoc's Android layer takes its settings too.
     std::string name = "debug.vkinsp.";
     const char* suffix = strncmp(envName, "VKINSP_", 7) == 0 ? envName + 7 : envName;
-    for (const char* p = suffix; *p; ++p) name.push_back((char)tolower((unsigned char)*p));
+    for (const char* p = suffix; *p; ++p)
+        name.push_back((char)tolower((unsigned char)*p));
     char value[PROP_VALUE_MAX] = {};
     int len = __system_property_get(name.c_str(), value);
     return len > 0 ? std::string(value, (size_t)len) : std::string();
@@ -68,7 +71,8 @@ std::string ConfigValue(const char* envName) {
 #endif
 }
 
-bool ConfigFlag(const char* envName) {
+bool ConfigFlag(const char* envName)
+{
     std::string v = ConfigValue(envName);
     return !v.empty() && v != "0";
 }
@@ -78,26 +82,33 @@ bool ConfigFlag(const char* envName) {
 
 static int g_logEnabled = -1;
 
-bool LogEnabled() {
-    if (g_logEnabled < 0) g_logEnabled = ConfigFlag("VKINSP_LOG") ? 1 : 0;
+bool LogEnabled()
+{
+    if (g_logEnabled < 0)
+        g_logEnabled = ConfigFlag("VKINSP_LOG") ? 1 : 0;
     return g_logEnabled == 1;
 }
 
 // VKINSP_LOG_FILE=<path> appends the log to a file as well (GUI applications such as Unity
 // players have no usable stderr).
-static FILE* LogFile() {
+static FILE* LogFile()
+{
     static FILE* file = nullptr;
     static bool tried = false;
-    if (!tried) {
+    if (!tried)
+    {
         tried = true;
         std::string path = ConfigValue("VKINSP_LOG_FILE");
-        if (!path.empty()) file = fopen(path.c_str(), "a");
+        if (!path.empty())
+            file = fopen(path.c_str(), "a");
     }
     return file;
 }
 
-void Log(const char* fmt, ...) {
-    if (!LogEnabled()) return;
+void Log(const char* fmt, ...)
+{
+    if (!LogEnabled())
+        return;
     char buf[2048];
     va_list args;
     va_start(args, fmt);
@@ -110,7 +121,8 @@ void Log(const char* fmt, ...) {
     fprintf(stderr, "[vkinsp] %s\n", buf);
     fflush(stderr);
 #endif
-    if (FILE* f = LogFile()) {
+    if (FILE* f = LogFile())
+    {
         fprintf(f, "[vkinsp] %s\n", buf);
         fflush(f);
     }
@@ -124,7 +136,8 @@ void Log(const char* fmt, ...) {
 // ---------------------------------------------------------------------------------------------
 // Dispatch registry
 
-namespace {
+namespace
+{
 std::shared_mutex g_registryMutex;
 std::unordered_map<void*, std::unique_ptr<InstanceData>> g_instances;
 std::unordered_map<void*, std::unique_ptr<DeviceData>> g_devices;
@@ -132,38 +145,45 @@ std::unordered_map<void*, std::unique_ptr<DeviceData>> g_devices;
 std::atomic<uint32_t> g_deviceCount{0};
 } // namespace
 
-uint32_t DeviceCount() {
+uint32_t DeviceCount()
+{
     return g_deviceCount.load(std::memory_order_relaxed);
 }
 
-InstanceData* FindInstance(void* key) {
+InstanceData* FindInstance(void* key)
+{
     std::shared_lock lock(g_registryMutex);
     auto it = g_instances.find(key);
     return it == g_instances.end() ? nullptr : it->second.get();
 }
 
-DeviceData* FindDevice(void* key) {
+DeviceData* FindDevice(void* key)
+{
     std::shared_lock lock(g_registryMutex);
     auto it = g_devices.find(key);
     return it == g_devices.end() ? nullptr : it->second.get();
 }
 
-void RegisterInstance(void* key, std::unique_ptr<InstanceData> data) {
+void RegisterInstance(void* key, std::unique_ptr<InstanceData> data)
+{
     std::unique_lock lock(g_registryMutex);
     g_instances[key] = std::move(data);
 }
 
-void RegisterDevice(void* key, std::unique_ptr<DeviceData> data) {
+void RegisterDevice(void* key, std::unique_ptr<DeviceData> data)
+{
     std::unique_lock lock(g_registryMutex);
     g_devices[key] = std::move(data);
 }
 
-void UnregisterInstance(void* key) {
+void UnregisterInstance(void* key)
+{
     std::unique_lock lock(g_registryMutex);
     g_instances.erase(key);
 }
 
-void UnregisterDevice(void* key) {
+void UnregisterDevice(void* key)
+{
     std::unique_lock lock(g_registryMutex);
     g_devices.erase(key);
 }
@@ -173,67 +193,94 @@ void UnregisterDevice(void* key) {
 
 // Tells the UI what the pause state is now, so its button follows a pause the UI did not ask for
 // (a capture resuming the application below) as well as one it did.
-static void SendPauseState() {
+static void SendPauseState()
+{
     JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("PauseState");
-    w.Key("paused"); w.Boolean(gpuinsp::FramePause::Get().Paused());
+    w.Key("action");
+    w.String("PauseState");
+    w.Key("paused");
+    w.Boolean(gpuinsp::FramePause::Get().Paused());
     w.EndObject();
     Transport::Get().SendJson(std::move(w.str()));
 }
 
-static void HandleUiMessage(const std::string& text) {
+static void HandleUiMessage(const std::string& text)
+{
     JsonValue msg;
-    if (!JsonParser::Parse(text, msg)) {
+    if (!JsonParser::Parse(text, msg))
+    {
         Log("bad message from UI: %s", text.c_str());
         return;
     }
     std::string action = msg.GetString("action");
     Log("ui message: %s", action.c_str());
-    if (action == "Ping") {
+    if (action == "Ping")
+    {
         Transport::Get().SendJson("{\"action\":\"Pong\"}");
-    } else if (action == "RequestBlob") {
+    }
+    else if (action == "RequestBlob")
+    {
         uint64_t id = (uint64_t)msg.GetNumber("id");
         uint32_t index = (uint32_t)msg.GetNumber("index");
         auto blob = Tracker::Get().GetBlob(id, index);
         JsonWriter w;
         w.BeginObject();
-        w.Key("action"); w.String("ObjectBlob");
-        w.Key("id"); w.Uint(id);
-        w.Key("index"); w.Uint(index);
-        w.Key("size"); w.Uint(blob ? blob->size() : 0);
+        w.Key("action");
+        w.String("ObjectBlob");
+        w.Key("id");
+        w.Uint(id);
+        w.Key("index");
+        w.Uint(index);
+        w.Key("size");
+        w.Uint(blob ? blob->size() : 0);
         w.EndObject();
-        if (blob) Transport::Get().SendBinary(std::move(w.str()), blob->data(), blob->size());
-        else Transport::Get().SendJson(std::move(w.str()));
+        if (blob)
+            Transport::Get().SendBinary(std::move(w.str()), blob->data(), blob->size());
+        else
+            Transport::Get().SendJson(std::move(w.str()));
     }
-    else if (action == "RequestDescriptorSet") {
+    else if (action == "RequestDescriptorSet")
+    {
         // Live contents of a descriptor set for the Inspect panel, as an ObjectUpdate the UI
         // merges into the object ("bindings", same shape as a capture's descriptor snapshot).
         uint64_t id = (uint64_t)msg.GetNumber("id");
         TrackedObject obj;
         DescriptorSetContents contents;
         bool tracked = Tracker::Get().FindById(id, obj) && obj.type == HT_VkDescriptorSet &&
-                       DescriptorTracker::Get().GetSet((VkDescriptorSet)(uintptr_t)obj.handle, contents);
+            DescriptorTracker::Get().GetSet((VkDescriptorSet)(uintptr_t)obj.handle, contents);
         JsonWriter w(&Tracker::Get());
         w.BeginObject();
-        w.Key("action"); w.String("ObjectUpdate");
-        w.Key("id"); w.Uint(id);
-        w.Key("tracked"); w.Boolean(tracked);
-        w.Key("layout"); w.Handle(HT_VkDescriptorSetLayout, "VkDescriptorSetLayout", (uint64_t)(uintptr_t)contents.layout);
+        w.Key("action");
+        w.String("ObjectUpdate");
+        w.Key("id");
+        w.Uint(id);
+        w.Key("tracked");
+        w.Boolean(tracked);
+        w.Key("layout");
+        w.Handle(HT_VkDescriptorSetLayout, "VkDescriptorSetLayout", (uint64_t)(uintptr_t)contents.layout);
         w.Key("bindings");
         uint32_t dynamicIndex = 0;
         WriteDescriptorBindingsJson(w, contents, nullptr, 0, dynamicIndex, nullptr);
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
-    } else if (action == "RequestImage") {
+    }
+    else if (action == "RequestImage")
+    {
         ImageReadback::Get().Request((uint64_t)msg.GetNumber("id"), (uint32_t)msg.GetNumber("mip"),
-                                     (uint32_t)msg.GetNumber("layer"));
-    } else if (action == "ReplaceShader" || action == "RestoreShader") {
+            (uint32_t)msg.GetNumber("layer"));
+    }
+    else if (action == "ReplaceShader" || action == "RestoreShader")
+    {
         // Live shader editing (see shader_edit.h): {pipeline, stage: "VK_SHADER_STAGE_...", spirv: base64}.
         uint64_t pipeline = (uint64_t)msg.GetNumber("pipeline");
         std::string stageName = msg.GetString("stage");
         VkShaderStageFlagBits stage = (VkShaderStageFlagBits)0;
-        static const struct { const char* name; VkShaderStageFlagBits bit; } kStages[] = {
+        static const struct
+        {
+            const char* name;
+            VkShaderStageFlagBits bit;
+        } kStages[] = {
             {"VK_SHADER_STAGE_VERTEX_BIT", VK_SHADER_STAGE_VERTEX_BIT},
             {"VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT},
             {"VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT},
@@ -249,53 +296,88 @@ static void HandleUiMessage(const std::string& text) {
             {"VK_SHADER_STAGE_INTERSECTION_BIT_KHR", VK_SHADER_STAGE_INTERSECTION_BIT_KHR},
             {"VK_SHADER_STAGE_CALLABLE_BIT_KHR", VK_SHADER_STAGE_CALLABLE_BIT_KHR},
         };
-        for (auto& s : kStages) if (stageName == s.name) stage = s.bit;
-        if (action == "RestoreShader") {
+        for (auto& s : kStages)
+            if (stageName == s.name)
+                stage = s.bit;
+        if (action == "RestoreShader")
+        {
             ShaderEditor::Get().Restore(pipeline, stage);
-        } else {
+        }
+        else
+        {
             std::vector<uint8_t> bytes;
-            if (!stage || !DecodeBase64(msg.GetString("spirv"), bytes) || bytes.size() % 4) {
+            if (!stage || !DecodeBase64(msg.GetString("spirv"), bytes) || bytes.size() % 4)
+            {
                 JsonWriter w;
                 w.BeginObject();
-                w.Key("action"); w.String("ShaderReplaced");
-                w.Key("pipeline"); w.Uint(pipeline);
-                w.Key("stage"); w.String(stageName);
-                w.Key("ok"); w.Boolean(false);
-                w.Key("error"); w.String(stage ? "malformed SPIR-V payload" : "unknown shader stage");
+                w.Key("action");
+                w.String("ShaderReplaced");
+                w.Key("pipeline");
+                w.Uint(pipeline);
+                w.Key("stage");
+                w.String(stageName);
+                w.Key("ok");
+                w.Boolean(false);
+                w.Key("error");
+                w.String(stage ? "malformed SPIR-V payload" : "unknown shader stage");
                 w.EndObject();
                 Transport::Get().SendJson(std::move(w.str()));
-            } else {
+            }
+            else
+            {
                 std::vector<uint32_t> words(bytes.size() / 4);
                 memcpy(words.data(), bytes.data(), bytes.size());
                 ShaderEditor::Get().Replace(pipeline, stage, std::move(words));
             }
         }
-    } else if (action == "Hud") {
+    }
+    else if (action == "Hud")
+    {
         // The in-app HUD (hud.h): the application's frame time drawn over its own window.
         Hud::Get().SetEnabled(msg.GetBool("enabled", false));
-    } else if (action == "Pause") {
+    }
+    else if (action == "Pause")
+    {
         // Live pause (frame_pause.h): the application is held at its frame boundary. "step" lets
         // that many frames through and stays paused.
-        if (const JsonValue* v = msg.Get("step")) {
+        if (const JsonValue* v = msg.Get("step"))
+        {
             gpuinsp::FramePause::Get().Step((uint32_t)std::max(1.0, v->num));
-        } else {
+        }
+        else
+        {
             gpuinsp::FramePause::Get().SetPaused(msg.GetBool("paused", false));
         }
         SendPauseState();
-    } else if (action == "RequestSnapshot") {
+    }
+    else if (action == "RequestSnapshot")
+    {
         // A UI window that picked up an already-connected session rebuilds its object list.
         Tracker::Get().SendSnapshot();
         ValidationLog::Get().SendSnapshot();
-    } else if (action == "Settings") {
-        if (const JsonValue* v = msg.Get("recordAlways")) CaptureManager::Get().SetRecordAlways(v->b);
-    } else if (action == "Capture") {
+    }
+    else if (action == "Settings")
+    {
+        if (const JsonValue* v = msg.Get("recordAlways"))
+            CaptureManager::Get().SetRecordAlways(v->b);
+    }
+    else if (action == "Capture")
+    {
         CaptureOptions o;
         o.frameCount = (uint32_t)msg.GetNumber("frameCount", 1);
-        if (const JsonValue* v = msg.Get("atFrame")) { if (v->kind == JsonValue::Number && v->num >= 0) o.atFrame = (uint64_t)v->num; }
-        if (const JsonValue* v = msg.Get("maxBufferSize")) o.maxBufferSize = (uint64_t)v->num;
-        if (const JsonValue* v = msg.Get("maxTextureSize")) o.maxTextureSize = (uint64_t)v->num;
-        if (const JsonValue* v = msg.Get("maxBufferTotal")) o.maxBufferTotal = (uint64_t)v->num;
-        if (const JsonValue* v = msg.Get("maxImageTotal")) o.maxImageTotal = (uint64_t)v->num;
+        if (const JsonValue* v = msg.Get("atFrame"))
+        {
+            if (v->kind == JsonValue::Number && v->num >= 0)
+                o.atFrame = (uint64_t)v->num;
+        }
+        if (const JsonValue* v = msg.Get("maxBufferSize"))
+            o.maxBufferSize = (uint64_t)v->num;
+        if (const JsonValue* v = msg.Get("maxTextureSize"))
+            o.maxTextureSize = (uint64_t)v->num;
+        if (const JsonValue* v = msg.Get("maxBufferTotal"))
+            o.maxBufferTotal = (uint64_t)v->num;
+        if (const JsonValue* v = msg.Get("maxImageTotal"))
+            o.maxImageTotal = (uint64_t)v->num;
         o.captureTextures = msg.GetBool("captureTextures", true);
         o.captureBuffers = msg.GetBool("captureBuffers", true);
         o.captureImages = msg.GetBool("captureImages", true);
@@ -304,87 +386,128 @@ static void HandleUiMessage(const std::string& text) {
         // A capture is recorded from frames the application renders, and a paused application
         // renders none: waiting here would simply hang. Resuming is the honest answer, and the UI
         // is told so its pause button follows.
-        if (gpuinsp::FramePause::Get().Paused()) {
+        if (gpuinsp::FramePause::Get().Paused())
+        {
             Log("capture requested while paused: resuming");
             gpuinsp::FramePause::Get().SetPaused(false);
             SendPauseState();
         }
         CaptureManager::Get().Request(o);
-    } else if (action == "TimingCapture") {
-        if (msg.GetBool("start", false)) BeginTimingCapture((uint32_t)msg.GetNumber("sampleHz", 0)); else EndTimingCapture();
-    } else if (action == "MemoryCapture") {
-        if (msg.GetBool("start", false)) BeginMemoryCapture(); else EndMemoryCapture();
-    } else if (action == "RequestStacktraces") {
+    }
+    else if (action == "TimingCapture")
+    {
+        if (msg.GetBool("start", false))
+            BeginTimingCapture((uint32_t)msg.GetNumber("sampleHz", 0));
+        else
+            EndTimingCapture();
+    }
+    else if (action == "MemoryCapture")
+    {
+        if (msg.GetBool("start", false))
+            BeginMemoryCapture();
+        else
+            EndMemoryCapture();
+    }
+    else if (action == "RequestStacktraces")
+    {
         // Creation stacks of objects, symbolized: {stacks: [{id, frames}]}; `available` says
         // whether the layer captured any (the launch option).
         JsonWriter w;
         w.BeginObject();
-        w.Key("action"); w.String("Stacktraces");
-        w.Key("available"); w.Boolean(StackTracesEnabled());
-        w.Key("stacks"); w.BeginArray();
-        if (const JsonValue* ids = msg.Get("ids")) {
-            for (const JsonValue& v : ids->arr) {
-                if (v.kind != JsonValue::Number) continue;
+        w.Key("action");
+        w.String("Stacktraces");
+        w.Key("available");
+        w.Boolean(StackTracesEnabled());
+        w.Key("stacks");
+        w.BeginArray();
+        if (const JsonValue* ids = msg.Get("ids"))
+        {
+            for (const JsonValue& v : ids->arr)
+            {
+                if (v.kind != JsonValue::Number)
+                    continue;
                 uint64_t id = (uint64_t)v.num;
                 StackTrace stack = Tracker::Get().GetStack(id);
                 w.BeginObject();
-                w.Key("id"); w.Uint(id);
-                w.Key("frames"); WriteStackFrames(w, Symbolize(stack));
+                w.Key("id");
+                w.Uint(id);
+                w.Key("frames");
+                WriteStackFrames(w, Symbolize(stack));
                 w.EndObject();
             }
         }
         w.EndArray();
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
-    } else if (action == "RequestSymbols") {
+    }
+    else if (action == "RequestSymbols")
+    {
         // Symbolizes the addresses a capture's commands carry: {frames: [...]} in request order.
         StackTrace addresses;
-        if (const JsonValue* list = msg.Get("addresses")) {
-            for (const JsonValue& v : list->arr) {
-                if (v.kind == JsonValue::String) addresses.push_back(strtoull(v.str.c_str(), nullptr, 0));
-                else if (v.kind == JsonValue::Number) addresses.push_back((uint64_t)v.num);
+        if (const JsonValue* list = msg.Get("addresses"))
+        {
+            for (const JsonValue& v : list->arr)
+            {
+                if (v.kind == JsonValue::String)
+                    addresses.push_back(strtoull(v.str.c_str(), nullptr, 0));
+                else if (v.kind == JsonValue::Number)
+                    addresses.push_back((uint64_t)v.num);
             }
         }
         JsonWriter w;
         w.BeginObject();
-        w.Key("action"); w.String("Symbols");
-        w.Key("frames"); WriteStackFrames(w, Symbolize(addresses));
+        w.Key("action");
+        w.String("Symbols");
+        w.Key("frames");
+        WriteStackFrames(w, Symbolize(addresses));
         w.EndObject();
         Transport::Get().SendJson(std::move(w.str()));
     }
 }
 
-static void EnsureStarted() {
+static void EnsureStarted()
+{
     static bool started = false;
-    if (started) return;
+    if (started)
+        return;
     started = true;
     Transport::Get().Start();
     Transport::Get().SetMessageHandler(HandleUiMessage);
-    if (ConfigFlag("VKINSP_RECORD_ALWAYS")) CaptureManager::Get().SetRecordAlways(true);
-    if (ConfigFlag("VKINSP_HUD")) Hud::Get().SetEnabled(true);
+    if (ConfigFlag("VKINSP_RECORD_ALWAYS"))
+        CaptureManager::Get().SetRecordAlways(true);
+    if (ConfigFlag("VKINSP_HUD"))
+        Hud::Get().SetEnabled(true);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Chain helpers
 
-static VkLayerInstanceCreateInfo* FindInstanceLinkInfo(const VkInstanceCreateInfo* ci) {
+static VkLayerInstanceCreateInfo* FindInstanceLinkInfo(const VkInstanceCreateInfo* ci)
+{
     auto* p = static_cast<const VkBaseInStructure*>(ci->pNext);
-    while (p) {
-        if (p->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO) {
+    while (p)
+    {
+        if (p->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO)
+        {
             auto* li = reinterpret_cast<VkLayerInstanceCreateInfo*>(const_cast<VkBaseInStructure*>(p));
-            if (li->function == VK_LAYER_LINK_INFO) return li;
+            if (li->function == VK_LAYER_LINK_INFO)
+                return li;
         }
         p = p->pNext;
     }
     return nullptr;
 }
 
-static VkLayerDeviceCreateInfo* FindDeviceLinkInfo(const VkDeviceCreateInfo* ci) {
+static VkLayerDeviceCreateInfo* FindDeviceLinkInfo(const VkDeviceCreateInfo* ci)
+{
     auto* p = static_cast<const VkBaseInStructure*>(ci->pNext);
-    while (p) {
-        if (p->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO) {
+    while (p)
+    {
+        if (p->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO)
+        {
             auto* li = reinterpret_cast<VkLayerDeviceCreateInfo*>(const_cast<VkBaseInStructure*>(p));
-            if (li->function == VK_LAYER_LINK_INFO) return li;
+            if (li->function == VK_LAYER_LINK_INFO)
+                return li;
         }
         p = p->pNext;
     }
@@ -402,16 +525,19 @@ static const VkLayerProperties kLayerProperties = {
 // Instance
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo* pCreateInfo,
-                                                     const VkAllocationCallbacks* pAllocator,
-                                                     VkInstance* pInstance) {
+    const VkAllocationCallbacks* pAllocator,
+    VkInstance* pInstance)
+{
     EnsureStarted();
 
     VkLayerInstanceCreateInfo* link = FindInstanceLinkInfo(pCreateInfo);
-    if (!link) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!link)
+        return VK_ERROR_INITIALIZATION_FAILED;
 
     PFN_vkGetInstanceProcAddr nextGipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
     auto nextCreateInstance = (PFN_vkCreateInstance)nextGipa(VK_NULL_HANDLE, "vkCreateInstance");
-    if (!nextCreateInstance) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!nextCreateInstance)
+        return VK_ERROR_INITIALIZATION_FAILED;
 
     // Advance the chain for the next layer.
     link->u.pLayerInfo = link->u.pLayerInfo->pNext;
@@ -428,33 +554,40 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo
     const bool oldValidation = OldValidationLayerEnabled(nextGipa, *pCreateInfo);
 
     VkResult res = nextCreateInstance(&createInfo, pAllocator, pInstance);
-    if (res == VK_ERROR_EXTENSION_NOT_PRESENT && surfaceCaps2) {
+    if (res == VK_ERROR_EXTENSION_NOT_PRESENT && surfaceCaps2)
+    {
         surfaceCaps2 = false;
         res = nextCreateInstance(&withoutSurfaceCaps2, pAllocator, pInstance);
     }
-    if (res != VK_SUCCESS) return res;
+    if (res != VK_SUCCESS)
+        return res;
 
     auto data = std::make_unique<InstanceData>();
     data->instance = *pInstance;
     data->nextGetInstanceProcAddr = nextGipa;
     data->surfaceCapabilities2 = surfaceCaps2 || (pCreateInfo->ppEnabledExtensionNames && [&] {
         for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
-            if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) == 0) return true;
+            if (strcmp(pCreateInfo->ppEnabledExtensionNames[i], VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME) == 0)
+                return true;
         return false;
     }());
     data->oldValidationLayer = oldValidation;
-    if (pCreateInfo->pApplicationInfo) {
+    if (pCreateInfo->pApplicationInfo)
+    {
         const VkApplicationInfo& ai = *pCreateInfo->pApplicationInfo;
         data->apiVersion = ai.apiVersion ? ai.apiVersion : VK_API_VERSION_1_0;
-        if (ai.pApplicationName) data->appName = ai.pApplicationName;
-        if (ai.pEngineName) data->engineName = ai.pEngineName;
+        if (ai.pApplicationName)
+            data->appName = ai.pApplicationName;
+        if (ai.pEngineName)
+            data->engineName = ai.pEngineName;
     }
     for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
         data->enabledExtensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
     InitInstanceDispatch(*pInstance, nextGipa, data->dispatch);
 
     // The name the attach list shows for this application (transport.h).
-    if (!data->appName.empty()) Transport::Get().SetTargetName(data->appName);
+    if (!data->appName.empty())
+        Transport::Get().SetTargetName(data->appName);
 
     Log("vkCreateInstance app='%s' engine='%s' api=%u.%u.%u", data->appName.c_str(),
         data->engineName.c_str(), VK_API_VERSION_MAJOR(data->apiVersion),
@@ -468,15 +601,18 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateInstance(const VkInstanceCreateInfo
     ArgsToJson_vkCreateInstance(w, pCreateInfo, pAllocator, pInstance);
     t.OnCreate(HT_VkInstance, (uint64_t)(uintptr_t)*pInstance, HT_Count, 0, VkCmdId::CreateInstance, 0, w.str());
     t.EndArgs();
-    if (debugUtils) ValidationLog::Get().CreateMessenger(inst);
+    if (debugUtils)
+        ValidationLog::Get().CreateMessenger(inst);
     return VK_SUCCESS;
 }
 
 VKAPI_ATTR void VKAPI_CALL layer_vkDestroyInstance(VkInstance instance,
-                                                  const VkAllocationCallbacks* pAllocator) {
+    const VkAllocationCallbacks* pAllocator)
+{
     void* key = DispatchKey(instance);
     InstanceData* data = FindInstance(key);
-    if (!data) return;
+    if (!data)
+        return;
     Log("vkDestroyInstance");
     ValidationLog::Get().DestroyMessenger(data);
     Tracker::Get().SendLeakReport(HT_VkInstance, (uint64_t)(uintptr_t)instance);
@@ -487,9 +623,12 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroyInstance(VkInstance instance,
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateInstanceLayerProperties(uint32_t* pPropertyCount,
-                                                                       VkLayerProperties* pProperties) {
-    if (pProperties) {
-        if (*pPropertyCount < 1) return VK_INCOMPLETE;
+    VkLayerProperties* pProperties)
+{
+    if (pProperties)
+    {
+        if (*pPropertyCount < 1)
+            return VK_INCOMPLETE;
         pProperties[0] = kLayerProperties;
     }
     *pPropertyCount = 1;
@@ -497,29 +636,35 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateInstanceLayerProperties(uint32_t
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateInstanceExtensionProperties(
-    const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties) {
-    if (pLayerName && strcmp(pLayerName, VKINSP_LAYER_NAME) == 0) {
+    const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
+{
+    if (pLayerName && strcmp(pLayerName, VKINSP_LAYER_NAME) == 0)
+    {
         *pPropertyCount = 0;
         return VK_SUCCESS;
     }
     return VK_ERROR_LAYER_NOT_PRESENT;
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateInstanceVersion(uint32_t* pApiVersion) {
+VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateInstanceVersion(uint32_t* pApiVersion)
+{
     *pApiVersion = VK_HEADER_VERSION_COMPLETE;
     return VK_SUCCESS;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice,
-                                                                     uint32_t* pPropertyCount,
-                                                                     VkLayerProperties* pProperties) {
+    uint32_t* pPropertyCount,
+    VkLayerProperties* pProperties)
+{
     return layer_vkEnumerateInstanceLayerProperties(pPropertyCount, pProperties);
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateDeviceExtensionProperties(
     VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount,
-    VkExtensionProperties* pProperties) {
-    if (pLayerName && strcmp(pLayerName, VKINSP_LAYER_NAME) == 0) {
+    VkExtensionProperties* pProperties)
+{
+    if (pLayerName && strcmp(pLayerName, VKINSP_LAYER_NAME) == 0)
+    {
         *pPropertyCount = 0;
         return VK_SUCCESS;
     }
@@ -531,17 +676,20 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkEnumerateDeviceExtensionProperties(
 // Device
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDevice,
-                                                   const VkDeviceCreateInfo* pCreateInfo,
-                                                   const VkAllocationCallbacks* pAllocator,
-                                                   VkDevice* pDevice) {
+    const VkDeviceCreateInfo* pCreateInfo,
+    const VkAllocationCallbacks* pAllocator,
+    VkDevice* pDevice)
+{
     InstanceData* instance = GetInstanceData(physicalDevice);
     VkLayerDeviceCreateInfo* link = FindDeviceLinkInfo(pCreateInfo);
-    if (!instance || !link) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!instance || !link)
+        return VK_ERROR_INITIALIZATION_FAILED;
 
     PFN_vkGetInstanceProcAddr nextGipa = link->u.pLayerInfo->pfnNextGetInstanceProcAddr;
     PFN_vkGetDeviceProcAddr nextGdpa = link->u.pLayerInfo->pfnNextGetDeviceProcAddr;
     auto nextCreateDevice = (PFN_vkCreateDevice)nextGipa(instance->instance, "vkCreateDevice");
-    if (!nextCreateDevice) return VK_ERROR_INITIALIZATION_FAILED;
+    if (!nextCreateDevice)
+        return VK_ERROR_INITIALIZATION_FAILED;
 
     link->u.pLayerInfo = link->u.pLayerInfo->pNext;
 
@@ -572,7 +720,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     // (vkinspDeviceCount).
     g_deviceCount.fetch_add(1, std::memory_order_relaxed);
     VkResult res = nextCreateDevice(physicalDevice, &createInfo, pAllocator, pDevice);
-    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added || breadcrumbs.added || shaderStats.added || cpuTimeline.added)) {
+    if (res != VK_SUCCESS && (refresh.presentTiming || refresh.displayTiming || dynamicRendering.added || pipelineStats.added || breadcrumbs.added || shaderStats.added || cpuTimeline.added))
+    {
         // The driver refused the additions: create the device as the application asked.
         Log("vkCreateDevice with the layer's extensions failed (%d); retrying without", (int)res);
         refresh = RefreshDeviceSetup{};
@@ -583,7 +732,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
         cpuTimeline = CpuTimelineSetup{};
         res = nextCreateDevice(physicalDevice, pCreateInfo, pAllocator, pDevice);
     }
-    if (res != VK_SUCCESS) {
+    if (res != VK_SUCCESS)
+    {
         g_deviceCount.fetch_sub(1, std::memory_order_relaxed);
         return res;
     }
@@ -604,8 +754,10 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     {
         // VKINSP_FRAME_BOUNDARY=wait|submit: skip the detection (a present still wins).
         const std::string boundary = ConfigValue("VKINSP_FRAME_BOUNDARY");
-        if (boundary == "wait") data->frameBoundary = DeviceData::FrameBoundary::Wait;
-        else if (boundary == "submit") data->frameBoundary = DeviceData::FrameBoundary::Submit;
+        if (boundary == "wait")
+            data->frameBoundary = DeviceData::FrameBoundary::Wait;
+        else if (boundary == "submit")
+            data->frameBoundary = DeviceData::FrameBoundary::Submit;
     }
     for (uint32_t i = 0; i < pCreateInfo->enabledExtensionCount; ++i)
         data->enabledExtensions.push_back(pCreateInfo->ppEnabledExtensionNames[i]);
@@ -626,20 +778,25 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkCreateDevice(VkPhysicalDevice physicalDev
     Tracker& t = Tracker::Get();
     JsonWriter& w = t.BeginArgs();
     w.BeginObject();
-    w.Key("physicalDevice"); w.Handle(HT_VkPhysicalDevice, "VkPhysicalDevice", (uint64_t)(uintptr_t)physicalDevice);
-    w.Key("pCreateInfo"); ToJson(w, *pCreateInfo);
-    w.Key("properties"); ToJson(w, dev->properties);
+    w.Key("physicalDevice");
+    w.Handle(HT_VkPhysicalDevice, "VkPhysicalDevice", (uint64_t)(uintptr_t)physicalDevice);
+    w.Key("pCreateInfo");
+    ToJson(w, *pCreateInfo);
+    w.Key("properties");
+    ToJson(w, dev->properties);
     w.EndObject();
     t.OnCreate(HT_VkDevice, (uint64_t)(uintptr_t)*pDevice, HT_VkPhysicalDevice, (uint64_t)(uintptr_t)physicalDevice,
-               VkCmdId::CreateDevice, 0, w.str());
+        VkCmdId::CreateDevice, 0, w.str());
     t.EndArgs();
     return VK_SUCCESS;
 }
 
-VKAPI_ATTR void VKAPI_CALL layer_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator) {
+VKAPI_ATTR void VKAPI_CALL layer_vkDestroyDevice(VkDevice device, const VkAllocationCallbacks* pAllocator)
+{
     void* key = DispatchKey(device);
     DeviceData* data = FindDevice(key);
-    if (!data) return;
+    if (!data)
+        return;
     Log("vkDestroyDevice frames=%llu", (unsigned long long)data->frameIndex);
     // A capture's query pools and staging on the device go before the device does.
     CaptureManager::Get().OnDestroyDevice(data);
@@ -657,28 +814,34 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroyDevice(VkDevice device, const VkAlloca
 // Object names
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkSetDebugUtilsObjectNameEXT(VkDevice device,
-                                                                 const VkDebugUtilsObjectNameInfoEXT* pNameInfo) {
+    const VkDebugUtilsObjectNameInfoEXT* pNameInfo)
+{
     DeviceData* data = GetDeviceData(device);
     VkResult res = VK_SUCCESS;
     if (data->dispatch.SetDebugUtilsObjectNameEXT)
         res = data->dispatch.SetDebugUtilsObjectNameEXT(device, pNameInfo);
-    if (pNameInfo) {
+    if (pNameInfo)
+    {
         HandleType ht = HandleTypeFromObjectType(pNameInfo->objectType);
-        if (ht != HT_Count) Tracker::Get().SetLabel(ht, pNameInfo->objectHandle, pNameInfo->pObjectName);
+        if (ht != HT_Count)
+            Tracker::Get().SetLabel(ht, pNameInfo->objectHandle, pNameInfo->pObjectName);
     }
     return res;
 }
 
 VKAPI_ATTR VkResult VKAPI_CALL layer_vkDebugMarkerSetObjectNameEXT(VkDevice device,
-                                                                  const VkDebugMarkerObjectNameInfoEXT* pNameInfo) {
+    const VkDebugMarkerObjectNameInfoEXT* pNameInfo)
+{
     DeviceData* data = GetDeviceData(device);
     VkResult res = VK_SUCCESS;
     if (data->dispatch.DebugMarkerSetObjectNameEXT)
         res = data->dispatch.DebugMarkerSetObjectNameEXT(device, pNameInfo);
-    if (pNameInfo) {
+    if (pNameInfo)
+    {
         // VkDebugReportObjectTypeEXT values match VkObjectType for all core object types.
         HandleType ht = HandleTypeFromObjectType((VkObjectType)pNameInfo->objectType);
-        if (ht != HT_Count) Tracker::Get().SetLabel(ht, pNameInfo->object, pNameInfo->pObjectName);
+        if (ht != HT_Count)
+            Tracker::Get().SetLabel(ht, pNameInfo->object, pNameInfo->pObjectName);
     }
     return res;
 }
@@ -695,41 +858,54 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkDebugMarkerSetObjectNameEXT(VkDevice devi
 // by the median distance to the nearest multiple (hitches and start-up do not count); rates are
 // tried slowest first and a faster one must fit clearly better, so a 30 fps application on a
 // 60 Hz display reads as 30 Hz: the intervals cannot tell the two apart. 0 when nothing fits.
-static double EstimateRefreshMs(const std::vector<double>& intervals) {
+static double EstimateRefreshMs(const std::vector<double>& intervals)
+{
     static const double kRates[] = {24, 30, 48, 50, 60, 72, 75, 90, 100, 120, 144, 165, 180, 240, 360};
     const size_t n = intervals.size();
     double sum = 0;
-    for (double ms : intervals) sum += ms;
+    for (double ms : intervals)
+        sum += ms;
     // Start-up allowance: the driver lets a few presents through before blocking (up to the
     // swapchain length); those consumed no refresh, so 8 intervals are left out of the bound.
     constexpr size_t kQueued = 8;
     std::vector<double> errors;
     errors.reserve(n);
     double best = 0, bestError = 0;
-    for (double hz : kRates) {
+    for (double hz : kRates)
+    {
         const double period = 1000.0 / hz;
-        if (n <= kQueued || sum < period * (double)(n - kQueued) * 0.97) continue;
+        if (n <= kQueued || sum < period * (double)(n - kQueued) * 0.97)
+            continue;
         errors.clear();
-        for (double ms : intervals) {
-            if (ms < 1.0) continue;   // queued present: no refresh between it and the previous one
+        for (double ms : intervals)
+        {
+            if (ms < 1.0)
+                continue;   // queued present: no refresh between it and the previous one
             const double k = std::max(1.0, std::round(ms / period));
             errors.push_back(std::fabs(ms - k * period));
         }
-        if (errors.size() < 8) continue;
+        if (errors.size() < 8)
+            continue;
         std::nth_element(errors.begin(), errors.begin() + errors.size() / 2, errors.end());
         const double error = errors[errors.size() / 2];
         // Frames ended by a fence wait or the runtime's pacing jitter by a millisecond where a
         // present's vblank is exact, hence the wide tolerance; distinguishing 72 from 75 Hz is
         // left to the best-fit rule.
-        if (error > std::max(period * 0.08, 0.25)) continue;
-        if (best == 0 || error + 0.1 < bestError) { best = period; bestError = error; }
+        if (error > std::max(period * 0.08, 0.25))
+            continue;
+        if (best == 0 || error + 0.1 < bestError)
+        {
+            best = period;
+            bestError = error;
+        }
     }
     return best;
 }
 
 // The end of a frame: the counters, the capture, the validation frame, the frame timing report.
 // From a present, or from the substitutes below when the application never presents.
-static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pPresentInfo, VkResult res) {
+static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pPresentInfo, VkResult res)
+{
     data->frameIndex++;
     CaptureManager::Get().OnFrameEnd(data, queue, pPresentInfo, res);
     ValidationLog::Get().SetFrame(data->frameIndex);
@@ -738,16 +914,20 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
     // interval (the UI's frame time meter plots the average and the longest).
     using clock = std::chrono::steady_clock;
     auto now = clock::now();
-    if (pPresentInfo && pPresentInfo->swapchainCount && pPresentInfo->pSwapchains) {
+    if (pPresentInfo && pPresentInfo->swapchainCount && pPresentInfo->pSwapchains)
+    {
         SwapchainInfo sc;
-        if (ResourceRegistry::Get().GetSwapchain(pPresentInfo->pSwapchains[0], sc)) {
+        if (ResourceRegistry::Get().GetSwapchain(pPresentInfo->pSwapchains[0], sc))
+        {
             data->presentMode = sc.presentMode;
             // The display can change (a window moved to another monitor, a mode switch):
             // re-query the swapchain's refresh period every ~2 s.
-            if (data->frameIndex % 120 == 0) {
+            if (data->frameIndex % 120 == 0)
+            {
                 RefreshSource source = RefreshSource::Unknown;
                 double ms = QueryRefreshMs(data, pPresentInfo->pSwapchains[0], source);
-                if (ms > 0 && (ms != sc.refreshMs || (int)source != sc.refreshSource)) {
+                if (ms > 0 && (ms != sc.refreshMs || (int)source != sc.refreshSource))
+                {
                     sc.refreshMs = ms;
                     sc.refreshSource = (int)source;
                     ResourceRegistry::Get().AddSwapchain(pPresentInfo->pSwapchains[0], sc);
@@ -757,14 +937,20 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             data->refreshSource = sc.refreshSource;
         }
     }
-    if (data->lastPresent.time_since_epoch().count() != 0) {
+    if (data->lastPresent.time_since_epoch().count() != 0)
+    {
         double ms = std::chrono::duration<double, std::milli>(now - data->lastPresent).count();
-        if (data->frameTimeCount == 0) {
+        if (data->frameTimeCount == 0)
+        {
             data->frameTimeMinMs = ms;
             data->frameTimeMaxMs = ms;
-        } else {
-            if (ms < data->frameTimeMinMs) data->frameTimeMinMs = ms;
-            if (ms > data->frameTimeMaxMs) data->frameTimeMaxMs = ms;
+        }
+        else
+        {
+            if (ms < data->frameTimeMinMs)
+                data->frameTimeMinMs = ms;
+            if (ms > data->frameTimeMaxMs)
+                data->frameTimeMaxMs = ms;
         }
         data->frameTimeAccumMs += ms;
         data->frameTimeCount++;
@@ -774,40 +960,67 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
 
         // Refresh-rate estimate from the intervals of the last ~240 frames (see EstimateRefreshMs).
         constexpr size_t kWindow = 240;
-        if (data->recentIntervalsMs.size() < kWindow) data->recentIntervalsMs.push_back(ms);
-        else data->recentIntervalsMs[data->recentIntervalNext] = ms;
+        if (data->recentIntervalsMs.size() < kWindow)
+            data->recentIntervalsMs.push_back(ms);
+        else
+            data->recentIntervalsMs[data->recentIntervalNext] = ms;
         data->recentIntervalNext = (data->recentIntervalNext + 1) % kWindow;
         const bool vsync = data->presentMode == VK_PRESENT_MODE_FIFO_KHR || data->presentMode == VK_PRESENT_MODE_FIFO_RELAXED_KHR ||
-                           data->presentMode == VK_PRESENT_MODE_FIFO_LATEST_READY_EXT;
+            data->presentMode == VK_PRESENT_MODE_FIFO_LATEST_READY_EXT;
         // The display's own refresh period when a source reports one; the estimate otherwise.
-        if (vsync && data->displayRefreshMs > 0) data->refreshMs = data->displayRefreshMs;
-        else if (vsync && data->recentIntervalsMs.size() >= 32) { data->refreshMs = EstimateRefreshMs(data->recentIntervalsMs); data->refreshSource = (int)RefreshSource::Estimate; }
-        else if (!vsync) data->refreshMs = 0;
+        if (vsync && data->displayRefreshMs > 0)
+            data->refreshMs = data->displayRefreshMs;
+        else if (vsync && data->recentIntervalsMs.size() >= 32)
+        {
+            data->refreshMs = EstimateRefreshMs(data->recentIntervalsMs);
+            data->refreshSource = (int)RefreshSource::Estimate;
+        }
+        else if (!vsync)
+            data->refreshMs = 0;
         // Logged when the rate changes (by more than half a percent: a timing extension's
         // measured period wanders slightly) or its source does.
-        if (std::fabs(data->refreshMs - data->loggedRefreshMs) > data->loggedRefreshMs * 0.005 || (data->refreshMs > 0 && data->refreshSource != data->loggedRefreshSource)) {
+        if (std::fabs(data->refreshMs - data->loggedRefreshMs) > data->loggedRefreshMs * 0.005 || (data->refreshMs > 0 && data->refreshSource != data->loggedRefreshSource))
+        {
             data->loggedRefreshMs = data->refreshMs;
             data->loggedRefreshSource = data->refreshSource;
-            if (data->refreshMs > 0) Log("refresh rate: %.4g Hz (%.3f ms, %s)", 1000.0 / data->refreshMs, data->refreshMs, RefreshSourceName((RefreshSource)data->refreshSource));
-            else Log("refresh rate: unknown");
+            if (data->refreshMs > 0)
+                Log("refresh rate: %.4g Hz (%.3f ms, %s)", 1000.0 / data->refreshMs, data->refreshMs, RefreshSourceName((RefreshSource)data->refreshSource));
+            else
+                Log("refresh rate: unknown");
         }
         double sinceReport = std::chrono::duration<double, std::milli>(now - data->lastReport).count();
-        if (sinceReport >= 100.0 && Transport::Get().Connected()) {
+        if (sinceReport >= 100.0 && Transport::Get().Connected())
+        {
             JsonWriter w;
             w.BeginObject();
-            w.Key("action"); w.String("FrameStats");
-            w.Key("frame"); w.Uint(data->frameIndex);
-            w.Key("frameTimeMs"); w.Double(data->frameTimeAccumMs / data->frameTimeCount);
-            w.Key("minMs"); w.Double(data->frameTimeMinMs);
-            w.Key("maxMs"); w.Double(data->frameTimeMaxMs);
-            w.Key("frames"); w.Uint(data->frameTimeCount);
+            w.Key("action");
+            w.String("FrameStats");
+            w.Key("frame");
+            w.Uint(data->frameIndex);
+            w.Key("frameTimeMs");
+            w.Double(data->frameTimeAccumMs / data->frameTimeCount);
+            w.Key("minMs");
+            w.Double(data->frameTimeMinMs);
+            w.Key("maxMs");
+            w.Double(data->frameTimeMaxMs);
+            w.Key("frames");
+            w.Uint(data->frameTimeCount);
             uint64_t submitNanos = data->submitNanos.exchange(0, std::memory_order_relaxed);
-            w.Key("submitMs"); w.Double((double)submitNanos / 1e6 / data->frameTimeCount);
-            w.Key("refreshMs"); w.Double(data->refreshMs);
-            w.Key("refreshSource"); w.String(data->refreshMs > 0 ? RefreshSourceName((RefreshSource)data->refreshSource) : "");
-            w.Key("displayRefreshMs"); w.Double(data->displayRefreshMs);
-            if (data->presentSeen.load(std::memory_order_relaxed)) { w.Key("presentMode"); w.Enum(ToString_VkPresentModeKHR(data->presentMode), (int64_t)data->presentMode); }
-            w.Key("frameBoundary"); w.String(FrameBoundaryName(data->frameBoundary));
+            w.Key("submitMs");
+            w.Double((double)submitNanos / 1e6 / data->frameTimeCount);
+            w.Key("refreshMs");
+            w.Double(data->refreshMs);
+            w.Key("refreshSource");
+            w.String(data->refreshMs > 0 ? RefreshSourceName((RefreshSource)data->refreshSource) : "");
+            w.Key("displayRefreshMs");
+            w.Double(data->displayRefreshMs);
+            if (data->presentSeen.load(std::memory_order_relaxed))
+            {
+                w.Key("presentMode");
+                w.Enum(ToString_VkPresentModeKHR(data->presentMode), (int64_t)data->presentMode);
+            }
+            w.Key("frameBoundary");
+            w.String(FrameBoundaryName(data->frameBoundary));
             // Dropped frames: refreshes that showed no new frame (with vsync the display consumes
             // at most one present per refresh). The running deficit of refreshes over frames is
             // signed: an interval bounded by a queued present is one refresh short and the next
@@ -819,27 +1032,42 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             uint32_t measuredSince = 0;
             double presentLatencyMs = 0;
             const bool measured = PresentTiming::Get().Measured(data, measuredSince, droppedTotal, presentLatencyMs);
-            if (measured) {
+            if (measured)
+            {
                 // The display's own count (present_timing.h) rather than the estimate below.
                 dropped = measuredSince;
-            } else if (data->refreshMs > 0) {
-                if (data->refreshMs != data->deficitRefreshMs) {
+            }
+            else if (data->refreshMs > 0)
+            {
+                if (data->refreshMs != data->deficitRefreshMs)
+                {
                     data->deficitRefreshMs = data->refreshMs;
                     data->refreshDeficit = 0;
                     data->droppedTotal = 0;
                 }
                 data->refreshDeficit += std::lround(sinceReport / data->refreshMs) - (long)data->frameTimeCount;
-                if (data->refreshDeficit > data->droppedTotal) {
+                if (data->refreshDeficit > data->droppedTotal)
+                {
                     dropped = (uint32_t)(data->refreshDeficit - data->droppedTotal);
                     data->droppedTotal = data->refreshDeficit;
                 }
                 droppedTotal = (uint64_t)std::max(0L, data->droppedTotal);
             }
-            w.Key("dropped"); w.Uint(dropped);
-            w.Key("droppedTotal"); w.Uint(droppedTotal);
-            if (measured) { w.Key("droppedMeasured"); w.Boolean(true); }
+            w.Key("dropped");
+            w.Uint(dropped);
+            w.Key("droppedTotal");
+            w.Uint(droppedTotal);
+            if (measured)
+            {
+                w.Key("droppedMeasured");
+                w.Boolean(true);
+            }
             // From the present call to the first pixel out, the median of the interval's frames.
-            if (presentLatencyMs > 0) { w.Key("presentLatencyMs"); w.Double(presentLatencyMs); }
+            if (presentLatencyMs > 0)
+            {
+                w.Key("presentLatencyMs");
+                w.Double(presentLatencyMs);
+            }
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
             data->frameTimeAccumMs = 0;
@@ -857,14 +1085,18 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             SendMemoryEvents(data);
             ValidationLog::Get().Flush();
         }
-    } else {
+    }
+    else
+    {
         data->lastReport = now;
     }
     data->lastPresent = now;
 }
 
-const char* FrameBoundaryName(DeviceData::FrameBoundary b) {
-    switch (b) {
+const char* FrameBoundaryName(DeviceData::FrameBoundary b)
+{
+    switch (b)
+    {
         case DeviceData::FrameBoundary::Present: return "present";
         case DeviceData::FrameBoundary::Wait: return "wait";
         case DeviceData::FrameBoundary::Submit: return "submit";
@@ -874,35 +1106,46 @@ const char* FrameBoundaryName(DeviceData::FrameBoundary b) {
 
 // A frame that ends without a present: the per-frame work a present would do (live image
 // read-backs, shader edits), then the frame end itself.
-static void FrameWithoutPresent(DeviceData* data, VkQueue queue) {
+static void FrameWithoutPresent(DeviceData* data, VkQueue queue)
+{
     data->submitsSinceFrame.store(0, std::memory_order_relaxed);
-    if (queue) {
+    if (queue)
+    {
         ImageReadback::Get().OnPresent(data, queue);
         ShaderEditor::Get().OnPresent(data);
     }
     EndFrame(data, queue, nullptr, VK_SUCCESS);
 }
 
-void OnSubmitForFrames(DeviceData* data, VkQueue queue) {
-    if (!data) return;
+void OnSubmitForFrames(DeviceData* data, VkQueue queue)
+{
+    if (!data)
+        return;
     data->lastSubmitQueue.store(queue, std::memory_order_relaxed);
     data->submitsSinceFrame.fetch_add(1, std::memory_order_relaxed);
-    if (data->presentSeen.load(std::memory_order_relaxed)) return;
+    if (data->presentSeen.load(std::memory_order_relaxed))
+        return;
     const uint32_t n = data->submitsWithoutPresent.fetch_add(1, std::memory_order_relaxed) + 1;
-    if (data->frameBoundary == DeviceData::FrameBoundary::Auto) {
+    if (data->frameBoundary == DeviceData::FrameBoundary::Auto)
+    {
         // Applications with a swapchain present within a few submissions; sixty without one
         // means there is no swapchain to present to.
-        if (n < 60) return;
+        if (n < 60)
+            return;
         data->frameBoundary = data->waitsWithoutPresent.load(std::memory_order_relaxed) > 0
-            ? DeviceData::FrameBoundary::Wait : DeviceData::FrameBoundary::Submit;
+            ? DeviceData::FrameBoundary::Wait
+            : DeviceData::FrameBoundary::Submit;
         Log("no present after %u submissions: frames end at %s", n,
             data->frameBoundary == DeviceData::FrameBoundary::Wait ? "the application's vkWaitForFences" : "every submission");
     }
-    if (data->frameBoundary == DeviceData::FrameBoundary::Submit) FrameWithoutPresent(data, queue);
+    if (data->frameBoundary == DeviceData::FrameBoundary::Submit)
+        FrameWithoutPresent(data, queue);
 }
 
-void OnWaitForFrames(DeviceData* data) {
-    if (!data || data->presentSeen.load(std::memory_order_relaxed)) return;
+void OnWaitForFrames(DeviceData* data)
+{
+    if (!data || data->presentSeen.load(std::memory_order_relaxed))
+        return;
     data->waitsWithoutPresent.fetch_add(1, std::memory_order_relaxed);
     if (data->frameBoundary == DeviceData::FrameBoundary::Wait && data->submitsSinceFrame.load(std::memory_order_relaxed) > 0)
         FrameWithoutPresent(data, data->lastSubmitQueue.load(std::memory_order_relaxed));
@@ -912,7 +1155,8 @@ void OnWaitForFrames(DeviceData* data) {
 // them have to be destroyed first. Hand-written for that one reason (MANUAL_COMMANDS in
 // tools/vkgen/dispatch.py); the tracker call below is what the generated forwarder did.
 VKAPI_ATTR void VKAPI_CALL layer_vkDestroySwapchainKHR(VkDevice device, VkSwapchainKHR swapchain,
-                                                      const VkAllocationCallbacks* pAllocator) {
+    const VkAllocationCallbacks* pAllocator)
+{
     DeviceData* data = GetDeviceData(device);
     Hud::Get().OnDestroySwapchain(data, swapchain);
     PresentTiming::Get().OnDestroySwapchain(swapchain);
@@ -920,7 +1164,8 @@ VKAPI_ATTR void VKAPI_CALL layer_vkDestroySwapchainKHR(VkDevice device, VkSwapch
     data->dispatch.DestroySwapchainKHR(device, swapchain, pAllocator);
 }
 
-VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo) {
+VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPresentInfoKHR* pPresentInfo)
+{
     DeviceData* data = GetDeviceData(queue);
     // Live image readbacks go on this queue before the present, while the frame's images are in
     // their tracked layouts and the swapchain image is still owned by the application.
@@ -931,7 +1176,8 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     // until the present has been made.
     VkPresentInfoKHR hudPresent{};
     std::vector<VkSemaphore> hudWaits;
-    if (Hud::Get().Draw(data, queue, pPresentInfo, hudPresent, hudWaits)) pPresentInfo = &hudPresent;
+    if (Hud::Get().Draw(data, queue, pPresentInfo, hudPresent, hudWaits))
+        pPresentInfo = &hudPresent;
     // Dropped frames measured by the display (present_timing.h): the earlier presents' results
     // are read and this one asks for its own. A results queue that turns out full refuses the
     // present, which is then made again as the application wrote it.
@@ -940,13 +1186,15 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
     // Hand-written, so the generated CPU timing does not reach it (see cpu_timeline.h).
     const uint64_t cpuStart = CpuEventBegin();
     VkResult res = data->dispatch.QueuePresentKHR(queue, timed);
-    if (timed != pPresentInfo && res == VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT) {
+    if (timed != pPresentInfo && res == VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT)
+    {
         PresentTiming::Get().AfterPresent(timed, res);
         res = data->dispatch.QueuePresentKHR(queue, pPresentInfo);
     }
     CpuEventEnd(data, cpuStart, CpuCategory::Present);
     // This entry point is hand-written, so the generated device-lost check does not reach it.
-    if (res == VK_ERROR_DEVICE_LOST) OnDeviceLost(data, "vkQueuePresentKHR");
+    if (res == VK_ERROR_DEVICE_LOST)
+        OnDeviceLost(data, "vkQueuePresentKHR");
     // A present always ends the frame; it also settles the frame boundary for good.
     data->presentSeen.store(true, std::memory_order_relaxed);
     data->frameBoundary = DeviceData::FrameBoundary::Present;
@@ -962,13 +1210,16 @@ VKAPI_ATTR VkResult VKAPI_CALL layer_vkQueuePresentKHR(VkQueue queue, const VkPr
 // ---------------------------------------------------------------------------------------------
 // GetProcAddr
 
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL layer_vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL layer_vkGetDeviceProcAddr(VkDevice device, const char* pName)
+{
     DeviceData* data = GetDeviceData(device);
-    if (!data) return nullptr;
+    if (!data)
+        return nullptr;
     int level = 0;
     PFN_vkVoidFunction ours = LookupEntryPoint(pName, &level);
     PFN_vkVoidFunction next = data->nextGetDeviceProcAddr(device, pName);
-    if (ours && level == 2) {
+    if (ours && level == 2)
+    {
         // Only claim device functions the rest of the chain actually implements, so that
         // unsupported extensions still report as unsupported to the application.
         return next ? ours : nullptr;
@@ -976,19 +1227,26 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL layer_vkGetDeviceProcAddr(VkDevice devi
     return next;
 }
 
-VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL layer_vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL layer_vkGetInstanceProcAddr(VkInstance instance, const char* pName)
+{
     int level = 0;
     PFN_vkVoidFunction ours = LookupEntryPoint(pName, &level);
 
-    if (ours && level == 0) return ours;  // global functions
-    if (strcmp(pName, "vkGetInstanceProcAddr") == 0) return (PFN_vkVoidFunction)layer_vkGetInstanceProcAddr;
-    if (strcmp(pName, "vkGetDeviceProcAddr") == 0) return (PFN_vkVoidFunction)layer_vkGetDeviceProcAddr;
-    if (instance == VK_NULL_HANDLE) return nullptr;
+    if (ours && level == 0)
+        return ours;  // global functions
+    if (strcmp(pName, "vkGetInstanceProcAddr") == 0)
+        return (PFN_vkVoidFunction)layer_vkGetInstanceProcAddr;
+    if (strcmp(pName, "vkGetDeviceProcAddr") == 0)
+        return (PFN_vkVoidFunction)layer_vkGetDeviceProcAddr;
+    if (instance == VK_NULL_HANDLE)
+        return nullptr;
 
     InstanceData* data = GetInstanceData(instance);
-    if (!data) return nullptr;
+    if (!data)
+        return nullptr;
     PFN_vkVoidFunction next = data->nextGetInstanceProcAddr(instance, pName);
-    if (ours) return next ? ours : nullptr;
+    if (ours)
+        return next ? ours : nullptr;
     return next;
 }
 
@@ -998,10 +1256,12 @@ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL layer_vkGetInstanceProcAddr(VkInstance 
 // Exports
 
 VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
-vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct) {
+vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct)
+{
     if (!pVersionStruct || pVersionStruct->sType != LAYER_NEGOTIATE_INTERFACE_STRUCT)
         return VK_ERROR_INITIALIZATION_FAILED;
-    if (pVersionStruct->loaderLayerInterfaceVersion < 2) return VK_ERROR_INITIALIZATION_FAILED;
+    if (pVersionStruct->loaderLayerInterfaceVersion < 2)
+        return VK_ERROR_INITIALIZATION_FAILED;
     pVersionStruct->loaderLayerInterfaceVersion = 2;
     pVersionStruct->pfnGetInstanceProcAddr = vkinsp::layer_vkGetInstanceProcAddr;
     pVersionStruct->pfnGetDeviceProcAddr = vkinsp::layer_vkGetDeviceProcAddr;
@@ -1009,11 +1269,13 @@ vkNegotiateLoaderLayerInterfaceVersion(VkNegotiateLayerInterface* pVersionStruct
     return VK_SUCCESS;
 }
 
-VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName) {
+VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetInstanceProcAddr(VkInstance instance, const char* pName)
+{
     return vkinsp::layer_vkGetInstanceProcAddr(instance, pName);
 }
 
-VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName) {
+VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDevice device, const char* pName)
+{
     return vkinsp::layer_vkGetDeviceProcAddr(device, pName);
 }
 
@@ -1023,35 +1285,48 @@ VKINSP_EXPORT VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL vkGetDeviceProcAddr(VkDev
  * Vulkan driver that presents through DXGI makes a D3D12 device of its own, which is not the
  * application's to inspect (src/d3d12/src/hooks_device.cpp, Hook_D3D12CreateDevice).
  */
-VKINSP_EXPORT uint32_t vkinspDeviceCount(void) {
+VKINSP_EXPORT uint32_t vkinspDeviceCount(void)
+{
     return vkinsp::DeviceCount();
 }
 
 // The application's side of a capture (include/gpu_inspector.h), which finds these by name. The
 // request goes to the inspector rather than straight to the capture manager: the capture bar's
 // options are the inspector's to choose, and a tab has to be waiting for what comes back.
-VKINSP_EXPORT int GpuInspectorConnected(void) {
+VKINSP_EXPORT int GpuInspectorConnected(void)
+{
     return vkinsp::Transport::Get().Connected() ? 1 : 0;
 }
 
-VKINSP_EXPORT int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label) {
-    if (!vkinsp::Transport::Get().Connected()) return 0;
+VKINSP_EXPORT int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label)
+{
+    if (!vkinsp::Transport::Get().Connected())
+        return 0;
     // The label is the application's words for the capture (the tab's name); bounded, since a
     // string that is not one would otherwise become a message of any length.
     const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
     vkinsp::JsonWriter w;
     w.BeginObject();
-    w.Key("action"); w.String("AppCaptureRequest");
-    w.Key("frameCount"); w.Uint(frameCount ? frameCount : 1u);
-    if (!name.empty()) { w.Key("label"); w.String(name); }
+    w.Key("action");
+    w.String("AppCaptureRequest");
+    w.Key("frameCount");
+    w.Uint(frameCount ? frameCount : 1u);
+    if (!name.empty())
+    {
+        w.Key("label");
+        w.String(name);
+    }
     w.EndObject();
     vkinsp::Transport::Get().SendJson(std::move(w.str()));
-    if (name.empty()) vkinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
-    else vkinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
+    if (name.empty())
+        vkinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    else
+        vkinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
     return 1;
 }
 
-VKINSP_EXPORT int GpuInspectorCapture(uint32_t frameCount) {
+VKINSP_EXPORT int GpuInspectorCapture(uint32_t frameCount)
+{
     return GpuInspectorCaptureNamed(frameCount, nullptr);
 }
 
@@ -1061,22 +1336,26 @@ VKINSP_EXPORT int GpuInspectorCapture(uint32_t frameCount) {
 // directories and resolves the enumeration entry points by name, as RenderDoc's Android layer
 // exports them too.
 VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
-vkEnumerateInstanceLayerProperties(uint32_t* pPropertyCount, VkLayerProperties* pProperties) {
+vkEnumerateInstanceLayerProperties(uint32_t* pPropertyCount, VkLayerProperties* pProperties)
+{
     return vkinsp::layer_vkEnumerateInstanceLayerProperties(pPropertyCount, pProperties);
 }
 
 VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
-vkEnumerateInstanceExtensionProperties(const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties) {
+vkEnumerateInstanceExtensionProperties(const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
+{
     return vkinsp::layer_vkEnumerateInstanceExtensionProperties(pLayerName, pPropertyCount, pProperties);
 }
 
 VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
-vkEnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkLayerProperties* pProperties) {
+vkEnumerateDeviceLayerProperties(VkPhysicalDevice physicalDevice, uint32_t* pPropertyCount, VkLayerProperties* pProperties)
+{
     return vkinsp::layer_vkEnumerateDeviceLayerProperties(physicalDevice, pPropertyCount, pProperties);
 }
 
 VKINSP_EXPORT VKAPI_ATTR VkResult VKAPI_CALL
-vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties) {
+vkEnumerateDeviceExtensionProperties(VkPhysicalDevice physicalDevice, const char* pLayerName, uint32_t* pPropertyCount, VkExtensionProperties* pProperties)
+{
     return vkinsp::layer_vkEnumerateDeviceExtensionProperties(physicalDevice, pLayerName, pPropertyCount, pProperties);
 }
 #endif

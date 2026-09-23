@@ -12,13 +12,23 @@
 
 #include "arena.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
-enum class JType : uint8_t { Null, Bool, Number, String, Array, Object };
+enum class JType : uint8_t
+{
+    Null,
+    Bool,
+    Number,
+    String,
+    Array,
+    Object
+};
 
 struct JMember;
 
-struct JValue {
+struct JValue
+{
     JType type = JType::Null;
     bool boolean = false;
     uint32_t count = 0;            // elements of an array, members of an object
@@ -43,12 +53,14 @@ struct JValue {
     double Double() const;
 };
 
-struct JMember {
+struct JMember
+{
     std::string_view key;
     JValue value;
 };
 
-class JsonDocument {
+class JsonDocument
+{
 public:
     /** Parses `size` bytes of `data`; false with a message (and the byte offset) on malformed input. */
     bool Parse(const char* data, size_t size, std::string& error);

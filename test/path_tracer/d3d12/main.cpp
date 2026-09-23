@@ -43,20 +43,25 @@
 
 using Microsoft::WRL::ComPtr;
 
-#define CHECK(x)                                                                              \
-    do {                                                                                      \
-        HRESULT hr_ = (x);                                                                    \
-        if (FAILED(hr_)) {                                                                    \
+#define CHECK(x)                                                                                         \
+    do                                                                                                   \
+    {                                                                                                    \
+        HRESULT hr_ = (x);                                                                               \
+        if (FAILED(hr_))                                                                                 \
+        {                                                                                                \
             fprintf(stderr, "%s failed: 0x%08lx (%s:%d)\n", #x, (unsigned long)hr_, __FILE__, __LINE__); \
-            exit(1);                                                                          \
-        }                                                                                     \
+            exit(1);                                                                                     \
+        }                                                                                                \
     } while (0)
 
-namespace {
+namespace
+{
 
-std::vector<char> ReadFile(const std::string& path) {
+std::vector<char> ReadFile(const std::string& path)
+{
     std::ifstream f(path, std::ios::binary | std::ios::ate);
-    if (!f) {
+    if (!f)
+    {
         fprintf(stderr, "cannot open %s\n", path.c_str());
         exit(1);
     }
@@ -66,18 +71,21 @@ std::vector<char> ReadFile(const std::string& path) {
     return data;
 }
 
-std::string ExeDir() {
+std::string ExeDir()
+{
     char buf[MAX_PATH];
     GetModuleFileNameA(nullptr, buf, MAX_PATH);
     std::string s(buf);
     return s.substr(0, s.find_last_of("\\/") + 1);
 }
 
-UINT64 AlignUp(UINT64 v, UINT64 a) {
+UINT64 AlignUp(UINT64 v, UINT64 a)
+{
     return (v + a - 1) / a * a;
 }
 
-std::wstring Widen(const std::string& s) {
+std::wstring Widen(const std::string& s)
+{
     return std::wstring(s.begin(), s.end());
 }
 
@@ -94,7 +102,8 @@ constexpr const wchar_t* kClosestHits[M] = {L"LambertianHit", L"MetalHit", L"Die
 constexpr const wchar_t* kHitGroups[M] = {L"LambertianGroup", L"MetalGroup", L"DielectricGroup"};
 
 // The global root signature's parameters.
-enum RootParameter : UINT {
+enum RootParameter : UINT
+{
     kRootUavs,       // table: u0 the output, u1 the running mean
     kRootScene,      // SRV t0: the top-level structure
     kRootSpheres,    // SRV t1
@@ -103,7 +112,8 @@ enum RootParameter : UINT {
     kRootCount,
 };
 
-struct App {
+struct App
+{
     uint32_t width = 960, height = 540;
     uint32_t maxFrames = 0;   // 0: until the window is closed
     uint32_t samplesPerFrame = 1;
@@ -151,18 +161,24 @@ struct App {
     D3D12_DISPATCH_RAYS_DESC dispatch{};
 
     // --------------------------------------------------------------------------------- window
-    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l) {
+    static LRESULT CALLBACK WndProc(HWND h, UINT msg, WPARAM w, LPARAM l)
+    {
         App* app = (App*)GetWindowLongPtrA(h, GWLP_USERDATA);
-        if (msg == WM_CLOSE || msg == WM_DESTROY) {
-            if (app) app->quit = true;
+        if (msg == WM_CLOSE || msg == WM_DESTROY)
+        {
+            if (app)
+                app->quit = true;
             return 0;
         }
-        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app) app->quit = true;
-        if (msg == WM_SIZE && app) app->resized = true;
+        if (msg == WM_KEYDOWN && w == VK_ESCAPE && app)
+            app->quit = true;
+        if (msg == WM_SIZE && app)
+            app->resized = true;
         return DefWindowProcA(h, msg, w, l);
     }
 
-    void CreateWindowNative() {
+    void CreateWindowNative()
+    {
         WNDCLASSA wc{};
         wc.lpfnWndProc = WndProc;
         wc.hInstance = GetModuleHandleA(nullptr);
@@ -172,22 +188,25 @@ struct App {
         RECT r{0, 0, (LONG)width, (LONG)height};
         AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
         hwnd = CreateWindowA(wc.lpszClassName, "GPU Inspector test: D3D12 path tracer", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                             CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
-                             wc.hInstance, nullptr);
+            CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr,
+            wc.hInstance, nullptr);
         SetWindowLongPtrA(hwnd, GWLP_USERDATA, (LONG_PTR)this);
         resized = false;   // the WM_SIZE of creation
     }
 
-    void PumpEvents() {
+    void PumpEvents()
+    {
         MSG msg;
-        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE)) {
+        while (PeekMessageA(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
             TranslateMessage(&msg);
             DispatchMessageA(&msg);
         }
     }
 
     // --------------------------------------------------------------------------------- helpers
-    static D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to) {
+    static D3D12_RESOURCE_BARRIER Transition(ID3D12Resource* resource, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+    {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
         b.Transition.pResource = resource;
@@ -197,7 +216,8 @@ struct App {
         return b;
     }
 
-    static D3D12_RESOURCE_BARRIER UavBarrier(ID3D12Resource* resource) {
+    static D3D12_RESOURCE_BARRIER UavBarrier(ID3D12Resource* resource)
+    {
         D3D12_RESOURCE_BARRIER b{};
         b.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV;
         b.UAV.pResource = resource;
@@ -205,7 +225,8 @@ struct App {
     }
 
     ComPtr<ID3D12Resource> CreateBuffer(D3D12_HEAP_TYPE heap, UINT64 size, D3D12_RESOURCE_STATES state,
-                                        D3D12_RESOURCE_FLAGS flags, const std::wstring& name) {
+        D3D12_RESOURCE_FLAGS flags, const std::wstring& name)
+    {
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = heap;
         D3D12_RESOURCE_DESC rd{};
@@ -225,9 +246,10 @@ struct App {
 
     // An upload-heap buffer holding the data. The path tracer's inputs are small, and a mapped
     // buffer is what the acceleration structure builds and the shader tables read in the samples.
-    ComPtr<ID3D12Resource> CreateUploadBuffer(const void* data, UINT64 size, const std::wstring& name) {
+    ComPtr<ID3D12Resource> CreateUploadBuffer(const void* data, UINT64 size, const std::wstring& name)
+    {
         ComPtr<ID3D12Resource> r = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, size, D3D12_RESOURCE_STATE_GENERIC_READ,
-                                                D3D12_RESOURCE_FLAG_NONE, name);
+            D3D12_RESOURCE_FLAG_NONE, name);
         void* mapped = nullptr;
         D3D12_RANGE none{0, 0};
         CHECK(r->Map(0, &none, &mapped));
@@ -236,7 +258,8 @@ struct App {
         return r;
     }
 
-    ComPtr<ID3D12Resource> CreateUavTexture(DXGI_FORMAT format, const wchar_t* name) {
+    ComPtr<ID3D12Resource> CreateUavTexture(DXGI_FORMAT format, const wchar_t* name)
+    {
         D3D12_HEAP_PROPERTIES hp{};
         hp.Type = D3D12_HEAP_TYPE_DEFAULT;
         D3D12_RESOURCE_DESC rd{};
@@ -250,30 +273,34 @@ struct App {
         rd.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
         ComPtr<ID3D12Resource> r;
         CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr,
-                                              IID_PPV_ARGS(&r)));
+            IID_PPV_ARGS(&r)));
         r->SetName(name);
         return r;
     }
 
-    D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle(UINT index) {
+    D3D12_CPU_DESCRIPTOR_HANDLE UavCpuHandle(UINT index)
+    {
         D3D12_CPU_DESCRIPTOR_HANDLE h = uavHeap->GetCPUDescriptorHandleForHeapStart();
         h.ptr += (SIZE_T)index * uavSize;
         return h;
     }
 
-    void BeginList(uint32_t slot) {
+    void BeginList(uint32_t slot)
+    {
         CHECK(allocators[slot]->Reset());
         CHECK(list->Reset(allocators[slot].Get(), nullptr));
     }
 
-    void ExecuteAndWait() {
+    void ExecuteAndWait()
+    {
         CHECK(list->Close());
         ID3D12CommandList* lists[] = {list.Get()};
         queue->ExecuteCommandLists(1, lists);
         WaitForGpu();
     }
 
-    void WaitForGpu() {
+    void WaitForGpu()
+    {
         CHECK(queue->Signal(fence.Get(), nextFenceValue));
         CHECK(fence->SetEventOnCompletion(nextFenceValue, fenceEvent));
         WaitForSingleObject(fenceEvent, INFINITE);
@@ -281,22 +308,29 @@ struct App {
     }
 
     // Blocks until the frame that last used this frame slot has finished on the GPU.
-    void WaitForFrame(uint32_t slot) {
-        if (fence->GetCompletedValue() < fenceValues[slot]) {
+    void WaitForFrame(uint32_t slot)
+    {
+        if (fence->GetCompletedValue() < fenceValues[slot])
+        {
             CHECK(fence->SetEventOnCompletion(fenceValues[slot], fenceEvent));
             WaitForSingleObject(fenceEvent, INFINITE);
         }
     }
 
     // --------------------------------------------------------------------------------- setup
-    void InitDevice() {
+    void InitDevice()
+    {
         UINT factoryFlags = 0;
-        if (debugLayer) {
+        if (debugLayer)
+        {
             ComPtr<ID3D12Debug> debug;
-            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug)))) {
+            if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debug))))
+            {
                 debug->EnableDebugLayer();
                 factoryFlags |= DXGI_CREATE_FACTORY_DEBUG;
-            } else {
+            }
+            else
+            {
                 fprintf(stderr, "--debug-layer: the D3D12 debug layer is not installed (Windows' Graphics Tools)\n");
             }
         }
@@ -305,17 +339,21 @@ struct App {
         // The first hardware adapter with DXR, fastest first where the factory can order them.
         ComPtr<IDXGIFactory6> factory6;
         factory.As(&factory6);
-        for (UINT i = 0;; ++i) {
+        for (UINT i = 0;; ++i)
+        {
             ComPtr<IDXGIAdapter1> candidate;
             HRESULT hr = factory6 ? factory6->EnumAdapterByGpuPreference(i, DXGI_GPU_PREFERENCE_HIGH_PERFORMANCE, IID_PPV_ARGS(&candidate))
                                   : factory->EnumAdapters1(i, &candidate);
-            if (hr == DXGI_ERROR_NOT_FOUND) break;
+            if (hr == DXGI_ERROR_NOT_FOUND)
+                break;
             CHECK(hr);
             DXGI_ADAPTER_DESC1 desc;
             candidate->GetDesc1(&desc);
-            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE) continue;
+            if (desc.Flags & DXGI_ADAPTER_FLAG_SOFTWARE)
+                continue;
             ComPtr<ID3D12Device5> d;
-            if (FAILED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d)))) continue;
+            if (FAILED(D3D12CreateDevice(candidate.Get(), D3D_FEATURE_LEVEL_12_0, IID_PPV_ARGS(&d))))
+                continue;
             D3D12_FEATURE_DATA_D3D12_OPTIONS5 options5{};
             if (FAILED(d->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS5, &options5, sizeof(options5))) ||
                 options5.RaytracingTier == D3D12_RAYTRACING_TIER_NOT_SUPPORTED)
@@ -324,7 +362,8 @@ struct App {
             printf("adapter: %ls\n", desc.Description);
             break;
         }
-        if (!device) {
+        if (!device)
+        {
             fprintf(stderr, "no Direct3D 12 adapter with DXR\n");
             exit(1);
         }
@@ -335,7 +374,8 @@ struct App {
         CHECK(device->CreateCommandQueue(&qd, IID_PPV_ARGS(&queue)));
         queue->SetName(L"Direct queue");
 
-        for (uint32_t i = 0; i < kFrameCount; ++i) {
+        for (uint32_t i = 0; i < kFrameCount; ++i)
+        {
             CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&allocators[i])));
             allocators[i]->SetName((L"Frame allocator " + std::to_wstring(i)).c_str());
         }
@@ -356,7 +396,8 @@ struct App {
         uavSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     }
 
-    void CreateSwapChain() {
+    void CreateSwapChain()
+    {
         DXGI_SWAP_CHAIN_DESC1 sd{};
         sd.Width = width;
         sd.Height = height;
@@ -376,8 +417,10 @@ struct App {
 
     // The back buffers, the output and the running mean at the window's size, with their UAVs,
     // and the camera for its aspect ratio. The accumulation starts again.
-    void CreateSizedResources() {
-        for (uint32_t i = 0; i < kFrameCount; ++i) {
+    void CreateSizedResources()
+    {
+        for (uint32_t i = 0; i < kFrameCount; ++i)
+        {
             CHECK(swapChain->GetBuffer(i, IID_PPV_ARGS(&backBuffers[i])));
             backBuffers[i]->SetName((L"Back buffer " + std::to_wstring(i)).c_str());
         }
@@ -401,21 +444,26 @@ struct App {
         accumulated = 0;
     }
 
-    void ReleaseSizedResources() {
-        for (auto& b : backBuffers) b.Reset();
+    void ReleaseSizedResources()
+    {
+        for (auto& b : backBuffers)
+            b.Reset();
         output.Reset();
         accumulation.Reset();
     }
 
     // Recreates the swap chain's buffers for the window's client area. Returns false when there
     // is nothing to draw into (minimized).
-    bool Resize() {
+    bool Resize()
+    {
         resized = false;
         RECT r;
         GetClientRect(hwnd, &r);
         uint32_t w = (uint32_t)(r.right - r.left), h = (uint32_t)(r.bottom - r.top);
-        if (w == 0 || h == 0) return false;
-        if (w == width && h == height) return true;
+        if (w == 0 || h == 0)
+            return false;
+        if (w == width && h == height)
+            return true;
         // ResizeBuffers refuses while anything still references the buffers.
         WaitForGpu();
         ReleaseSizedResources();
@@ -426,10 +474,12 @@ struct App {
         return true;
     }
 
-    ComPtr<ID3D12RootSignature> MakeRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& desc, const wchar_t* name) {
+    ComPtr<ID3D12RootSignature> MakeRootSignature(const D3D12_VERSIONED_ROOT_SIGNATURE_DESC& desc, const wchar_t* name)
+    {
         ComPtr<ID3DBlob> blob, error;
         HRESULT hr = D3D12SerializeVersionedRootSignature(&desc, &blob, &error);
-        if (FAILED(hr)) {
+        if (FAILED(hr))
+        {
             fprintf(stderr, "root signature: %s\n", error ? (const char*)error->GetBufferPointer() : "?");
             exit(1);
         }
@@ -439,7 +489,8 @@ struct App {
         return rs;
     }
 
-    D3D12_RAYTRACING_GEOMETRY_DESC BlasGeometry(uint32_t m) {
+    D3D12_RAYTRACING_GEOMETRY_DESC BlasGeometry(uint32_t m)
+    {
         D3D12_RAYTRACING_GEOMETRY_DESC g{};
         g.Type = D3D12_RAYTRACING_GEOMETRY_TYPE_PROCEDURAL_PRIMITIVE_AABBS;
         g.Flags = D3D12_RAYTRACING_GEOMETRY_FLAG_OPAQUE;
@@ -449,7 +500,8 @@ struct App {
         return g;
     }
 
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS BlasInputs(const D3D12_RAYTRACING_GEOMETRY_DESC* geometry) {
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS BlasInputs(const D3D12_RAYTRACING_GEOMETRY_DESC* geometry)
+    {
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{};
         in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
@@ -459,7 +511,8 @@ struct App {
         return in;
     }
 
-    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS TlasInputs() {
+    D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS TlasInputs()
+    {
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS in{};
         in.Type = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
         in.Flags = D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAG_PREFER_FAST_TRACE;
@@ -471,29 +524,32 @@ struct App {
 
     // Sizes a structure and creates the buffer it lives in. Returns the build's scratch size.
     UINT64 CreateStructure(const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& inputs, ComPtr<ID3D12Resource>& out,
-                           const std::wstring& name) {
+        const std::wstring& name)
+    {
         D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
         device->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
         UINT64 size = AlignUp(info.ResultDataMaxSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
         out = CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, size, D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE,
-                           D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, name);
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, name);
         return AlignUp(info.ScratchDataSizeInBytes, D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BYTE_ALIGNMENT);
     }
 
-    void CreateScene() {
+    void CreateScene()
+    {
         scene = rtiow::MakeScene();
         printf("scene: %zu spheres (%u Lambertian, %u metal, %u dielectric)\n", scene.spheres.size(),
-               scene.count[rtiow::kLambertian], scene.count[rtiow::kMetal], scene.count[rtiow::kDielectric]);
+            scene.count[rtiow::kLambertian], scene.count[rtiow::kMetal], scene.count[rtiow::kDielectric]);
         spheres = CreateUploadBuffer(scene.spheres.data(), scene.spheres.size() * sizeof(rtiow::Sphere), L"Spheres");
         // A constant buffer's size is a multiple of 256.
         camera = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, AlignUp(sizeof(rtiow::Camera), 256), D3D12_RESOURCE_STATE_GENERIC_READ,
-                              D3D12_RESOURCE_FLAG_NONE, L"Camera");
+            D3D12_RESOURCE_FLAG_NONE, L"Camera");
 
         // One scratch buffer: each bottom level has its own stretch of it, and the top level,
         // built once they are finished, starts at the beginning again.
         static_assert(sizeof(rtiow::Aabb) == sizeof(D3D12_RAYTRACING_AABB));
         UINT64 blasScratch = 0;
-        for (uint32_t m = 0; m < M; ++m) {
+        for (uint32_t m = 0; m < M; ++m)
+        {
             std::vector<rtiow::Aabb> boxes = rtiow::Bounds(scene, (rtiow::Material)m);
             std::wstring material = Widen(rtiow::MaterialName(m));
             aabbs[m] = CreateUploadBuffer(boxes.data(), boxes.size() * sizeof(rtiow::Aabb), material + L" AABBs");
@@ -506,7 +562,8 @@ struct App {
         // One instance per material: the identity transform, the material's first sphere as the
         // InstanceID and the material as the hit group contribution.
         D3D12_RAYTRACING_INSTANCE_DESC records[M]{};
-        for (uint32_t m = 0; m < M; ++m) {
+        for (uint32_t m = 0; m < M; ++m)
+        {
             D3D12_RAYTRACING_INSTANCE_DESC& r = records[m];
             r.Transform[0][0] = r.Transform[1][1] = r.Transform[2][2] = 1.0f;
             r.InstanceID = scene.first[m];
@@ -518,9 +575,10 @@ struct App {
         UINT64 tlasScratch = CreateStructure(TlasInputs(), tlas, L"Scene TLAS");
         // Created in COMMON, like every buffer; the builds promote it to UNORDERED_ACCESS.
         scratch = CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, std::max(blasScratch, tlasScratch), D3D12_RESOURCE_STATE_COMMON,
-                               D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"Build scratch");
+            D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, L"Build scratch");
 
-        if (!rebuild) {
+        if (!rebuild)
+        {
             BeginList(0);
             RecordBuilds();
             ExecuteAndWait();
@@ -530,9 +588,11 @@ struct App {
     // The three bottom levels, then the top level over them. The UAV barriers are where the
     // runtime has to have finished the builds before them: the top level reads the bottom levels,
     // and the trace reads the top level.
-    void RecordBuilds() {
+    void RecordBuilds()
+    {
         BeginMarker(L"Build acceleration structures");
-        for (uint32_t m = 0; m < M; ++m) {
+        for (uint32_t m = 0; m < M; ++m)
+        {
             D3D12_RAYTRACING_GEOMETRY_DESC geometry = BlasGeometry(m);
             D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc{};
             desc.Inputs = BlasInputs(&geometry);
@@ -541,7 +601,8 @@ struct App {
             list->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
         }
         D3D12_RESOURCE_BARRIER barriers[M];
-        for (uint32_t m = 0; m < M; ++m) barriers[m] = UavBarrier(blas[m].Get());
+        for (uint32_t m = 0; m < M; ++m)
+            barriers[m] = UavBarrier(blas[m].Get());
         list->ResourceBarrier(M, barriers);
 
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC desc{};
@@ -554,7 +615,8 @@ struct App {
         EndMarker();
     }
 
-    void CreatePipeline() {
+    void CreatePipeline()
+    {
         // The global root signature.
         D3D12_DESCRIPTOR_RANGE1 uavRange{};
         uavRange.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_UAV;
@@ -573,7 +635,8 @@ struct App {
         params[kRootFrame].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
         params[kRootFrame].Constants.ShaderRegister = 1;
         params[kRootFrame].Constants.Num32BitValues = sizeof(rtiow::FrameParams) / 4;
-        for (auto& p : params) p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
+        for (auto& p : params)
+            p.ShaderVisibility = D3D12_SHADER_VISIBILITY_ALL;
         D3D12_VERSIONED_ROOT_SIGNATURE_DESC rs{};
         rs.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
         rs.Desc_1_1.NumParameters = kRootCount;
@@ -592,7 +655,8 @@ struct App {
         subobjects.push_back({D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &lib});
 
         D3D12_HIT_GROUP_DESC hitGroups[M]{};
-        for (uint32_t m = 0; m < M; ++m) {
+        for (uint32_t m = 0; m < M; ++m)
+        {
             hitGroups[m].HitGroupExport = kHitGroups[m];
             hitGroups[m].Type = D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE;
             hitGroups[m].ClosestHitShaderImport = kClosestHits[m];
@@ -634,7 +698,8 @@ struct App {
         std::vector<uint8_t> table((size_t)(hitOffset + M * stride));
         auto identifier = [&](const wchar_t* name, UINT64 offset) {
             void* id = properties->GetShaderIdentifier(name);
-            if (!id) {
+            if (!id)
+            {
                 fprintf(stderr, "no shader identifier for %ls\n", name);
                 exit(1);
             }
@@ -642,7 +707,8 @@ struct App {
         };
         identifier(kRaygen, 0);
         identifier(kMiss, missOffset);
-        for (uint32_t m = 0; m < M; ++m) identifier(kHitGroups[m], hitOffset + m * stride);
+        for (uint32_t m = 0; m < M; ++m)
+            identifier(kHitGroups[m], hitOffset + m * stride);
         shaderTable = CreateUploadBuffer(table.data(), table.size(), L"Shader tables");
 
         D3D12_GPU_VIRTUAL_ADDRESS base = shaderTable->GetGPUVirtualAddress();
@@ -654,21 +720,26 @@ struct App {
 
     // Markers with the metadata value 0 (a Unicode string), the form PIX and the D3D12 runtime
     // understand without WinPixEventRuntime.
-    void BeginMarker(const wchar_t* name) {
+    void BeginMarker(const wchar_t* name)
+    {
         list->BeginEvent(0, name, (UINT)((wcslen(name) + 1) * sizeof(wchar_t)));
     }
 
-    void EndMarker() {
+    void EndMarker()
+    {
         list->EndEvent();
     }
 
     // --------------------------------------------------------------------------------- frame
-    bool DrawFrame() {
-        if (resized && !Resize()) return false;
+    bool DrawFrame()
+    {
+        if (resized && !Resize())
+            return false;
         WaitForFrame(frameIndex);
         BeginList(frameIndex);
 
-        if (rebuild) RecordBuilds();
+        if (rebuild)
+            RecordBuilds();
 
         rtiow::FrameParams params{accumulate ? accumulated : (uint32_t)frameCount, samplesPerFrame, maxDepth, accumulate ? 1u : 0u};
         BeginMarker(L"Path trace");
@@ -715,16 +786,20 @@ struct App {
         return true;
     }
 
-    int Run() {
+    int Run()
+    {
         CreateWindowNative();
         InitDevice();
         CreateScene();   // before the swap chain: the sized resources write the camera
         CreateSwapChain();
         CreatePipeline();
-        while (!quit && (maxFrames == 0 || frameCount < maxFrames)) {
+        while (!quit && (maxFrames == 0 || frameCount < maxFrames))
+        {
             PumpEvents();
-            if (quit) break;
-            if (!DrawFrame()) Sleep(16);
+            if (quit)
+                break;
+            if (!DrawFrame())
+                Sleep(16);
         }
         WaitForGpu();
         CloseHandle(fenceEvent);
@@ -734,21 +809,32 @@ struct App {
 
 } // namespace
 
-int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
+int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
+{
     setvbuf(stdout, nullptr, _IONBF, 0);   // a failure exits before a buffer would be flushed
     App app;
     int argc = __argc;
     char** argv = __argv;
-    for (int i = 1; i < argc; ++i) {
-        if (!strcmp(argv[i], "--frames") && i + 1 < argc) app.maxFrames = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--width") && i + 1 < argc) app.width = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--height") && i + 1 < argc) app.height = (uint32_t)atoi(argv[++i]);
-        else if (!strcmp(argv[i], "--spp") && i + 1 < argc) app.samplesPerFrame = (uint32_t)std::max(1, atoi(argv[++i]));
-        else if (!strcmp(argv[i], "--depth") && i + 1 < argc) app.maxDepth = (uint32_t)std::max(1, atoi(argv[++i]));
-        else if (!strcmp(argv[i], "--no-accumulate")) app.accumulate = false;
-        else if (!strcmp(argv[i], "--rebuild")) app.rebuild = true;
-        else if (!strcmp(argv[i], "--debug-layer")) app.debugLayer = true;
-        else {
+    for (int i = 1; i < argc; ++i)
+    {
+        if (!strcmp(argv[i], "--frames") && i + 1 < argc)
+            app.maxFrames = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--width") && i + 1 < argc)
+            app.width = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--height") && i + 1 < argc)
+            app.height = (uint32_t)atoi(argv[++i]);
+        else if (!strcmp(argv[i], "--spp") && i + 1 < argc)
+            app.samplesPerFrame = (uint32_t)std::max(1, atoi(argv[++i]));
+        else if (!strcmp(argv[i], "--depth") && i + 1 < argc)
+            app.maxDepth = (uint32_t)std::max(1, atoi(argv[++i]));
+        else if (!strcmp(argv[i], "--no-accumulate"))
+            app.accumulate = false;
+        else if (!strcmp(argv[i], "--rebuild"))
+            app.rebuild = true;
+        else if (!strcmp(argv[i], "--debug-layer"))
+            app.debugLayer = true;
+        else
+        {
             fprintf(stderr, "unknown option %s\n", argv[i]);
             return 1;
         }

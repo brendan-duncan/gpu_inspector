@@ -32,19 +32,22 @@
 
 #import <Metal/Metal.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /**
  * An Objective-C object held strongly by a copyable C++ value. The library is built without ARC,
  * so a closure capturing an `id` would not keep the object alive; one capturing a Strong does.
  */
-class Strong {
+class Strong
+{
 public:
     Strong() = default;
     explicit Strong(id object) : object_([object retain]) {}
-    Strong(const Strong &other) : object_([other.object_ retain]) {}
-    Strong(Strong &&other) noexcept : object_(other.object_) { other.object_ = nil; }
-    Strong &operator=(Strong other) noexcept {
+    Strong(const Strong& other) : object_([other.object_ retain]) {}
+    Strong(Strong&& other) noexcept : object_(other.object_) { other.object_ = nil; }
+    Strong& operator=(Strong other) noexcept
+    {
         std::swap(object_, other.object_);
         return *this;
     }
@@ -56,21 +59,29 @@ private:
 };
 
 /** An array of objects (setVertexBuffers:, useResources:), held strongly. */
-class StrongList {
+class StrongList
+{
 public:
-    StrongList(const id *objects, NSUInteger count) {
-        for (NSUInteger i = 0; objects != nullptr && i < count; i++) objects_.push_back([objects[i] retain]);
-        if (objects == nullptr) objects_.assign(count, nil);
+    StrongList(const id* objects, NSUInteger count)
+    {
+        for (NSUInteger i = 0; objects != nullptr && i < count; i++)
+            objects_.push_back([objects[i] retain]);
+        if (objects == nullptr)
+            objects_.assign(count, nil);
     }
-    StrongList(const StrongList &other) : objects_(other.objects_) {
-        for (id o : objects_) [o retain];
+    StrongList(const StrongList& other) : objects_(other.objects_)
+    {
+        for (id o : objects_)
+            [o retain];
     }
-    StrongList &operator=(const StrongList &) = delete;
-    ~StrongList() {
-        for (id o : objects_) [o release];
+    StrongList& operator=(const StrongList&) = delete;
+    ~StrongList()
+    {
+        for (id o : objects_)
+            [o release];
     }
     /** The objects as the pointer the array form of a call takes. */
-    const id *data() const { return objects_.data(); }
+    const id* data() const { return objects_.data(); }
 
 private:
     std::vector<id> objects_;
@@ -80,20 +91,25 @@ private:
  * A measurement's encoder, as the recorded calls see it. The calls a measurement changes go
  * through here; the rest are issued as the application made them.
  */
-class OverdrawReplay {
+class OverdrawReplay
+{
 public:
     /** The application bound a pipeline. */
     virtual void BindPipeline(id<MTLRenderCommandEncoder> encoder, id state) = 0;
     virtual void SetDepthStencilState(id<MTLRenderCommandEncoder> encoder, id state) = 0;
-    virtual void SetCullMode(id<MTLRenderCommandEncoder> encoder, NSUInteger mode) {
+    virtual void SetCullMode(id<MTLRenderCommandEncoder> encoder, NSUInteger mode)
+    {
         [encoder setCullMode:(MTLCullMode)mode];
     }
-    virtual void SetScissorRects(id<MTLRenderCommandEncoder> encoder, const MTLScissorRect *rects, NSUInteger count) {
-        if (count == 1) [encoder setScissorRect:rects[0]];
-        else [encoder setScissorRects:rects count:count];
+    virtual void SetScissorRects(id<MTLRenderCommandEncoder> encoder, const MTLScissorRect* rects, NSUInteger count)
+    {
+        if (count == 1)
+            [encoder setScissorRect:rects[0]];
+        else
+            [encoder setScissorRects:rects count:count];
     }
     /** A draw, which the measurement issues through `draw` as many times as it needs, or not at all. */
-    virtual void IssueDraw(id<MTLRenderCommandEncoder> encoder, const std::function<void(id<MTLRenderCommandEncoder>)> &draw) = 0;
+    virtual void IssueDraw(id<MTLRenderCommandEncoder> encoder, const std::function<void(id<MTLRenderCommandEncoder>)>& draw) = 0;
     /** A draw that cannot be measured at all (an indirect command buffer's). */
     virtual void Skip() = 0;
 
@@ -102,7 +118,7 @@ protected:
 };
 
 /** A render encoder call recorded while capturing, issued again against a measurement's encoder. */
-using OverdrawOp = std::function<void(id<MTLRenderCommandEncoder> encoder, OverdrawReplay &replay)>;
+using OverdrawOp = std::function<void(id<MTLRenderCommandEncoder> encoder, OverdrawReplay& replay)>;
 
 /**
  * What a recorded call sets, so a measurement that needs the encoder's state at one draw can issue
@@ -115,9 +131,17 @@ using OverdrawOp = std::function<void(id<MTLRenderCommandEncoder> encoder, Overd
  *   Range       binds `name` slots location..location+length-1, undoing earlier binds of each and
  *               an earlier bind of exactly the same range.
  */
-enum class OpPolicy : uint8_t { Draw, Replace, Slot, SlotOffset, Range };
+enum class OpPolicy : uint8_t
+{
+    Draw,
+    Replace,
+    Slot,
+    SlotOffset,
+    Range
+};
 
-struct OpKey {
+struct OpKey
+{
     OpPolicy policy = OpPolicy::Replace;
     std::string name;
     uint32_t location = 0;
@@ -127,7 +151,8 @@ struct OpKey {
     static OpKey Replace(std::string name) { return {OpPolicy::Replace, std::move(name), 0, 1}; }
     static OpKey Slot(std::string family, NSUInteger index) { return {OpPolicy::Slot, std::move(family), (uint32_t)index, 1}; }
     static OpKey Offset(std::string family, NSUInteger index) { return {OpPolicy::SlotOffset, std::move(family), (uint32_t)index, 1}; }
-    static OpKey Range(std::string family, NSRange range) {
+    static OpKey Range(std::string family, NSRange range)
+    {
         return {OpPolicy::Range, std::move(family), (uint32_t)range.location, (uint32_t)range.length};
     }
 };
@@ -149,7 +174,7 @@ struct OverdrawPass;
  * what each measurement needs copied before the pass can change it. Null when no measurement of
  * the capture concerns the pass. `descriptor` is the pass descriptor the encoder is made from.
  */
-std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPassDescriptor *descriptor);
+std::shared_ptr<OverdrawPass> PrepareOverdrawPass(id commandBuffer, MTLRenderPassDescriptor* descriptor);
 
 /** The application's encoder exists: the pass's calls are recorded against it from here on. */
 void BeginOverdrawPass(id encoder, std::shared_ptr<OverdrawPass> pass, uint32_t passIndex);
@@ -180,7 +205,7 @@ void RememberPipelineDescriptor(id state, id descriptor);
 id CopyRememberedPipelineDescriptor(id state);
 
 /** A depth-stencil state was created: its descriptor is kept, for the pixel history's test copies. */
-void RememberDepthStencilState(id state, MTLDepthStencilDescriptor *descriptor);
+void RememberDepthStencilState(id state, MTLDepthStencilDescriptor* descriptor);
 
 /** An object is being deallocated: drops what was kept of a pipeline or depth-stencil state, and its copies. */
 void ForgetRenderPipeline(id object);
@@ -199,7 +224,7 @@ void StartOverdrawCapture(bool overdraw, bool recordPasses, uint64_t maxDataSize
 void SendOverdraw();
 
 /** A capture starts recording: the pixel it follows, if any (pixel_history.mm). */
-void StartPixelHistoryCapture(const PixelHistoryRequest &request);
+void StartPixelHistoryCapture(const PixelHistoryRequest& request);
 
 /** The capture's command buffers have completed: the pixel's history is sent as CapturePixelHistory. */
 void SendPixelHistory();

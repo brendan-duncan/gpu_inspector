@@ -85,6 +85,7 @@ static PFN_eglGetProcAddress eglGetProcAddress;
 // ------------------------------------------------------------------------------------------------
 // GL, fetched through eglGetProcAddress (and the library's exports) the way applications do.
 
+// clang-format off
 #define GL_FUNCTIONS(X) \
     X(glGetString) X(glViewport) X(glClearColor) X(glClear) X(glEnable) X(glDisable) X(glDepthFunc) \
     X(glCreateShader) X(glShaderSource) X(glCompileShader) X(glGetShaderiv) X(glGetShaderInfoLog) \
@@ -99,6 +100,7 @@ static PFN_eglGetProcAddress eglGetProcAddress;
     X(glRenderbufferStorage) X(glRenderbufferStorageMultisample) X(glBlitFramebuffer) \
     X(glInvalidateFramebuffer) X(glDrawArrays) X(glDrawElements) X(glGetError) X(glObjectLabel) \
     X(glPushDebugGroup) X(glPopDebugGroup) X(glGetIntegerv) X(glDrawBuffers) X(glReadBuffer)
+// clang-format on
 
 #define DECLARE(name) static PFN_##name name;
 GL_FUNCTIONS(DECLARE)
@@ -106,26 +108,31 @@ GL_FUNCTIONS(DECLARE)
 
 static HMODULE g_gles = nullptr;
 
-static void* Proc(const char* name) {
+static void* Proc(const char* name)
+{
     void* p = (void*)eglGetProcAddress(name);
-    if (!p && g_gles) p = (void*)GetProcAddress(g_gles, name);
+    if (!p && g_gles)
+        p = (void*)GetProcAddress(g_gles, name);
     return p;
 }
 
 // ------------------------------------------------------------------------------------------------
 
-static void Fail(const char* what) {
+static void Fail(const char* what)
+{
     fprintf(stderr, "glesinsp_triangle: %s\n", what);
     exit(1);
 }
 
-static GLuint Shader(GLenum type, const char* source) {
+static GLuint Shader(GLenum type, const char* source)
+{
     GLuint s = glCreateShader(type);
     glShaderSource(s, 1, &source, nullptr);
     glCompileShader(s);
     GLint ok = 0;
     glGetShaderiv(s, GL_COMPILE_STATUS, &ok);
-    if (!ok) {
+    if (!ok)
+    {
         char log[2048];
         glGetShaderInfoLog(s, sizeof(log), nullptr, log);
         fprintf(stderr, "shader: %s\n", log);
@@ -134,7 +141,8 @@ static GLuint Shader(GLenum type, const char* source) {
     return s;
 }
 
-static GLuint Program(const char* vs, const char* fs, const char* label) {
+static GLuint Program(const char* vs, const char* fs, const char* label)
+{
     GLuint v = Shader(GL_VERTEX_SHADER, vs);
     GLuint f = Shader(GL_FRAGMENT_SHADER, fs);
     GLuint p = glCreateProgram();
@@ -143,7 +151,8 @@ static GLuint Program(const char* vs, const char* fs, const char* label) {
     glLinkProgram(p);
     GLint ok = 0;
     glGetProgramiv(p, GL_LINK_STATUS, &ok);
-    if (!ok) {
+    if (!ok)
+    {
         char log[2048];
         glGetProgramInfoLog(p, sizeof(log), nullptr, log);
         fprintf(stderr, "program: %s\n", log);
@@ -152,7 +161,8 @@ static GLuint Program(const char* vs, const char* fs, const char* label) {
     // Like most applications: the shaders go as soon as the program is linked.
     glDeleteShader(v);
     glDeleteShader(f);
-    if (glObjectLabel) glObjectLabel(GL_PROGRAM, p, -1, label);
+    if (glObjectLabel)
+        glObjectLabel(GL_PROGRAM, p, -1, label);
     return p;
 }
 
@@ -223,19 +233,23 @@ out vec4 color;
 void main() { color = vec4(vColor, 1.0); }
 )";
 
-struct Mat4 {
+struct Mat4
+{
     float m[16];
 };
 
-static Mat4 Multiply(const Mat4& a, const Mat4& b) {
+static Mat4 Multiply(const Mat4& a, const Mat4& b)
+{
     Mat4 r{};
     for (int c = 0; c < 4; ++c)
         for (int row = 0; row < 4; ++row)
-            for (int k = 0; k < 4; ++k) r.m[c * 4 + row] += a.m[k * 4 + row] * b.m[c * 4 + k];
+            for (int k = 0; k < 4; ++k)
+                r.m[c * 4 + row] += a.m[k * 4 + row] * b.m[c * 4 + k];
     return r;
 }
 
-static Mat4 Perspective(float fovy, float aspect, float n, float f) {
+static Mat4 Perspective(float fovy, float aspect, float n, float f)
+{
     const float t = 1.0f / tanf(fovy / 2);
     Mat4 r{};
     r.m[0] = t / aspect;
@@ -246,7 +260,8 @@ static Mat4 Perspective(float fovy, float aspect, float n, float f) {
     return r;
 }
 
-static Mat4 Rotation(float a, float b) {
+static Mat4 Rotation(float a, float b)
+{
     const float ca = cosf(a), sa = sinf(a), cb = cosf(b), sb = sinf(b);
     Mat4 y{{ca, 0, -sa, 0, 0, 1, 0, 0, sa, 0, ca, 0, 0, 0, 0, 1}};
     Mat4 x{{1, 0, 0, 0, 0, cb, sb, 0, 0, -sb, cb, 0, 0, 0, 0, 1}};
@@ -255,34 +270,45 @@ static Mat4 Rotation(float a, float b) {
     return r;
 }
 
-static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-    if (msg == WM_DESTROY) {
+static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    if (msg == WM_DESTROY)
+    {
         PostQuitMessage(0);
         return 0;
     }
     return DefWindowProcW(hwnd, msg, wp, lp);
 }
 
-int main(int argc, char** argv) {
+int main(int argc, char** argv)
+{
     int frames = 0;
     int captureAt = 0;   // --capture-at: ask the inspector for a capture at this frame (gpu_inspector.h)
     bool captureAsked = false;
     int width = 800, height = 600;
     bool msaa = false;
     std::string angle;
-    for (int i = 1; i < argc; ++i) {
+    for (int i = 1; i < argc; ++i)
+    {
         std::string a = argv[i];
-        if (a == "--frames" && i + 1 < argc) frames = atoi(argv[++i]);
-        else if (a == "--capture-at" && i + 1 < argc) captureAt = atoi(argv[++i]);
-        else if (a == "--width" && i + 1 < argc) width = atoi(argv[++i]);
-        else if (a == "--height" && i + 1 < argc) height = atoi(argv[++i]);
-        else if (a == "--msaa") msaa = true;
-        else if (a == "--angle" && i + 1 < argc) angle = argv[++i];
+        if (a == "--frames" && i + 1 < argc)
+            frames = atoi(argv[++i]);
+        else if (a == "--capture-at" && i + 1 < argc)
+            captureAt = atoi(argv[++i]);
+        else if (a == "--width" && i + 1 < argc)
+            width = atoi(argv[++i]);
+        else if (a == "--height" && i + 1 < argc)
+            height = atoi(argv[++i]);
+        else if (a == "--msaa")
+            msaa = true;
+        else if (a == "--angle" && i + 1 < argc)
+            angle = argv[++i];
     }
 
     // ANGLE: beside the executable, or where --angle says.
     std::string dir = angle;
-    if (dir.empty()) {
+    if (dir.empty())
+    {
         char exe[MAX_PATH];
         GetModuleFileNameA(nullptr, exe, MAX_PATH);
         dir = exe;
@@ -290,14 +316,17 @@ int main(int argc, char** argv) {
     }
     HMODULE egl = LoadLibraryA((dir + "\\libEGL.dll").c_str());
     g_gles = LoadLibraryA((dir + "\\libGLESv2.dll").c_str());
-    if (!egl || !g_gles) Fail(("ANGLE (libEGL.dll and libGLESv2.dll) not found in " + dir + ": build with ANGLE_DIR set, or pass --angle <dir>").c_str());
+    if (!egl || !g_gles)
+        Fail(("ANGLE (libEGL.dll and libGLESv2.dll) not found in " + dir + ": build with ANGLE_DIR set, or pass --angle <dir>").c_str());
 #define EGL_LOAD(name) name = (PFN_##name)GetProcAddress(egl, #name);
+    // clang-format off
     EGL_LOAD(eglGetDisplay) EGL_LOAD(eglInitialize) EGL_LOAD(eglChooseConfig) EGL_LOAD(eglCreateWindowSurface)
     EGL_LOAD(eglCreateContext) EGL_LOAD(eglMakeCurrent) EGL_LOAD(eglSwapBuffers) EGL_LOAD(eglSwapInterval)
     EGL_LOAD(eglDestroyContext) EGL_LOAD(eglDestroySurface) EGL_LOAD(eglTerminate) EGL_LOAD(eglGetError)
     EGL_LOAD(eglGetProcAddress)
+    // clang-format on
 #undef EGL_LOAD
-    if (!eglGetDisplay || !eglGetProcAddress) Fail("libEGL.dll lacks the EGL entry points");
+                    if (!eglGetDisplay || !eglGetProcAddress) Fail("libEGL.dll lacks the EGL entry points");
 
     WNDCLASSW wc{};
     wc.lpfnWndProc = WndProc;
@@ -308,20 +337,23 @@ int main(int argc, char** argv) {
     RECT r{0, 0, width, height};
     AdjustWindowRect(&r, WS_OVERLAPPEDWINDOW, FALSE);
     HWND hwnd = CreateWindowW(wc.lpszClassName, L"glesinsp_triangle (OpenGL ES on ANGLE)", WS_OVERLAPPEDWINDOW | WS_VISIBLE,
-                              CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
+        CW_USEDEFAULT, CW_USEDEFAULT, r.right - r.left, r.bottom - r.top, nullptr, nullptr, wc.hInstance, nullptr);
 
     EGLDisplay display = eglGetDisplay(GetDC(hwnd));
     EGLint major = 0, minor = 0;
-    if (!eglInitialize(display, &major, &minor)) Fail("eglInitialize failed");
+    if (!eglInitialize(display, &major, &minor))
+        Fail("eglInitialize failed");
     const EGLint configAttribs[] = {EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8, EGL_DEPTH_SIZE, 24,
-                                    EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_NONE};
+        EGL_RENDERABLE_TYPE, EGL_OPENGL_ES3_BIT, EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_NONE};
     EGLConfig config = nullptr;
     EGLint count = 0;
-    if (!eglChooseConfig(display, configAttribs, &config, 1, &count) || count == 0) Fail("no ES 3 config");
+    if (!eglChooseConfig(display, configAttribs, &config, 1, &count) || count == 0)
+        Fail("no ES 3 config");
     EGLSurface surface = eglCreateWindowSurface(display, config, hwnd, nullptr);
     const EGLint contextAttribs[] = {EGL_CONTEXT_CLIENT_VERSION, 3, EGL_NONE};
     EGLContext context = eglCreateContext(display, config, nullptr, contextAttribs);
-    if (!surface || !context) Fail("the surface or the context could not be made");
+    if (!surface || !context)
+        Fail("the surface or the context could not be made");
     eglMakeCurrent(display, surface, surface, context);
     eglSwapInterval(display, 1);
 
@@ -347,15 +379,130 @@ int main(int argc, char** argv) {
 
     const float cube[] = {
         // position, uv: six faces of two triangles each, drawn with an index buffer.
-        -1, -1, 1, 0, 0, 1, -1, 1, 1, 0, 1, 1, 1, 1, 1, -1, 1, 1, 0, 1,
-        1, -1, -1, 0, 0, -1, -1, -1, 1, 0, -1, 1, -1, 1, 1, 1, 1, -1, 0, 1,
-        -1, -1, -1, 0, 0, -1, -1, 1, 1, 0, -1, 1, 1, 1, 1, -1, 1, -1, 0, 1,
-        1, -1, 1, 0, 0, 1, -1, -1, 1, 0, 1, 1, -1, 1, 1, 1, 1, 1, 0, 1,
-        -1, 1, 1, 0, 0, 1, 1, 1, 1, 0, 1, 1, -1, 1, 1, -1, 1, -1, 0, 1,
-        -1, -1, -1, 0, 0, 1, -1, -1, 1, 0, 1, -1, 1, 1, 1, -1, -1, 1, 0, 1,
+        -1,
+        -1,
+        1,
+        0,
+        0,
+        1,
+        -1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        1,
+        1,
+        1,
+        -1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        -1,
+        -1,
+        0,
+        0,
+        -1,
+        -1,
+        -1,
+        1,
+        0,
+        -1,
+        1,
+        -1,
+        1,
+        1,
+        1,
+        1,
+        -1,
+        0,
+        1,
+        -1,
+        -1,
+        -1,
+        0,
+        0,
+        -1,
+        -1,
+        1,
+        1,
+        0,
+        -1,
+        1,
+        1,
+        1,
+        1,
+        -1,
+        1,
+        -1,
+        0,
+        1,
+        1,
+        -1,
+        1,
+        0,
+        0,
+        1,
+        -1,
+        -1,
+        1,
+        0,
+        1,
+        1,
+        -1,
+        1,
+        1,
+        1,
+        1,
+        1,
+        0,
+        1,
+        -1,
+        1,
+        1,
+        0,
+        0,
+        1,
+        1,
+        1,
+        1,
+        0,
+        1,
+        1,
+        -1,
+        1,
+        1,
+        -1,
+        1,
+        -1,
+        0,
+        1,
+        -1,
+        -1,
+        -1,
+        0,
+        0,
+        1,
+        -1,
+        -1,
+        1,
+        0,
+        1,
+        -1,
+        1,
+        1,
+        1,
+        -1,
+        -1,
+        1,
+        0,
+        1,
     };
     std::vector<uint16_t> indices;
-    for (uint16_t f = 0; f < 6; ++f) {
+    for (uint16_t f = 0; f < 6; ++f)
+    {
         const uint16_t b = f * 4;
         indices.insert(indices.end(), {b, (uint16_t)(b + 1), (uint16_t)(b + 2), b, (uint16_t)(b + 2), (uint16_t)(b + 3)});
     }
@@ -373,7 +520,8 @@ int main(int argc, char** argv) {
     glEnableVertexAttribArray(1);
     glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 20, (const void*)12);
     glBindVertexArray(0);
-    if (glObjectLabel) {
+    if (glObjectLabel)
+    {
         glObjectLabel(GL_BUFFER, cubeVbo, -1, "cube vertices");
         glObjectLabel(GL_BUFFER, cubeIbo, -1, "cube indices");
     }
@@ -381,7 +529,8 @@ int main(int argc, char** argv) {
     glBindBuffer(GL_UNIFORM_BUFFER, ubo);
     glBufferData(GL_UNIFORM_BUFFER, 96, nullptr, GL_DYNAMIC_DRAW);
     glUniformBlockBinding(cubeProgram, glGetUniformBlockIndex(cubeProgram, "Transform"), 2);
-    if (glObjectLabel) glObjectLabel(GL_BUFFER, ubo, -1, "transform");
+    if (glObjectLabel)
+        glObjectLabel(GL_BUFFER, ubo, -1, "transform");
 
     const float quad[] = {-1, -1, 1, -1, 1, 1, -1, -1, 1, 1, -1, 1};
     GLuint quadVao = 0, quadVbo = 0;
@@ -397,7 +546,8 @@ int main(int argc, char** argv) {
     // A checkerboard, and a BC1 texture when the driver takes one.
     std::vector<uint8_t> checker(64 * 64 * 4);
     for (int y = 0; y < 64; ++y)
-        for (int x = 0; x < 64; ++x) {
+        for (int x = 0; x < 64; ++x)
+        {
             const bool on = ((x / 8) ^ (y / 8)) & 1;
             uint8_t* p = &checker[(y * 64 + x) * 4];
             p[0] = on ? 240 : 40;
@@ -411,27 +561,40 @@ int main(int argc, char** argv) {
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, checker.data());
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-    if (glObjectLabel) glObjectLabel(GL_TEXTURE, checkerTex, -1, "checker");
+    if (glObjectLabel)
+        glObjectLabel(GL_TEXTURE, checkerTex, -1, "checker");
     glGenTextures(1, &detailTex);
     glBindTexture(GL_TEXTURE_2D, detailTex);
     const std::string extensions = (const char*)glGetString(GL_EXTENSIONS);
     if (extensions.find("GL_EXT_texture_compression_dxt1") != std::string::npos ||
-        extensions.find("GL_EXT_texture_compression_s3tc") != std::string::npos) {
+        extensions.find("GL_EXT_texture_compression_s3tc") != std::string::npos)
+    {
         // 16x16 of BC1 blocks: each block red to blue, alternating which end is which.
         std::vector<uint8_t> blocks(4 * 4 * 8);
-        for (int b = 0; b < 16; ++b) {
+        for (int b = 0; b < 16; ++b)
+        {
             uint8_t* p = &blocks[b * 8];
             const uint16_t red = 0xF800, blue = 0x001F;
             const uint16_t c0 = (b & 1) ? red : blue, c1 = (b & 1) ? blue : red;
-            p[0] = c0 & 0xFF; p[1] = c0 >> 8; p[2] = c1 & 0xFF; p[3] = c1 >> 8;
-            p[4] = 0x00; p[5] = 0x55; p[6] = 0xAA; p[7] = 0xFF;
+            p[0] = c0 & 0xFF;
+            p[1] = c0 >> 8;
+            p[2] = c1 & 0xFF;
+            p[3] = c1 >> 8;
+            p[4] = 0x00;
+            p[5] = 0x55;
+            p[6] = 0xAA;
+            p[7] = 0xFF;
         }
         glCompressedTexImage2D(GL_TEXTURE_2D, 0, 0x83F0, 16, 16, 0, (GLsizei)blocks.size(), blocks.data());
-        if (glObjectLabel) glObjectLabel(GL_TEXTURE, detailTex, -1, "detail (BC1)");
-    } else {
+        if (glObjectLabel)
+            glObjectLabel(GL_TEXTURE, detailTex, -1, "detail (BC1)");
+    }
+    else
+    {
         const uint8_t gray[4] = {128, 128, 128, 255};
         glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 1, 1, 0, GL_RGBA, GL_UNSIGNED_BYTE, gray);
-        if (glObjectLabel) glObjectLabel(GL_TEXTURE, detailTex, -1, "detail");
+        if (glObjectLabel)
+            glObjectLabel(GL_TEXTURE, detailTex, -1, "detail");
     }
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
 
@@ -443,17 +606,23 @@ int main(int argc, char** argv) {
     glBindTexture(GL_TEXTURE_2D, colorTex);
     glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, ow, oh, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    if (glObjectLabel) glObjectLabel(GL_TEXTURE, colorTex, -1, "offscreen color");
+    if (glObjectLabel)
+        glObjectLabel(GL_TEXTURE, colorTex, -1, "offscreen color");
     glGenRenderbuffers(1, &depthRb);
     glBindRenderbuffer(GL_RENDERBUFFER, depthRb);
-    if (msaa) glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT24, ow, oh);
-    else glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, ow, oh);
+    if (msaa)
+        glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_DEPTH_COMPONENT24, ow, oh);
+    else
+        glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH_COMPONENT24, ow, oh);
     glGenFramebuffers(1, &fbo);
     glBindFramebuffer(GL_FRAMEBUFFER, fbo);
     glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, colorTex, 0);
-    if (!msaa) glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRb);
-    if (glObjectLabel) glObjectLabel(GL_FRAMEBUFFER, fbo, -1, "offscreen");
-    if (msaa) {
+    if (!msaa)
+        glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRb);
+    if (glObjectLabel)
+        glObjectLabel(GL_FRAMEBUFFER, fbo, -1, "offscreen");
+    if (msaa)
+    {
         glGenRenderbuffers(1, &msaaColor);
         glBindRenderbuffer(GL_RENDERBUFFER, msaaColor);
         glRenderbufferStorageMultisample(GL_RENDERBUFFER, 4, GL_RGBA8, ow, oh);
@@ -461,9 +630,11 @@ int main(int argc, char** argv) {
         glBindFramebuffer(GL_FRAMEBUFFER, msaaFbo);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_RENDERBUFFER, msaaColor);
         glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, depthRb);
-        if (glObjectLabel) glObjectLabel(GL_FRAMEBUFFER, msaaFbo, -1, "offscreen (4x MSAA)");
+        if (glObjectLabel)
+            glObjectLabel(GL_FRAMEBUFFER, msaaFbo, -1, "offscreen (4x MSAA)");
     }
-    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) Fail("the offscreen framebuffer is incomplete");
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        Fail("the offscreen framebuffer is incomplete");
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // Client-side vertices, which ES still allows outside a vertex array object.
@@ -477,27 +648,33 @@ int main(int argc, char** argv) {
     MSG msg{};
     int frame = 0;
     bool running = true;
-    while (running) {
-        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE)) {
-            if (msg.message == WM_QUIT) running = false;
+    while (running)
+    {
+        while (PeekMessageW(&msg, nullptr, 0, 0, PM_REMOVE))
+        {
+            if (msg.message == WM_QUIT)
+                running = false;
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        if (!running) break;
+        if (!running)
+            break;
         RECT client;
         GetClientRect(hwnd, &client);
         const int w = std::max<int>(1, client.right), h = std::max<int>(1, client.bottom);
         const float t = frame / 60.0f;
 
         // Pass 1: the cube, offscreen.
-        if (glPushDebugGroup) glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "offscreen cube");
+        if (glPushDebugGroup)
+            glPushDebugGroup(GL_DEBUG_SOURCE_APPLICATION, 1, -1, "offscreen cube");
         glBindFramebuffer(GL_FRAMEBUFFER, msaa ? msaaFbo : fbo);
         glViewport(0, 0, ow, oh);
         glEnable(GL_DEPTH_TEST);
         glDepthFunc(GL_LESS);
         glClearColor(0.1f, 0.12f, 0.2f, 1);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
-        struct {
+        struct
+        {
             Mat4 mvp;
             float tint[4];
             float time;
@@ -516,7 +693,8 @@ int main(int argc, char** argv) {
         glBindVertexArray(cubeVao);
         glDrawElements(GL_TRIANGLES, (GLsizei)indices.size(), GL_UNSIGNED_SHORT, nullptr);
         glBindVertexArray(0);
-        if (msaa) {
+        if (msaa)
+        {
             glBindFramebuffer(GL_READ_FRAMEBUFFER, msaaFbo);
             glBindFramebuffer(GL_DRAW_FRAMEBUFFER, fbo);
             glBlitFramebuffer(0, 0, ow, oh, 0, 0, ow, oh, GL_COLOR_BUFFER_BIT, GL_NEAREST);
@@ -525,7 +703,8 @@ int main(int argc, char** argv) {
         const GLenum discard[] = {GL_DEPTH_ATTACHMENT};
         glBindFramebuffer(GL_FRAMEBUFFER, msaa ? msaaFbo : fbo);
         glInvalidateFramebuffer(GL_FRAMEBUFFER, 1, discard);
-        if (glPopDebugGroup) glPopDebugGroup();
+        if (glPopDebugGroup)
+            glPopDebugGroup();
 
         // Pass 2: the window.
         glBindFramebuffer(GL_FRAMEBUFFER, 0);
@@ -552,16 +731,19 @@ int main(int argc, char** argv) {
         glDisableVertexAttribArray(1);
 
         eglSwapBuffers(display, surface);
-        if (const GLenum e = glGetError()) fprintf(stderr, "frame %d: GL error 0x%X\n", frame, e);
+        if (const GLenum e = glGetError())
+            fprintf(stderr, "frame %d: GL error 0x%X\n", frame, e);
         // Asked again each frame until somebody is there to hear it: the inspector connects a
         // few frames after the context is made.
-        if (captureAt > 0 && frame >= captureAt && !captureAsked) {
+        if (captureAt > 0 && frame >= captureAt && !captureAsked)
+        {
             char label[48];
             snprintf(label, sizeof label, "asked at frame %d", captureAt);   // the tab's name
             captureAsked = gpu_inspector_capture_named(1, label) != 0;
         }
         ++frame;
-        if (frames && frame >= frames) break;
+        if (frames && frame >= frames)
+            break;
     }
     eglMakeCurrent(display, nullptr, nullptr, nullptr);
     eglDestroyContext(display, context);

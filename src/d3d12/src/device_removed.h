@@ -17,7 +17,8 @@
 
 #include <string>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /**
  * Turns DRED on. Must run before the device is created, which is the only chance the runtime gives:

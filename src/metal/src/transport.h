@@ -20,11 +20,13 @@
 #include <string>
 #include <vector>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
-class Transport {
+class Transport
+{
 public:
-    static Transport &Get();
+    static Transport& Get();
 
     /** Starts the listener thread. Safe to call more than once. */
     void Start();
@@ -41,19 +43,19 @@ public:
      * header, so a render target of tens of megabytes is copied once, from the staging buffer,
      * and the vector form is not copied at all.
      */
-    void SendBinary(std::string headerJson, const void *data, size_t size);
+    void SendBinary(std::string headerJson, const void* data, size_t size);
     void SendBinary(std::string headerJson, std::vector<uint8_t> payload);
 
     /** Called on the listener thread once a client has connected, to send it a snapshot. */
     void SetOnConnect(std::function<void()> handler);
     void SetOnDisconnect(std::function<void()> handler);
     /** Incoming JSON from the UI, called on the receiver thread. */
-    void SetMessageHandler(std::function<void(const std::string &)> handler);
+    void SetMessageHandler(std::function<void(const std::string&)> handler);
 
 private:
     Transport() = default;
     struct Impl;
-    Impl *impl_ = nullptr;
+    Impl* impl_ = nullptr;
 };
 
 }  // namespace mtlinsp

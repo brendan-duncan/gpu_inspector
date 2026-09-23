@@ -31,7 +31,8 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 class CommandRecorder;
 
@@ -47,7 +48,7 @@ class CommandRecorder;
  * carries; null for a CreateStateObject.
  */
 void NoteStateObject(ID3D12StateObject* stateObject, const D3D12_STATE_OBJECT_DESC* desc,
-                     ID3D12StateObject* grownFrom);
+    ID3D12StateObject* grownFrom);
 
 /**
  * The export whose identifier is these bytes, or "". Kept for the UI to resolve a binding table
@@ -105,12 +106,12 @@ void WriteStructureRef(JsonWriter& w, D3D12_GPU_VIRTUAL_ADDRESS address);
  * layer, and the same defect it was written to avoid.
  */
 std::string NoteAccelerationStructureBuild(CommandRecorder* rec,
-                                           const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC& desc,
-                                           ID3D12Device* device);
+    const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC& desc,
+    ID3D12Device* device);
 
 /** A copy between structures: the destination takes the source's build, so the UI can still show it. */
 void NoteAccelerationStructureCopy(D3D12_GPU_VIRTUAL_ADDRESS dest, D3D12_GPU_VIRTUAL_ADDRESS source,
-                                   D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE mode, ID3D12Device* device);
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE mode, ID3D12Device* device);
 
 // ---------------------------------------------------------------------------------------------
 // Traces

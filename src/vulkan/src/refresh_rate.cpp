@@ -17,10 +17,13 @@
 #include <unistd.h>
 #endif
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-const char* RefreshSourceName(RefreshSource s) {
-    switch (s) {
+const char* RefreshSourceName(RefreshSource s)
+{
+    switch (s)
+    {
         case RefreshSource::PresentTiming: return "present_timing";
         case RefreshSource::DisplayTiming: return "display_timing";
         case RefreshSource::Monitor: return "monitor";
@@ -29,14 +32,18 @@ const char* RefreshSourceName(RefreshSource s) {
     }
 }
 
-static bool HasName(const char* const* names, uint32_t count, const char* name) {
+static bool HasName(const char* const* names, uint32_t count, const char* name)
+{
     for (uint32_t i = 0; i < count; ++i)
-        if (names[i] && strcmp(names[i], name) == 0) return true;
+        if (names[i] && strcmp(names[i], name) == 0)
+            return true;
     return false;
 }
 
-bool AddSurfaceCapabilities2(VkInstanceCreateInfo& info, std::vector<const char*>& names) {
-    if (HasName(info.ppEnabledExtensionNames, info.enabledExtensionCount, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME)) return false;
+bool AddSurfaceCapabilities2(VkInstanceCreateInfo& info, std::vector<const char*>& names)
+{
+    if (HasName(info.ppEnabledExtensionNames, info.enabledExtensionCount, VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME))
+        return false;
     names.assign(info.ppEnabledExtensionNames, info.ppEnabledExtensionNames + info.enabledExtensionCount);
     names.push_back(VK_KHR_GET_SURFACE_CAPABILITIES_2_EXTENSION_NAME);
     info.ppEnabledExtensionNames = names.data();
@@ -44,76 +51,98 @@ bool AddSurfaceCapabilities2(VkInstanceCreateInfo& info, std::vector<const char*
     return true;
 }
 
-static bool ContainsValidationLayer(const std::string& list) {
+static bool ContainsValidationLayer(const std::string& list)
+{
     return list.find("VK_LAYER_KHRONOS_validation") != std::string::npos;
 }
 
-bool OldValidationLayerEnabled(PFN_vkGetInstanceProcAddr nextGipa, const VkInstanceCreateInfo& info) {
+bool OldValidationLayerEnabled(PFN_vkGetInstanceProcAddr nextGipa, const VkInstanceCreateInfo& info)
+{
     bool enabled = false;
     for (uint32_t i = 0; i < info.enabledLayerCount; ++i)
-        if (info.ppEnabledLayerNames[i] && ContainsValidationLayer(info.ppEnabledLayerNames[i])) enabled = true;
+        if (info.ppEnabledLayerNames[i] && ContainsValidationLayer(info.ppEnabledLayerNames[i]))
+            enabled = true;
     // Layers the loader enabled from the environment (the launcher's way) are not in the list.
-    if (!enabled) enabled = ContainsValidationLayer(ConfigValue("VK_INSTANCE_LAYERS")) || ContainsValidationLayer(ConfigValue("VK_LOADER_LAYERS_ENABLE"));
-    if (!enabled) return false;
+    if (!enabled)
+        enabled = ContainsValidationLayer(ConfigValue("VK_INSTANCE_LAYERS")) || ContainsValidationLayer(ConfigValue("VK_LOADER_LAYERS_ENABLE"));
+    if (!enabled)
+        return false;
     // The next layer's vkEnumerateInstanceLayerProperties reports that layer itself.
     auto enumerate = (PFN_vkEnumerateInstanceLayerProperties)nextGipa(VK_NULL_HANDLE, "vkEnumerateInstanceLayerProperties");
     uint32_t count = 0;
-    if (!enumerate || enumerate(&count, nullptr) != VK_SUCCESS || count == 0) return true;   // unknown age: careful
+    if (!enumerate || enumerate(&count, nullptr) != VK_SUCCESS || count == 0)
+        return true;   // unknown age: careful
     std::vector<VkLayerProperties> props(count);
-    if (enumerate(&count, props.data()) < VK_SUCCESS) return true;
-    for (uint32_t i = 0; i < count; ++i) {
-        if (!ContainsValidationLayer(props[i].layerName)) continue;
+    if (enumerate(&count, props.data()) < VK_SUCCESS)
+        return true;
+    for (uint32_t i = 0; i < count; ++i)
+    {
+        if (!ContainsValidationLayer(props[i].layerName))
+            continue;
         const bool old = VK_API_VERSION_PATCH(props[i].specVersion) < VK_HEADER_VERSION;
-        if (old) Log("refresh rate: validation layer %u.%u.%u is older than the layer's headers (1.x.%u); VK_EXT_present_timing stays off",
-                     VK_API_VERSION_MAJOR(props[i].specVersion), VK_API_VERSION_MINOR(props[i].specVersion), VK_API_VERSION_PATCH(props[i].specVersion), VK_HEADER_VERSION);
+        if (old)
+            Log("refresh rate: validation layer %u.%u.%u is older than the layer's headers (1.x.%u); VK_EXT_present_timing stays off",
+                VK_API_VERSION_MAJOR(props[i].specVersion), VK_API_VERSION_MINOR(props[i].specVersion), VK_API_VERSION_PATCH(props[i].specVersion), VK_HEADER_VERSION);
         return old;
     }
     return true;
 }
 
 // Whether the chain already carries a struct of this type (the application's own features).
-static bool ChainHas(const void* pNext, VkStructureType type) {
+static bool ChainHas(const void* pNext, VkStructureType type)
+{
     for (auto* p = (const VkBaseInStructure*)pNext; p; p = p->pNext)
-        if (p->sType == type) return true;
+        if (p->sType == type)
+            return true;
     return false;
 }
 
-void PlanRefreshSource(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, RefreshDeviceSetup& setup) {
-    if (!inst || !inst->dispatch.EnumerateDeviceExtensionProperties) return;
+void PlanRefreshSource(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDeviceCreateInfo& info, RefreshDeviceSetup& setup)
+{
+    if (!inst || !inst->dispatch.EnumerateDeviceExtensionProperties)
+        return;
     // VKINSP_NO_REFRESH_EXTENSIONS=1: leave the device as the application created it (the
     // monitor mode or the estimate then give the refresh period).
-    if (ConfigFlag("VKINSP_NO_REFRESH_EXTENSIONS")) return;
+    if (ConfigFlag("VKINSP_NO_REFRESH_EXTENSIONS"))
+        return;
     uint32_t count = 0;
-    if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || count == 0) return;
+    if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, nullptr) != VK_SUCCESS || count == 0)
+        return;
     std::vector<VkExtensionProperties> props(count);
-    if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, props.data()) < VK_SUCCESS) return;
+    if (inst->dispatch.EnumerateDeviceExtensionProperties(physicalDevice, nullptr, &count, props.data()) < VK_SUCCESS)
+        return;
     auto offered = [&](const char* name) {
         for (uint32_t i = 0; i < count; ++i)
-            if (strcmp(props[i].extensionName, name) == 0) return true;
+            if (strcmp(props[i].extensionName, name) == 0)
+                return true;
         return false;
     };
     setup.extensionNames.assign(info.ppEnabledExtensionNames, info.ppEnabledExtensionNames + info.enabledExtensionCount);
     auto add = [&](const char* name) {
-        if (!HasName(setup.extensionNames.data(), (uint32_t)setup.extensionNames.size(), name)) setup.extensionNames.push_back(name);
+        if (!HasName(setup.extensionNames.data(), (uint32_t)setup.extensionNames.size(), name))
+            setup.extensionNames.push_back(name);
     };
 
     // VK_EXT_present_timing: needs its dependencies and the presentTiming feature (plus
     // presentId2, which it builds on). Only when the physical device reports the features and the
     // application did not chain its own copies of the feature structs.
     PFN_vkGetPhysicalDeviceFeatures2 features2 = inst->dispatch.GetPhysicalDeviceFeatures2
-        ? inst->dispatch.GetPhysicalDeviceFeatures2 : (PFN_vkGetPhysicalDeviceFeatures2)inst->dispatch.GetPhysicalDeviceFeatures2KHR;
+        ? inst->dispatch.GetPhysicalDeviceFeatures2
+        : (PFN_vkGetPhysicalDeviceFeatures2)inst->dispatch.GetPhysicalDeviceFeatures2KHR;
     if (features2 && inst->surfaceCapabilities2 && !inst->oldValidationLayer &&
         offered(VK_EXT_PRESENT_TIMING_EXTENSION_NAME) && offered(VK_KHR_PRESENT_ID_2_EXTENSION_NAME) &&
         offered(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME) &&
         !ChainHas(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT) &&
-        !ChainHas(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR)) {
+        !ChainHas(info.pNext, VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR))
+    {
         VkPhysicalDevicePresentTimingFeaturesEXT timing{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT};
         VkPhysicalDevicePresentId2FeaturesKHR id2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR};
         timing.pNext = &id2;
         VkPhysicalDeviceFeatures2 f2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
         f2.pNext = &timing;
         features2(physicalDevice, &f2);
-        if (timing.presentTiming && id2.presentId2) {
+        if (timing.presentTiming && id2.presentId2)
+        {
             add(VK_EXT_PRESENT_TIMING_EXTENSION_NAME);
             add(VK_KHR_PRESENT_ID_2_EXTENSION_NAME);
             add(VK_KHR_CALIBRATED_TIMESTAMPS_EXTENSION_NAME);
@@ -125,34 +154,41 @@ void PlanRefreshSource(InstanceData* inst, VkPhysicalDevice physicalDevice, VkDe
             setup.presentTiming = true;
         }
     }
-    if (!setup.presentTiming && offered(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME)) {
+    if (!setup.presentTiming && offered(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME))
+    {
         add(VK_GOOGLE_DISPLAY_TIMING_EXTENSION_NAME);
         setup.displayTiming = true;
     }
-    if (setup.presentTiming || setup.displayTiming) {
+    if (setup.presentTiming || setup.displayTiming)
+    {
         info.ppEnabledExtensionNames = setup.extensionNames.data();
         info.enabledExtensionCount = (uint32_t)setup.extensionNames.size();
         Log("refresh rate: enabling %s", setup.presentTiming ? "VK_EXT_present_timing" : "VK_GOOGLE_display_timing");
     }
 }
 
-static bool QuerySurfacePresentTiming(DeviceData* dev, VkSurfaceKHR surface, VkPresentTimingSurfaceCapabilitiesEXT& timing) {
-    if (!dev || !dev->presentTiming || !dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilities2KHR) return false;
+static bool QuerySurfacePresentTiming(DeviceData* dev, VkSurfaceKHR surface, VkPresentTimingSurfaceCapabilitiesEXT& timing)
+{
+    if (!dev || !dev->presentTiming || !dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilities2KHR)
+        return false;
     timing = VkPresentTimingSurfaceCapabilitiesEXT{VK_STRUCTURE_TYPE_PRESENT_TIMING_SURFACE_CAPABILITIES_EXT};
     VkSurfaceCapabilities2KHR caps{VK_STRUCTURE_TYPE_SURFACE_CAPABILITIES_2_KHR};
     caps.pNext = &timing;
     VkPhysicalDeviceSurfaceInfo2KHR info{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SURFACE_INFO_2_KHR};
     info.surface = surface;
-    if (dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilities2KHR(dev->physicalDevice, &info, &caps) != VK_SUCCESS) return false;
+    if (dev->instance->dispatch.GetPhysicalDeviceSurfaceCapabilities2KHR(dev->physicalDevice, &info, &caps) != VK_SUCCESS)
+        return false;
     return timing.presentTimingSupported == VK_TRUE;
 }
 
-bool SurfaceSupportsPresentTiming(DeviceData* dev, VkSurfaceKHR surface) {
+bool SurfaceSupportsPresentTiming(DeviceData* dev, VkSurfaceKHR surface)
+{
     VkPresentTimingSurfaceCapabilitiesEXT timing;
     return QuerySurfacePresentTiming(dev, surface, timing);
 }
 
-VkPresentStageFlagsEXT SurfacePresentStages(DeviceData* dev, VkSurfaceKHR surface) {
+VkPresentStageFlagsEXT SurfacePresentStages(DeviceData* dev, VkSurfaceKHR surface)
+{
     VkPresentTimingSurfaceCapabilitiesEXT timing;
     return QuerySurfacePresentTiming(dev, surface, timing) ? timing.presentStageQueries : 0;
 }
@@ -160,33 +196,50 @@ VkPresentStageFlagsEXT SurfacePresentStages(DeviceData* dev, VkSurfaceKHR surfac
 #if defined(_WIN32)
 // The refresh rate of the monitor showing the process's main window (its largest visible
 // top-level window), in ms; 0 when unknown.
-static double MonitorRefreshMs() {
-    struct Best { HWND hwnd = nullptr; long area = 0; } best;
+static double MonitorRefreshMs()
+{
+    struct Best
+    {
+        HWND hwnd = nullptr;
+        long area = 0;
+    } best;
     EnumWindows([](HWND hwnd, LPARAM param) -> BOOL {
         Best* b = (Best*)param;
         DWORD pid = 0;
         GetWindowThreadProcessId(hwnd, &pid);
-        if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd)) return TRUE;
+        if (pid != GetCurrentProcessId() || !IsWindowVisible(hwnd))
+            return TRUE;
         RECT r;
-        if (!GetWindowRect(hwnd, &r)) return TRUE;
+        if (!GetWindowRect(hwnd, &r))
+            return TRUE;
         long area = (long)(r.right - r.left) * (long)(r.bottom - r.top);
-        if (area > b->area) { b->area = area; b->hwnd = hwnd; }
+        if (area > b->area)
+        {
+            b->area = area;
+            b->hwnd = hwnd;
+        }
         return TRUE;
-    }, (LPARAM)&best);
-    if (!best.hwnd) return 0;
+    },
+        (LPARAM)&best);
+    if (!best.hwnd)
+        return 0;
     HMONITOR monitor = MonitorFromWindow(best.hwnd, MONITOR_DEFAULTTONEAREST);
     MONITORINFOEXW mi;
     mi.cbSize = sizeof(mi);
-    if (!monitor || !GetMonitorInfoW(monitor, &mi)) return 0;
+    if (!monitor || !GetMonitorInfoW(monitor, &mi))
+        return 0;
     DEVMODEW dm;
     memset(&dm, 0, sizeof(dm));
     dm.dmSize = sizeof(dm);
-    if (!EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm)) return 0;
+    if (!EnumDisplaySettingsW(mi.szDevice, ENUM_CURRENT_SETTINGS, &dm))
+        return 0;
     // 0 and 1 mean "the hardware default": unknown to us. The mode frequency is an integer;
     // the NTSC-derived rates are reported rounded down (59 for 59.94 Hz).
-    if (dm.dmDisplayFrequency < 2) return 0;
+    if (dm.dmDisplayFrequency < 2)
+        return 0;
     double hz = (double)dm.dmDisplayFrequency;
-    switch (dm.dmDisplayFrequency) {
+    switch (dm.dmDisplayFrequency)
+    {
         case 23: hz = 23.976; break;
         case 29: hz = 29.97; break;
         case 47: hz = 47.952; break;
@@ -218,9 +271,11 @@ static double MonitorRefreshMs() {
  * on the compositor's connection, and reaching it needs the application's `wl_display`, which
  * only its surface holds. Such an application falls back to the frame-interval estimate.
  */
-namespace {
+namespace
+{
 
-struct Xrandr {
+struct Xrandr
+{
     void* x11 = nullptr;
     void* randr = nullptr;
     Display* (*OpenDisplay)(const char*) = nullptr;
@@ -239,20 +294,25 @@ struct Xrandr {
 };
 
 template <typename T>
-static void Bind(void* lib, const char* name, T& out, bool& ok) {
+static void Bind(void* lib, const char* name, T& out, bool& ok)
+{
     out = reinterpret_cast<T>(dlsym(lib, name));
-    if (!out) ok = false;
+    if (!out)
+        ok = false;
 }
 
 /** The entry points, loaded once. Failure is remembered: a machine without RandR is not retried every frame. */
-static const Xrandr& LoadXrandr() {
+static const Xrandr& LoadXrandr()
+{
     static Xrandr x = [] {
         Xrandr r;
         // No DISPLAY is a console, a Wayland-native session or a headless run: nothing to ask.
-        if (!getenv("DISPLAY")) return r;
+        if (!getenv("DISPLAY"))
+            return r;
         r.x11 = dlopen("libX11.so.6", RTLD_LAZY | RTLD_LOCAL);
         r.randr = dlopen("libXrandr.so.2", RTLD_LAZY | RTLD_LOCAL);
-        if (!r.x11 || !r.randr) return r;
+        if (!r.x11 || !r.randr)
+            return r;
         bool ok = true;
         Bind(r.x11, "XOpenDisplay", r.OpenDisplay, ok);
         Bind(r.x11, "XCloseDisplay", r.CloseDisplay, ok);
@@ -273,50 +333,67 @@ static const Xrandr& LoadXrandr() {
 }
 
 /** A window's absolute rectangle on the screen, false when the server does not know it. */
-static bool WindowRect(const Xrandr& x, Display* display, Window window, int& x0, int& y0, unsigned& w, unsigned& h) {
+static bool WindowRect(const Xrandr& x, Display* display, Window window, int& x0, int& y0, unsigned& w, unsigned& h)
+{
     Window root = 0;
     int ignoredX = 0, ignoredY = 0;
     unsigned border = 0, depth = 0;
-    if (!x.GetGeometry(display, window, &root, &ignoredX, &ignoredY, &w, &h, &border, &depth)) return false;
+    if (!x.GetGeometry(display, window, &root, &ignoredX, &ignoredY, &w, &h, &border, &depth))
+        return false;
     Window child = 0;
     // Relative to its parent is not where it is: the window manager reparents, so the position is
     // whatever translating (0,0) to the root gives.
-    if (!x.TranslateCoordinates(display, window, root, 0, 0, &x0, &y0, &child)) return false;
+    if (!x.TranslateCoordinates(display, window, root, 0, 0, &x0, &y0, &child))
+        return false;
     return w > 0 && h > 0;
 }
 
 /** This process's largest window, from the window manager's client list; 0 when it has none yet. */
-static Window ProcessWindow(const Xrandr& x, Display* display) {
+static Window ProcessWindow(const Xrandr& x, Display* display)
+{
     const Atom clientList = x.InternAtom(display, "_NET_CLIENT_LIST", True);
     const Atom pidAtom = x.InternAtom(display, "_NET_WM_PID", True);
-    if (!clientList || !pidAtom) return 0;
+    if (!clientList || !pidAtom)
+        return 0;
     Atom type = 0;
     int format = 0;
     unsigned long count = 0, after = 0;
     unsigned char* data = nullptr;
     if (x.GetWindowProperty(display, x.DefaultRootWindowFn(display), clientList, 0, 4096, False, AnyPropertyType,
-                            &type, &format, &count, &after, &data) != Success || !data) return 0;
+            &type, &format, &count, &after, &data) != Success ||
+        !data)
+        return 0;
     Window best = 0;
     unsigned long bestArea = 0;
-    if (format == 32) {
+    if (format == 32)
+    {
         const unsigned long* windows = reinterpret_cast<const unsigned long*>(data);
         const unsigned long self = (unsigned long)getpid();
-        for (unsigned long i = 0; i < count; ++i) {
+        for (unsigned long i = 0; i < count; ++i)
+        {
             const Window candidate = (Window)windows[i];
             Atom pidType = 0;
             int pidFormat = 0;
             unsigned long pidCount = 0, pidAfter = 0;
             unsigned char* pidData = nullptr;
             if (x.GetWindowProperty(display, candidate, pidAtom, 0, 1, False, AnyPropertyType,
-                                    &pidType, &pidFormat, &pidCount, &pidAfter, &pidData) != Success || !pidData) continue;
+                    &pidType, &pidFormat, &pidCount, &pidAfter, &pidData) != Success ||
+                !pidData)
+                continue;
             const bool mine = pidFormat == 32 && pidCount >= 1 && *reinterpret_cast<const unsigned long*>(pidData) == self;
             x.FreeFn(pidData);
-            if (!mine) continue;
+            if (!mine)
+                continue;
             int wx = 0, wy = 0;
             unsigned ww = 0, wh = 0;
-            if (!WindowRect(x, display, candidate, wx, wy, ww, wh)) continue;
+            if (!WindowRect(x, display, candidate, wx, wy, ww, wh))
+                continue;
             const unsigned long area = (unsigned long)ww * wh;
-            if (area > bestArea) { bestArea = area; best = candidate; }
+            if (area > bestArea)
+            {
+                bestArea = area;
+                best = candidate;
+            }
         }
     }
     x.FreeFn(data);
@@ -324,48 +401,62 @@ static Window ProcessWindow(const Xrandr& x, Display* display) {
 }
 
 /** The refresh period in ms of a RandR mode, 0 when the mode has no timings. */
-static double ModeMs(const XRRModeInfo& mode) {
+static double ModeMs(const XRRModeInfo& mode)
+{
     const double total = (double)mode.hTotal * (double)mode.vTotal;
-    if (mode.dotClock == 0 || total <= 0) return 0;
+    if (mode.dotClock == 0 || total <= 0)
+        return 0;
     return 1000.0 * total / (double)mode.dotClock;
 }
 
 }  // namespace
 
-static double MonitorRefreshMs() {
+static double MonitorRefreshMs()
+{
     const Xrandr& x = LoadXrandr();
-    if (!x.ok) return 0;
+    if (!x.ok)
+        return 0;
     // One connection, kept: opening one per query would be a round trip to the server inside the
     // application's frame. Xlib is not thread-safe per display, so it is used under this lock.
     static std::mutex mutex;
     std::lock_guard<std::mutex> lock(mutex);
     static Display* display = x.OpenDisplay(nullptr);
-    if (!display) return 0;
+    if (!display)
+        return 0;
 
     XRRScreenResources* resources = x.GetScreenResourcesCurrent(display, x.DefaultRootWindowFn(display));
-    if (!resources) return 0;
+    if (!resources)
+        return 0;
 
     // Where the window is, so the right output is picked on a multi-monitor desktop; with no
     // window yet (the swapchain can be made before it is mapped) the first active output stands in.
     int wx = 0, wy = 0;
     unsigned ww = 0, wh = 0;
     bool haveWindow = false;
-    if (const Window window = ProcessWindow(x, display)) haveWindow = WindowRect(x, display, window, wx, wy, ww, wh);
+    if (const Window window = ProcessWindow(x, display))
+        haveWindow = WindowRect(x, display, window, wx, wy, ww, wh);
     const int cx = wx + (int)ww / 2, cy = wy + (int)wh / 2;
 
     double ms = 0, firstActive = 0;
-    for (int i = 0; i < resources->ncrtc && ms == 0; ++i) {
+    for (int i = 0; i < resources->ncrtc && ms == 0; ++i)
+    {
         XRRCrtcInfo* crtc = x.GetCrtcInfo(display, resources, resources->crtcs[i]);
-        if (!crtc) continue;
-        if (crtc->mode != 0 && crtc->width > 0 && crtc->height > 0) {
-            for (int m = 0; m < resources->nmode; ++m) {
-                if (resources->modes[m].id != crtc->mode) continue;
+        if (!crtc)
+            continue;
+        if (crtc->mode != 0 && crtc->width > 0 && crtc->height > 0)
+        {
+            for (int m = 0; m < resources->nmode; ++m)
+            {
+                if (resources->modes[m].id != crtc->mode)
+                    continue;
                 const double candidate = ModeMs(resources->modes[m]);
-                if (candidate <= 0) break;
-                if (firstActive == 0) firstActive = candidate;
-                const bool contains = cx >= crtc->x && cx < crtc->x + (int)crtc->width
-                                   && cy >= crtc->y && cy < crtc->y + (int)crtc->height;
-                if (haveWindow && contains) ms = candidate;
+                if (candidate <= 0)
+                    break;
+                if (firstActive == 0)
+                    firstActive = candidate;
+                const bool contains = cx >= crtc->x && cx < crtc->x + (int)crtc->width && cy >= crtc->y && cy < crtc->y + (int)crtc->height;
+                if (haveWindow && contains)
+                    ms = candidate;
                 break;
             }
         }
@@ -376,30 +467,38 @@ static double MonitorRefreshMs() {
 }
 #endif  // VKINSP_HAVE_XRANDR
 
-double QueryRefreshMs(DeviceData* dev, VkSwapchainKHR swapchain, RefreshSource& source) {
+double QueryRefreshMs(DeviceData* dev, VkSwapchainKHR swapchain, RefreshSource& source)
+{
     source = RefreshSource::Unknown;
-    if (!dev) return 0;
-    if (dev->presentTiming) {
+    if (!dev)
+        return 0;
+    if (dev->presentTiming)
+    {
         VkSwapchainTimingPropertiesEXT props{VK_STRUCTURE_TYPE_SWAPCHAIN_TIMING_PROPERTIES_EXT};
         uint64_t counter = 0;
         VkResult r = dev->dispatch.GetSwapchainTimingPropertiesEXT
-            ? dev->dispatch.GetSwapchainTimingPropertiesEXT(dev->device, swapchain, &props, &counter) : VK_ERROR_EXTENSION_NOT_PRESENT;
-        if (r == VK_SUCCESS && props.refreshDuration > 0) {
+            ? dev->dispatch.GetSwapchainTimingPropertiesEXT(dev->device, swapchain, &props, &counter)
+            : VK_ERROR_EXTENSION_NOT_PRESENT;
+        if (r == VK_SUCCESS && props.refreshDuration > 0)
+        {
             source = RefreshSource::PresentTiming;
             return (double)props.refreshDuration / 1e6;
         }
         Log("refresh rate: vkGetSwapchainTimingPropertiesEXT gave %d (refreshDuration %llu)", (int)r, (unsigned long long)props.refreshDuration);
     }
-    if (dev->displayTiming && dev->dispatch.GetRefreshCycleDurationGOOGLE) {
+    if (dev->displayTiming && dev->dispatch.GetRefreshCycleDurationGOOGLE)
+    {
         VkRefreshCycleDurationGOOGLE cycle{};
-        if (dev->dispatch.GetRefreshCycleDurationGOOGLE(dev->device, swapchain, &cycle) == VK_SUCCESS && cycle.refreshDuration > 0) {
+        if (dev->dispatch.GetRefreshCycleDurationGOOGLE(dev->device, swapchain, &cycle) == VK_SUCCESS && cycle.refreshDuration > 0)
+        {
             source = RefreshSource::DisplayTiming;
             return (double)cycle.refreshDuration / 1e6;
         }
     }
 #if defined(_WIN32) || defined(VKINSP_HAVE_XRANDR)
     double ms = MonitorRefreshMs();
-    if (ms > 0) {
+    if (ms > 0)
+    {
         source = RefreshSource::Monitor;
         return ms;
     }

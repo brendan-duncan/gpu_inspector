@@ -11,13 +11,21 @@
 
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
 struct InstanceData;
 struct DeviceData;
 
 // ("Unknown", not "None": X11 headers define None, and vulkan_xlib.h pulls them in on Linux.)
-enum class RefreshSource { Unknown, PresentTiming, DisplayTiming, Monitor, Estimate };
+enum class RefreshSource
+{
+    Unknown,
+    PresentTiming,
+    DisplayTiming,
+    Monitor,
+    Estimate
+};
 const char* RefreshSourceName(RefreshSource s);
 
 // Adds VK_KHR_get_surface_capabilities2 (a dependency of VK_EXT_present_timing) to the instance
@@ -33,7 +41,8 @@ bool OldValidationLayerEnabled(PFN_vkGetInstanceProcAddr nextGipa, const VkInsta
 // What to add to a device's create info for a refresh-period source: the extensions, and for
 // VK_EXT_present_timing the feature structs to chain. Fills `info` (a copy of the application's)
 // in place; `storage` keeps the new arrays alive for the call.
-struct RefreshDeviceSetup {
+struct RefreshDeviceSetup
+{
     std::vector<const char*> extensionNames;
     VkPhysicalDevicePresentTimingFeaturesEXT presentTimingFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_TIMING_FEATURES_EXT};
     VkPhysicalDevicePresentId2FeaturesKHR presentId2Features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_2_FEATURES_KHR};

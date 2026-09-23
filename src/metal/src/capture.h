@@ -20,10 +20,12 @@
 #import <Metal/Metal.h>
 #import <objc/runtime.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /** One pixel of a texture to follow through a capture (pixel_history.mm), from the `Capture` message's `pixelHistory`. */
-struct PixelHistoryRequest {
+struct PixelHistoryRequest
+{
     bool enabled = false;
     /** The texture's tracked id; 0, or a texture the frame no longer has, for the drawable the frame renders into. */
     uint64_t texture = 0;
@@ -40,14 +42,16 @@ struct PixelHistoryRequest {
  * the UI clicked: the measurement happens while the *next* frame records, and that frame's commands
  * are numbered again from the start.
  */
-struct DrawOverlayRequest {
+struct DrawOverlayRequest
+{
     bool enabled = false;
     uint32_t passIndex = 0;
     uint32_t drawIndex = 0;
 };
 
 /** The UI's `Capture` message, with the Vulkan layer's defaults for what it leaves out. */
-struct CaptureOptions {
+struct CaptureOptions
+{
     uint32_t frameCount = 1;
     /** Frame number to start at (frame_stats.h's counter); UINT64_MAX for the next boundary. */
     uint64_t atFrame = UINT64_MAX;
@@ -72,7 +76,7 @@ struct CaptureOptions {
 };
 
 /** Arms a capture, from the UI's `Capture` message. */
-void RequestCapture(const CaptureOptions &options);
+void RequestCapture(const CaptureOptions& options);
 
 /**
  * Whether commands should be recorded right now. Checked on every intercepted encoder call.
@@ -120,11 +124,11 @@ uint64_t CommandBufferId(id commandBuffer);
  * encoder a parallel render encoder handed out names it as `parent`: it shares that pass, and
  * its own end is not the pass's.
  */
-void RegisterEncoder(id encoder, id commandBuffer, const char *type, id parent);
+void RegisterEncoder(id encoder, id commandBuffer, const char* type, id parent);
 /** The encoder is closed: nothing more will be recorded against it. */
 void ForgetEncoder(id encoder);
 /** The command buffer a registered encoder belongs to, or nil. */
-id EncoderCommandBuffer(id encoder, bool *secondary);
+id EncoderCommandBuffer(id encoder, bool* secondary);
 /** Whether an object is an encoder or a command buffer: something whose label is a command. */
 bool IsCommandStreamObject(id object);
 
@@ -137,15 +141,15 @@ bool IsCommandStreamObject(id object);
  * `method` is the selector, `object` the encoder or command buffer it was called on, and
  * `argsJson` its arguments already serialized, or empty.
  */
-void RecordCommand(const char *method, id object, const std::string &argsJson);
+void RecordCommand(const char* method, id object, const std::string& argsJson);
 
 /** As RecordCommand, with the CaptureBuffers ids of the ranges the command bound. */
-void RecordCommandWithBuffers(const char *method, id object, const std::string &argsJson,
-                              std::vector<uint64_t> bufferData);
+void RecordCommandWithBuffers(const char* method, id object, const std::string& argsJson,
+    std::vector<uint64_t> bufferData);
 
 /** As RecordCommand, with the read-back ids of the textures the command bound (QueueTextureCapture). */
-void RecordCommandWithTextures(const char *method, id object, const std::string &argsJson,
-                               std::vector<uint64_t> textureData);
+void RecordCommandWithTextures(const char* method, id object, const std::string& argsJson,
+    std::vector<uint64_t> textureData);
 
 /**
  * Queues a bound buffer range to be read back with the capture, and returns the id the command
@@ -167,7 +171,7 @@ void RecordCommandWithTextures(const char *method, id object, const std::string 
 uint64_t QueueBufferCapture(id encoder, id buffer, uint64_t offset, uint64_t size, bool whole = false);
 
 /** Queues inline bytes (`setVertexBytes:` and friends) as a CaptureBuffers entry with no buffer. */
-uint64_t QueueBytesCapture(const void *bytes, uint64_t size);
+uint64_t QueueBytesCapture(const void* bytes, uint64_t size);
 
 /**
  * Queues a texture bound for sampling to be read back with the capture, and returns the id the
@@ -188,13 +192,20 @@ uint64_t QueueTextureCapture(id encoder, id texture);
 // --------------------------------------------------------------------------------------------
 // Passes
 
-enum class PassKind { Render, Compute, Blit, Other };
+enum class PassKind
+{
+    Render,
+    Compute,
+    Blit,
+    Other
+};
 
 /**
  * Where a pass's GPU timestamps go, decided before the encoder exists because a render or
  * compute pass takes them through its descriptor.
  */
-struct PassTimingSlot {
+struct PassTimingSlot
+{
     id sampleBuffer = nil;          // id<MTLCounterSampleBuffer>, or nil for no timing
     uint32_t startIndex = 0;
     uint32_t endIndex = 0;
@@ -218,9 +229,9 @@ struct PassTimingSlot {
  * attachment when the device samples at stage boundaries. A descriptor of nil reserves for the
  * encoder-boundary path. Returns a slot with no buffer when timing is off or exhausted.
  */
-PassTimingSlot ReserveRenderPassTiming(id commandBuffer, MTLRenderPassDescriptor *descriptor);
-PassTimingSlot ReserveComputePassTiming(id commandBuffer, MTLComputePassDescriptor *descriptor);
-PassTimingSlot ReserveBlitPassTiming(id commandBuffer, MTLBlitPassDescriptor *descriptor);
+PassTimingSlot ReserveRenderPassTiming(id commandBuffer, MTLRenderPassDescriptor* descriptor);
+PassTimingSlot ReserveComputePassTiming(id commandBuffer, MTLComputePassDescriptor* descriptor);
+PassTimingSlot ReserveBlitPassTiming(id commandBuffer, MTLBlitPassDescriptor* descriptor);
 /**
  * The same for an acceleration structure pass, which is how long the frame's builds took.
  *
@@ -238,10 +249,15 @@ PassTimingSlot ReserveAccelerationStructurePassTiming(id commandBuffer, id descr
  * because the UI's PASS_BEGIN set holds all of them and it numbers them in one sequence per
  * command buffer.
  */
-uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTimingSlot &timing);
+uint32_t BeginPass(id encoder, id commandBuffer, PassKind kind, const PassTimingSlot& timing);
 
 /** Which half of an attachment a read-back is of. A combined format is read once per aspect. */
-enum class PassAspect { Color, Depth, Stencil };
+enum class PassAspect
+{
+    Color,
+    Depth,
+    Stencil
+};
 
 /**
  * Notes an attachment of the render pass just begun, for read-back at endEncoding. Multisample
@@ -254,8 +270,8 @@ enum class PassAspect { Color, Depth, Stencil };
  * depth aspect had to start being sent at all — a depth attachment is announced under index 0 like
  * color attachment 0, and without the aspect the second read-back landed on the first's entry.
  */
-void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor *attachment,
-                       uint32_t index, PassAspect aspect);
+void AddPassAttachment(id encoder, MTLRenderPassAttachmentDescriptor* attachment,
+    uint32_t index, PassAspect aspect);
 
 /** Just before the application's endEncoding is forwarded: the end-of-pass timestamp. */
 void BeforeEndEncoding(id encoder);

@@ -19,9 +19,11 @@
 #include "stacktrace.h"
 #include "vk_commands.gen.h"
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-struct TrackedObject {
+struct TrackedObject
+{
     uint64_t id = 0;
     HandleType type = HT_Count;
     uint64_t handle = 0;
@@ -38,7 +40,8 @@ struct TrackedObject {
     StackTrace stack;
 };
 
-class Tracker : public HandleResolver {
+class Tracker : public HandleResolver
+{
 public:
     static Tracker& Get();
 
@@ -53,7 +56,7 @@ public:
     // moves to the new owner when one is given (a driver hands the same handle out again under a
     // new parent: the images of a swapchain recreated with oldSwapchain).
     uint64_t OnCreate(HandleType type, uint64_t handle, HandleType parentType, uint64_t parentHandle,
-                      VkCmdId cmd, uint32_t index, const std::string& args);
+        VkCmdId cmd, uint32_t index, const std::string& args);
     void OnDestroy(HandleType type, uint64_t handle);
     void OnDestroyChildren(HandleType type, uint64_t handle);
     // Reports the objects still alive under an owner about to be destroyed (a device or an

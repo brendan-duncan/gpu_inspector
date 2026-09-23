@@ -8,9 +8,11 @@
 
 #include "common.h"
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
-struct FormatInfo {
+struct FormatInfo
+{
     /** The protocol's name for pixel data of this format, or nullptr when the inspector cannot decode it. */
     const char* protocolName = nullptr;
     /** Bytes per pixel, or per block for a block-compressed format. */

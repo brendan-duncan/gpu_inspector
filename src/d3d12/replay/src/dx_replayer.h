@@ -41,7 +41,8 @@
 
 #include "dx_decode.h"
 
-namespace dxreplay {
+namespace dxreplay
+{
 
 /** What the replay was doing last ("command 412 DrawIndexedInstanced"), for a crash handler to name: empty before it starts. */
 const char* CurrentStep();
@@ -51,7 +52,8 @@ class Source;
 using vkreplay::CaptureFile;
 
 /** What the hardware counters run asks for (dx_counters.h, --counters). */
-struct DxCounterOptions {
+struct DxCounterOptions
+{
     bool enabled = false;
     /** Only list what this GPU offers, which needs no profiling session. */
     bool list = false;
@@ -60,13 +62,16 @@ struct DxCounterOptions {
 };
 
 /** Draws timed again with variants of one of their shader stages (--ablate, dx_measure.cpp). */
-struct DxAblationOptions {
-    struct Variant {
+struct DxAblationOptions
+{
+    struct Variant
+    {
         std::string name;
         /** The variant's DXIL container. */
         std::vector<uint8_t> code;
     };
-    struct Target {
+    struct Target
+    {
         uint32_t command = 0;
         /** "fragment", "compute", "vertex": the names the capture keeps a pipeline's code under. */
         std::string stage;
@@ -85,7 +90,8 @@ struct DxAblationOptions {
  * Inspector and run in the captured frame instead of in the application. What the frame's targets
  * hold with it is compared with what the capture read back, which is the edit's effect.
  */
-struct DxShaderReplacement {
+struct DxShaderReplacement
+{
     uint64_t pipeline = 0;
     /** "vertex", "fragment", "compute", ...: the names the capture keeps a pipeline's code under. */
     std::string stage;
@@ -93,7 +99,8 @@ struct DxShaderReplacement {
     std::vector<uint8_t> code;
 };
 
-struct DxReplayOptions {
+struct DxReplayOptions
+{
     /** Enable the D3D12 debug layer and report its messages. */
     bool debugLayer = false;
     bool compareTargets = true;
@@ -112,7 +119,8 @@ struct DxReplayOptions {
 };
 
 /** One draw or dispatch as the replay measured it (the Vulkan replay's DrawResult). */
-struct DxDrawResult {
+struct DxDrawResult
+{
     uint32_t command = 0;
     uint32_t frame = 0;
     uint64_t commandList = 0;
@@ -129,7 +137,8 @@ struct DxDrawResult {
     uint64_t samplesPassed = 0;
 };
 
-struct DxAblationTiming {
+struct DxAblationTiming
+{
     std::string name;
     bool measured = false;
     /** Per draw: the median of the rounds. */
@@ -138,7 +147,8 @@ struct DxAblationTiming {
     std::string note;
 };
 
-struct DxAblationResult {
+struct DxAblationResult
+{
     uint32_t command = 0;
     std::string stage;
     uint64_t pipeline = 0;
@@ -153,7 +163,8 @@ struct DxAblationResult {
 };
 
 /** One measured range's counter values, in the order of DxCounterReport::counters. */
-struct DxCounterRange {
+struct DxCounterRange
+{
     uint32_t command = 0;
     uint32_t frame = 0;
     uint64_t commandBuffer = 0;
@@ -161,7 +172,8 @@ struct DxCounterRange {
     std::vector<double> values;
 };
 
-struct DxCounterReport {
+struct DxCounterReport
+{
     bool requested = false;
     /** "nvperf"; D3D12 has no portable counter API, so there is no second backend. */
     std::string backend;
@@ -176,7 +188,8 @@ struct DxCounterReport {
     std::vector<std::string> notes;
 };
 
-struct DxTargetComparison {
+struct DxTargetComparison
+{
     uint64_t resource = 0;
     uint64_t commandList = 0;
     uint32_t frame = 0;
@@ -197,7 +210,8 @@ struct DxTargetComparison {
     std::vector<uint8_t> replayed;
 };
 
-struct DxExportReport {
+struct DxExportReport
+{
     bool requested = false;
     std::string directory;
     std::string error;
@@ -211,7 +225,8 @@ struct DxExportReport {
     std::vector<std::string> notes;
 };
 
-struct DxReplayReport {
+struct DxReplayReport
+{
     std::string device;
     size_t objectsCreated = 0;
     size_t objectsSkipped = 0;
@@ -237,7 +252,8 @@ struct DxReplayReport {
 /** A command that draws, dispatches or runs a bundle: what --draws puts queries around. */
 bool IsActionMethod(const std::string& method);
 
-class DxReplayer {
+class DxReplayer
+{
 public:
     DxReplayer();
     ~DxReplayer();
@@ -276,7 +292,8 @@ private:
 
     // --- Ray tracing (dx_raytracing.cpp) -------------------------------------------------------
     /** Where a captured acceleration structure lives: the buffer a build wrote it into, and where in it. */
-    struct StructurePlace {
+    struct StructurePlace
+    {
         uint64_t buffer = 0;
         uint64_t offset = 0;
     };
@@ -297,7 +314,7 @@ private:
     void BuildEarlierStructures();
     /** One binding table region rebuilt with this runtime's identifiers, in a buffer of the replay's own. */
     D3D12_GPU_VIRTUAL_ADDRESS RemapBindingTable(const vkreplay::JValue& command, const char* region, UINT64 stride,
-                                                UINT64 size, uint64_t stateObjectId);
+        UINT64 size, uint64_t stateObjectId);
     /** An upload buffer holding these bytes, released when the submission that read it has finished. */
     D3D12_GPU_VIRTUAL_ADDRESS UploadTransient(const void* data, size_t size, const char* what);
     /** Whether this GPU does ray tracing at all, fetching ID3D12Device5 the first time it is asked. */
@@ -305,7 +322,7 @@ private:
     ID3D12GraphicsCommandList4* RaytracingList(ID3D12GraphicsCommandList* list);
     /** One of the five ray tracing commands; false with a reason when it was left out. */
     bool IssueRaytracingCommand(const std::string& method, const vkreplay::JValue& command, const vkreplay::JValue* args,
-                                ID3D12GraphicsCommandList* list, std::string& leftOut);
+        ID3D12GraphicsCommandList* list, std::string& leftOut);
     ID3D12Device5* _device5 = nullptr;
     bool _noRaytracing = false;
     std::unordered_map<uint64_t, StructurePlace> _structureAddresses;   // captured address -> where it lives
@@ -341,7 +358,7 @@ private:
     ID3D12PipelineState* AblationPipeline(uint64_t pipelineId, size_t target, int variant);
     /** Times the command with its ablation target's variants, right before it is issued as captured. */
     void IssueAblation(uint32_t index, const std::string& method, const vkreplay::JValue& command, const vkreplay::JValue* args,
-                       ID3D12GraphicsCommandList* list, uint64_t listId, uint32_t frame, uint32_t passIndex);
+        ID3D12GraphicsCommandList* list, uint64_t listId, uint32_t frame, uint32_t passIndex);
     MeasureState* _measure = nullptr;
     /** Per list being recorded: the pipeline set, and how many of the capture's own queries are open. */
     uint64_t _boundPipeline = 0;
@@ -351,7 +368,8 @@ private:
     const std::vector<uint8_t>* _overrideCode = nullptr;
 
 private:
-    struct Resource {
+    struct Resource
+    {
         ID3D12Resource* resource = nullptr;
         D3D12_RESOURCE_DESC desc{};
         D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
@@ -362,7 +380,8 @@ private:
         std::vector<D3D12_RESOURCE_STATES> states;
         bool IsBuffer() const { return desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER; }
     };
-    struct Heap {
+    struct Heap
+    {
         ID3D12DescriptorHeap* heap = nullptr;
         D3D12_DESCRIPTOR_HEAP_DESC desc{};
         D3D12_CPU_DESCRIPTOR_HANDLE cpu{};
@@ -376,18 +395,21 @@ private:
         std::unordered_set<uint32_t> bound;
     };
     /** The state a subresource has to be in when the frame starts, as far as the frame's commands say. */
-    struct InitialState {
+    struct InitialState
+    {
         D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_COMMON;
         bool fixed = false;   // a barrier or a writing use decided it
         bool any = false;
     };
-    struct Group {
+    struct Group
+    {
         uint64_t list = 0;
         uint32_t first = 0;   // its Reset
         uint32_t last = 0;    // its Close
         bool used = false;
     };
-    struct PassTarget {
+    struct PassTarget
+    {
         uint64_t resource = 0;
         uint32_t mip = 0;
         uint32_t firstSlice = 0;
@@ -396,7 +418,8 @@ private:
         bool discarded = false;
         bool stencilDiscarded = false;
     };
-    struct Pass {
+    struct Pass
+    {
         bool active = false;
         bool realPass = false;   // BeginRenderPass: nothing may be copied until EndRenderPass
         uint32_t index = 0;
@@ -404,7 +427,8 @@ private:
         uint64_t list = 0;
         std::vector<PassTarget> targets;   // by attachment index
     };
-    struct Readback {
+    struct Readback
+    {
         ID3D12Resource* buffer = nullptr;
         size_t target = 0;
         const vkreplay::JValue* texture = nullptr;
@@ -412,13 +436,18 @@ private:
         uint64_t rowBytes = 0;
         uint32_t rows = 0;
     };
-    enum class DescriptorKind { RenderTarget, DepthStencil, Table };
+    enum class DescriptorKind
+    {
+        RenderTarget,
+        DepthStencil,
+        Table
+    };
 
     bool CreateDevice();
     void CreateObjects();
     void CreateObject(const vkreplay::JValue& object);
     ID3D12Resource* CreateResource(uint64_t id, const D3D12_HEAP_PROPERTIES& heap, D3D12_HEAP_FLAGS flags, const D3D12_RESOURCE_DESC& desc,
-                                   const D3D12_CLEAR_VALUE* clear, const std::string& comment);
+        const D3D12_CLEAR_VALUE* clear, const std::string& comment);
     ID3D12PipelineState* CreatePipeline(const vkreplay::JValue& object, const std::string& cmd, const vkreplay::JValue& args);
     ID3D12RootSignature* CreateRootSignature(uint64_t id, const vkreplay::JValue& args);
 
@@ -440,7 +469,7 @@ private:
     bool RecordBundle(uint32_t executeIndex, uint64_t bundleId, ID3D12GraphicsCommandList* bundle);
     /** One captured command issued on `list`; false when it was left out. */
     bool IssueCommand(uint32_t index, const std::string& method, const vkreplay::JValue& command, const vkreplay::JValue* args,
-                      ID3D12GraphicsCommandList* list, uint64_t listId);
+        ID3D12GraphicsCommandList* list, uint64_t listId);
     void InjectReadbacks(ID3D12GraphicsCommandList* list, const Pass& pass, std::vector<Readback>& readbacks);
     void CompareReadbacks(std::vector<Readback>& readbacks);
 
@@ -502,7 +531,8 @@ private:
     bool _restoring = false;
     void NoteWrite(uint64_t resource, bool colorTarget);
     void EmitFrameEnd();
-    struct BundleInfo {
+    struct BundleInfo
+    {
         uint64_t allocator = 0;
         uint64_t initialState = 0;
         bool recorded = false;

@@ -5,10 +5,12 @@
 
 #include "../gen/gles_api.gen.h"
 
-namespace glesinsp {
+namespace glesinsp
+{
 
 /** How glReadPixels reads a color format back, and what the bytes then are. */
-enum class ReadClass : uint8_t {
+enum class ReadClass : uint8_t
+{
     None,       // depth, stencil, compressed, or unknown: not read with glReadPixels
     Unorm,      // GL_RGBA / GL_UNSIGNED_BYTE -> R8G8B8A8 (UNORM or SRGB)
     Float,      // GL_RGBA / GL_FLOAT -> R32G32B32A32_SFLOAT
@@ -16,7 +18,8 @@ enum class ReadClass : uint8_t {
     Uint,       // GL_RGBA_INTEGER / GL_UNSIGNED_INT -> R32G32B32A32_UINT
 };
 
-struct FormatInfo {
+struct FormatInfo
+{
     /** The format's own name, "VK_FORMAT_R8G8B8A8_UNORM"; "VK_FORMAT_UNDEFINED" when unknown. */
     const char* vk = "VK_FORMAT_UNDEFINED";
     ReadClass read = ReadClass::None;
@@ -34,7 +37,8 @@ FormatInfo FormatOf(GLenum internalFormat);
 GLenum SizedFormat(GLenum internalFormat, GLenum format, GLenum type);
 
 /** What a read-back of this class is: glReadPixels' format and type, the bytes per texel, and its VK name. */
-struct ReadFormat {
+struct ReadFormat
+{
     GLenum format = 0;
     GLenum type = 0;
     int bytesPerTexel = 0;

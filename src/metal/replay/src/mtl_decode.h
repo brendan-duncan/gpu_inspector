@@ -26,17 +26,20 @@
 
 #include "mtl_source.h"
 
-namespace mtlreplay {
+namespace mtlreplay
+{
 
 using vkreplay::JValue;
 
 /** The capture id of a `{"__id", "__class"}` reference, or 0. */
-inline uint64_t IdOf(const JValue* v) {
+inline uint64_t IdOf(const JValue* v)
+{
     const JValue* id = v ? v->Get("__id") : nullptr;
     return id ? id->Uint() : 0;
 }
 
-struct DecodeEnv {
+struct DecodeEnv
+{
     /** The replay's object for a capture id, or nil. */
     std::function<id(uint64_t captureId)> object;
     /** References that resolved to nothing: what names them is left out rather than handed a nil. */
@@ -44,19 +47,22 @@ struct DecodeEnv {
     std::vector<std::string> problems;
     std::string where;
 
-    void Problem(const std::string& message) {
+    void Problem(const std::string& message)
+    {
         problems.push_back(where.empty() ? message : where + ": " + message);
     }
 };
 
-class Decoder {
+class Decoder
+{
 public:
     Decoder(const JValue* json, DecodeEnv& env) : _j(json), _env(env) {}
 
     const JValue* Json() const { return _j; }
     bool Has(const char* name) const { return Get(name) != nullptr; }
     /** A member of this object, or null; also null for a JSON null, which reads as absent. */
-    const JValue* Get(const char* name) const {
+    const JValue* Get(const char* name) const
+    {
         const JValue* v = _j ? _j->Get(name) : nullptr;
         return v && !v->IsNull() ? v : nullptr;
     }
@@ -64,44 +70,59 @@ public:
     Decoder Nested(const char* name) const { return Decoder(Get(name), _env); }
     Decoder At(const JValue* value) const { return Decoder(value, _env); }
 
-    uint64_t Uint(const char* name, uint64_t fallback = 0) const {
+    uint64_t Uint(const char* name, uint64_t fallback = 0) const
+    {
         const JValue* v = Get(name);
-        if (!v) return fallback;
-        if (v->IsBool()) return v->boolean ? 1 : 0;
+        if (!v)
+            return fallback;
+        if (v->IsBool())
+            return v->boolean ? 1 : 0;
         return v->Uint();
     }
-    int64_t Int(const char* name, int64_t fallback = 0) const {
+    int64_t Int(const char* name, int64_t fallback = 0) const
+    {
         const JValue* v = Get(name);
-        if (!v) return fallback;
-        if (v->IsBool()) return v->boolean ? 1 : 0;
+        if (!v)
+            return fallback;
+        if (v->IsBool())
+            return v->boolean ? 1 : 0;
         return v->Int();
     }
-    double Double(const char* name, double fallback = 0) const {
+    double Double(const char* name, double fallback = 0) const
+    {
         const JValue* v = Get(name);
         return v ? v->Double() : fallback;
     }
-    bool Bool(const char* name, bool fallback = false) const {
+    bool Bool(const char* name, bool fallback = false) const
+    {
         const JValue* v = Get(name);
-        if (!v) return fallback;
+        if (!v)
+            return fallback;
         return v->IsBool() ? v->boolean : v->Uint() != 0;
     }
     /** A string member, or "" (with `present` false) when it is absent or null. */
-    std::string Str(const char* name, bool* present = nullptr) const {
+    std::string Str(const char* name, bool* present = nullptr) const
+    {
         const JValue* v = Get(name);
-        if (present) *present = v && v->IsString();
+        if (present)
+            *present = v && v->IsString();
         return v && v->IsString() ? std::string(v->Str()) : std::string();
     }
     /** A string member as an NSString, or nil. */
-    NSString* NSStr(const char* name) const {
+    NSString* NSStr(const char* name) const
+    {
         const JValue* v = Get(name);
-        if (!v || !v->IsString()) return nil;
+        if (!v || !v->IsString())
+            return nil;
         return [[NSString alloc] initWithBytes:v->text length:v->length encoding:NSUTF8StringEncoding];
     }
 
-    int64_t Enum(const char* name, const EnumTable& table, int64_t fallback = 0) const {
+    int64_t Enum(const char* name, const EnumTable& table, int64_t fallback = 0) const
+    {
         return ParseEnum(Get(name), table, fallback);
     }
-    uint64_t Flags(const char* name, const EnumTable& table, uint64_t fallback = 0) const {
+    uint64_t Flags(const char* name, const EnumTable& table, uint64_t fallback = 0) const
+    {
         return ParseFlags(Get(name), table, fallback);
     }
 
@@ -109,10 +130,13 @@ public:
     id Object(const char* name) const { return Resolve(IdOf(Get(name))); }
     uint64_t ObjectId(const char* name) const { return IdOf(Get(name)); }
     /** `captureId` rather than `id`, which is Objective-C's own. */
-    id Resolve(uint64_t captureId) const {
-        if (!captureId) return nil;
+    id Resolve(uint64_t captureId) const
+    {
+        if (!captureId)
+            return nil;
         id object = _env.object ? _env.object(captureId) : nil;
-        if (!object) ++_env.unresolved;
+        if (!object)
+            ++_env.unresolved;
         return object;
     }
 
@@ -147,37 +171,55 @@ private:
  * leaves the rest at whatever a freshly allocated descriptor holds — which is what the application
  * left them at, since the capture writes every property it read.
  */
-class FillVisitor {
+class FillVisitor
+{
 public:
     explicit FillVisitor(const Decoder& d) : _d(d) {}
 
-    void Uint(const char* n, uint64_t, uint64_t, void (^set)(uint64_t)) {
-        if (const JValue* v = _d.Get(n)) set(v->IsBool() ? (v->boolean ? 1u : 0u) : v->Uint());
+    void Uint(const char* n, uint64_t, uint64_t, void (^set)(uint64_t))
+    {
+        if (const JValue* v = _d.Get(n))
+            set(v->IsBool() ? (v->boolean ? 1u : 0u) : v->Uint());
     }
-    void Int(const char* n, int64_t, int64_t, void (^set)(int64_t)) {
-        if (const JValue* v = _d.Get(n)) set(v->IsBool() ? (v->boolean ? 1 : 0) : v->Int());
+    void Int(const char* n, int64_t, int64_t, void (^set)(int64_t))
+    {
+        if (const JValue* v = _d.Get(n))
+            set(v->IsBool() ? (v->boolean ? 1 : 0) : v->Int());
     }
-    void Float(const char* n, double, double, void (^set)(double)) {
-        if (const JValue* v = _d.Get(n)) set(v->Double());
+    void Float(const char* n, double, double, void (^set)(double))
+    {
+        if (const JValue* v = _d.Get(n))
+            set(v->Double());
     }
-    void Bool(const char* n, bool, bool, void (^set)(bool)) {
-        if (const JValue* v = _d.Get(n)) set(v->IsBool() ? v->boolean : v->Uint() != 0);
+    void Bool(const char* n, bool, bool, void (^set)(bool))
+    {
+        if (const JValue* v = _d.Get(n))
+            set(v->IsBool() ? v->boolean : v->Uint() != 0);
     }
-    void Enum(const char* n, int64_t, int64_t, const EnumTable& table, void (^set)(int64_t)) {
-        if (const JValue* v = _d.Get(n)) set(Decoder::ParseEnum(v, table));
+    void Enum(const char* n, int64_t, int64_t, const EnumTable& table, void (^set)(int64_t))
+    {
+        if (const JValue* v = _d.Get(n))
+            set(Decoder::ParseEnum(v, table));
     }
-    void Flags(const char* n, uint64_t, uint64_t, const EnumTable& table, void (^set)(uint64_t)) {
-        if (const JValue* v = _d.Get(n)) set(Decoder::ParseFlags(v, table));
+    void Flags(const char* n, uint64_t, uint64_t, const EnumTable& table, void (^set)(uint64_t))
+    {
+        if (const JValue* v = _d.Get(n))
+            set(Decoder::ParseFlags(v, table));
     }
-    void Object(const char* n, id, void (^set)(id)) {
+    void Object(const char* n, id, void (^set)(id))
+    {
         // A reference that resolves to nothing is left alone rather than set to nil: what the
         // property already holds is at worst the descriptor's default, and DecodeEnv counted it.
         const JValue* v = _d.Get(n);
-        if (!v) return;
-        if (id object = _d.Resolve(IdOf(v))) set(object);
+        if (!v)
+            return;
+        if (id object = _d.Resolve(IdOf(v)))
+            set(object);
     }
-    void Label(NSString*, void (^set)(NSString*)) {
-        if (NSString* label = _d.NSStr("label")) set(label);
+    void Label(NSString*, void (^set)(NSString*))
+    {
+        if (NSString* label = _d.NSStr("label"))
+            set(label);
     }
 
 private:

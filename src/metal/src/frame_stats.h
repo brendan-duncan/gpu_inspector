@@ -11,7 +11,8 @@
 
 #import <objc/objc.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /** A frame ended. Returns its number: the first frame to end is 1. */
 uint64_t OnFrameEnded();

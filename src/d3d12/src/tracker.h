@@ -20,9 +20,11 @@
 #include <string>
 #include <vector>
 
-namespace dxinsp {
+namespace dxinsp
+{
 
-struct TrackedObject {
+struct TrackedObject
+{
     uint64_t id = 0;
     std::string type;        // "ID3D12Resource"
     uint64_t handle = 0;     // the interface pointer
@@ -36,7 +38,8 @@ struct TrackedObject {
     StackTrace stack;
 };
 
-class Tracker : public vkinsp::HandleResolver {
+class Tracker : public vkinsp::HandleResolver
+{
 public:
     static Tracker& Get();
 

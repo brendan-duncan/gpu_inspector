@@ -13,16 +13,19 @@
 #include "arena.h"
 #include "json.h"
 
-namespace vkreplay {
+namespace vkreplay
+{
 
 struct VkFunctions;
 
-struct EnumEntry {
+struct EnumEntry
+{
     const char* name;
     int64_t value;
 };
 
-class DecodeContext {
+class DecodeContext
+{
 public:
     explicit DecodeContext(Arena& arena) : arena(arena) {}
 
@@ -40,7 +43,10 @@ public:
     std::vector<std::string> problems;
 
     template <typename T>
-    T* Make(size_t count) { return arena.Make<T>(count); }
+    T* Make(size_t count)
+    {
+        return arena.Make<T>(count);
+    }
 
     void Problem(std::string message);
 

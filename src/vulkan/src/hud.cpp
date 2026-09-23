@@ -8,21 +8,27 @@
 #include <chrono>
 #include <cstring>
 
-namespace vkinsp {
+namespace vkinsp
+{
 
-Hud& Hud::Get() {
+Hud& Hud::Get()
+{
     static Hud* instance = new Hud();
     return *instance;
 }
 
-void Hud::SetEnabled(bool on) {
+void Hud::SetEnabled(bool on)
+{
     const bool was = _enabled.exchange(on, std::memory_order_relaxed);
-    if (was != on) Log("in-app HUD %s", on ? "on" : "off");
+    if (was != on)
+        Log("in-app HUD %s", on ? "on" : "off");
 }
 
-void Hud::OnSwapchainImages(VkDevice device, VkSwapchainKHR swapchain, uint32_t count, const VkImage* images) {
+void Hud::OnSwapchainImages(VkDevice device, VkSwapchainKHR swapchain, uint32_t count, const VkImage* images)
+{
     (void)device;
-    if (!swapchain || !images || !count) return;
+    if (!swapchain || !images || !count)
+        return;
     std::lock_guard lock(_mutex);
     auto& list = _pendingImages[(uint64_t)(uintptr_t)swapchain];
     list.assign(images, images + count);
@@ -31,18 +37,24 @@ void Hud::OnSwapchainImages(VkDevice device, VkSwapchainKHR swapchain, uint32_t 
 // -----------------------------------------------------------------------------------------------
 // Setup
 
-static int FindHostMemoryType(DeviceData* dev, uint32_t typeBits) {
+static int FindHostMemoryType(DeviceData* dev, uint32_t typeBits)
+{
     const VkMemoryPropertyFlags wanted = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
-    for (uint32_t i = 0; i < dev->memoryProperties.memoryTypeCount; ++i) {
-        if (!(typeBits & (1u << i))) continue;
-        if ((dev->memoryProperties.memoryTypes[i].propertyFlags & wanted) == wanted) return (int)i;
+    for (uint32_t i = 0; i < dev->memoryProperties.memoryTypeCount; ++i)
+    {
+        if (!(typeBits & (1u << i)))
+            continue;
+        if ((dev->memoryProperties.memoryTypes[i].propertyFlags & wanted) == wanted)
+            return (int)i;
     }
     return -1;
 }
 
-Hud::DeviceResources* Hud::Resources(DeviceData* dev, VkQueue queue) {
+Hud::DeviceResources* Hud::Resources(DeviceData* dev, VkQueue queue)
+{
     auto it = _devices.find(dev->device);
-    if (it != _devices.end()) {
+    if (it != _devices.end())
+    {
         DeviceResources& r = it->second;
         return r.failed ? nullptr : &r;
     }
@@ -63,17 +75,20 @@ Hud::DeviceResources* Hud::Resources(DeviceData* dev, VkQueue queue) {
     {
         std::lock_guard lock(dev->queueMutex);
         auto q = dev->queueFamilies.find(queue);
-        if (q == dev->queueFamilies.end()) return fail("the present queue's family is unknown");
+        if (q == dev->queueFamilies.end())
+            return fail("the present queue's family is unknown");
         r.family = q->second;
     }
 
     VkShaderModuleCreateInfo smci{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
     smci.codeSize = sizeof(kHudVertSpv);
     smci.pCode = kHudVertSpv;
-    if (d.CreateShaderModule(dev->device, &smci, nullptr, &r.vert) != VK_SUCCESS) return fail("the vertex shader would not compile");
+    if (d.CreateShaderModule(dev->device, &smci, nullptr, &r.vert) != VK_SUCCESS)
+        return fail("the vertex shader would not compile");
     smci.codeSize = sizeof(kHudFragSpv);
     smci.pCode = kHudFragSpv;
-    if (d.CreateShaderModule(dev->device, &smci, nullptr, &r.frag) != VK_SUCCESS) return fail("the fragment shader would not compile");
+    if (d.CreateShaderModule(dev->device, &smci, nullptr, &r.frag) != VK_SUCCESS)
+        return fail("the fragment shader would not compile");
 
     VkPushConstantRange pcr{};
     pcr.stageFlags = VK_SHADER_STAGE_VERTEX_BIT;
@@ -82,12 +97,14 @@ Hud::DeviceResources* Hud::Resources(DeviceData* dev, VkQueue queue) {
     VkPipelineLayoutCreateInfo plci{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
     plci.pushConstantRangeCount = 1;
     plci.pPushConstantRanges = &pcr;
-    if (d.CreatePipelineLayout(dev->device, &plci, nullptr, &r.pipelineLayout) != VK_SUCCESS) return fail("the pipeline layout would not be created");
+    if (d.CreatePipelineLayout(dev->device, &plci, nullptr, &r.pipelineLayout) != VK_SUCCESS)
+        return fail("the pipeline layout would not be created");
 
     VkCommandPoolCreateInfo cpci{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     cpci.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
     cpci.queueFamilyIndex = r.family;
-    if (d.CreateCommandPool(dev->device, &cpci, nullptr, &r.pool) != VK_SUCCESS) return fail("the command pool would not be created");
+    if (d.CreateCommandPool(dev->device, &cpci, nullptr, &r.pool) != VK_SUCCESS)
+        return fail("the command pool would not be created");
 
     constexpr size_t kRing = 4;
     r.frames.resize(kRing);
@@ -97,8 +114,10 @@ Hud::DeviceResources* Hud::Resources(DeviceData* dev, VkQueue queue) {
     cbai.commandBufferCount = 1;
     VkFenceCreateInfo fci{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     VkSemaphoreCreateInfo sci{VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO};
-    for (auto& f : r.frames) {
-        if (d.AllocateCommandBuffers(dev->device, &cbai, &f.cb) != VK_SUCCESS) return fail("a command buffer would not be allocated");
+    for (auto& f : r.frames)
+    {
+        if (d.AllocateCommandBuffers(dev->device, &cbai, &f.cb) != VK_SUCCESS)
+            return fail("a command buffer would not be allocated");
         // A command buffer allocated from inside a layer skips the loader trampoline that stamps
         // the dispatch pointer of dispatchable objects; layers below (the validation layer) look
         // their state up by it, so set it to the device's, as the loader would. Same as
@@ -106,8 +125,10 @@ Hud::DeviceResources* Hud::Resources(DeviceData* dev, VkQueue queue) {
         // layer-data pointer the first time the HUD resets this command buffer, and the crash only
         // appears when validation is in the chain -- the driver never reads that field.
         *reinterpret_cast<void**>(f.cb) = *reinterpret_cast<void**>(dev->device);
-        if (d.CreateFence(dev->device, &fci, nullptr, &f.fence) != VK_SUCCESS) return fail("a fence would not be created");
-        if (d.CreateSemaphore(dev->device, &sci, nullptr, &f.done) != VK_SUCCESS) return fail("a semaphore would not be created");
+        if (d.CreateFence(dev->device, &fci, nullptr, &f.fence) != VK_SUCCESS)
+            return fail("a fence would not be created");
+        if (d.CreateSemaphore(dev->device, &sci, nullptr, &f.done) != VK_SUCCESS)
+            return fail("a semaphore would not be created");
     }
 
     Log("HUD: ready on queue family %u", r.family);
@@ -115,13 +136,15 @@ Hud::DeviceResources* Hud::Resources(DeviceData* dev, VkQueue queue) {
     return &_devices[dev->device];
 }
 
-bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc, SwapchainResources*& out) {
+bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc, SwapchainResources*& out)
+{
     const uint64_t key = (uint64_t)(uintptr_t)sc;
     SwapchainResources& s = r.swapchains[key];
     out = &s;
 
     SwapchainInfo info;
-    if (!ResourceRegistry::Get().GetSwapchain(sc, info)) return false;
+    if (!ResourceRegistry::Get().GetSwapchain(sc, info))
+        return false;
 
     // Already built for this swapchain, at this size and format.
     if (s.renderPass && s.swapchain == sc && s.format == info.format &&
@@ -135,8 +158,10 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
 
     // An image the application never asked to be a color attachment cannot be drawn into. Some
     // applications create a transfer-only swapchain and blit into it; there the HUD stays off.
-    if (!(info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT)) {
-        if (!s.complained) {
+    if (!(info.usage & VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT))
+    {
+        if (!s.complained)
+        {
             Log("HUD: the swapchain has no color attachment usage, so the HUD cannot be drawn into it");
             s.complained = true;
         }
@@ -144,7 +169,8 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
     }
 
     auto images = _pendingImages.find(key);
-    if (images == _pendingImages.end() || images->second.empty()) return false;
+    if (images == _pendingImages.end() || images->second.empty())
+        return false;
     s.images = images->second;
 
     const DeviceDispatch& d = dev->dispatch;
@@ -189,20 +215,23 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
     rpci.pSubpasses = &subpass;
     rpci.dependencyCount = 2;
     rpci.pDependencies = deps;
-    if (d.CreateRenderPass(dev->device, &rpci, nullptr, &s.renderPass) != VK_SUCCESS) {
+    if (d.CreateRenderPass(dev->device, &rpci, nullptr, &s.renderPass) != VK_SUCCESS)
+    {
         Log("HUD: the render pass would not be created");
         return false;
     }
 
     s.views.resize(s.images.size(), VK_NULL_HANDLE);
     s.framebuffers.resize(s.images.size(), VK_NULL_HANDLE);
-    for (size_t i = 0; i < s.images.size(); ++i) {
+    for (size_t i = 0; i < s.images.size(); ++i)
+    {
         VkImageViewCreateInfo ivci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         ivci.image = s.images[i];
         ivci.viewType = VK_IMAGE_VIEW_TYPE_2D;
         ivci.format = s.format;
         ivci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-        if (d.CreateImageView(dev->device, &ivci, nullptr, &s.views[i]) != VK_SUCCESS) {
+        if (d.CreateImageView(dev->device, &ivci, nullptr, &s.views[i]) != VK_SUCCESS)
+        {
             Log("HUD: an image view would not be created");
             DestroySwapchain(dev, s);
             return false;
@@ -214,7 +243,8 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
         fbci.width = s.extent.width;
         fbci.height = s.extent.height;
         fbci.layers = 1;
-        if (d.CreateFramebuffer(dev->device, &fbci, nullptr, &s.framebuffers[i]) != VK_SUCCESS) {
+        if (d.CreateFramebuffer(dev->device, &fbci, nullptr, &s.framebuffers[i]) != VK_SUCCESS)
+        {
             Log("HUD: a framebuffer would not be created");
             DestroySwapchain(dev, s);
             return false;
@@ -276,7 +306,7 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
     blend.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA;
     blend.alphaBlendOp = VK_BLEND_OP_ADD;
     blend.colorWriteMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT |
-                           VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
     VkPipelineColorBlendStateCreateInfo cb{VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO};
     cb.attachmentCount = 1;
     cb.pAttachments = &blend;
@@ -299,7 +329,8 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
     gpci.layout = r.pipelineLayout;
     gpci.renderPass = s.renderPass;
     gpci.subpass = 0;
-    if (d.CreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gpci, nullptr, &s.pipeline) != VK_SUCCESS) {
+    if (d.CreateGraphicsPipelines(dev->device, VK_NULL_HANDLE, 1, &gpci, nullptr, &s.pipeline) != VK_SUCCESS)
+    {
         Log("HUD: the pipeline would not be created");
         DestroySwapchain(dev, s);
         return false;
@@ -310,40 +341,58 @@ bool Hud::EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc
     return true;
 }
 
-bool Hud::EnsureVertexBuffer(DeviceData* dev, DeviceResources& r, Frame& f, VkDeviceSize bytes) {
+bool Hud::EnsureVertexBuffer(DeviceData* dev, DeviceResources& r, Frame& f, VkDeviceSize bytes)
+{
     (void)r;
-    if (f.capacity >= bytes && f.vertices) return true;
+    if (f.capacity >= bytes && f.vertices)
+        return true;
     const DeviceDispatch& d = dev->dispatch;
-    if (f.mapped) { d.UnmapMemory(dev->device, f.memory); f.mapped = nullptr; }
-    if (f.vertices) d.DestroyBuffer(dev->device, f.vertices, nullptr);
-    if (f.memory) d.FreeMemory(dev->device, f.memory, nullptr);
+    if (f.mapped)
+    {
+        d.UnmapMemory(dev->device, f.memory);
+        f.mapped = nullptr;
+    }
+    if (f.vertices)
+        d.DestroyBuffer(dev->device, f.vertices, nullptr);
+    if (f.memory)
+        d.FreeMemory(dev->device, f.memory, nullptr);
     f.vertices = VK_NULL_HANDLE;
     f.memory = VK_NULL_HANDLE;
     f.capacity = 0;
 
     // Rounded up so a HUD that gains a line does not reallocate every frame.
     VkDeviceSize size = 4096;
-    while (size < bytes) size *= 2;
+    while (size < bytes)
+        size *= 2;
 
     VkBufferCreateInfo bci{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
     bci.size = size;
     bci.usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT;
     bci.sharingMode = VK_SHARING_MODE_EXCLUSIVE;
-    if (d.CreateBuffer(dev->device, &bci, nullptr, &f.vertices) != VK_SUCCESS) return false;
+    if (d.CreateBuffer(dev->device, &bci, nullptr, &f.vertices) != VK_SUCCESS)
+        return false;
     VkMemoryRequirements req{};
     d.GetBufferMemoryRequirements(dev->device, f.vertices, &req);
     const int type = FindHostMemoryType(dev, req.memoryTypeBits);
-    if (type < 0) { d.DestroyBuffer(dev->device, f.vertices, nullptr); f.vertices = VK_NULL_HANDLE; return false; }
-    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
-    mai.allocationSize = req.size;
-    mai.memoryTypeIndex = (uint32_t)type;
-    if (d.AllocateMemory(dev->device, &mai, nullptr, &f.memory) != VK_SUCCESS) {
+    if (type < 0)
+    {
         d.DestroyBuffer(dev->device, f.vertices, nullptr);
         f.vertices = VK_NULL_HANDLE;
         return false;
     }
-    if (d.BindBufferMemory(dev->device, f.vertices, f.memory, 0) != VK_SUCCESS) return false;
-    if (d.MapMemory(dev->device, f.memory, 0, VK_WHOLE_SIZE, 0, &f.mapped) != VK_SUCCESS) return false;
+    VkMemoryAllocateInfo mai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+    mai.allocationSize = req.size;
+    mai.memoryTypeIndex = (uint32_t)type;
+    if (d.AllocateMemory(dev->device, &mai, nullptr, &f.memory) != VK_SUCCESS)
+    {
+        d.DestroyBuffer(dev->device, f.vertices, nullptr);
+        f.vertices = VK_NULL_HANDLE;
+        return false;
+    }
+    if (d.BindBufferMemory(dev->device, f.vertices, f.memory, 0) != VK_SUCCESS)
+        return false;
+    if (d.MapMemory(dev->device, f.memory, 0, VK_WHOLE_SIZE, 0, &f.mapped) != VK_SUCCESS)
+        return false;
     f.capacity = size;
     return true;
 }
@@ -362,7 +411,8 @@ bool Hud::EnsureVertexBuffer(DeviceData* dev, DeviceResources& r, Frame& f, VkDe
 // Draw is called at one fixed point in the application's frame loop, so the interval between two
 // of its timestamps is a whole frame, blocking present included.
 
-void Hud::UpdateTiming(DeviceData* dev, DeviceResources& r) {
+void Hud::UpdateTiming(DeviceData* dev, DeviceResources& r)
+{
     (void)dev;
     const auto now = std::chrono::steady_clock::now();
     const auto previous = r.lastDraw;
@@ -370,24 +420,43 @@ void Hud::UpdateTiming(DeviceData* dev, DeviceResources& r) {
     const bool acrossPause = generation != r.pauseGeneration;
     r.lastDraw = now;
     r.pauseGeneration = generation;
-    if (previous.time_since_epoch().count() == 0) return;   // the first frame has nothing to measure
+    if (previous.time_since_epoch().count() == 0)
+        return;   // the first frame has nothing to measure
     // This interval spans a pause, so it is the length of the pause: a step out of a five-second
     // one was being read as a 4985 ms frame. Taken from the pause's own counter rather than from
     // the paused flag, which is read here before the present and can change while the application
     // is still inside it.
-    if (acrossPause) return;
+    if (acrossPause)
+        return;
     const double ms = std::chrono::duration<double, std::milli>(now - previous).count();
     // An absurd interval -- a breakpoint, a minimized window, the HUD being switched on mid-run --
     // is dropped rather than smoothed in.
-    if (ms <= 0 || ms > 10000) return;
+    if (ms <= 0 || ms > 10000)
+        return;
 
-    if (r.windowFrames == 0) { r.minMs = ms; r.maxMs = ms; }
-    else { if (ms < r.minMs) r.minMs = ms; if (ms > r.maxMs) r.maxMs = ms; }
+    if (r.windowFrames == 0)
+    {
+        r.minMs = ms;
+        r.maxMs = ms;
+    }
+    else
+    {
+        if (ms < r.minMs)
+            r.minMs = ms;
+        if (ms > r.maxMs)
+            r.maxMs = ms;
+    }
     r.windowMs += ms;
     r.windowFrames++;
-    if (r.smoothedMs == 0) { r.smoothedMs = ms; r.shownMinMs = ms; r.shownMaxMs = ms; }
+    if (r.smoothedMs == 0)
+    {
+        r.smoothedMs = ms;
+        r.shownMinMs = ms;
+        r.shownMaxMs = ms;
+    }
     // Published twice a second: often enough to follow a change, seldom enough to read.
-    if (r.windowMs >= 500.0) {
+    if (r.windowMs >= 500.0)
+    {
         r.smoothedMs = r.windowMs / r.windowFrames;
         r.shownMinMs = r.minMs;
         r.shownMaxMs = r.maxMs;
@@ -400,29 +469,36 @@ void Hud::UpdateTiming(DeviceData* dev, DeviceResources& r) {
 // Drawing
 
 bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPresentInfoKHR& out,
-               std::vector<VkSemaphore>& waits) {
-    if (!Enabled() || !dev || !in || !in->swapchainCount || !in->pSwapchains) return false;
+    std::vector<VkSemaphore>& waits)
+{
+    if (!Enabled() || !dev || !in || !in->swapchainCount || !in->pSwapchains)
+        return false;
 
     std::lock_guard lock(_mutex);
     DeviceResources* res = Resources(dev, queue);
-    if (!res) return false;
+    if (!res)
+        return false;
     DeviceResources& r = *res;
     UpdateTiming(dev, r);
-    if (r.smoothedMs <= 0) return false;   // nothing measured yet
+    if (r.smoothedMs <= 0)
+        return false;   // nothing measured yet
 
     const DeviceDispatch& d = dev->dispatch;
 
     // The slot's previous submission must be done before its command buffer and vertex buffer are
     // written again. With four slots this has effectively always happened already.
     Frame& f = r.frames[r.next];
-    if (f.submitted) {
-        if (d.WaitForFences(dev->device, 1, &f.fence, VK_TRUE, 1000000000ull) != VK_SUCCESS) return false;
+    if (f.submitted)
+    {
+        if (d.WaitForFences(dev->device, 1, &f.fence, VK_TRUE, 1000000000ull) != VK_SUCCESS)
+            return false;
         d.ResetFences(dev->device, 1, &f.fence);
         f.submitted = false;
     }
 
     // Build every swapchain's rectangles into one array, and remember each one's range.
-    struct Target {
+    struct Target
+    {
         SwapchainResources* s;
         uint32_t imageIndex;
         uint32_t first;
@@ -430,11 +506,14 @@ bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPre
     };
     std::vector<Target> targets;
     std::vector<gpuhud::Rect> rects;
-    for (uint32_t i = 0; i < in->swapchainCount; ++i) {
+    for (uint32_t i = 0; i < in->swapchainCount; ++i)
+    {
         SwapchainResources* s = nullptr;
-        if (!EnsureSwapchain(dev, r, in->pSwapchains[i], s) || !s || !s->usable) continue;
+        if (!EnsureSwapchain(dev, r, in->pSwapchains[i], s) || !s || !s->usable)
+            continue;
         const uint32_t imageIndex = in->pImageIndices ? in->pImageIndices[i] : 0;
-        if (imageIndex >= s->framebuffers.size()) continue;
+        if (imageIndex >= s->framebuffers.size())
+            continue;
 
         gpuhud::HudState state;
         state.frameMs = r.smoothedMs;
@@ -450,17 +529,22 @@ bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPre
         gpuhud::BuildHud(rects, state, s->extent.width, s->extent.height, gpuhud::HudScale(s->extent.width));
         targets.push_back({s, imageIndex, first, (uint32_t)rects.size() - first});
     }
-    if (targets.empty() || rects.empty()) return false;
+    if (targets.empty() || rects.empty())
+        return false;
 
     const VkDeviceSize bytes = rects.size() * sizeof(gpuhud::Rect);
-    if (!EnsureVertexBuffer(dev, r, f, bytes)) return false;
+    if (!EnsureVertexBuffer(dev, r, f, bytes))
+        return false;
     memcpy(f.mapped, rects.data(), (size_t)bytes);
 
     VkCommandBufferBeginInfo cbbi{VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO};
     cbbi.flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT;
-    if (d.ResetCommandBuffer(f.cb, 0) != VK_SUCCESS) return false;
-    if (d.BeginCommandBuffer(f.cb, &cbbi) != VK_SUCCESS) return false;
-    for (const Target& t : targets) {
+    if (d.ResetCommandBuffer(f.cb, 0) != VK_SUCCESS)
+        return false;
+    if (d.BeginCommandBuffer(f.cb, &cbbi) != VK_SUCCESS)
+        return false;
+    for (const Target& t : targets)
+    {
         VkRenderPassBeginInfo rpbi{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
         rpbi.renderPass = t.s->renderPass;
         rpbi.framebuffer = t.s->framebuffers[t.imageIndex];
@@ -478,12 +562,13 @@ bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPre
         d.CmdDraw(f.cb, 4, t.count, 0, 0);
         d.CmdEndRenderPass(f.cb);
     }
-    if (d.EndCommandBuffer(f.cb) != VK_SUCCESS) return false;
+    if (d.EndCommandBuffer(f.cb) != VK_SUCCESS)
+        return false;
 
     // The overlay waits on whatever the present was going to wait on, and the present waits on the
     // overlay instead. See the header: submitting on the same queue is not enough on its own.
     std::vector<VkPipelineStageFlags> stages(in->waitSemaphoreCount ? in->waitSemaphoreCount : 0,
-                                             VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
+        VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT);
     VkSubmitInfo si{VK_STRUCTURE_TYPE_SUBMIT_INFO};
     si.waitSemaphoreCount = in->waitSemaphoreCount;
     si.pWaitSemaphores = in->pWaitSemaphores;
@@ -492,7 +577,8 @@ bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPre
     si.pCommandBuffers = &f.cb;
     si.signalSemaphoreCount = 1;
     si.pSignalSemaphores = &f.done;
-    if (d.QueueSubmit(queue, 1, &si, f.fence) != VK_SUCCESS) return false;
+    if (d.QueueSubmit(queue, 1, &si, f.fence) != VK_SUCCESS)
+        return false;
     f.submitted = true;
     r.next = (r.next + 1) % r.frames.size();
 
@@ -506,12 +592,19 @@ bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPre
 // -----------------------------------------------------------------------------------------------
 // Teardown
 
-void Hud::DestroySwapchain(DeviceData* dev, SwapchainResources& s) {
+void Hud::DestroySwapchain(DeviceData* dev, SwapchainResources& s)
+{
     const DeviceDispatch& d = dev->dispatch;
-    for (VkFramebuffer fb : s.framebuffers) if (fb) d.DestroyFramebuffer(dev->device, fb, nullptr);
-    for (VkImageView v : s.views) if (v) d.DestroyImageView(dev->device, v, nullptr);
-    if (s.pipeline) d.DestroyPipeline(dev->device, s.pipeline, nullptr);
-    if (s.renderPass) d.DestroyRenderPass(dev->device, s.renderPass, nullptr);
+    for (VkFramebuffer fb : s.framebuffers)
+        if (fb)
+            d.DestroyFramebuffer(dev->device, fb, nullptr);
+    for (VkImageView v : s.views)
+        if (v)
+            d.DestroyImageView(dev->device, v, nullptr);
+    if (s.pipeline)
+        d.DestroyPipeline(dev->device, s.pipeline, nullptr);
+    if (s.renderPass)
+        d.DestroyRenderPass(dev->device, s.renderPass, nullptr);
     s.framebuffers.clear();
     s.views.clear();
     s.images.clear();
@@ -520,48 +613,68 @@ void Hud::DestroySwapchain(DeviceData* dev, SwapchainResources& s) {
     s.usable = false;
 }
 
-void Hud::OnDestroySwapchain(DeviceData* dev, VkSwapchainKHR swapchain) {
-    if (!dev || !swapchain) return;
+void Hud::OnDestroySwapchain(DeviceData* dev, VkSwapchainKHR swapchain)
+{
+    if (!dev || !swapchain)
+        return;
     std::lock_guard lock(_mutex);
     _pendingImages.erase((uint64_t)(uintptr_t)swapchain);
     auto it = _devices.find(dev->device);
-    if (it == _devices.end()) return;
+    if (it == _devices.end())
+        return;
     DeviceResources& r = it->second;
     auto s = r.swapchains.find((uint64_t)(uintptr_t)swapchain);
-    if (s == r.swapchains.end()) return;
+    if (s == r.swapchains.end())
+        return;
     // An overlay drawn into these images may still be running: the application's own guarantee
     // covers its work, not the layer's.
     for (auto& f : r.frames)
-        if (f.submitted) dev->dispatch.WaitForFences(dev->device, 1, &f.fence, VK_TRUE, 1000000000ull);
+        if (f.submitted)
+            dev->dispatch.WaitForFences(dev->device, 1, &f.fence, VK_TRUE, 1000000000ull);
     DestroySwapchain(dev, s->second);
     r.swapchains.erase(s);
 }
 
-void Hud::OnDestroyDevice(DeviceData* dev) {
-    if (!dev) return;
+void Hud::OnDestroyDevice(DeviceData* dev)
+{
+    if (!dev)
+        return;
     std::lock_guard lock(_mutex);
     auto it = _devices.find(dev->device);
-    if (it == _devices.end()) return;
+    if (it == _devices.end())
+        return;
     DeviceResources& r = it->second;
     const DeviceDispatch& d = dev->dispatch;
     for (auto& f : r.frames)
-        if (f.submitted) d.WaitForFences(dev->device, 1, &f.fence, VK_TRUE, 1000000000ull);
-    for (auto& s : r.swapchains) {
+        if (f.submitted)
+            d.WaitForFences(dev->device, 1, &f.fence, VK_TRUE, 1000000000ull);
+    for (auto& s : r.swapchains)
+    {
         _pendingImages.erase(s.first);
         DestroySwapchain(dev, s.second);
     }
     r.swapchains.clear();
-    for (auto& f : r.frames) {
-        if (f.mapped) d.UnmapMemory(dev->device, f.memory);
-        if (f.vertices) d.DestroyBuffer(dev->device, f.vertices, nullptr);
-        if (f.memory) d.FreeMemory(dev->device, f.memory, nullptr);
-        if (f.done) d.DestroySemaphore(dev->device, f.done, nullptr);
-        if (f.fence) d.DestroyFence(dev->device, f.fence, nullptr);
+    for (auto& f : r.frames)
+    {
+        if (f.mapped)
+            d.UnmapMemory(dev->device, f.memory);
+        if (f.vertices)
+            d.DestroyBuffer(dev->device, f.vertices, nullptr);
+        if (f.memory)
+            d.FreeMemory(dev->device, f.memory, nullptr);
+        if (f.done)
+            d.DestroySemaphore(dev->device, f.done, nullptr);
+        if (f.fence)
+            d.DestroyFence(dev->device, f.fence, nullptr);
     }
-    if (r.pool) d.DestroyCommandPool(dev->device, r.pool, nullptr);
-    if (r.pipelineLayout) d.DestroyPipelineLayout(dev->device, r.pipelineLayout, nullptr);
-    if (r.vert) d.DestroyShaderModule(dev->device, r.vert, nullptr);
-    if (r.frag) d.DestroyShaderModule(dev->device, r.frag, nullptr);
+    if (r.pool)
+        d.DestroyCommandPool(dev->device, r.pool, nullptr);
+    if (r.pipelineLayout)
+        d.DestroyPipelineLayout(dev->device, r.pipelineLayout, nullptr);
+    if (r.vert)
+        d.DestroyShaderModule(dev->device, r.vert, nullptr);
+    if (r.frag)
+        d.DestroyShaderModule(dev->device, r.frag, nullptr);
     _devices.erase(it);
 }
 

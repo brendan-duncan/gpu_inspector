@@ -17,9 +17,11 @@
 
 #include <string>
 
-namespace d3d11insp {
+namespace d3d11insp
+{
 
-struct ShaderInfo {
+struct ShaderInfo
+{
     /** The inspector's stage name: vertex, fragment, tess_control, tess_eval, geometry, compute. */
     std::string stage;
     std::string target;   // "ps_5_0"

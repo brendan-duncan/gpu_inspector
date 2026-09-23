@@ -5,7 +5,8 @@
 
 #include "common.h"
 
-namespace dxinsp {
+namespace dxinsp
+{
 
 /**
  * After D3D12CreateDevice succeeded: tracks the adapter (IDXGIAdapter, from the pAdapter the

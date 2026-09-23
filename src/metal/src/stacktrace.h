@@ -10,18 +10,21 @@
 #include <string>
 #include <vector>
 
-namespace vkinsp {
+namespace vkinsp
+{
 class JsonWriter;
 }
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 constexpr size_t kMaxStackFrames = 32;
 
 /** Return addresses, innermost first. */
 using StackTrace = std::vector<uint64_t>;
 
-struct StackFrame {
+struct StackFrame
+{
     uint64_t address = 0;
     std::string module;     // file name of the module, empty when unknown
     std::string function;   // demangled symbol, empty when unknown
@@ -36,9 +39,9 @@ bool StackTracesEnabled();
 StackTrace CaptureStack(unsigned skip = 0);
 
 /** A frame per address, resolved as far as dladdr allows. */
-std::vector<StackFrame> Symbolize(const StackTrace &addresses);
+std::vector<StackFrame> Symbolize(const StackTrace& addresses);
 
-void WriteStackFrames(vkinsp::JsonWriter &w, const std::vector<StackFrame> &frames);
+void WriteStackFrames(vkinsp::JsonWriter& w, const std::vector<StackFrame>& frames);
 
 /** "0x1234", the spelling the UI uses for an address. */
 std::string HexAddress(uint64_t address);

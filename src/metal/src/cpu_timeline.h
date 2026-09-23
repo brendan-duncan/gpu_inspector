@@ -24,10 +24,12 @@
 
 #import <objc/objc.h>
 
-namespace mtlinsp {
+namespace mtlinsp
+{
 
 /** What a CPU event was, in the words the timeline shows. The names match the other two backends'. */
-enum class CpuCategory : uint16_t {
+enum class CpuCategory : uint16_t
+{
     Submit = 0,     // commit: handing work to the GPU
     WaitFences,     // waitUntilCompleted / waitUntilScheduled: blocked until the GPU caught up
     Acquire,        // nextDrawable: blocked until the presenter freed a drawable
