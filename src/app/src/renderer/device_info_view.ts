@@ -5,7 +5,7 @@
 // Everything here also works on capture files, where these questions matter most.
 import { heapPressure, memoryHeaps, usedHeaps, type MemoryDatabase } from "./memory_heaps.js";
 import { HEAP_OCCUPANCY_LOW, heapOccupancy, metalMemory, type MetalMemory } from "./metal/metal_memory.js";
-import { memoryTimeline, memoryVerdict } from "./memory_timeline.js";
+import { memoryTimeline, memoryVerdict, residencyText } from "./memory_timeline.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { collapsible } from "./widget/collapsible.js";
 import { Div } from "./widget/div.js";
@@ -204,6 +204,8 @@ function renderMemoryOverTime(container: Widget, db: MemoryDatabase | null): voi
   const t = db?.memorySamples ? memoryTimeline(db.memorySamples) : null;
   if (!t) return;
   row(container, "Over time", memoryVerdict(t));
+  const residency = residencyText(t);
+  if (residency) row(container, "Residency", residency);
 
   // Plotted against the sample's own frame number, so a stall does not stretch the line.
   const first = t.points[0].frame;
@@ -216,8 +218,20 @@ function renderMemoryOverTime(container: Widget, db: MemoryDatabase | null): voi
     .join(" ");
   const line = new Div(container, { class: "memory-chart" });
   // preserveAspectRatio="none" lets the 0-100 space stretch to whatever width the panel has.
+  // Residency beside the line: an eviction is a red tick down from the top, a page-in a green tick
+  // up from the bottom, a budget change a dashed line through the sample. What is evicted is still
+  // held, so none of these move the line itself.
+  const marks = t.points.filter((p) => p.evicted || p.madeResident || p.budgetChanged).map((p) => {
+    const px = (((p.frame - first) / span) * 100).toFixed(2);
+    let svg = "";
+    if (p.budgetChanged) svg += `<line x1="${px}" y1="0" x2="${px}" y2="100" class="memory-chart-budget" vector-effect="non-scaling-stroke" />`;
+    if (p.evicted) svg += `<line x1="${px}" y1="0" x2="${px}" y2="18" class="memory-chart-evict" vector-effect="non-scaling-stroke" />`;
+    if (p.madeResident) svg += `<line x1="${px}" y1="100" x2="${px}" y2="82" class="memory-chart-resident" vector-effect="non-scaling-stroke" />`;
+    return svg;
+  }).join("");
   line.element.innerHTML =
     `<svg viewBox="0 0 100 100" preserveAspectRatio="none" class="memory-chart-svg" aria-hidden="true">`
+    + marks
     + `<polyline points="${points}" class="memory-chart-line" vector-effect="non-scaling-stroke" /></svg>`;
   const scale = new Div(container, { class: "memory-chart-scale" });
   new Span(scale, { text: formatBytes(t.maxBytes) });

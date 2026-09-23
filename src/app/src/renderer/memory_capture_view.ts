@@ -65,6 +65,31 @@ function drawGraph(canvas: HTMLCanvasElement, s: MemoryCaptureSummary): void {
   ctx.lineTo(w - 1, y(last));
   ctx.stroke();
 
+  // Residency: an eviction points down from the top, a page-in up from the bottom, and a budget
+  // change is a dashed line through the frame it fell in. Beside the held line rather than on
+  // it, since what is evicted is still held.
+  for (const m of s.marks) {
+    const mx = Math.round(x(m.frame)) + 0.5;
+    if (m.kind === "budget") {
+      ctx.strokeStyle = "#c0a040";
+      ctx.lineWidth = 1;
+      ctx.setLineDash([2, 3]);
+      ctx.beginPath();
+      ctx.moveTo(mx, 0);
+      ctx.lineTo(mx, h);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      continue;
+    }
+    const evict = m.kind === "evict";
+    ctx.fillStyle = evict ? "#d05f5f" : "#5fb06f";
+    ctx.beginPath();
+    if (evict) { ctx.moveTo(mx - 4, 1); ctx.lineTo(mx + 4, 1); ctx.lineTo(mx, 8); }
+    else { ctx.moveTo(mx - 4, h - 1); ctx.lineTo(mx + 4, h - 1); ctx.lineTo(mx, h - 8); }
+    ctx.closePath();
+    ctx.fill();
+  }
+
   // Where it began, to read the rest against.
   ctx.strokeStyle = "#808080";
   ctx.lineWidth = 1;
@@ -98,7 +123,9 @@ export function renderMemoryCaptureReport(container: Widget, capture: MemoryCapt
   canvas.height = 90;
   canvas.style.width = "100%";
   canvas.style.height = "90px";
-  canvas.title = "Bytes held by the application, frame by frame; the dashed line is what it held when the capture began.";
+  canvas.title = s.marks.length
+    ? "Bytes held by the application, frame by frame; the dashed line is what it held when the capture began. Red marks at the top are evictions, green at the bottom page-ins, and a dashed yellow line a change of the driver's budget."
+    : "Bytes held by the application, frame by frame; the dashed line is what it held when the capture began.";
   container.element.appendChild(canvas);
   drawGraph(canvas, s);
 
@@ -121,6 +148,13 @@ export function renderMemoryCaptureReport(container: Widget, capture: MemoryCapt
   for (const h of s.heaps) {
     if (s.heaps.length < 2) break;
     row(heapName(h.heap), `${signed(h.netBytes)}: ${formatBytes(h.allocatedBytes)} allocated, ${formatBytes(h.freedBytes)} freed`);
+  }
+  if (s.residency.evictions || s.residency.pageIns) {
+    row("Residency", `${formatBytes(s.residency.evictedBytes)} evicted in ${s.residency.evictions} call${s.residency.evictions === 1 ? "" : "s"}, ${formatBytes(s.residency.residentBytes)} paged back in ${s.residency.pageIns} time${s.residency.pageIns === 1 ? "" : "s"}`);
+  }
+  if (s.residency.budgetChanges) {
+    const last = [...s.marks].reverse().find((m) => m.kind === "budget");
+    row("Budget", `changed by the driver ${s.residency.budgetChanges} time${s.residency.budgetChanges === 1 ? "" : "s"}${last ? `, last at frame ${last.frame} to ${formatBytes(last.bytes)} for ${heapName(last.heap).toLowerCase()}` : ""}`);
   }
   if (capture.dropped) {
     row("Not recorded", `${capture.dropped} events past the capture's limit: the totals above stop where the recording did`);

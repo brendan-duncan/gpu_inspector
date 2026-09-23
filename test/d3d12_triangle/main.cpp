@@ -7,7 +7,7 @@
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
 //                        [--render-pass] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
-//                        [--capture-at N] [--churn] [--heavy] [--ray-tracing [--rebuild-blas]]
+//                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas]]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -188,6 +188,10 @@ struct App {
     // the one made two frames before (transient allocations), and every 30th frame makes one that
     // is kept until exit (a slow leak).
     bool churn = false;
+    // --evict: a 32 MB default-heap buffer evicted every 120th frame and made resident again 60
+    // frames later, so a memory capture and the memory series have residency to mark.
+    bool evictMode = false;
+    ComPtr<ID3D12Resource> evictable;
     std::vector<ComPtr<ID3D12Resource>> churnRecent, churnKept;
     // --stencil: the depth buffer is D24S8, cleared with the depth and written with 1 wherever the
     // cube draws, so a capture reads a stencil target back beside the depth.
@@ -744,6 +748,7 @@ struct App {
 
         BeginUpload();
         vertexBuffer = CreateBufferWithData(verts, sizeof(verts), D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER, L"Cube vertices");
+        if (evictMode) evictable = CreateBuffer(D3D12_HEAP_TYPE_DEFAULT, 32 * 1024 * 1024, D3D12_RESOURCE_STATE_COMMON, D3D12_RESOURCE_FLAG_NONE, L"Evict: paged out and back");
         indexBuffer = CreateBufferWithData(indices, sizeof(indices), D3D12_RESOURCE_STATE_INDEX_BUFFER, L"Cube indices");
         indirectArgs = CreateBufferWithData(&drawArgs, sizeof(drawArgs), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, L"Draw arguments");
         CreateTexture();
@@ -1343,6 +1348,7 @@ struct App {
         WaitForGpu();
         churnRecent.clear();
         churnKept.clear();
+        evictable.Reset();
         constantBuffer->Unmap(0, nullptr);
         CloseHandle(fenceEvent);
         // Everything else is released by the members' destructors, the device last.
@@ -1370,6 +1376,12 @@ struct App {
                 char label[48];
                 snprintf(label, sizeof label, "asked at frame %llu", (unsigned long long)captureAt);   // the tab's name
                 captureAsked = gpu_inspector_capture_named(1, label) != 0;
+            }
+            if (evictMode && evictable && frameCount > 0) {
+                // Never drawn from, so evicting it is safe at any point of the frame.
+                ID3D12Pageable* pageable = evictable.Get();
+                if (frameCount % 120 == 0) device->Evict(1, &pageable);
+                else if (frameCount % 120 == 60) device->MakeResident(1, &pageable);
             }
             if (churn) {
                 churnRecent.push_back(CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, 64 * 1024, D3D12_RESOURCE_STATE_GENERIC_READ,
@@ -1417,6 +1429,7 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) {
         else if (!strcmp(argv[i], "--offscreen")) app.offscreen = true;
         else if (!strcmp(argv[i], "--leak")) app.leak = true;
         else if (!strcmp(argv[i], "--churn")) app.churn = true;
+        else if (!strcmp(argv[i], "--evict")) app.evictMode = true;
         else if (!strcmp(argv[i], "--heavy")) app.heavy = true;
         else if (!strcmp(argv[i], "--ray-tracing")) app.rayTracing = true;
         else if (!strcmp(argv[i], "--rebuild-blas")) { app.rayTracing = true; app.rebuildBlas = true; }

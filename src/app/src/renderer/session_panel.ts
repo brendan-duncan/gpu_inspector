@@ -305,6 +305,8 @@ export class SessionPanel extends Div implements SessionContext {
           survivors: m.survivors.length, survivorBytes: m.survivorBytes,
           survivorNames: m.survivors.slice(0, 3).map((v) => db.getObject(v.id)?.name ?? null),
           transient: m.transient.count, verdict: m.verdict,
+          evictions: m.residency.evictions, evictedBytes: m.residency.evictedBytes, pageIns: m.residency.pageIns,
+          residentBytes: m.residency.residentBytes, budgetChanges: m.residency.budgetChanges,
         } : null;
       })(),
       captures: this.capturePanel.debugState(),

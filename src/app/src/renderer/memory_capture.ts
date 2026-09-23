@@ -22,6 +22,27 @@ export interface MemoryEvent {
   /** Index into the device's heaps, the order MemorySample reports them in. */
   heap: number;
   free?: boolean;
+  /** D3D12 residency, beside the allocations (protocol.ts, MemoryEventsMessage). */
+  kind?: "evict" | "resident" | "budget";
+  count?: number;
+}
+
+/** A residency event or a budget change, for the graph's marks and the report's rows. */
+export interface MemoryMark {
+  frame: number;
+  kind: "evict" | "resident" | "budget";
+  /** What the call named; for a budget change, the new budget. */
+  bytes: number;
+  count: number;
+  heap: number;
+}
+
+export interface Residency {
+  evictions: number;
+  evictedBytes: number;
+  pageIns: number;
+  residentBytes: number;
+  budgetChanges: number;
 }
 
 export interface MemoryCapture {
@@ -115,6 +136,9 @@ export interface MemoryCaptureSummary {
   busiest: AllocatingFrame[];
   /** Bytes held after each frame that had events, for the graph. */
   series: { frame: number; bytes: number }[];
+  /** Evictions, page-ins and budget changes, in frame order (D3D12). */
+  marks: MemoryMark[];
+  residency: Residency;
   verdict: string;
 }
 
@@ -152,8 +176,18 @@ export function summarizeMemoryCapture(capture: MemoryCapture): MemoryCaptureSum
   let peak = startBytes;
   let allocations = 0, allocatedBytes = 0, frees = 0, freedBytes = 0, unnamed = 0;
   let transientCount = 0, transientBytes = 0, olderCount = 0, olderBytes = 0;
+  const marks: MemoryMark[] = [];
+  const residency: Residency = { evictions: 0, evictedBytes: 0, pageIns: 0, residentBytes: 0, budgetChanges: 0 };
 
   for (const e of events) {
+    // Residency is beside the allocations, not among them: what is evicted is still held.
+    if (e.kind) {
+      marks.push({ frame: e.frame, kind: e.kind, bytes: e.bytes, count: e.count ?? 0, heap: e.heap });
+      if (e.kind === "evict") { residency.evictions++; residency.evictedBytes += e.bytes; }
+      else if (e.kind === "resident") { residency.pageIns++; residency.residentBytes += e.bytes; }
+      else residency.budgetChanges++;
+      continue;
+    }
     const h = heapOf(e.heap);
     if (e.free) {
       frees++;
@@ -219,6 +253,12 @@ export function summarizeMemoryCapture(capture: MemoryCapture): MemoryCaptureSum
       ? `${allocations} allocation${allocations === 1 ? "" : "s"} over ${frames} frames, and everything made was freed again: nothing is growing and nothing is churning.`
       : `${allocations} allocation${allocations === 1 ? "" : "s"} over ${frames} frames, ${netBytes > 0 ? "up" : "down"} ${bytesText(Math.abs(netBytes))} overall, with nothing made here left held for long enough to call a leak.`);
   }
+  if (residency.evictions || residency.pageIns) {
+    parts.push(`The application evicted ${bytesText(residency.evictedBytes)} in ${residency.evictions} call${residency.evictions === 1 ? "" : "s"} and paged ${bytesText(residency.residentBytes)} back in ${residency.pageIns} time${residency.pageIns === 1 ? "" : "s"}: memory pressure it answered, and paging back in is a stall where it happens (the marks on the graph).`);
+  }
+  if (residency.budgetChanges) {
+    parts.push(`The driver changed this process's memory budget ${residency.budgetChanges} time${residency.budgetChanges === 1 ? "" : "s"} while this ran: something else on the GPU took or gave back memory.`);
+  }
 
   return {
     frames, firstFrame, lastFrame,
@@ -228,7 +268,7 @@ export function summarizeMemoryCapture(capture: MemoryCapture): MemoryCaptureSum
     heaps: [...heaps.values()].sort((a, b) => a.heap - b.heap),
     survivors: settled, survivorBytes, unnamed, transient,
     freedOlder: { count: olderCount, bytes: olderBytes },
-    busiest, series,
+    busiest, series, marks, residency,
     verdict: parts.join(" "),
   };
 }

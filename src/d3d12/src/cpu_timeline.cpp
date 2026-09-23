@@ -644,7 +644,19 @@ struct MemoryEvent {
     uint64_t bytes = 0;
     uint8_t segment = 0;
     bool released = false;
+    /** 0: an allocation or a free. Otherwise a residency event (MemoryEventsMessage.events[].kind). */
+    enum Kind : uint8_t { Alloc = 0, Evict = 1, Resident = 2, Budget = 3 };
+    Kind kind = Alloc;
+    /** Residency: how many objects the call named. */
+    uint32_t count = 0;
 };
+
+// Residency since the last MemorySample, per segment, so the live series can mark the sample an
+// eviction or a page-in fell in; and the driver's last budget, to notice it changing.
+uint64_t g_evictedSinceSample[2] = {0, 0};
+uint64_t g_residentSinceSample[2] = {0, 0};
+uint64_t g_lastBudget[2] = {0, 0};
+bool g_haveLastBudget = false;
 
 std::atomic<bool> g_memoryCapture{false};
 std::chrono::steady_clock::time_point g_memoryOrigin{};
@@ -657,7 +669,8 @@ size_t g_memoryEventsDropped = 0;
 constexpr size_t kMaxMemoryEvents = 1u << 20;
 
 /** Under g_memoryMutex. */
-void RecordMemoryEvent(uint64_t id, uint64_t bytes, uint32_t segment, bool released) {
+void RecordMemoryEvent(uint64_t id, uint64_t bytes, uint32_t segment, bool released,
+                       MemoryEvent::Kind kind = MemoryEvent::Alloc, uint32_t count = 0) {
     if (!g_memoryCapture.load(std::memory_order_relaxed)) return;
     if (g_memoryEventsTotal >= kMaxMemoryEvents) {
         ++g_memoryEventsDropped;
@@ -671,6 +684,8 @@ void RecordMemoryEvent(uint64_t id, uint64_t bytes, uint32_t segment, bool relea
     e.bytes = bytes;
     e.segment = (uint8_t)segment;
     e.released = released;
+    e.kind = kind;
+    e.count = count;
     g_memoryEvents.push_back(e);
 }
 
@@ -722,6 +737,32 @@ void NoteMemoryReleased(void* object) {
     g_held.erase(it);
 }
 
+void NoteResidency(bool evict, UINT count, ID3D12Pageable* const* objects) {
+    if (!count || !objects) return;
+    // One event per segment the call touched: what it named is summed by where it lives, and an
+    // object never noted (a descriptor heap, a query heap, a pipeline state) counts with no bytes.
+    uint64_t bytes[2] = {0, 0};
+    uint32_t counts[2] = {0, 0};
+    uint64_t ids[2] = {0, 0};
+    uint32_t unknown = 0;
+    std::lock_guard<std::mutex> lock(g_memoryMutex);
+    for (UINT i = 0; i < count; ++i) {
+        auto it = objects[i] ? g_held.find(objects[i]) : g_held.end();
+        if (it == g_held.end() || it->second.segment >= 2) { ++unknown; continue; }
+        const uint32_t s = it->second.segment;
+        bytes[s] += it->second.bytes;
+        if (!counts[s]++) ids[s] = it->second.id;
+    }
+    // The objects the library holds no size for go with the GPU's own segment, as a count.
+    if (unknown) counts[0] += unknown;
+    for (uint32_t s = 0; s < 2; ++s) {
+        if (!counts[s]) continue;
+        (evict ? g_evictedSinceSample : g_residentSinceSample)[s] += bytes[s];
+        RecordMemoryEvent(counts[s] == 1 ? ids[s] : 0, bytes[s], s, false, evict ? MemoryEvent::Evict : MemoryEvent::Resident, counts[s]);
+    }
+    Log("%s: %u object(s), %llu bytes", evict ? "evict" : "make resident", count, (unsigned long long)(bytes[0] + bytes[1]));
+}
+
 void BeginMemoryCapture() {
     std::lock_guard<std::mutex> lock(g_memoryMutex);
     g_memoryEvents.clear();
@@ -761,7 +802,7 @@ void SendMemoryEvents() {
     }
     if (baseline) {
         for (const MemoryEvent& e : batch) {
-            if (e.segment >= 2) continue;
+            if (e.segment >= 2 || e.kind != MemoryEvent::Alloc) continue;
             if (e.released) { bytes[e.segment] += e.bytes; ++counts[e.segment]; }
             else { bytes[e.segment] -= (std::min)(bytes[e.segment], e.bytes); if (counts[e.segment]) --counts[e.segment]; }
         }
@@ -789,6 +830,10 @@ void SendMemoryEvents() {
         w.Key("bytes"); w.Uint(e.bytes);
         w.Key("heap"); w.Uint(e.segment);
         if (e.released) { w.Key("free"); w.Boolean(true); }
+        if (e.kind == MemoryEvent::Evict) { w.Key("kind"); w.String("evict"); }
+        else if (e.kind == MemoryEvent::Resident) { w.Key("kind"); w.String("resident"); }
+        else if (e.kind == MemoryEvent::Budget) { w.Key("kind"); w.String("budget"); }
+        if (e.count) { w.Key("count"); w.Uint(e.count); }
         w.EndObject();
     }
     w.EndArray();
@@ -817,12 +862,34 @@ void SendMemorySample(ID3D12Device* device) {
 
     uint64_t bytes[2];
     uint32_t counts[2];
+    uint64_t evicted[2], resident[2];
+    bool budgetChanged[2] = {false, false};
     {
         std::lock_guard<std::mutex> lock(g_memoryMutex);
         bytes[0] = g_segmentBytes[0];
         bytes[1] = g_segmentBytes[1];
         counts[0] = g_segmentCount[0];
         counts[1] = g_segmentCount[1];
+        for (size_t i = 0; i < 2; ++i) {
+            evicted[i] = g_evictedSinceSample[i];
+            resident[i] = g_residentSinceSample[i];
+            g_evictedSinceSample[i] = 0;
+            g_residentSinceSample[i] = 0;
+        }
+        // The driver's budget moving is the pressure an eviction answers, and worth marking on
+        // the series and in a capture whether or not the application registered for the
+        // notification: the sample already asks the adapter, so a change is noticed here.
+        if (hasBudget) {
+            for (size_t i = 0; i < 2; ++i) {
+                if (g_haveLastBudget && budget[i] != g_lastBudget[i]) {
+                    budgetChanged[i] = true;
+                    RecordMemoryEvent(0, budget[i], (uint32_t)i, false, MemoryEvent::Budget, 0);
+                    Log("video memory budget changed: segment %zu %llu -> %llu bytes", i, (unsigned long long)g_lastBudget[i], (unsigned long long)budget[i]);
+                }
+                g_lastBudget[i] = budget[i];
+            }
+            g_haveLastBudget = true;
+        }
     }
 
     JsonWriter w(&Tracker::Get());
@@ -838,6 +905,9 @@ void SendMemorySample(ID3D12Device* device) {
             w.Key("usage"); w.Uint(usage[i]);
             w.Key("budget"); w.Uint(budget[i]);
         }
+        if (evicted[i]) { w.Key("evicted"); w.Uint(evicted[i]); }
+        if (resident[i]) { w.Key("madeResident"); w.Uint(resident[i]); }
+        if (budgetChanged[i]) { w.Key("budgetChanged"); w.Boolean(true); }
         w.EndObject();
     }
     w.EndArray();

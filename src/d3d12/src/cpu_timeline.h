@@ -172,6 +172,15 @@ void NoteHeldAllocation(void* object, uint64_t sizeBytes, D3D12_HEAP_TYPE heapTy
 void NoteMemoryReleased(void* object);
 
 /**
+ * The application evicting objects (ID3D12Device::Evict) or paging them back in (MakeResident,
+ * EnqueueMakeResident). The totals above are unchanged — what is evicted is still the
+ * application's — but the series and a memory capture mark it: an eviction is memory pressure
+ * the application answered, and paging back in is the stall that follows. The bytes are the
+ * objects' sizes as they were noted at creation; an object never noted counts with no bytes.
+ */
+void NoteResidency(bool evict, UINT count, ID3D12Pageable* const* objects);
+
+/**
  * One sample of the memory series: what this application holds per segment, and what the driver
  * says is resident and allowed. Called with the frame report.
  */

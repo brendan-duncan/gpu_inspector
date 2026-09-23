@@ -736,6 +736,11 @@ export interface MemorySampleHeap {
   /** The driver's view, counting every process: what is resident, and what this one may have. */
   usage?: number;
   budget?: number;
+  /** D3D12: bytes the application evicted, and paged back in, since the last sample. */
+  evicted?: number;
+  madeResident?: number;
+  /** D3D12: the driver's budget for this heap changed since the last sample. */
+  budgetChanged?: boolean;
 }
 
 /**
@@ -786,6 +791,14 @@ export interface MemoryEventsMessage {
     /** Index into the heaps, as MemorySample orders them. */
     heap: number;
     free?: boolean;
+    /**
+     * D3D12 residency, beside the allocations: the application evicted objects, paged them back
+     * in (MakeResident, EnqueueMakeResident), or the driver's budget for the heap changed. Not an
+     * allocation: `bytes` is what the call named (the new budget, for "budget"), `count` how
+     * many objects, and `id` one of them when there was only one.
+     */
+    kind?: "evict" | "resident" | "budget";
+    count?: number;
   }[];
 }
 

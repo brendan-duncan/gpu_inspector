@@ -191,6 +191,7 @@ differently or misbehave on purpose.
 | `--render-pass` | Uses `ID3D12GraphicsCommandList4` render passes |
 | `--debug-layer` | Turns the D3D12 debug layer on from the application |
 | `--msaa`, `--stencil`, `--leak`, `--offscreen`, `--heavy`, `--churn`, `--capture-at <frame>` | As above |
+| `--evict` | A 32 MB buffer evicted every 120th frame and made resident 60 frames later, for the residency marks |
 
 ## Other commands
 

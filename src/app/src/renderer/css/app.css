@@ -482,6 +482,10 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .memory-chart { height: 56px; margin: 4px 0 2px 0; background: var(--bg-primary); border-radius: 3px; overflow: hidden; }
 .memory-chart-svg { display: block; width: 100%; height: 100%; }
 .memory-chart-line { fill: none; stroke: #5fd08a; stroke-width: 1.5; }
+/* Residency beside the line (device_info_view.ts): an eviction down from the top, a page-in up from the bottom, a budget change through the sample. */
+.memory-chart-evict { stroke: #d05f5f; stroke-width: 2; }
+.memory-chart-resident { stroke: #5fb06f; stroke-width: 2; }
+.memory-chart-budget { stroke: #c0a040; stroke-width: 1; stroke-dasharray: 2 3; }
 .memory-chart-scale { display: flex; justify-content: space-between; color: var(--fg-muted); font-size: 9pt; font-variant-numeric: tabular-nums; }
 /* CPU and GPU activity on one axis (renderer/timeline_tracks.ts) */
 .track-row { display: flex; align-items: center; gap: 10px; padding: 2px 0; font-size: 10pt; }

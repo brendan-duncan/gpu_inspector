@@ -371,6 +371,34 @@ void OnHeapCreated(ID3D12Device* device, ID3D12Heap* heap, const char* cmd, Args
     Log("%s -> ID3D12Heap %p", cmd, (void*)heap);
 }
 
+// Residency (cpu_timeline.h, NoteResidency): the calls are made as the application made them and
+// noted afterwards, as a mark on the memory series and an event in a memory capture. MakeResident
+// blocks while the objects page in, so it is timed as the frame's own work rather than as an
+// allocation: the stall is the point.
+HRESULT STDMETHODCALLTYPE Hook_MakeResident(ID3D12Device14* This, UINT NumObjects, ID3D12Pageable* const* ppObjects) {
+    if (Internal()) return DEV(MakeResident)(This, NumObjects, ppObjects);
+    HRESULT hr = DEV(MakeResident)(This, NumObjects, ppObjects);
+    if (SUCCEEDED(hr)) NoteResidency(false, NumObjects, ppObjects);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE Hook_Evict(ID3D12Device14* This, UINT NumObjects, ID3D12Pageable* const* ppObjects) {
+    if (Internal()) return DEV(Evict)(This, NumObjects, ppObjects);
+    HRESULT hr = DEV(Evict)(This, NumObjects, ppObjects);
+    if (SUCCEEDED(hr)) NoteResidency(true, NumObjects, ppObjects);
+    return hr;
+}
+
+HRESULT STDMETHODCALLTYPE Hook_EnqueueMakeResident(ID3D12Device14* This, D3D12_RESIDENCY_FLAGS Flags, UINT NumObjects, ID3D12Pageable* const* ppObjects,
+                                                   ID3D12Fence* pFenceToSignal, UINT64 FenceValueToSignal) {
+    if (Internal()) return DEV(EnqueueMakeResident)(This, Flags, NumObjects, ppObjects, pFenceToSignal, FenceValueToSignal);
+    HRESULT hr = DEV(EnqueueMakeResident)(This, Flags, NumObjects, ppObjects, pFenceToSignal, FenceValueToSignal);
+    // Noted when enqueued rather than when the fence signals: the request is the application's
+    // decision, and the fence is its own to wait on.
+    if (SUCCEEDED(hr)) NoteResidency(false, NumObjects, ppObjects);
+    return hr;
+}
+
 HRESULT STDMETHODCALLTYPE Hook_CreateHeap(ID3D12Device14* This, const D3D12_HEAP_DESC* pDesc, REFIID riid, void** out) {
     if (Internal()) return DEV(CreateHeap)(This, pDesc, riid, out);
     HRESULT hr = DEV(CreateHeap)(This, pDesc, riid, out);
@@ -1215,6 +1243,9 @@ void HookDevice(ID3D12Device* device) {
         {slot::ID3D12Device14_CopyDescriptorsSimple, (void*)&Hook_CopyDescriptorsSimple},
         {slot::ID3D12Device14_CreateCommittedResource, (void*)&Hook_CreateCommittedResource},
         {slot::ID3D12Device14_CreateHeap, (void*)&Hook_CreateHeap},
+        {slot::ID3D12Device14_MakeResident, (void*)&Hook_MakeResident},
+        {slot::ID3D12Device14_Evict, (void*)&Hook_Evict},
+        {slot::ID3D12Device14_EnqueueMakeResident, (void*)&Hook_EnqueueMakeResident},
         {slot::ID3D12Device14_CreatePlacedResource, (void*)&Hook_CreatePlacedResource},
         {slot::ID3D12Device14_CreateReservedResource, (void*)&Hook_CreateReservedResource},
         {slot::ID3D12Device14_OpenSharedHandle, (void*)&Hook_OpenSharedHandle},

@@ -1017,10 +1017,17 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
 - [ ] Replay on another device to tell a driver bug from an application bug (PIX replays on WARP):
       replay on lavapipe or SwiftShader and compare the render targets with the hardware result,
       which the replay's own comparison mostly does already.
-- [ ] Memory events beside the totals: residency changes (`MakeResident`, `Evict`,
-      `EnqueueMakeResident`) and budget-change notifications
-      (`RegisterVideoMemoryBudgetChangeNotificationEvent`) marked on the memory series, so it says
-      when the driver evicted or paged something back in, not only how much was held.
+- [x] Memory events beside the totals (D3D12): `Evict`, `MakeResident` and `EnqueueMakeResident`
+      are hooked (`hooks_device.cpp`, `NoteResidency` in `cpu_timeline.cpp`), sized from what the
+      library noted at creation, and go out two ways: as `evicted` / `madeResident` bytes on each
+      `MemorySample` heap, which the Inspect memory series marks (red down, green up) with a
+      Residency row, and as `kind: evict | resident` events in a memory capture, which the report
+      marks on its graph, counts in a row and names in the verdict. The budget is not watched
+      through `RegisterVideoMemoryBudgetChangeNotificationEvent` after all: the sample already
+      asks the adapter for the budget every report, so a change between two samples is the
+      notification (`budgetChanged` on the heap, a `budget` event in a capture, a dashed mark on
+      both graphs). `test/d3d12_triangle --evict`; `d3d12-memory-residency` in `tools/ui_tests.py`.
+      Not seen here: a real budget change, which needs another process to take GPU memory.
 - [x] Dropped frames on D3D12, measured rather than estimated (`UpdatePresentStatistics`,
       `src/d3d12/src/device_info.cpp`): the swap chain's `DXGI_FRAME_STATISTICS` counts the
       refreshes that showed the previous frame again, where the library used to send a hard-coded

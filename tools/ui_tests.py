@@ -1377,6 +1377,18 @@ def dropped_frames(measured, vulkan=False):
     return check
 
 
+def memory_residency(state, log):
+    # A memory capture of the D3D12 sample's --evict: a 32 MB buffer evicted every 120th frame and
+    # made resident again 60 frames later, so a six second capture holds both kinds of event,
+    # sized from what the library noted at the buffer's creation.
+    m = session(state).get("memoryCapture") or {}
+    return check_connected(state, log) + \
+        expect((m.get("evictions") or 0) >= 1, f"{m.get('evictions')} evictions recorded") + \
+        expect((m.get("pageIns") or 0) >= 1, f"{m.get('pageIns')} page-ins recorded") + \
+        expect((m.get("evictedBytes") or 0) >= 32 * 1024 * 1024, f"{m.get('evictedBytes')} bytes evicted: the buffer's size was not known") + \
+        expect("evicted" in (m.get("verdict") or ""), f"the verdict says nothing about residency: {m.get('verdict')!r}")
+
+
 def capture_on_hitch(state, log):
     # Capture on hitch (--debug-capture-on-hitch with --debug-timing): the sample stalls one frame
     # in ninety (--hitch-every 90), and the timing run's first hitch has to take a frame capture
@@ -1911,6 +1923,7 @@ def d3d12_cases(triangle):
              capture_on_hitch, delay_ms=15000),
         Case("d3d12-dropped-frames", launch + ["--args=--stall 40"], dropped_frames(measured=True), delay_ms=9000),
         Case("d3d12-memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
+        Case("d3d12-memory-residency", launch + ["--args=--evict", "--debug-memory=6000"], memory_residency, delay_ms=12000),
         Case("d3d12-app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
         Case("d3d12-shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),
         Case("d3d12-mesh-output", launch + ["--debug-capture", "--debug-view=mesh"],

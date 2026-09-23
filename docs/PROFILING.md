@@ -230,9 +230,15 @@ the three things a total cannot:
   the driver every frame, which costs time rather than memory, and a ring buffer or a pool removes it.
 - **Frames that allocated most**, which is where an allocation-driven hitch comes from; a
   Timing Capture of the same stretch says whether one did.
+- **Residency** (Direct3D 12): what the application evicted and paged back in (`Evict`,
+  `MakeResident`, `EnqueueMakeResident`) while it ran, and how often the driver changed this
+  process's budget. Neither moves the bytes held, since what is evicted is still the
+  application's, but an eviction is memory pressure it answered and a page-in is a stall where it
+  happens, so both are marked on the graph and counted in the verdict.
 
 The graph is the bytes held, frame by frame, as steps; the dashed line is what was held when the
-capture began.
+capture began. Red marks at the top are evictions, green marks at the bottom page-ins, and a
+dashed yellow line a change of the driver's budget.
 
 ## Step 2: which pass
 
@@ -396,6 +402,13 @@ application holds across the session and names the shape:
 
 The shape is read from how far the series moves each way, not from where it starts and ends: a
 pool can stop anywhere in its cycle, so a refill caught at its peak would otherwise read as a leak.
+
+*What the driver took away.* On Direct3D 12 the series also marks residency: a red tick down
+from the top where the application evicted something, a green tick up from the bottom where it
+paged something back in, and a dashed line through the sample in which the driver changed the
+budget it allows this process. A **Residency** row under the shape says how much went each way.
+That is the part of memory pressure a total cannot show: the total is unchanged by an eviction,
+and what it costs is the stall when the memory comes back.
 
 ## The limiters: which unit inside the shader core is saturated
 

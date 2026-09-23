@@ -19,6 +19,10 @@ export interface MemoryPoint {
   allocations: number;
   /** The driver's resident total across every heap, where it reported one. */
   usage: number | null;
+  /** D3D12: what the application evicted and paged back in since the previous sample, and whether the budget moved. */
+  evicted: number;
+  madeResident: number;
+  budgetChanged: boolean;
 }
 
 /** What the series is doing, which is the question an instant cannot answer. */
@@ -41,6 +45,10 @@ export interface MemoryTimeline {
   swingBytes: number;
   /** The driver reported residency, so `usage` is real rather than absent. */
   hasUsage: boolean;
+  /** Residency over the series: what was evicted and paged back in, and how often the budget moved. */
+  evictedBytes: number;
+  residentBytes: number;
+  budgetChanges: number;
 }
 
 /**
@@ -60,19 +68,17 @@ export const SAWTOOTH_SHARE = 0.1;
 export const MAX_SAMPLES = 36000;
 
 function totalOf(m: MemorySampleMessage): MemoryPoint {
-  let allocated = 0;
-  let allocations = 0;
-  let usage = 0;
-  let anyUsage = false;
+  let allocated = 0, allocations = 0, usage = 0, evicted = 0, madeResident = 0;
+  let hasUsage = false, budgetChanged = false;
   for (const h of m.heaps ?? []) {
     allocated += h.allocated ?? 0;
     allocations += h.allocations ?? 0;
-    if (typeof h.usage === "number") {
-      usage += h.usage;
-      anyUsage = true;
-    }
+    if (typeof h.usage === "number") { usage += h.usage; hasUsage = true; }
+    evicted += h.evicted ?? 0;
+    madeResident += h.madeResident ?? 0;
+    if (h.budgetChanged) budgetChanged = true;
   }
-  return { frame: m.frame ?? 0, allocated, allocations, usage: anyUsage ? usage : null };
+  return { frame: m.frame, allocated, allocations, usage: hasUsage ? usage : null, evicted, madeResident, budgetChanged };
 }
 
 /**
@@ -145,6 +151,9 @@ export function memoryTimeline(samples: MemorySampleMessage[]): MemoryTimeline |
   return {
     points, minBytes, maxBytes, frames, trend, bytesPerFrame, swingBytes,
     hasUsage: points.some((p) => p.usage !== null),
+    evictedBytes: points.reduce((sum, p) => sum + p.evicted, 0),
+    residentBytes: points.reduce((sum, p) => sum + p.madeResident, 0),
+    budgetChanges: points.filter((p) => p.budgetChanged).length,
   };
 }
 
@@ -160,6 +169,14 @@ function bytes(n: number): string {
 }
 
 /** What the shape means, in words, with the numbers it was read from. */
+/** The residency sentence for the series, or "" when nothing was evicted, paged in or re-budgeted. */
+export function residencyText(t: MemoryTimeline): string {
+  const parts: string[] = [];
+  if (t.evictedBytes || t.residentBytes) parts.push(`the application evicted ${bytes(t.evictedBytes)} and paged ${bytes(t.residentBytes)} back in (the marks: red down for an eviction, green up for a page-in)`);
+  if (t.budgetChanges) parts.push(`the driver changed its budget ${t.budgetChanges} time${t.budgetChanges === 1 ? "" : "s"} (the dashed marks)`);
+  return parts.length ? `Over these samples ${parts.join(", and ")}.` : "";
+}
+
 export function memoryVerdict(t: MemoryTimeline): string {
   const over = t.frames > 0 ? ` over ${t.frames} frames` : "";
   const held = bytes(t.points[t.points.length - 1].allocated);
