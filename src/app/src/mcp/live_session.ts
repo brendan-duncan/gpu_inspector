@@ -93,6 +93,23 @@ export interface CaptureOptions {
   timeoutMs: number;
 }
 
+/**
+ * A capture the application asked for itself (gpu_inspector_capture in include/gpu_inspector.h):
+ * taken with the session's default options, saved under the application's label, and opened in
+ * the capture store, so an agent's test harness finds it in list_captures.
+ */
+export interface AppCapture {
+  /** When the application asked, ms since the epoch. */
+  at: number;
+  label: string;
+  frameCount: number;
+  /** "dropped": asked while a capture was already being taken, which the capture library ignores. */
+  state: "capturing" | "saved" | "dropped" | "failed";
+  file?: string;
+  frame?: number;
+  error?: string;
+}
+
 export interface CaptureResult {
   data: CaptureData;
   /** "marker": the capture library said the capture was complete; "quiet": its stream went silent. */
@@ -211,6 +228,10 @@ export class LiveSession {
    * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
    */
   remote: { stop(): Promise<void>; repair?(): Promise<unknown> } | null = null;
+  /** The captures the application asked for itself, oldest first. */
+  readonly appCaptures: AppCapture[] = [];
+  /** Told of each app-requested capture's saved file, so the server can open it in its store. */
+  onAppCaptureSaved: ((session: LiveSession, file: string) => void) | null = null;
 
   constructor(readonly id: string, public name: string, readonly port: number, readonly launched: boolean) {
     const db = this.database;
@@ -226,8 +247,45 @@ export class LiveSession {
     db.onOtherMessage.addListener((msg) => {
       if (msg.action === "ShaderReplaced") {
         this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? (msg.replacement ? `applied as object ${msg.replacement}` : "restored") : `failed: ${msg.error ?? "unknown error"}`}`);
+      } else if (msg.action === "AppCaptureRequest") {
+        void this._appCapture(Math.max(1, Math.floor(msg.frameCount) || 1), typeof msg.label === "string" ? msg.label.trim().slice(0, 200) : "");
       }
     });
+  }
+
+  /**
+   * The application called gpu_inspector_capture (include/gpu_inspector.h): the same capture the
+   * desktop UI would take, with the defaults capture_frames uses, saved under the application's
+   * label and handed to the store. One already being taken means the capture library ignores
+   * the request, so it is recorded as dropped rather than waited on.
+   */
+  private async _appCapture(frameCount: number, label: string): Promise<void> {
+    const what = `${frameCount} frame${frameCount === 1 ? "" : "s"}${label ? ` "${label}"` : ""}`;
+    const record: AppCapture = { at: Date.now(), label, frameCount, state: "capturing" };
+    this.appCaptures.push(record);
+    if (this._capturing) {
+      record.state = "dropped";
+      this.appendLog(`the application asked for a capture (${what}) while one was being taken; the capture library ignores it`);
+      return;
+    }
+    this.appendLog(`the application asked for a capture: ${what}`);
+    try {
+      const result = await this.capture({
+        frames: frameCount, profilePasses: true, renderTargets: true, buffers: true, images: true, stacktraces: false,
+        maxBufferBytes: 128 * 1024, timeoutMs: 60000,
+      });
+      if (label) result.data.requestLabel = label;
+      const file = await this.saveCapture(result.data);
+      record.state = "saved";
+      record.file = file;
+      record.frame = result.data.frame;
+      this.appendLog(`the application's capture (${what}) was saved as ${file}`);
+      this.onAppCaptureSaved?.(this, file);
+    } catch (e) {
+      record.state = "failed";
+      record.error = e instanceof Error ? e.message : String(e);
+      this.appendLog(`the application's capture (${what}) failed: ${record.error}`);
+    }
   }
 
   get connected(): boolean {
@@ -587,6 +645,13 @@ export class LiveSession {
 
 export class SessionManager {
   private readonly _sessions = new Map<string, LiveSession>();
+  /** Given to every session (LiveSession.onAppCaptureSaved): the server opens the file in its capture store. */
+  onAppCaptureSaved: ((session: LiveSession, file: string) => void) | null = null;
+
+  private _add(session: LiveSession): void {
+    session.onAppCaptureSaved = (s, file) => this.onAppCaptureSaved?.(s, file);
+    this._sessions.set(session.id, session);
+  }
   private _counter = 0;
   private _latest: LiveSession | null = null;
 
@@ -652,7 +717,7 @@ export class SessionManager {
     const session = new LiveSession(`app-${++this._counter}`, `${path.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
     session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
     for (const note of notes) session.appendLog(note);
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     session.startProcess(exe, spawnArgs, cwd, env);
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
@@ -688,7 +753,7 @@ export class SessionManager {
     const session = new LiveSession(`app-${++this._counter}`, `${image} when it starts (D3D12)`, port, true);
     session.appendLog(`watching for ${image}: ${watch.exe} ${watch.args.join(" ")}`);
     session.appendLog(`D3D12 capture library: ${d3d12.library}`);
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     session.startProcess(watch.exe, watch.args, d3d12.dir, { ...process.env });
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
@@ -733,7 +798,7 @@ export class SessionManager {
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
     const serial = device.serial;
     const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     const target = new AndroidTarget({
       adb, serial, package: o.package, activity: o.activity ?? "", port, log: true,
@@ -768,7 +833,7 @@ export class SessionManager {
     if (!(await session.connect(waitMs))) {
       throw new Error(`Nothing answered on port ${port} within ${waitMs / 1000} s. An application listens there when it was started with GPU Inspector's capture library (VKINSP_PORT, or MTLINSP_PORT on macOS).`);
     }
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     return session;
   }

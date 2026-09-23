@@ -991,9 +991,11 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       save. Every sample's `--capture-at N` exercises it, and `tools/ui_tests.py` runs it on all four
       Windows backends (`app-capture`, `d3d12-app-capture`, `d3d11-app-capture`,
       `gles-app-capture`). Metal and Linux are written but untested from here.
-      Still open: an MCP session (`launch_app`) ignores `AppCaptureRequest`, since it captures only
-      when a tool asks; an agent-driven test harness would want the application's request to
-      become a capture it can list.
+      An MCP session takes the application's capture too (`LiveSession._appCapture` in
+      `src/app/src/mcp/live_session.ts`): capture_frames' defaults, saved under the label, opened in
+      the store; `get_session_status` lists them under `appCaptures`, `list_captures` and
+      `get_capture_summary` carry the label. A request during a capture is recorded as dropped,
+      as the capture library ignores it. `src/app/test/live.test.js` covers it with the fake library.
 
       **Not by answering RenderDoc's API.** Unity, Unreal and the test harnesses that already call
       it find it with `GetModuleHandle("renderdoc.dll")`, so being found at all would mean shipping

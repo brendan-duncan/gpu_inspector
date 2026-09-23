@@ -65,6 +65,11 @@ the Direct3D 11 and OpenGL ES plugins (on Windows, Linux and Android). The heade
 whichever of them is in the process and connected. Every sample's `--capture-at N` does it at frame
 N (`gles_linux --capture-at=N`).
 
+The same request reaches an [MCP session](../claude-plugin/README.md): an application launched
+with `launch_app` that asks for a capture gets one taken with the session's default options and
+saved under its label, which `get_session_status` lists under `appCaptures` and `list_captures`
+shows open. That is what makes a test harness's assertion a capture an agent can read.
+
 ## Reading the frame
 
 The left side is the frame's commands, grouped by submit, command buffer, render pass and the

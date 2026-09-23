@@ -65,6 +65,11 @@ function sessionStatus(s: LiveSession): Record<string, unknown> {
     },
     validation: { errors, warnings, total: db.validation.length },
     leakedObjects: db.leakCount || undefined,
+    // Captures the application asked for itself (include/gpu_inspector.h), saved under its label.
+    appCaptures: s.appCaptures.length ? s.appCaptures.map((c) => ({
+      label: c.label || undefined, frames: c.frameCount, state: c.state, file: c.file, frame: c.frame, error: c.error,
+      secondsAgo: round((Date.now() - c.at) / 1000),
+    })) : undefined,
     recentLog: s.log.slice(-15),
     note: s.state === "connected" && !last ? "Connected, but no frame has been reported yet: the application may not be rendering." : undefined,
   };
@@ -300,6 +305,7 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
         sessions: sessions.list().map((s) => ({
           session: s.id, name: s.name, state: s.state, pid: s.pid ?? undefined, port: s.port, api: s.api ?? undefined,
           frame: s.frameStats.at(-1)?.msg.frame,
+          appCaptures: s.appCaptures.length || undefined,
         })),
         capturesDirectory: capturesDir(),
       }),
@@ -307,7 +313,8 @@ export function liveTools(sessions: SessionManager, store: CaptureStore): ToolDe
     {
       name: "get_session_status",
       description: "A live session's state: whether it is connected, the process, the device, the last frame report (frame " +
-        "time, submit time, refresh period, dropped frames), live objects by type, memory, validation counts, and the recent log.",
+        "time, submit time, refresh period, dropped frames), live objects by type, memory, validation counts, the captures " +
+        "the application asked for itself (appCaptures: saved files, named by the application's label), and the recent log.",
       inputSchema: schema({ session: SESSION_PARAM }),
       readOnly: true,
       handler: (args) => jsonResult(sessionStatus(sessions.get(stringArg(args, "session")))),

@@ -29758,6 +29758,8 @@ var LiveSession = class {
     db.onOtherMessage.addListener((msg) => {
       if (msg.action === "ShaderReplaced") {
         this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? msg.replacement ? `applied as object ${msg.replacement}` : "restored" : `failed: ${msg.error ?? "unknown error"}`}`);
+      } else if (msg.action === "AppCaptureRequest") {
+        void this._appCapture(Math.max(1, Math.floor(msg.frameCount) || 1), typeof msg.label === "string" ? msg.label.trim().slice(0, 200) : "");
       }
     });
   }
@@ -29783,6 +29785,50 @@ var LiveSession = class {
    * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
    */
   remote = null;
+  /** The captures the application asked for itself, oldest first. */
+  appCaptures = [];
+  /** Told of each app-requested capture's saved file, so the server can open it in its store. */
+  onAppCaptureSaved = null;
+  /**
+   * The application called gpu_inspector_capture (include/gpu_inspector.h): the same capture the
+   * desktop UI would take, with the defaults capture_frames uses, saved under the application's
+   * label and handed to the store. One already being taken means the capture library ignores
+   * the request, so it is recorded as dropped rather than waited on.
+   */
+  async _appCapture(frameCount, label) {
+    const what = `${frameCount} frame${frameCount === 1 ? "" : "s"}${label ? ` "${label}"` : ""}`;
+    const record = { at: Date.now(), label, frameCount, state: "capturing" };
+    this.appCaptures.push(record);
+    if (this._capturing) {
+      record.state = "dropped";
+      this.appendLog(`the application asked for a capture (${what}) while one was being taken; the capture library ignores it`);
+      return;
+    }
+    this.appendLog(`the application asked for a capture: ${what}`);
+    try {
+      const result = await this.capture({
+        frames: frameCount,
+        profilePasses: true,
+        renderTargets: true,
+        buffers: true,
+        images: true,
+        stacktraces: false,
+        maxBufferBytes: 128 * 1024,
+        timeoutMs: 6e4
+      });
+      if (label) result.data.requestLabel = label;
+      const file = await this.saveCapture(result.data);
+      record.state = "saved";
+      record.file = file;
+      record.frame = result.data.frame;
+      this.appendLog(`the application's capture (${what}) was saved as ${file}`);
+      this.onAppCaptureSaved?.(this, file);
+    } catch (e) {
+      record.state = "failed";
+      record.error = e instanceof Error ? e.message : String(e);
+      this.appendLog(`the application's capture (${what}) failed: ${record.error}`);
+    }
+  }
   get connected() {
     return this._socket !== null && !this._socket.destroyed;
   }
@@ -30121,6 +30167,12 @@ var LiveSession = class {
 };
 var SessionManager = class {
   _sessions = /* @__PURE__ */ new Map();
+  /** Given to every session (LiveSession.onAppCaptureSaved): the server opens the file in its capture store. */
+  onAppCaptureSaved = null;
+  _add(session) {
+    session.onAppCaptureSaved = (s, file) => this.onAppCaptureSaved?.(s, file);
+    this._sessions.set(session.id, session);
+  }
   _counter = 0;
   _latest = null;
   /** Launches an application with the capture library in it and waits for it to connect. */
@@ -30201,7 +30253,7 @@ var SessionManager = class {
     const session = new LiveSession(`app-${++this._counter}`, `${path12.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
     session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
     for (const note of notes) session.appendLog(note);
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     session.startProcess(exe, spawnArgs, cwd, env);
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
@@ -30243,7 +30295,7 @@ var SessionManager = class {
     const session = new LiveSession(`app-${++this._counter}`, `${image} when it starts (D3D12)`, port, true);
     session.appendLog(`watching for ${image}: ${watch.exe} ${watch.args.join(" ")}`);
     session.appendLog(`D3D12 capture library: ${d3d12.library}`);
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     session.startProcess(watch.exe, watch.args, d3d12.dir, { ...process.env });
     if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
@@ -30286,7 +30338,7 @@ var SessionManager = class {
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
     const serial = device.serial;
     const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     const target = new AndroidTarget({
       adb: adb2,
@@ -30326,7 +30378,7 @@ var SessionManager = class {
     if (!await session.connect(waitMs)) {
       throw new Error(`Nothing answered on port ${port} within ${waitMs / 1e3} s. An application listens there when it was started with GPU Inspector's capture library (VKINSP_PORT, or MTLINSP_PORT on macOS).`);
     }
-    this._sessions.set(session.id, session);
+    this._add(session);
     this._latest = session;
     return session;
   }
@@ -33730,6 +33782,8 @@ function captureSummary(c2) {
     savedAt: c2.manifest.savedAt,
     frame: d.frame,
     frames: d.frames,
+    // The application's own name for the capture, when it asked for it (gpu_inspector_capture_named).
+    label: d.requestLabel || void 0,
     counts: {
       commands: d.commands.length,
       draws,
@@ -33842,6 +33896,7 @@ function captureTools(store) {
             application: c2.manifest.source?.name || void 0,
             api: c2.data.api,
             frame: c2.data.frame,
+            label: c2.data.requestLabel || void 0,
             frames: c2.data.frames > 1 ? c2.data.frames : void 0,
             commands: c2.data.commands.length,
             megabytes: round(c2.fileBytes / 1048576)
@@ -34540,6 +34595,16 @@ function sessionStatus(s) {
     },
     validation: { errors, warnings, total: db.validation.length },
     leakedObjects: db.leakCount || void 0,
+    // Captures the application asked for itself (include/gpu_inspector.h), saved under its label.
+    appCaptures: s.appCaptures.length ? s.appCaptures.map((c2) => ({
+      label: c2.label || void 0,
+      frames: c2.frameCount,
+      state: c2.state,
+      file: c2.file,
+      frame: c2.frame,
+      error: c2.error,
+      secondsAgo: round((Date.now() - c2.at) / 1e3)
+    })) : void 0,
     recentLog: s.log.slice(-15),
     note: s.state === "connected" && !last ? "Connected, but no frame has been reported yet: the application may not be rendering." : void 0
   };
@@ -34751,14 +34816,15 @@ function liveTools(sessions2, store) {
           pid: s.pid ?? void 0,
           port: s.port,
           api: s.api ?? void 0,
-          frame: s.frameStats.at(-1)?.msg.frame
+          frame: s.frameStats.at(-1)?.msg.frame,
+          appCaptures: s.appCaptures.length || void 0
         })),
         capturesDirectory: capturesDir()
       })
     },
     {
       name: "get_session_status",
-      description: "A live session's state: whether it is connected, the process, the device, the last frame report (frame time, submit time, refresh period, dropped frames), live objects by type, memory, validation counts, and the recent log.",
+      description: "A live session's state: whether it is connected, the process, the device, the last frame report (frame time, submit time, refresh period, dropped frames), live objects by type, memory, validation counts, the captures the application asked for itself (appCaptures: saved files, named by the application's label), and the recent log.",
       inputSchema: schema({ session: SESSION_PARAM }),
       readOnly: true,
       handler: (args) => jsonResult(sessionStatus(sessions2.get(stringArg(args, "session"))))
@@ -35281,11 +35347,20 @@ function serverVersion() {
 var INSTRUCTIONS = [
   "These tools read GPU Inspector frame captures (.gpucap) of Vulkan, Metal and Direct3D 12 applications, with the analyses GPU Inspector runs, and drive running applications.",
   "Open a saved capture with open_capture (list_captures shows the files GPU Inspector saved recently), or launch_app an application (launch_android_app on Android) and capture_frames it; then start from get_capture_summary.",
+  "An application that calls gpu_inspector_capture_named (include/gpu_inspector.h) from an assertion or a failed test gets its capture taken and saved by the session on its own: get_session_status lists them under appCaptures, and list_captures shows them open with the application's label.",
   "For performance: get_bottlenecks (needs profiled passes), get_frame_issues, get_render_graph, analyze_shaders, get_shader_flame_graph, get_live_frame_stats, and compare_captures to check a fix.",
   "To debug rendering: read_texture shows what a pass wrote; list_commands finds draws by pass, label or kind; get_command shows the state a draw read (pipeline, decoded uniforms, vertex and index buffers, render targets); read_vertices, read_buffer and get_shader go deeper; get_validation lists real errors. replace_shader tries a shader fix in the running application, and read_live_image looks at an image without capturing.",
   'Object references read Type#id "name": pass the id to get_object. Cite command indices, object ids and pass labels so the user can find them in GPU Inspector.'
 ].join(" ");
 function createServer(store = new CaptureStore(), sessions2 = new SessionManager()) {
+  sessions2.onAppCaptureSaved = (session, file) => {
+    try {
+      const { capture } = store.open(file);
+      session.appendLog(`the application's capture is open as ${capture.id}`);
+    } catch (e) {
+      session.appendLog(`the application's capture could not be opened: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  };
   return new McpStdioServer({ name: "gpu-inspector", version: serverVersion() }, [
     ...captureTools(store),
     ...commandTools(store),

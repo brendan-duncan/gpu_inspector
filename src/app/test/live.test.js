@@ -159,7 +159,9 @@ function fakeLayer({ marker, dropFirst = 0 }) {
   };
   // Closed after the tests too, so a failed assertion does not leave the process running.
   layers.push({ close });
-  return new Promise((resolve) => tcp.listen(0, "127.0.0.1", () => resolve({ port: tcp.address().port, requests, close, dropped: () => dropped })));
+  // Something the capture library sends on its own, as the application's capture request is.
+  const send = (msg) => { for (const s of sockets) s.write(frame(msg)); };
+  return new Promise((resolve) => tcp.listen(0, "127.0.0.1", () => resolve({ port: tcp.address().port, requests, close, send, dropped: () => dropped })));
 }
 
 // ------------------------------------------------------------------------------------------
@@ -223,6 +225,37 @@ test("an attached application is watched, captured, saved and reopened", async (
   const refused = await call("capture_frames", {});
   assert.equal(refused.result.isError, true);
   assert.match(refused.text, /not connected/);
+  layer.close();
+});
+
+test("a capture the application asks for is taken, saved under its label and opened", async () => {
+  const layer = await fakeLayer({ marker: true });
+  const status = (await call("attach_app", { port: layer.port })).json;
+  assert.equal(status.state, "connected");
+  // The application called gpu_inspector_capture_named(1, "shadow test failed") (include/gpu_inspector.h).
+  layer.send({ action: "AppCaptureRequest", frameCount: 1, label: "shadow test failed" });
+  let app;
+  for (let i = 0; i < 100 && !app?.file; i++) {
+    await new Promise((r) => setTimeout(r, 50));
+    app = (await call("get_session_status", { session: status.session })).json.appCaptures?.[0];
+  }
+  assert.ok(app, "the session recorded the application's request");
+  assert.equal(app.state, "saved", app.error);
+  assert.equal(app.label, "shadow test failed");
+  assert.equal(app.frame, 200);
+  assert.ok(fs.existsSync(app.file), "saved as a file");
+  assert.match(app.file, /shadow_test_failed/, "the file is named after the label");
+  assert.equal(layer.requests.filter((r) => r.action === "Capture").length, 1, "one capture was requested of the library");
+  // Opened in the store like capture_frames' own, listed with the label, and the capture tools work on it.
+  const listed = (await call("list_captures", {})).json.open.find((c) => c.file === app.file);
+  assert.ok(listed, "list_captures shows it open");
+  assert.equal(listed.label, "shadow test failed");
+  const summary = (await call("get_capture_summary", { capture: listed.capture })).json;
+  assert.equal(summary.label, "shadow test failed");
+  assert.equal(summary.counts.draws, 1);
+  assert.equal((await call("list_sessions", {})).json.sessions.find((s) => s.session === status.session).appCaptures, 1);
+  assert.ok((await call("get_session_log", { session: status.session, match: "asked for a capture" })).json.lines.length > 0);
+  await call("stop_app", { session: status.session });
   layer.close();
 });
 

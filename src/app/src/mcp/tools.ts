@@ -265,6 +265,8 @@ export function captureSummary(c: Capture): Record<string, unknown> {
   return {
     capture: c.id, file: c.path, application: c.manifest.source?.name || undefined, api: d.api, savedAt: c.manifest.savedAt,
     frame: d.frame, frames: d.frames,
+    // The application's own name for the capture, when it asked for it (gpu_inspector_capture_named).
+    label: d.requestLabel || undefined,
     counts: {
       commands: d.commands.length, draws, dispatches,
       renderPasses: passes.filter((p) => !p.compute).length, computePasses: passes.filter((p) => p.compute).length,
@@ -354,6 +356,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         return jsonResult({
           open: open.map((c) => ({
             capture: c.id, file: c.path, application: c.manifest.source?.name || undefined, api: c.data.api, frame: c.data.frame,
+            label: c.data.requestLabel || undefined,
             frames: c.data.frames > 1 ? c.data.frames : undefined, commands: c.data.commands.length, megabytes: round(c.fileBytes / 1048576),
           })),
           recent: recent.map((file) => ({
