@@ -27,7 +27,11 @@ vkinsp_replay <capture.gpucap> --serve [--validate]
   - Compares each target byte for byte with the capture's copy.
   - Exits with 0 when every target matches, 1 when some differ or could not be compared, and 2
     when the replay could not run.
-- **`--validate`:** enables the Khronos validation layer and lists its messages.
+- **`--validate`:** enables the Khronos validation layer and lists its messages. **`--validate-data
+  <file>`** writes them as JSON, each with the captured command the replay was re-issuing when it
+  fired and the phase (`setup`, `frame` or `submit`), which is what the Validate report and the MCP
+  server's `get_validation` with `replay: true` read. The layer's settings come from the
+  environment as for a launch (`VK_LAYER_VALIDATE_SYNC=true` for synchronization validation).
 - **`--dump <dir>`:** writes the captured, replayed and difference image of each compared target
   as PNG.
 - **`--trace`:** prints each object and command to stderr before it is replayed, so the call a

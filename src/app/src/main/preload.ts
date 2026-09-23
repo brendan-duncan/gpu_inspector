@@ -31,6 +31,7 @@ contextBridge.exposeInMainWorld("inspector", {
   openCaptureWindow: (opts: unknown) => ipcRenderer.invoke("inspector:openCaptureWindow", opts),
   appStyles: () => ipcRenderer.invoke("inspector:appStyles"),
   measureOverdraw: (opts: unknown) => ipcRenderer.invoke("inspector:measureOverdraw", opts),
+  validateCapture: (opts: unknown) => ipcRenderer.invoke("inspector:validateCapture", opts),
   pixelHistory: (opts: unknown) => ipcRenderer.invoke("inspector:pixelHistory", opts),
   measureDraws: (opts: unknown) => ipcRenderer.invoke("inspector:measureDraws", opts),
   measureHwCounters: (opts: unknown) => ipcRenderer.invoke("inspector:measureHwCounters", opts),

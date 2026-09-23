@@ -1389,6 +1389,21 @@ def memory_residency(state, log):
         expect("evicted" in (m.get("verdict") or ""), f"the verdict says nothing about residency: {m.get('verdict')!r}")
 
 
+def validate_report(state, log):
+    # Validate (--debug-view=validate): the frame of a capture taken *without* the validation layer
+    # is replayed under it (vkinsp_replay --validate-data), so the sample's --bad-scissor has to
+    # come back as an error tied to the vkCmdSetScissor command, though the session itself has none.
+    s = session(state)
+    c = capture(state)
+    v = c.get("replayValidation") or {}
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect((s.get("validationErrors") or 0) == 0, f"{s.get('validationErrors')} live validation errors: the launch was not meant to validate") + \
+        expect("validate" in (c.get("reportTabs") or []), f"the Validate report did not open: {c.get('reportTabs')}") + \
+        expect(v.get("layer") is True, "the replay did not find the validation layer") + \
+        expect((v.get("errors") or 0) >= 1, f"{v.get('errors')} errors from the replay: the bad scissor was not reported") + \
+        expect((v.get("linked") or 0) >= 1, f"{v.get('linked')} messages tied to a command")
+
+
 def capture_on_hitch(state, log):
     # Capture on hitch (--debug-capture-on-hitch with --debug-timing): the sample stalls one frame
     # in ninety (--hitch-every 90), and the timing run's first hitch has to take a frame capture
@@ -1521,6 +1536,8 @@ def triangle_cases(triangle):
         Case("stencil-msaa", launch + ["--args=--stencil --msaa", "--validation", "--debug-capture"], triangle_stencil(5), delay_ms=16000),
         Case("offscreen", launch + ["--args=--offscreen", "--debug-capture"], triangle_offscreen, delay_ms=14000),
         Case("scissor", launch + ["--args=--bad-scissor", "--validation", "--debug-capture"], triangle_scissor, delay_ms=16000),
+        Case("validate-report", launch + ["--args=--bad-scissor", "--debug-capture", "--debug-view=validate", "--debug-settle=12000"],
+             validate_report, delay_ms=26000),
         Case("hazard", launch + ["--args=--hazard", "--validation", "--sync-validation", "--debug-capture"], triangle_hazard, delay_ms=18000),
         Case("oob", launch + ["--args=--oob", "--validation", "--gpu-validation", "--debug-capture"], triangle_oob, delay_ms=18000),
         Case("stacks", launch + ["--debug-capture", "--debug-capture-stacks", "--debug-command=9", "--debug-expand-stacks"], triangle_stacks, delay_ms=16000),

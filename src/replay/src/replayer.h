@@ -469,8 +469,26 @@ struct TargetComparison {
     std::vector<uint8_t> replayed;
 };
 
+/**
+ * One validation message, with where the replay was when it fired: the captured command being
+ * re-issued (`command`, -1 outside one) and the phase — "setup" while the capture's objects were
+ * created, "frame" while its command buffers were recorded, "submit" while they were submitted
+ * (synchronization and GPU-assisted validation report there).
+ */
+struct ValidationRecord {
+    bool error = false;
+    std::string id;        // VUID-..., or the layer's message id name
+    std::string message;
+    int64_t command = -1;
+    std::string phase;
+};
+
 struct ReplayReport {
     std::string device;
+    /** Where the replay is, for the messages the validation layer fires (ValidationRecord). */
+    int64_t currentCommand = -1;
+    const char* phase = "setup";
+    std::vector<ValidationRecord> validationRecords;
     size_t objectsCreated = 0;
     size_t objectsSkipped = 0;
     size_t commandsRecorded = 0;

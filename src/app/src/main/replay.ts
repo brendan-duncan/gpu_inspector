@@ -108,7 +108,10 @@ export type ReplayAnalysis =
   // Export to C++ (src/replay/src/exporter.h): the frame written into `dir` as a standalone project; the data is its summary.
   | { kind: "export"; dir: string }
   // A shader edited and run in the capture (`request`: encodeReplaceRequest in renderer/shader_replay.ts); the data is its render targets.
-  | { kind: "replace"; request: Uint8Array };
+  | { kind: "replace"; request: Uint8Array }
+  // The frame replayed under the Khronos validation layer (--validate-data; renderer/replay_validation.ts parses it),
+  // with synchronization validation when `sync`.
+  | { kind: "validate"; sync?: boolean };
 
 /**
  * Whether an analysis needs a replay of its own. The export writes the capture's objects as they are
@@ -116,7 +119,18 @@ export type ReplayAnalysis =
  * a replaced shader, which is a different pipeline from the one a kept replay already made.
  */
 function needsOwnProcess(analysis: ReplayAnalysis): boolean {
-  return analysis.kind === "export" || analysis.kind === "replace";
+  // The validation layer is enabled when the instance is made, so a validated replay is its own process too.
+  return analysis.kind === "export" || analysis.kind === "replace" || analysis.kind === "validate";
+}
+
+/** The environment a validated replay runs with: the layer's settings, as a validated launch sets them (launch_env.ts). */
+function analysisEnv(analysis: ReplayAnalysis): NodeJS.ProcessEnv | undefined {
+  if (analysis.kind !== "validate") return undefined;
+  return {
+    ...process.env,
+    VK_LAYER_DUPLICATE_MESSAGE_LIMIT: process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ?? "0",
+    ...(analysis.sync ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}),
+  };
 }
 
 /** The last lines of the tool's output, for an error message. */
@@ -152,6 +166,7 @@ function analysisArgs(analysis: ReplayAnalysis, out: string, input: string | nul
   }
   if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
   if (analysis.kind === "export") return ["--export", analysis.dir, "--export-data", out];
+  if (analysis.kind === "validate") return ["--validate", "--validate-data", out];
   if (analysis.kind === "overlay" || analysis.kind === "mesh") {
     const flag = `--${analysis.kind}`;
     return [...analysis.commands.flatMap((c) => [flag, String(Math.max(0, Math.floor(c)))]), `${flag}-data`, out];
@@ -168,7 +183,7 @@ export function runReplay(tool: string, capturePath: string, analysis: ReplayAna
     let done = false;
     let timedOut = false;
     const input = inputFile(analysis);
-    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out, input)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
+    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out, input)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: analysisEnv(analysis) });
     const timer = setTimeout(() => {
       timedOut = true;
       child.kill();

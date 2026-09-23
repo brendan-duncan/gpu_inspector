@@ -173,6 +173,29 @@ It answers:
 - which passes write something that nothing ever reads
 - the frame's critical path
 
+## Validate
+
+The frame replayed on this machine's GPU under the Khronos validation layer, whether or not the
+application was launched with it. A live session only has validation messages when **Validation
+layer** was ticked at launch; a capture file arrives from a tester, an agent or another machine,
+and the question about it is whether the frame in it is legal. Replaying the file needs neither
+the application nor the machine it ran on.
+
+The report is the layer's errors and warnings, worst and most frequent first, grouped by VUID with
+the message the layer gave. Each fired on a captured command, which its row opens in the command
+list, and the command carries the same mark there as a live message would. The replay knows
+which command it is re-issuing when a message fires, so the link is exact, where a live session
+has to match the message's text back to a command. A message fired while the capture's objects
+were being created, or at submission, says so instead of naming a command.
+
+**Validate again with synchronization validation** runs it once more with the layer's hazard
+detection on: a write with no barrier before the read. It is slower, and it can miss a hazard the
+application has, because the replay's own read-back barriers order some of the work it did not.
+
+Vulkan captures only; a Metal or Direct3D 12 capture carries the messages it was taken with.
+Needs the Vulkan SDK's validation layer on this machine, and says so when it is missing. The MCP
+server's `get_validation` does the same with `replay: true`.
+
 ## The render target tab
 
 **Open in Tab** under any of a pass's render targets (in a draw's details, or the pass's) shows the

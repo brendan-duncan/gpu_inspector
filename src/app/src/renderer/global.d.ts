@@ -59,6 +59,8 @@ export interface InspectorApi {
    */
   /** Every pass's overdraw (--overdraw-data; renderer/overdraw.ts parses it). */
   measureOverdraw(opts: { key: string; data?: Uint8Array; name?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
+  /** The frame replayed under the validation layer (--validate-data; renderer/replay_validation.ts parses it). */
+  validateCapture(opts: { key: string; data?: Uint8Array; name?: string; sync?: boolean }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** Every draw measured (--draw-data). */
   measureDraws(opts: { key: string; data?: Uint8Array; name?: string; api?: string }): Promise<{ data: Uint8Array | null; error?: string; output: string; needData?: boolean }>;
   /** The GPU's own hardware counters per render pass, and per draw with `perDraw` (--counter-data). */

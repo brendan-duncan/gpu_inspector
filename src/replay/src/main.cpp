@@ -43,7 +43,7 @@ using namespace vkreplay;
 namespace {
 
 void PrintUsage() {
-    std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
+    std::fprintf(stderr, "usage: vkinsp_replay <capture.gpucap> [--validate [--validate-data <file>]] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
                          "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
                          "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
                          "                     [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]\n"
@@ -75,6 +75,38 @@ std::string JsonString(const std::string& s) {
         }
     }
     return out + "\"";
+}
+
+/**
+ * --validate-data: the validation layer's messages with where the replay was when each fired,
+ * for the Validate report (renderer/replay_validation.ts) and the MCP's get_validation. Repeats of
+ * one message at one command are counted rather than listed.
+ */
+bool WriteValidationData(const ReplayReport& report, bool layerFound, const std::string& path) {
+    std::string json = "{\"format\":\"gpu-inspector-validation\",\"version\":1,\"device\":" + JsonString(report.device) +
+                       ",\"layer\":" + (layerFound ? "true" : "false") + ",\"messages\":[";
+    struct Counted { const ValidationRecord* r; size_t count; };
+    std::vector<Counted> counted;
+    for (const ValidationRecord& r : report.validationRecords) {
+        bool seen = false;
+        for (Counted& c : counted) {
+            if (c.r->error == r.error && c.r->id == r.id && c.r->command == r.command && c.r->phase == r.phase && c.r->message == r.message) { ++c.count; seen = true; break; }
+        }
+        if (!seen) counted.push_back({&r, 1});
+    }
+    for (size_t i = 0; i < counted.size(); ++i) {
+        const ValidationRecord& r = *counted[i].r;
+        json += std::string(i ? "," : "") + "{\"severity\":" + (r.error ? "\"error\"" : "\"warning\"") + ",\"id\":" + JsonString(r.id) +
+                ",\"message\":" + JsonString(r.message) + ",\"command\":" + std::to_string(r.command) + ",\"phase\":" + JsonString(r.phase) +
+                ",\"count\":" + std::to_string(counted[i].count) + "}";
+    }
+    json += "],\"problems\":[";
+    for (size_t i = 0; i < report.problems.size(); ++i) json += std::string(i ? "," : "") + JsonString(report.problems[i]);
+    json += "]}";
+    std::ofstream out(path, std::ios::binary);
+    if (!out) return false;
+    out.write(json.data(), (std::streamsize)json.size());
+    return out.good();
 }
 
 bool WriteOverdrawData(const ReplayReport& report, const std::string& path) {
@@ -1037,7 +1069,7 @@ int Check(const CaptureFile& capture) {
 int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::string& dumpDir, const std::string& overdrawDir,
            const std::string& overdrawData, const std::string& pixelData, const std::string& drawData, const std::string& overlayData,
            const std::string& meshData, const std::string& ablationData, const std::string& counterData, const std::string& exportData,
-           const std::string& targetData) {
+           const std::string& targetData, const std::string& validationData) {
     ReplayReport report;
     bool ran = false;
     {
@@ -1148,6 +1180,12 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
     if (options.validation) {
         std::printf("validation messages: %zu\n", report.validation.size());
         PrintGrouped(report.validation, 40);
+        if (!validationData.empty()) {
+            const bool layerFound = std::none_of(report.problems.begin(), report.problems.end(),
+                                                 [](const std::string& p) { return p.find("validation layer is not installed") != std::string::npos; });
+            if (WriteValidationData(report, layerFound, validationData)) std::printf("  wrote %s\n", validationData.c_str());
+            else std::printf("  could not write %s\n", validationData.c_str());
+        }
     }
     if (!dumpDir.empty()) DumpTargets(report, dumpDir);
     if (!targetData.empty()) std::printf(WriteTargetData(report, targetData) ? "wrote %s\n" : "could not write %s\n", targetData.c_str());
@@ -1307,6 +1345,7 @@ int main(int argc, char** argv) {
     std::string exportData;
     std::string replaceRequest;
     std::string targetData;
+    std::string validationData;
     bool check = false;
     bool serve = false;
     ReplayOptions options;
@@ -1314,6 +1353,10 @@ int main(int argc, char** argv) {
         if (!std::strcmp(argv[i], "--check")) check = true;
         else if (!std::strcmp(argv[i], "--serve")) serve = true;
         else if (!std::strcmp(argv[i], "--validate")) options.validation = true;
+        else if (!std::strcmp(argv[i], "--validate-data") && i + 1 < argc) {
+            validationData = argv[++i];
+            options.validation = true;
+        }
         else if (!std::strcmp(argv[i], "--trace")) options.trace = true;
         else if (!std::strcmp(argv[i], "--overdraw") && i + 1 < argc) {
             overdrawDir = argv[++i];
@@ -1443,5 +1486,5 @@ int main(int argc, char** argv) {
     }
     return check ? Check(capture)
                  : Replay(capture, options, dumpDir, overdrawDir, overdrawData, pixelData, drawData, overlayData, meshData, ablationData, counterData,
-                          exportData, targetData);
+                          exportData, targetData, validationData);
 }

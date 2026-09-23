@@ -16,6 +16,8 @@ import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink } from "./args_view.js";
 import { renderTimingReport, sampledStretch, timingButtonLabel } from "./timing_view.js";
+import { parseReplayValidation, replayValidationCounts, type ReplayValidation } from "./replay_validation.js";
+import { renderReplayValidationReport } from "./replay_validation_view.js";
 import { emptyTimingSamples, summarizeSamples, summaryAddresses } from "./timing_samples.js";
 import { memoryButtonLabel, renderMemoryCaptureReport } from "./memory_capture_view.js";
 import { encodeReplaceRequest, parseReplayedTargets, replayedTargetsSummary, type ReplayedTargets, type ShaderReplacement } from "./shader_replay.js";
@@ -144,6 +146,8 @@ const ICON_OVERDRAW = '<svg viewBox="0 0 16 16"><rect x="2" y="6.5" width="7.5" 
  * name in the menu; `tooltip` the full sentence on hover, so the menu stays scannable without
  * losing what each report actually contains.
  */
+const ICON_VALIDATE = '<svg viewBox="0 0 16 16" aria-label="Validate"><path d="M8 1.8 13.5 4v4.2c0 3-2.3 5.1-5.5 6.2C4.8 13.3 2.5 11.2 2.5 8.2V4Z" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/><path d="M5.6 8.2l1.7 1.7 3.3-3.6" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>';
+
 const REPORTS: { id: string; icon: string; label: string; detail: string; tooltip: string }[] = [
   { id: "stats", icon: ICON_STATS, label: "Frame Stats",
     detail: "Commands, passes, bindings, memory, geometry",
@@ -163,6 +167,9 @@ const REPORTS: { id: string; icon: string; label: string; detail: string; toolti
   { id: "overdraw", icon: ICON_OVERDRAW, label: "Overdraw",
     detail: "Fragments per pixel, over the pass's render target",
     tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Metal or D3D12 capture carries what it was taken with; a Vulkan capture is replayed on this machine's GPU to measure it" },
+  { id: "validate", icon: ICON_VALIDATE, label: "Validate",
+    detail: "The frame replayed under the validation layer",
+    tooltip: "Replay the frame on this machine's GPU under the Khronos validation layer, whether or not the application was launched with it: every error and warning, tied to the captured command it fired on. Vulkan captures; needs the Vulkan SDK's validation layer" },
 ];
 
 /** Tabs of the same kind that are the result of something done rather than a report asked for, so the menu does not list them. */
@@ -1972,6 +1979,8 @@ export class CaptureView implements CaptureHost {
       })),
       buffers: d.buffers.size, passTimings: d.passTimings.size,
       overdraw: d.overdraw.length, overdrawCounts: d.overdraw.filter((o) => !!o.data).length,
+      // Validate: the frame replayed under the validation layer (replay_validation.ts).
+      replayValidation: this.replayValidation ? { ...replayValidationCounts(this.replayValidation), layer: this.replayValidation.layer, messages: this.replayValidation.messages.length, sync: this._replayValidationSync } : null,
       // A shader edited and run in the capture (Compile & Replay): what it did to the render targets.
       shaderReplay: this.shaderReplay ? {
         targets: this.shaderReplay.targets.length, compared: this.shaderReplay.targets.filter((t) => t.compared).length,
@@ -2065,10 +2074,13 @@ export class CaptureView implements CaptureHost {
   private _markValidation(row: CommandRow): void {
     const cmd = row.command;
     const msgs = this.window.database.validationForCommand(cmd.secondary ?? cmd.object?.__id, cmd.slot);
-    if (!msgs.length || row.validationMark) return;
-    const sev = worstSeverity(msgs);
+    if (row.validationMark) return;
+    // The replay's messages for the command (Validate), beside the live layer's.
+    const replayed = this.replayValidation?.byCommand.get(cmd.index) ?? [];
+    if (!msgs.length && !replayed.length) return;
+    const sev = msgs.length ? worstSeverity(msgs) : replayed.some((m) => m.severity === "error") ? "error" : "warning";
     const mark = new Span(null, { text: severityMark(sev), class: `capture_validation_mark validation-sev validation-sev-${sev}` });
-    mark.tooltip = msgs.map((m) => validationItemText(m)).join("\n");
+    mark.tooltip = [...msgs.map((m) => validationItemText(m)), ...replayed.map((m) => `${m.severity} (replay)${m.id ? ` ${m.id}` : ""}: ${m.message}`)].join("\n");
     row.element.insertBefore(mark.element, row.element.children[1] ?? null);
     row.validationMark = mark;
     row.classList.add("capture_command_validation");
@@ -2150,6 +2162,7 @@ export class CaptureView implements CaptureHost {
       case "graph": this._showRenderGraph(); break;
       // Overdraw is the pass's render target with the heat over it, so it opens the target's tab.
       case "overdraw": void this.openOverdraw(); break;
+      case "validate": void this.showValidate(); break;
       default: break;
     }
   }
@@ -2368,6 +2381,50 @@ export class CaptureView implements CaptureHost {
   }
 
   /** "GPU Bottlenecks": what limits each pass, measured (metal/bottleneck_report.ts). */
+  /** The replay's validation of the frame (replay_validation.ts), once it has run; the report and the command marks read it. */
+  replayValidation: ReplayValidation | null = null;
+
+  /**
+   * Validate: the frame replayed under the Khronos validation layer (vkinsp_replay --validate), so a
+   * capture taken without the layer, or on another machine, still says whether its calls are legal.
+   */
+  async showValidate(sync = false): Promise<void> {
+    if (this.data.api !== "vulkan") {
+      const body = this._reportBody("validate");
+      if (body) new Div(body, { text: "Validate replays Vulkan captures; a Metal or Direct3D 12 capture carries the validation messages it was taken with (Inspect's Validation Messages).", class: "text-muted", style: "padding: 12px;" });
+      return;
+    }
+    const run = (this._reportRuns.get("validate") ?? 0) + 1;
+    if (!this._reportBody("validate", `Replaying the frame under the validation layer${sync ? " with synchronization validation" : ""}...`)) return;
+    this._setStatus("validating: replaying the frame under the validation layer...");
+    try {
+      const result = await this._replay((r) => window.inspector.validateCapture({ ...r, sync }));
+      if (this._reportRuns.get("validate") !== run) return;
+      const body = this._reportTabs.get("validate")?.body;
+      if (!body) return;
+      if (!result.data) {
+        body.html = "";
+        new Div(body, { text: `The replay could not validate the frame: ${result.error ?? "no data"}`, class: "text-muted", style: "padding: 12px;" });
+        if (result.output) new Div(body, { text: result.output, class: "text-muted font-sm", style: "padding: 0 12px 12px; white-space: pre-wrap;" });
+        this._setStatus(`validation failed: ${result.error ?? "no data"}`);
+        return;
+      }
+      this.replayValidation = parseReplayValidation(result.data);
+      this._replayValidationSync = sync;
+      renderReplayValidationReport(body, this.data, this.replayValidation, {
+        selectCommand: (index) => this.selectCommand(index), rerun: (s) => void this.showValidate(s), sync,
+      });
+      // The rows already drawn take their marks now; the ones drawn later take them as they are made.
+      for (const row of this._rows) this._markValidation(row);
+      const counts = replayValidationCounts(this.replayValidation);
+      this._setStatus(!this.replayValidation.layer ? "validation: the validation layer is not installed"
+        : `validation: ${counts.errors} error${counts.errors === 1 ? "" : "s"}, ${counts.warnings} warning${counts.warnings === 1 ? "" : "s"}`);
+    } catch (e) {
+      this._setStatus(`validation failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  private _replayValidationSync = false;
+
   private _showBottlenecks(): void {
     const body = this._reportBody("bottlenecks");
     if (!body) return;
@@ -2433,6 +2490,8 @@ export class CaptureView implements CaptureHost {
       }, 500));
     }
     else if (name === "overdraw") void this.openOverdraw();
+    // Testing aid (--debug-view=validate[:sync]): the frame validated by a replay.
+    else if (name.startsWith("validate")) void this.showValidate(name.split(":")[1] === "sync");
     else if (name.startsWith("accel")) {
       // Testing aid (--debug-view=accel[:<object id>|<name>]): the acceleration structure tab on the
       // capture's first structure that can be drawn, or the one named.

@@ -32,6 +32,13 @@ VKAPI_ATTR VkBool32 VKAPI_CALL DebugCallback(VkDebugUtilsMessageSeverityFlagBits
     if (report && (severity & (VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT | VK_DEBUG_UTILS_MESSAGE_SEVERITY_WARNING_BIT_EXT))) {
         const bool error = severity & VK_DEBUG_UTILS_MESSAGE_SEVERITY_ERROR_BIT_EXT;
         report->validation.push_back(std::string(error ? "error: " : "warning: ") + (data && data->pMessage ? data->pMessage : ""));
+        ValidationRecord r;
+        r.error = error;
+        r.id = data && data->pMessageIdName ? data->pMessageIdName : "";
+        r.message = data && data->pMessage ? data->pMessage : "";
+        r.command = report->currentCommand;
+        r.phase = report->phase ? report->phase : "";
+        report->validationRecords.push_back(std::move(r));
     }
     return VK_FALSE;
 }
@@ -2745,6 +2752,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         const std::string m = Str(c.Get("method"));
         const JValue* args = c.Get("args");
         _ctx.where = "command " + std::to_string(i) + " " + m;
+        if (_report) { _report->currentCommand = i; _report->phase = "frame"; }
         if (_options.trace) {
             std::fprintf(stderr, "command %u %s%s\n", i, m.c_str(), skippingPass ? " (left out with its pass)" : "");
             std::fflush(stderr);
@@ -3032,6 +3040,8 @@ void Replayer::ReplayCommands() {
             continue;
         }
         // One submission for the call's command buffers, without the application's semaphores and fence.
+        // Synchronization and GPU-assisted validation report here, against the submit command.
+        if (_report) { _report->currentCommand = i; _report->phase = "submit"; }
         VkSubmitInfo info{VK_STRUCTURE_TYPE_SUBMIT_INFO};
         // Hardware counters, KHR path: the counter pass index for this round is chained in (hw_counters.cpp).
         info.pNext = _submitNext;
@@ -3108,6 +3118,8 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report) {
     _options = options;
     if (&report != &_setupReport) report = _setupReport;
     _report = &report;
+    report.phase = "frame";
+    report.currentCommand = -1;
     if (_frameRun) ResetFrameState();
     _frameRun = true;
 

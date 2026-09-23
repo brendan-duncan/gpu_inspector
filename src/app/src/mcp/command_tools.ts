@@ -15,10 +15,13 @@ import { isObject, num, objectMemoryBytes, refId, str, type VulkanObject } from 
 import type { ArgValue, CaptureCommand, CaptureDescriptor, CaptureDescriptorBinding, ValidationSeverity } from "../shared/protocol.js";
 import type { Capture, CaptureStore } from "./capture_store.js";
 import {
-  CAPTURE_PARAM, PAGE_PARAMS, boolArg, compact, enumArg, jsonResult, optionalInt, page, readTyped, refText, regexArg, requireInt, round, schema,
+  CAPTURE_PARAM, PAGE_PARAMS, boolArg, clip, compact, enumArg, jsonResult, optionalInt, page, readTyped, refText, regexArg, requireInt, round, schema,
   stackLines, stringArg, textureBrief, validationBrief,
 } from "./describe.js";
 import { symbolizeOnHost } from "./search_paths.js";
+import { NO_REPLAY_TOOL, findReplayTool, replayServers } from "../main/replay.js";
+import { parseReplayValidation, replayValidationCounts } from "../renderer/replay_validation.js";
+import { checkoutRoots, installedLayerDirs } from "./live_session.js";
 import type { ToolDefinition } from "./stdio_server.js";
 
 const KINDS = ["all", "draw", "dispatch", "action", "pass", "bind", "label", "submit", "issue", "validation"] as const;
@@ -630,17 +633,45 @@ export function commandTools(store: CaptureStore): ToolDefinition[] {
       name: "get_validation",
       description: "The validation messages the capture carries (from the Khronos validation layer, the driver, or Metal's " +
         "validation layer, when enabled at launch), with repeat counts, the objects they name, and the captured command each " +
-        "fired on when the layer could tell. Errors are real bugs; report them first.",
+        "fired on when the layer could tell. Errors are real bugs; report them first. With replay: true, a Vulkan capture is " +
+        "replayed on this machine's GPU under the validation layer instead, whether or not it was launched with one: every " +
+        "message with the captured command it fired on (a capture from another machine, or taken without validation).",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         severity: { type: "string", enum: ["error", "warning", "info", "verbose", "all"], description: "Only this severity (default all)." },
+        replay: { type: "boolean", description: "Replay the frame under the validation layer (Vulkan captures; needs the Vulkan SDK's layer) rather than reading the messages the capture carries." },
+        sync: { type: "boolean", description: "With replay: synchronization validation too (hazards between commands). Slower; the replay's own read-back barriers can hide a hazard the application has." },
         ...PAGE_PARAMS,
       }),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c = store.resolve(stringArg(args, "capture"));
         const db = c.db;
         const severity = enumArg(args, "severity", ["error", "warning", "info", "verbose", "all"] as const, "all");
+        if (boolArg(args, "replay", false)) {
+          if (c.data.api !== "vulkan") throw new Error("replay validates Vulkan captures; a Metal or Direct3D 12 capture carries the messages it was taken with.");
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) throw new Error(`validating a capture replays it, and ${NO_REPLAY_TOOL}`);
+          const run = await replayServers.run(tool, c.path, { kind: "validate", sync: boolArg(args, "sync", false) });
+          if (!run.data) throw new Error(`the replay could not validate the frame: ${run.error ?? "no data"}\n${run.output}`);
+          const v = parseReplayValidation(run.data);
+          const counts = replayValidationCounts(v);
+          const list = v.messages.filter((m) => severity === "all" || m.severity === severity);
+          const p = page(list, args, 50, 200);
+          return jsonResult({
+            capture: c.id, replayed: true, device: v.device, errors: counts.errors, warnings: counts.warnings, linkedToCommands: counts.linked,
+            total: p.total, offset: p.offset, nextOffset: p.nextOffset,
+            messages: p.items.map((m) => ({
+              severity: m.severity, id: m.id || undefined, count: m.count > 1 ? m.count : undefined,
+              command: m.command >= 0 ? m.command : undefined, method: m.command >= 0 ? c.data.commands[m.command]?.method : undefined,
+              phase: m.phase || undefined, message: clip(m.message, 1500),
+            })),
+            replayProblems: v.problems.length ? v.problems.slice(0, 10) : undefined,
+            note: !v.layer ? "The Khronos validation layer is not installed on this machine (it comes with the Vulkan SDK), so the replay reports nothing."
+              : !v.messages.length ? "No messages: every call the layer checked is legal."
+              : v.problems.length ? "A message near a replay problem may be the replay's own rather than the application's." : undefined,
+          });
+        }
         const list = db.validation.filter((v) => severity === "all" || v.severity === severity);
         const [errors, warnings] = db.validationCounts;
         const p = page(list, args, 50, 200);

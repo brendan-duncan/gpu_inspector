@@ -109,7 +109,7 @@ capture.
 | `compare_captures` | Timing, statistics, issues and per-pass changes between two captures |
 | `list_commands`, `get_command` | The command stream; one command with the state bound at it |
 | `list_objects`, `get_object` | The object graph with creation arguments |
-| `get_validation` | Validation messages, linked to commands |
+| `get_validation` | Validation messages, linked to commands; with `replay: true` a Vulkan capture is replayed under the validation layer on this machine, whether or not it was launched with one |
 | `list_textures`, `read_texture` | Read-back images, as PNG plus statistics and texel values |
 | `read_buffer`, `read_vertices` | Buffer ranges as scalars or GLSL structs; a draw's vertices with bounds |
 | `get_shader`, `analyze_shaders` | Reflection, embedded source, GLSL/HLSL/MSL, disassembly, static cost analysis. A D3D12 pipeline gives DXBC/DXIL reflection, disassembly and its HLSL (embedded by `dxc -Zi`, or out of the PDB `dxc -Zs` wrote, found under `set_search_paths`' `symbolDirs`); the SPIR-V cost analysis is Vulkan only |

@@ -11969,6 +11969,2373 @@ async function symbolizeSymbolMap(db, frames) {
   });
 }
 
+// src/main/replay.ts
+import { spawn } from "node:child_process";
+import fs5 from "node:fs";
+import os3 from "node:os";
+import path4 from "node:path";
+var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
+function findReplayTool(roots, layerDirs) {
+  const candidates = [
+    process.env.INSPECTOR_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path4.join(dir, REPLAY_TOOL))
+  ].filter((f) => !!f);
+  return candidates.find((f) => fs5.existsSync(f)) ?? null;
+}
+var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
+var D3D12_REPLAY_TOOL = "dxinsp_replay.exe";
+function findD3D12ReplayTool(roots, layerDirs) {
+  if (process.platform !== "win32") return null;
+  const candidates = [
+    process.env.INSPECTOR_D3D12_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, D3D12_REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path4.join(dir, D3D12_REPLAY_TOOL))
+  ].filter((f) => !!f);
+  return candidates.find((f) => fs5.existsSync(f)) ?? null;
+}
+var NO_D3D12_REPLAY_TOOL = process.platform === "win32" ? `${D3D12_REPLAY_TOOL} not found. Build it (cmake --build build --target dxinsp_replay), or set INSPECTOR_D3D12_REPLAY to its path.` : "a Direct3D 12 capture replays on Windows only.";
+var METAL_REPLAY_TOOL = "mtlinsp_replay";
+function findMetalReplayTool(roots, layerDirs) {
+  if (process.platform !== "darwin") return null;
+  const candidates = [
+    process.env.INSPECTOR_METAL_REPLAY,
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, METAL_REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path4.join(dir, METAL_REPLAY_TOOL))
+  ].filter((f) => !!f);
+  return candidates.find((f) => fs5.existsSync(f)) ?? null;
+}
+var NO_METAL_REPLAY_TOOL = process.platform === "darwin" ? `${METAL_REPLAY_TOOL} not found. Build it (cmake --build build --target mtlinsp_replay), or set INSPECTOR_METAL_REPLAY to its path.` : "a Metal capture replays on macOS only.";
+function findExportTool(api, roots, layerDirs) {
+  if (api === "d3d12") return { tool: findD3D12ReplayTool(roots, layerDirs), missing: NO_D3D12_REPLAY_TOOL };
+  if (api === "metal") return { tool: findMetalReplayTool(roots, layerDirs), missing: NO_METAL_REPLAY_TOOL };
+  if (api === "vulkan") return { tool: findReplayTool(roots, layerDirs), missing: NO_REPLAY_TOOL };
+  return { tool: null, missing: `Export to C++ writes what a replay does, and there is no replay for a ${api ?? "capture"} capture.` };
+}
+function needsOwnProcess(analysis) {
+  return analysis.kind === "export" || analysis.kind === "replace" || analysis.kind === "validate";
+}
+function analysisEnv(analysis) {
+  if (analysis.kind !== "validate") return void 0;
+  return {
+    ...process.env,
+    VK_LAYER_DUPLICATE_MESSAGE_LIMIT: process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ?? "0",
+    ...analysis.sync ? { VK_LAYER_VALIDATE_SYNC: "true", VK_LAYER_ENABLES: "VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT" } : {}
+  };
+}
+function tail(text, lines = 12) {
+  return text.trim().split(/\r?\n/).slice(-lines).join("\n");
+}
+function inputFile(analysis) {
+  if (analysis.kind !== "ablate" && analysis.kind !== "replace") return null;
+  const file = tempOutput(`${analysis.kind}_request`);
+  fs5.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
+  return file;
+}
+function removeFile(file) {
+  if (!file) return;
+  try {
+    fs5.unlinkSync(file);
+  } catch {
+  }
+}
+function analysisArgs(analysis, out, input) {
+  if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
+  if (analysis.kind === "replace") return ["--replace", input ?? "", "--target-data", out];
+  if (analysis.kind === "overdraw") return ["--overdraw-data", out];
+  if (analysis.kind === "draws") return ["--draw-data", out];
+  if (analysis.kind === "counters") {
+    return [
+      ...(analysis.counters ?? []).flatMap((c2) => ["--counter", c2]),
+      ...analysis.perDraw ? ["--counter-draws"] : [],
+      "--counter-data",
+      out
+    ];
+  }
+  if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
+  if (analysis.kind === "export") return ["--export", analysis.dir, "--export-data", out];
+  if (analysis.kind === "validate") return ["--validate", "--validate-data", out];
+  if (analysis.kind === "overlay" || analysis.kind === "mesh") {
+    const flag = `--${analysis.kind}`;
+    return [...analysis.commands.flatMap((c2) => [flag, String(Math.max(0, Math.floor(c2)))]), `${flag}-data`, out];
+  }
+  const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
+  return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
+}
+function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
+  return new Promise((resolve) => {
+    const out = path4.join(os3.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+    let output = "";
+    let done = false;
+    let timedOut = false;
+    const input = inputFile(analysis);
+    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out, input)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true, env: analysisEnv(analysis) });
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill();
+    }, timeoutMs);
+    const collect = (chunk2) => {
+      output += chunk2.toString();
+      if (output.length > 256 * 1024) output = output.slice(-128 * 1024);
+    };
+    child.stdout?.on("data", collect);
+    child.stderr?.on("data", collect);
+    const finish2 = (error) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      removeFile(input);
+      let data = null;
+      try {
+        data = new Uint8Array(fs5.readFileSync(out));
+        fs5.unlinkSync(out);
+      } catch {
+      }
+      if (data) {
+        resolve({ data, output: tail(output) });
+        return;
+      }
+      resolve({
+        data: null,
+        output: tail(output),
+        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no data:
+${tail(output)}`)
+      });
+    };
+    child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
+    child.on("close", () => finish2(null));
+  });
+}
+function serveRequest(id, analysis, out, input) {
+  if (analysis.kind === "pixel") {
+    return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
+  }
+  if (analysis.kind === "ablate") return { id, kind: "ablate", in: input, out };
+  if (analysis.kind === "replace") return { id, kind: "replace", in: input, out };
+  return { id, ...analysis, out };
+}
+function tempOutput(kind) {
+  return path4.join(os3.tmpdir(), `vkinsp_${kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+}
+var ReplayServer = class {
+  tool;
+  capturePath;
+  lastUsed = Date.now();
+  _child;
+  _ready;
+  _resolveReady = () => {
+  };
+  _pending = /* @__PURE__ */ new Map();
+  _nextId = 1;
+  _output = "";
+  _exited = false;
+  constructor(tool, capturePath) {
+    this.tool = tool;
+    this.capturePath = capturePath;
+    this._ready = new Promise((resolve) => {
+      this._resolveReady = resolve;
+    });
+    this._child = spawn(tool, [capturePath, "--serve"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
+    let buffered = "";
+    this._child.stdout?.on("data", (chunk2) => {
+      buffered += chunk2.toString();
+      let newline;
+      while ((newline = buffered.indexOf("\n")) >= 0) {
+        const line = buffered.slice(0, newline).replace(/\r$/, "");
+        buffered = buffered.slice(newline + 1);
+        this._line(line);
+      }
+    });
+    this._child.stderr?.on("data", (chunk2) => this._collect(chunk2.toString()));
+    this._child.stdin?.on("error", () => {
+    });
+    this._child.on("error", (e) => this._exit(`could not run ${tool}: ${e.message}`));
+    this._child.on("exit", (code) => this._exit(`the replay process exited (${code ?? "killed"})`));
+  }
+  get alive() {
+    return !this._exited;
+  }
+  /**
+   * Replays the frame for an analysis and reads the file it wrote. `fallback` is set when the answer
+   * is not the analysis's: the process could not start (a tool from before --serve) or exited.
+   */
+  async run(analysis, timeoutMs = 10 * 60 * 1e3) {
+    this.lastUsed = Date.now();
+    const startError = await this._ready;
+    if (startError) return { data: null, output: tail(this._output), error: startError, fallback: true };
+    const id = this._nextId++;
+    const out = tempOutput(analysis.kind);
+    const input = inputFile(analysis);
+    const answer = await new Promise((resolve) => {
+      const timer = setTimeout(() => {
+        this._pending.delete(id);
+        this.dispose();
+        resolve({ id, ok: false, error: `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` });
+      }, timeoutMs);
+      this._pending.set(id, (a) => {
+        clearTimeout(timer);
+        resolve(a);
+      });
+      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out, input)) + "\n");
+    });
+    removeFile(input);
+    this.lastUsed = Date.now();
+    let data = null;
+    try {
+      data = new Uint8Array(fs5.readFileSync(out));
+      fs5.unlinkSync(out);
+    } catch {
+    }
+    if (answer.ok && data) return { data, output: tail(this._output) };
+    return { data: null, output: tail(this._output), error: answer.error ?? "the replay wrote no data", fallback: this._exited };
+  }
+  /** Stops the process: asked to quit, and killed if it does not. */
+  dispose() {
+    if (this._exited) return;
+    try {
+      this._child.stdin?.write(JSON.stringify({ kind: "quit" }) + "\n");
+      this._child.stdin?.end();
+    } catch {
+    }
+    setTimeout(() => {
+      if (!this._exited) this._child.kill();
+    }, 2e3).unref();
+  }
+  _line(line) {
+    if (!line.startsWith("@replay ")) {
+      this._collect(line + "\n");
+      return;
+    }
+    let answer;
+    try {
+      answer = JSON.parse(line.slice(8));
+    } catch {
+      return;
+    }
+    if (answer.ready !== void 0) {
+      this._resolveReady(answer.ready ? null : answer.error ?? "the replay could not start");
+      return;
+    }
+    if (answer.id === void 0) return;
+    const resolve = this._pending.get(answer.id);
+    this._pending.delete(answer.id);
+    resolve?.(answer);
+  }
+  _collect(text) {
+    this._output += text;
+    if (this._output.length > 256 * 1024) this._output = this._output.slice(-128 * 1024);
+  }
+  _exit(message) {
+    if (this._exited) return;
+    this._exited = true;
+    this._resolveReady(message);
+    for (const [id, resolve] of this._pending) resolve({ id, ok: false, error: message });
+    this._pending.clear();
+  }
+};
+var ReplayServerPool = class {
+  constructor(max = 3, idleMs = 5 * 60 * 1e3) {
+    this.max = max;
+    this.idleMs = idleMs;
+  }
+  _servers = /* @__PURE__ */ new Map();
+  _sweep = null;
+  /** Runs an analysis in the capture's replay, starting one if needed; a process that cannot serve falls back to a one-shot replay. */
+  async run(tool, capturePath, analysis, timeoutMs) {
+    let stamp = 0;
+    try {
+      stamp = fs5.statSync(capturePath).mtimeMs;
+    } catch {
+      return { data: null, output: "", error: `${capturePath} does not exist` };
+    }
+    if (needsOwnProcess(analysis)) return runReplay(tool, capturePath, analysis, timeoutMs);
+    const key = `${tool}
+${path4.resolve(capturePath)}
+${stamp}`;
+    let server = this._servers.get(key);
+    if (!server || !server.alive) {
+      server?.dispose();
+      server = new ReplayServer(tool, capturePath);
+      this._servers.set(key, server);
+      this._trim();
+    }
+    this._scheduleSweep();
+    const result = await server.run(analysis, timeoutMs);
+    if (!server.alive) this._servers.delete(key);
+    if (result.fallback) return runReplay(tool, capturePath, analysis, timeoutMs);
+    return result;
+  }
+  /** Stops the replays of a capture file (it is closed, or about to be deleted). */
+  release(capturePath) {
+    const resolved = path4.resolve(capturePath);
+    for (const [key, server] of this._servers) {
+      if (path4.resolve(server.capturePath) !== resolved) continue;
+      server.dispose();
+      this._servers.delete(key);
+    }
+  }
+  disposeAll() {
+    for (const server of this._servers.values()) server.dispose();
+    this._servers.clear();
+  }
+  _trim() {
+    const live = [...this._servers.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
+    while (live.length > this.max) {
+      const [key, server] = live.shift();
+      server.dispose();
+      this._servers.delete(key);
+    }
+  }
+  _scheduleSweep() {
+    if (this._sweep) return;
+    this._sweep = setInterval(() => {
+      const now = Date.now();
+      for (const [key, server] of this._servers) {
+        if (now - server.lastUsed < this.idleMs) continue;
+        server.dispose();
+        this._servers.delete(key);
+      }
+      if (!this._servers.size && this._sweep) {
+        clearInterval(this._sweep);
+        this._sweep = null;
+      }
+    }, 30 * 1e3);
+    this._sweep.unref();
+  }
+};
+var replayServers = new ReplayServerPool();
+
+// src/renderer/replay_validation.ts
+function parseReplayValidation(bytes) {
+  const doc = JSON.parse(new TextDecoder().decode(bytes));
+  if (doc.format !== "gpu-inspector-validation") throw new Error("the replay wrote no validation data");
+  const messages = (doc.messages ?? []).map((m) => ({
+    severity: m.severity === "error" ? "error" : "warning",
+    id: m.id ?? "",
+    message: m.message ?? "",
+    command: typeof m.command === "number" ? m.command : -1,
+    phase: m.phase ?? "",
+    count: Math.max(1, m.count ?? 1)
+  }));
+  const byCommand = /* @__PURE__ */ new Map();
+  for (const m of messages) {
+    if (m.command < 0) continue;
+    const list = byCommand.get(m.command) ?? [];
+    list.push(m);
+    byCommand.set(m.command, list);
+  }
+  return { device: doc.device ?? "", layer: doc.layer !== false, messages, problems: doc.problems ?? [], byCommand };
+}
+function replayValidationCounts(v) {
+  let errors = 0, warnings = 0, linked = 0;
+  for (const m of v.messages) {
+    if (m.severity === "error") errors += m.count;
+    else warnings += m.count;
+    if (m.command >= 0) linked += m.count;
+  }
+  return { errors, warnings, linked };
+}
+
+// src/main/plugins.ts
+import fs6 from "node:fs";
+import os4 from "node:os";
+import path5 from "node:path";
+
+// src/shared/protocol.ts
+var PLUGIN_SDK_VERSION = 1;
+
+// src/main/plugins.ts
+function userPluginDir() {
+  if (process.env.GPU_INSPECTOR_HOME) return path5.join(process.env.GPU_INSPECTOR_HOME, "plugins");
+  const home = os4.homedir();
+  if (process.platform === "win32") return path5.join(process.env.APPDATA ?? path5.join(home, "AppData", "Roaming"), "gpu-inspector", "plugins");
+  if (process.platform === "darwin") return path5.join(home, "Library", "Application Support", "gpu-inspector", "plugins");
+  return path5.join(process.env.XDG_CONFIG_HOME ?? path5.join(home, ".config"), "gpu-inspector", "plugins");
+}
+function pluginSearchDirs(checkoutRoots2, packaged = []) {
+  const dirs = [];
+  for (const d of (process.env.GPU_INSPECTOR_PLUGINS ?? "").split(path5.delimiter)) if (d.trim()) dirs.push(d.trim());
+  dirs.push(userPluginDir());
+  for (const root of checkoutRoots2) dirs.push(path5.join(root, "build", "plugins"));
+  dirs.push(...packaged);
+  return dirs;
+}
+function readManifest(dir) {
+  const file = path5.join(dir, "plugin.json");
+  if (!fs6.existsSync(file)) return null;
+  let manifest;
+  try {
+    manifest = JSON.parse(fs6.readFileSync(file, "utf8"));
+  } catch (e) {
+    const id = path5.basename(dir);
+    return { manifest: { id, name: id, version: "", sdk: 0 }, dir, backend: null, error: `plugin.json does not parse: ${e.message}` };
+  }
+  const plugin = { manifest, dir, backend: null, error: null };
+  if (typeof manifest.id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(manifest.id)) {
+    plugin.error = "plugin.json needs an id: lower case letters, digits, - and _";
+    manifest.id = typeof manifest.id === "string" && manifest.id ? manifest.id : path5.basename(dir);
+    return plugin;
+  }
+  manifest.name ||= manifest.id;
+  manifest.version ||= "";
+  manifest.api ||= manifest.id;
+  if (typeof manifest.sdk !== "number" || manifest.sdk > PLUGIN_SDK_VERSION) {
+    plugin.error = `written for plugin SDK ${String(manifest.sdk)}; this GPU Inspector implements ${PLUGIN_SDK_VERSION}`;
+    return plugin;
+  }
+  if (manifest.backend) {
+    const backend = path5.resolve(dir, manifest.backend);
+    if (!isInside(dir, backend)) plugin.error = "the backend module is outside the plugin's directory";
+    else if (!fs6.existsSync(backend)) plugin.error = `the backend module ${manifest.backend} is missing (is the plugin built?)`;
+    else plugin.backend = backend;
+  }
+  return plugin;
+}
+function isInside(dir, file) {
+  const rel = path5.relative(path5.resolve(dir), path5.resolve(file));
+  return rel === "" || !rel.startsWith("..") && !path5.isAbsolute(rel);
+}
+function findPlugins(dirs) {
+  const found2 = /* @__PURE__ */ new Map();
+  const consider = (dir) => {
+    const p = readManifest(dir);
+    if (p && !found2.has(p.manifest.id)) found2.set(p.manifest.id, p);
+  };
+  for (const dir of dirs) {
+    let entries;
+    try {
+      if (!fs6.statSync(dir).isDirectory()) continue;
+      if (fs6.existsSync(path5.join(dir, "plugin.json"))) {
+        consider(dir);
+        continue;
+      }
+      entries = fs6.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const e of entries) if (e.isDirectory()) consider(path5.join(dir, e.name));
+  }
+  return [...found2.values()];
+}
+function expand(value, plugin, s) {
+  return value.replace(/\$\{port\}/g, String(s.port)).replace(/\$\{log\}/g, s.log ? "1" : "0").replace(/\$\{recordAlways\}/g, s.recordAlways ? "1" : "0").replace(/\$\{stacktraces\}/g, s.stacktraces ? "1" : "0").replace(/\$\{pluginDir\}/g, plugin.dir);
+}
+function pluginLaunches(plugins2, settings, platform = process.platform) {
+  const out = [];
+  for (const plugin of plugins2) {
+    if (plugin.error) continue;
+    const c2 = plugin.manifest.capture?.[platform];
+    if (!c2) continue;
+    const resolve = (files) => (files ?? []).map((f) => path5.resolve(plugin.dir, f));
+    const inject = platform === "win32" ? resolve(c2.inject) : [];
+    const preload = platform === "win32" ? [] : resolve(c2.preload);
+    const env = {};
+    for (const [k, v] of Object.entries(c2.env ?? {})) env[k] = expand(String(v), plugin, settings);
+    const missing = [...inject, ...preload].filter((f) => !fs6.existsSync(f));
+    if (!inject.length && !preload.length && !Object.keys(env).length) continue;
+    out.push({ plugin, inject, preload, env, missing });
+  }
+  return out;
+}
+function applyPreloads(env, launches, variable) {
+  const notes = [];
+  const preload = [];
+  for (const p of launches) {
+    if (p.missing.length) {
+      notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
+      continue;
+    }
+    if (!p.preload.length) continue;
+    Object.assign(env, p.env);
+    preload.push(...p.preload);
+    notes.push(`${p.plugin.manifest.name} capture library: ${p.preload.join(", ")} (plugin ${p.plugin.dir})`);
+  }
+  if (preload.length) env[variable] = [...preload, ...env[variable] ? [env[variable]] : []].join(":");
+  return notes;
+}
+function androidPlugins(plugins2) {
+  return plugins2.filter((p) => !p.error && p.manifest.capture?.android?.glesLayer && p.manifest.capture.android.socket);
+}
+function pluginAndroidLaunch(plugin, abilist, pkg, settings) {
+  const a = plugin.manifest.capture.android;
+  const expandAndroid = (v) => expand(v, plugin, settings).replace(/\$\{package\}/g, pkg);
+  const properties = {};
+  for (const [k, v] of Object.entries(a.properties ?? {})) properties[k] = expandAndroid(String(v));
+  const socket = expandAndroid(a.socket);
+  const layerName = path5.basename(a.glesLayer);
+  for (const abi of abilist) {
+    const library = path5.resolve(plugin.dir, a.glesLayer.replace(/\$\{abi\}/g, abi));
+    if (isInside(plugin.dir, library) && fs6.existsSync(library)) return { plugin, library, abi, layerName, socket, properties, error: null };
+  }
+  return {
+    plugin,
+    library: null,
+    abi: "",
+    layerName,
+    socket,
+    properties,
+    error: `${plugin.manifest.name} has no Android library for ${abilist.join(", ") || "the device"}: build it with tools/build_android.py`
+  };
+}
+function pluginInfo(p) {
+  const rel = p.backend ? path5.relative(p.dir, p.backend).split(path5.sep).map(encodeURIComponent).join("/") : null;
+  return {
+    id: p.manifest.id,
+    name: p.manifest.name,
+    version: p.manifest.version,
+    api: p.manifest.api ?? p.manifest.id,
+    dir: p.dir,
+    backendUrl: rel ? `${PLUGIN_SCHEME}://${p.manifest.id}/${rel}` : null,
+    error: p.error
+  };
+}
+var PLUGIN_SCHEME = "gpuinsp-plugin";
+
+// src/mcp/plugins.ts
+import path6 from "node:path";
+import { pathToFileURL } from "node:url";
+
+// src/renderer/plugin_host.ts
+function pluginHost(context) {
+  return {
+    sdkVersion: PLUGIN_SDK_VERSION,
+    context,
+    emptySets: EMPTY_SETS,
+    util: { isObject, isHandleRef, num, str, refId, fmt, formatBytes }
+  };
+}
+async function activatePlugin(mod, info, context) {
+  const m = mod;
+  if (!m || typeof m.activate !== "function") throw new Error("the backend module exports no activate function");
+  const got = await m.activate(pluginHost(context));
+  const backends = Array.isArray(got) ? got : [got];
+  if (!backends.some((b) => b && b.id === info.api)) throw new Error(`activate returned no backend for "${info.api}", the api plugin.json names`);
+  for (const b of backends) {
+    registerBackend(Object.setPrototypeOf({ plugin: { id: info.id, version: info.version, dir: info.dir } }, b));
+  }
+  return registeredBackends().filter((b) => backends.some((x) => x.id === b.id));
+}
+
+// src/mcp/plugins.ts
+var found = null;
+function plugins() {
+  found ??= findPlugins(pluginSearchDirs(checkoutRoots(), installedLayerDirs().map((d) => path6.join(path6.dirname(d), "plugins"))));
+  return found;
+}
+async function loadPluginBackends() {
+  for (const p of plugins()) {
+    if (p.error || !p.backend) {
+      if (p.error) process.stderr.write(`gpu-inspector MCP server: plugin ${p.manifest.id}: ${p.error}
+`);
+      continue;
+    }
+    try {
+      await activatePlugin(await import(pathToFileURL(p.backend).href), pluginInfo(p), "mcp");
+    } catch (e) {
+      process.stderr.write(`gpu-inspector MCP server: plugin ${p.manifest.id}: the backend did not load: ${e.message}
+`);
+    }
+  }
+}
+function androidPluginFor(api) {
+  if (!api || api.toLowerCase() === "vulkan") return null;
+  return androidPlugins(plugins()).find((p) => (p.manifest.api ?? p.manifest.id) === api || p.manifest.id === api);
+}
+function androidApis() {
+  return ["vulkan", ...androidPlugins(plugins()).map((p) => p.manifest.api ?? p.manifest.id)];
+}
+function launchPlugins(port, recordAlways, stacktraces) {
+  return pluginLaunches(plugins(), { port, log: true, recordAlways, stacktraces });
+}
+
+// src/mcp/live_session.ts
+import { spawn as spawn3 } from "node:child_process";
+import fs11 from "node:fs";
+import net2 from "node:net";
+import os7 from "node:os";
+import path11 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+
+// src/main/android.ts
+import { execFile as execFile2, execFileSync, spawn as spawn2 } from "node:child_process";
+import crypto from "node:crypto";
+import fs7 from "node:fs";
+import os5 from "node:os";
+import path7 from "node:path";
+var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+var LAYER_LIB = "libVkLayer_inspector_capture.so";
+var LAYER_APK = "gpu_inspector_layer.apk";
+var DEVICE_TMP = "/data/local/tmp";
+var ADB_TIMEOUT_MS = 2e4;
+var INSTALL_TIMEOUT_MS = 18e4;
+var START_TIMEOUT_MS = 6e4;
+var PID_RETRIES = 20;
+var PID_RETRY_MS = 500;
+var POLL_MS = 2e3;
+var MIN_SDK = 28;
+var LAYER_APP_SDK = 29;
+function findAdb() {
+  const exe = process.platform === "win32" ? "adb.exe" : "adb";
+  const candidates = [];
+  if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
+  for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
+    if (process.env[v]) candidates.push(path7.join(process.env[v], "platform-tools", exe));
+  }
+  if (process.platform === "win32") {
+    if (process.env.LOCALAPPDATA) candidates.push(path7.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
+  } else if (process.platform === "darwin") {
+    candidates.push(path7.join(os5.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
+  } else {
+    candidates.push(path7.join(os5.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
+  }
+  for (const c2 of candidates) if (fs7.existsSync(c2)) return c2;
+  for (const dir of (process.env.PATH ?? "").split(path7.delimiter)) {
+    if (dir && fs7.existsSync(path7.join(dir, exe))) return path7.join(dir, exe);
+  }
+  return null;
+}
+function adbArgs(serial, args) {
+  return serial ? ["-s", serial, ...args] : args;
+}
+function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
+  return new Promise((resolve, reject) => {
+    execFile2(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+      if (err) {
+        const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
+        reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
+      } else {
+        resolve(stdout);
+      }
+    });
+  });
+}
+function shell(adbPath, serial, command, timeoutMs = ADB_TIMEOUT_MS) {
+  return adb(adbPath, serial, ["shell", command], timeoutMs);
+}
+function parseDevices(text) {
+  const out = [];
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith("List of devices") || line.startsWith("*")) continue;
+    const parts2 = line.split(/\s+/);
+    if (parts2.length < 2) continue;
+    const model = parts2.find((p) => p.startsWith("model:"))?.substring(6).replace(/_/g, " ") ?? "";
+    out.push({ serial: parts2[0], state: parts2[1], model });
+  }
+  return out;
+}
+async function listDevices(adbPath) {
+  const listed = parseDevices(await adb(adbPath, null, ["devices", "-l"]));
+  const devices = [];
+  for (const d of listed) {
+    const dev = { serial: d.serial, state: d.state, model: d.model, sdk: 0, abi: "" };
+    if (d.state === "device") {
+      try {
+        const props = (await shell(adbPath, d.serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.manufacturer; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
+        dev.sdk = Number(props[0]) || 0;
+        dev.abi = props[1] ?? "";
+        if (!dev.model) dev.model = [props[2], props[3]].filter(Boolean).join(" ");
+      } catch {
+      }
+    }
+    devices.push(dev);
+  }
+  return devices;
+}
+async function listPackages(adbPath, serial) {
+  const text = await shell(adbPath, serial, "pm list packages -3");
+  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("package:")).map((l) => l.substring(8)).sort();
+}
+async function resolveActivity(adbPath, serial, pkg) {
+  try {
+    const text = await shell(adbPath, serial, `cmd package resolve-activity --brief ${pkg}`);
+    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const component = lines.reverse().find((l) => l.startsWith(`${pkg}/`));
+    return component ?? null;
+  } catch {
+    return null;
+  }
+}
+function findAndroidLayer(candidates) {
+  for (const dir of candidates) {
+    const libRoot = path7.join(dir, "lib");
+    if (!fs7.existsSync(libRoot)) continue;
+    const libs = {};
+    for (const abi of fs7.readdirSync(libRoot)) {
+      const lib = path7.join(libRoot, abi, LAYER_LIB);
+      if (fs7.existsSync(lib)) libs[abi] = lib;
+    }
+    if (!Object.keys(libs).length) continue;
+    const apk = path7.join(dir, LAYER_APK);
+    let apkInfo = null;
+    if (fs7.existsSync(apk)) {
+      try {
+        apkInfo = JSON.parse(fs7.readFileSync(`${apk}.json`, "utf8"));
+      } catch {
+        apkInfo = null;
+      }
+    }
+    return { dir, libs, apk: apkInfo ? apk : null, apkInfo };
+  }
+  return null;
+}
+var AndroidTarget = class {
+  constructor(opts) {
+    this.opts = opts;
+    this._socket = `vkinsp:${opts.port}:${opts.package}`;
+  }
+  pid = null;
+  _logcat = null;
+  _poll = null;
+  _polling = false;
+  _stopped = false;
+  /** The capture library's socket and log tag on the device: the Vulkan layer's, or the plugin's. */
+  _socket;
+  _tag = "vkinsp";
+  /** Installs and enables the layer, starts the application and the watches. Rejects with a readable message. */
+  async start() {
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    const log = this.opts.onLog;
+    const props = (await shell(adbPath, serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.cpu.abilist; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
+    const sdk = Number(props[0]) || 0;
+    const abi = props[1] ?? "";
+    const abilist = (props[2] ?? abi).split(",").map((s) => s.trim()).filter(Boolean);
+    log(`device ${serial}: ${props[3] ?? ""}, Android API ${sdk}, ${abi}`);
+    const plugin = this.opts.plugin ? this.opts.plugin(abilist) : null;
+    if (plugin) {
+      const name = plugin.plugin.manifest.name;
+      if (sdk < LAYER_APP_SDK) throw new Error(`Android 10 (API ${LAYER_APP_SDK}) or newer is required for ${name} layers; the device runs API ${sdk}`);
+      if (plugin.error || !plugin.library) throw new Error(plugin.error ?? `${name} has no Android library`);
+      this._socket = plugin.socket;
+      this._tag = plugin.socket.split(":")[0] || this._tag;
+      log(`layer: ${await this._copyIntoDataDir(plugin.library, plugin.layerName, plugin.abi)}`);
+      await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
+      await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
+      await shell(adbPath, serial, `settings put global gpu_debug_layers_gles ${plugin.layerName}`);
+      for (const key of ["gpu_debug_layers", "gpu_debug_layer_app"]) await shell(adbPath, serial, `settings delete global ${key}`);
+      for (const [key, value] of Object.entries(plugin.properties)) await shell(adbPath, serial, `setprop ${key} ${value}`);
+    } else {
+      if (sdk < MIN_SDK) throw new Error(`Android 9 (API ${MIN_SDK}) or newer is required for Vulkan layers; the device runs API ${sdk}`);
+      if (!this.opts.layer) throw new Error("Android layer not found: build it with tools/build_android.py (see docs/ARCHITECTURE.md)");
+      const how = await this._installLayer(sdk, abilist, this.opts.layer);
+      log(`layer: ${how}`);
+      await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
+      await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
+      await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
+      if (sdk >= LAYER_APP_SDK) await shell(adbPath, serial, "settings delete global gpu_debug_layers_gles");
+      await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
+      await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
+      await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
+      await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
+    }
+    await shell(adbPath, serial, `am force-stop ${pkg}`);
+    for (let i = 0; i < 20 && !this._stopped; ++i) {
+      const pid = await this._findPid();
+      if (pid === null) break;
+      if (i === 0) log(`waiting for the previous instance (pid ${pid}) to exit`);
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    if (!this._stopped) {
+      const unix = await shell(adbPath, serial, "cat /proc/net/unix").catch(() => "");
+      if (unix.includes(`@${this.socketName}`)) log(`warning: @${this.socketName} is still held on the device by another process; the layer waits for it`);
+    }
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:${this.socketName}`]);
+    log(`forwarding localhost:${port} to the device's @${this.socketName}`);
+    if (this._stopped) return;
+    this._startLogcat();
+    let activity = this.opts.activity.trim();
+    if (!activity) activity = await resolveActivity(adbPath, serial, pkg) ?? "";
+    if (activity && !activity.includes("/")) activity = `${pkg}/${activity}`;
+    if (activity) {
+      log(`starting ${activity}`);
+      const out = await shell(adbPath, serial, `am start -S -n ${activity}`, START_TIMEOUT_MS);
+      const error = out.split(/\r?\n/).find((l) => /^Error/.test(l.trim()));
+      if (error) throw new Error(`${error.trim()} (activity ${activity})`);
+    } else {
+      log(`starting ${pkg} (no launchable activity resolved; using the launcher intent)`);
+      const out = await shell(adbPath, serial, `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`, START_TIMEOUT_MS);
+      if (/No activities found|monkey aborted/i.test(out)) throw new Error(`no launchable activity in ${pkg}`);
+    }
+    for (let i = 0; i < PID_RETRIES && this.pid === null && !this._stopped; ++i) {
+      this.pid = await this._findPid();
+      if (this.pid === null) await new Promise((r) => setTimeout(r, PID_RETRY_MS));
+      if (this.pid === null && i === 4) await this._launchDiagnostics(true);
+    }
+    if (this._stopped) return;
+    if (this.pid === null) throw new Error(`${pkg} did not start (no process found)`);
+    await this._launchDiagnostics(false);
+    this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
+  }
+  /** The capture library's abstract socket on the device: the port and the package (see transport.cpp). */
+  get socketName() {
+    return this._socket;
+  }
+  /**
+   * Re-establishes the port forward when it is gone. adb drops a device's forwards whenever the
+   * device disconnects, and a headset's USB link blips when it changes power state, so a
+   * connection attempt refused on the host side is checked against `adb forward --list`.
+   * Resolves true when the forward had to be re-created.
+   */
+  async ensureForward() {
+    if (this._stopped) return false;
+    const { adb: adbPath, serial, port } = this.opts;
+    const target = `localabstract:${this.socketName}`;
+    const list = await adb(adbPath, serial, ["forward", "--list"]);
+    const present = list.split(/\r?\n/).some((l) => {
+      const f = l.trim().split(/\s+/);
+      return f[0] === serial && f[1] === `tcp:${port}` && f[2] === target;
+    });
+    if (present || this._stopped) return false;
+    await adb(adbPath, serial, ["forward", `tcp:${port}`, target]);
+    this.opts.onLog(`the port forward was gone (device reconnected?): forwarding localhost:${port} to @${this.socketName} again`);
+    return true;
+  }
+  /** Terminates the application, the port forward and the watches. */
+  async stop() {
+    this._stopWatching();
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    try {
+      await shell(adbPath, serial, `am force-stop ${pkg}`);
+    } catch {
+    }
+    try {
+      await adb(adbPath, serial, ["forward", "--remove", `tcp:${port}`]);
+    } catch {
+    }
+  }
+  /** stop() for application exit, where nothing can be awaited. */
+  stopSync() {
+    this._stopWatching();
+    const { adb: adbPath, serial, package: pkg, port } = this.opts;
+    for (const args of [["shell", `am force-stop ${pkg}`], ["forward", "--remove", `tcp:${port}`]]) {
+      try {
+        execFileSync(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
+      } catch {
+      }
+    }
+  }
+  _stopWatching() {
+    this._stopped = true;
+    if (this._poll) {
+      clearInterval(this._poll);
+      this._poll = null;
+    }
+    if (this._logcat) {
+      try {
+        this._logcat.kill();
+      } catch {
+      }
+      this._logcat = null;
+    }
+  }
+  /**
+   * Gets the layer where the device's loader will find it. Android 10+ with the layer APK:
+   * install it (when the installed version differs) and point gpu_debug_layer_app at it. Otherwise
+   * copy the .so into the target's data directory with run-as, skipped when the copy there
+   * already matches.
+   */
+  async _installLayer(sdk, abilist, layer) {
+    const { adb: adbPath, serial } = this.opts;
+    const apkAbi = layer.apkInfo ? abilist.find((a) => layer.apkInfo.abis.includes(a)) : void 0;
+    if (sdk >= LAYER_APP_SDK && layer.apk && layer.apkInfo && apkAbi) {
+      const info = layer.apkInfo;
+      let installed = "";
+      try {
+        const dump = await shell(adbPath, serial, `dumpsys package ${info.package}`);
+        installed = /versionName=(\S+)/.exec(dump)?.[1] ?? "";
+      } catch {
+        installed = "";
+      }
+      if (installed !== info.versionName) {
+        this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
+        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
+      }
+      await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
+      return `${info.package} ${info.versionName} (${apkAbi})`;
+    }
+    const abi = abilist.find((a) => layer.libs[a]);
+    if (!abi) {
+      throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
+    }
+    const how = await this._copyIntoDataDir(layer.libs[abi], LAYER_LIB, abi);
+    await shell(adbPath, serial, "settings delete global gpu_debug_layer_app");
+    return how;
+  }
+  /**
+   * Copies a layer library into the target's data directory with run-as, where the loaders look when
+   * the debug layer settings are on; skipped when the copy there already matches.
+   */
+  async _copyIntoDataDir(lib, name, abi) {
+    const { adb: adbPath, serial, package: pkg } = this.opts;
+    const local = crypto.createHash("md5").update(fs7.readFileSync(lib)).digest("hex");
+    let remote = "";
+    try {
+      remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${name}`)).trim().split(/\s+/)[0] ?? "";
+    } catch (e) {
+      const message = e instanceof Error ? e.message : String(e);
+      if (/not debuggable|is not debuggable|Could not set capabilities|run-as: Package/.test(message)) {
+        throw new Error(`${pkg} is not debuggable: Android only loads layers into debuggable applications (a Unity Development Build) or on rooted devices`);
+      }
+      remote = "";
+    }
+    if (remote !== local) {
+      this.opts.onLog(`copying ${name} (${abi}) into ${pkg}'s data directory`);
+      await adb(adbPath, serial, ["push", lib, `${DEVICE_TMP}/${name}`], INSTALL_TIMEOUT_MS);
+      try {
+        await shell(adbPath, serial, `run-as ${pkg} cp ${DEVICE_TMP}/${name} . && run-as ${pkg} chmod 700 ${name}`);
+      } catch (e) {
+        const message = e instanceof Error ? e.message : String(e);
+        throw new Error(`could not copy the layer into ${pkg}: ${message}. The application must be debuggable (a Unity Development Build).`);
+      }
+    }
+    return `${name} (${abi}) in ${pkg}'s data directory`;
+  }
+  _startLogcat() {
+    const { adb: adbPath, serial } = this.opts;
+    const tag = this._tag;
+    const proc = spawn2(adbPath, adbArgs(serial, ["logcat", "-v", "tag", "-T", "1", `${tag}:*`, "DEBUG:E", "AndroidRuntime:E", "*:S"]), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
+    this._logcat = proc;
+    let rest = "";
+    proc.stdout?.on("data", (d) => {
+      rest += d.toString("utf8");
+      const lines = rest.split(/\r?\n/);
+      rest = lines.pop() ?? "";
+      for (const line of lines) {
+        if (!line.length || line.startsWith("--------- beginning of")) continue;
+        const prefix = `I/${tag}`;
+        this.opts.onLog(line.startsWith(prefix) && /^\s*:/.test(line.slice(prefix.length)) ? `[${tag}] ${line.slice(prefix.length).replace(/^\s*:\s?/, "")}` : line);
+      }
+    });
+    proc.on("exit", () => {
+      if (this._logcat === proc) this._logcat = null;
+    });
+    proc.on("error", () => {
+      if (this._logcat === proc) this._logcat = null;
+    });
+  }
+  /**
+   * What can keep a launch from running, in the Log: a device that is asleep (an OpenXR session
+   * stays idle until the headset is worn), and on a headset the shell's "controllers required"
+   * dialog, which a launch attempted without controllers or tracked hands leaves behind and
+   * which then blocks every later launch until the shell restarts.
+   */
+  async _launchDiagnostics(noProcess) {
+    const { adb: adbPath, serial } = this.opts;
+    const log = this.opts.onLog;
+    try {
+      const power = await shell(adbPath, serial, "dumpsys power | grep -m1 mWakefulness=");
+      const state = /mWakefulness=(\w+)/.exec(power)?.[1];
+      if (state && state !== "Awake") log(`the device is ${state.toLowerCase()}: an OpenXR session stays idle (no frames) until the headset is worn or woken (adb shell input keyevent KEYCODE_WAKEUP)`);
+    } catch {
+    }
+    try {
+      const windows = await shell(adbPath, serial, "dumpsys window windows | grep -c -i launchcheck");
+      if (Number(windows.trim()) > 0) {
+        log(`the headset shell is showing its launch check dialog ("controllers required"), which blocks ${noProcess ? "this launch" : "launches"}: put the headset on with controllers or tracked hands, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+      }
+    } catch {
+    }
+    if (!noProcess) return;
+    try {
+      const blocked = await shell(adbPath, serial, "logcat -d -t 300 | grep 'Launch is blocked because' | tail -1");
+      const reason = /Launch is blocked because:\s*([^.]*?)\.?\s*(?:Caching|$)/.exec(blocked)?.[1]?.trim();
+      if (reason) log(`the headset shell blocked the launch: ${reason}. Put the headset on and dismiss the dialog, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
+    } catch {
+    }
+  }
+  async _findPid() {
+    try {
+      const out = (await shell(this.opts.adb, this.opts.serial, `pidof ${this.opts.package}`)).trim();
+      const pid = Number(out.split(/\s+/)[0]);
+      return pid > 0 ? pid : null;
+    } catch {
+      return null;
+    }
+  }
+  async _pollProcess() {
+    if (this._polling || this._stopped) return;
+    this._polling = true;
+    try {
+      const pid = await this._findPid();
+      if (this._stopped) return;
+      if (pid === null || this.pid !== null && pid !== this.pid) {
+        this._stopWatching();
+        this.opts.onExit();
+      }
+    } finally {
+      this._polling = false;
+    }
+  }
+};
+async function disableLayer(adbPath, serial) {
+  for (const key of ["enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app", "gpu_debug_layers_gles"]) {
+    try {
+      await shell(adbPath, serial, `settings delete global ${key}`);
+    } catch {
+    }
+  }
+}
+
+// src/main/layer_protocol.ts
+function encodeRequest(msg) {
+  const payload = Buffer.from(JSON.stringify(msg), "utf8");
+  const header = Buffer.alloc(5);
+  header.writeUInt32LE(payload.length, 0);
+  header.writeUInt8(0, 4);
+  return Buffer.concat([header, payload]);
+}
+var FrameReader = class {
+  _buffered = Buffer.alloc(0);
+  /** The messages `chunk` completes, in order; a frame that does not parse goes to `onError` and is skipped. */
+  push(chunk2, onError) {
+    this._buffered = this._buffered.length ? Buffer.concat([this._buffered, chunk2]) : chunk2;
+    const out = [];
+    while (this._buffered.length >= 5) {
+      const len = this._buffered.readUInt32LE(0);
+      const kind = this._buffered.readUInt8(4);
+      if (this._buffered.length < 5 + len) break;
+      const payload = this._buffered.subarray(5, 5 + len);
+      this._buffered = this._buffered.subarray(5 + len);
+      if (kind === 0) {
+        try {
+          out.push(JSON.parse(payload.toString("utf8")));
+        } catch (e) {
+          onError?.({ kind: "json", error: String(e), payload });
+        }
+      } else if (kind === 1) {
+        const hl = payload.readUInt32LE(0);
+        let header;
+        try {
+          header = JSON.parse(payload.subarray(4, 4 + hl).toString("utf8"));
+        } catch (e) {
+          onError?.({ kind: "header", error: String(e), payload });
+          continue;
+        }
+        out.push({ ...header, __binary: new Uint8Array(payload.subarray(4 + hl)) });
+      }
+    }
+    return out;
+  }
+};
+
+// src/main/launch_env.ts
+import { execFile as execFile3, execFileSync as execFileSync2 } from "node:child_process";
+import fs8 from "node:fs";
+import net from "node:net";
+import os6 from "node:os";
+import path8 from "node:path";
+var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
+var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
+var DEFAULT_PORT = 47531;
+function findLayerDir(roots, packaged = []) {
+  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
+  const candidates = [];
+  for (const root of roots) {
+    const bin = path8.join(root, "build", "bin");
+    candidates.push(path8.join(bin, "Release"), path8.join(bin, "RelWithDebInfo"), path8.join(bin, "Debug"), bin);
+  }
+  candidates.push(...packaged);
+  for (const dir of candidates) {
+    if (fs8.existsSync(path8.join(dir, `${LAYER_NAME2}.json`))) return dir;
+  }
+  return null;
+}
+function findValidationLayerDir() {
+  const manifest = "VkLayer_khronos_validation.json";
+  const candidates = [];
+  const sdk = process.env.VULKAN_SDK;
+  if (sdk) candidates.push(path8.join(sdk, "Bin"), path8.join(sdk, "share", "vulkan", "explicit_layer.d"), path8.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (process.platform === "win32") {
+    for (const root of ["C:\\VulkanSDK", path8.join(os6.homedir(), "VulkanSDK")]) {
+      try {
+        const versions = fs8.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path8.join(root, v, "Bin"));
+      } catch {
+      }
+    }
+  } else {
+    candidates.push(
+      "/usr/share/vulkan/explicit_layer.d",
+      "/usr/local/share/vulkan/explicit_layer.d",
+      "/etc/vulkan/explicit_layer.d",
+      path8.join(os6.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
+    );
+  }
+  for (const c2 of candidates) if (fs8.existsSync(path8.join(c2, manifest))) return c2;
+  return null;
+}
+function vulkanLayerEnvironment(o) {
+  const layers = [LAYER_NAME2, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
+  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
+  return {
+    VK_ADD_LAYER_PATH: layerPaths.join(path8.delimiter),
+    // The layer's manifest among the implicit layers as well, ahead of the registered ones. Once a
+    // GPU Inspector is installed (or "Set for my account" ran), its layer is registered as an
+    // implicit layer of the same name, and VK_LOADER_LAYERS_ENABLE force-enables that one rather
+    // than the one in VK_ADD_LAYER_PATH: a launch from any other build silently ran the installed
+    // layer. The implicit search is added to, not replaced, so the driver's own layers stay.
+    VK_ADD_IMPLICIT_LAYER_PATH: [o.layerDir, ...process.env.VK_ADD_IMPLICIT_LAYER_PATH ? [process.env.VK_ADD_IMPLICIT_LAYER_PATH] : []].join(path8.delimiter),
+    VK_LOADER_LAYERS_ENABLE: layers.join(","),
+    // Older loaders:
+    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path8.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path8.delimiter),
+    VKINSP_PORT: String(o.port),
+    VKINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
+    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    ...o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {},
+    ...o.shaderStatistics ? { VKINSP_SHADER_STATISTICS: "1" } : {},
+    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...o.symbolDirs ? { VKINSP_SYMBOL_PATH: o.symbolDirs } : {},
+    // The validation layer stops reporting a message after a few repeats (its
+    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
+    // attaches a message to the captured command it fired on, which needs every occurrence.
+    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
+    // Synchronization and GPU-assisted validation: the settings-file names for current layers, and
+    // the enable list for older ones, which takes several separated by the platform's path
+    // separator — so the two are built together rather than one overwriting the other.
+    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true" } : {},
+    ...o.validation && o.gpuValidation ? { VK_LAYER_VALIDATE_GPU_BASED: "GPU_BASED_GPU_ASSISTED" } : {},
+    ...o.validation && (o.syncValidation || o.gpuValidation) ? { VK_LAYER_ENABLES: [
+      ...o.syncValidation ? ["VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"] : [],
+      ...o.gpuValidation ? ["VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"] : []
+    ].join(path8.delimiter) } : {}
+  };
+}
+function splitArgs(s) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
+  return out;
+}
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
+  });
+}
+async function findFreePort(start, taken = () => false) {
+  for (let port = start; port < start + 100 && port < 65536; port++) {
+    if (taken(port)) continue;
+    if (await portFree(port)) return port;
+  }
+  return start;
+}
+function terminate(proc, wait = false) {
+  if (process.platform === "win32" && proc.pid) {
+    const args = ["/PID", String(proc.pid), "/T", "/F"];
+    if (wait) {
+      try {
+        execFileSync2("taskkill", args, { stdio: "ignore" });
+        return;
+      } catch {
+      }
+    } else {
+      execFile3("taskkill", args, () => {
+        try {
+          proc.kill();
+        } catch {
+        }
+      });
+      return;
+    }
+  }
+  try {
+    proc.kill();
+  } catch {
+  }
+}
+
+// src/main/metal.ts
+import { execFileSync as execFileSync3, spawnSync } from "node:child_process";
+import fs9 from "node:fs";
+import path9 from "node:path";
+import { fileURLToPath } from "node:url";
+var moduleDir = path9.dirname(fileURLToPath(import.meta.url));
+var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
+function findCaptureLibrary(roots = [path9.resolve(moduleDir, "..", "..", "..", "..")], packaged = [path9.join(process.resourcesPath ?? "", "layer")]) {
+  const candidates = [];
+  if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
+  for (const root of roots) {
+    for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
+      candidates.push(path9.join(root, dir, CAPTURE_LIBRARY));
+    }
+  }
+  for (const dir of packaged) candidates.push(path9.join(dir, CAPTURE_LIBRARY));
+  return candidates.find((p) => fs9.existsSync(p)) ?? null;
+}
+function resolveExecutable(exe) {
+  if (!exe.endsWith(".app")) return exe;
+  const macOS = path9.join(exe, "Contents", "MacOS");
+  const plist = path9.join(exe, "Contents", "Info.plist");
+  if (fs9.existsSync(plist)) {
+    try {
+      const name = execFileSync3(
+        "/usr/libexec/PlistBuddy",
+        ["-c", "Print :CFBundleExecutable", plist],
+        { encoding: "utf8" }
+      ).trim();
+      const candidate = path9.join(macOS, name);
+      if (name && fs9.existsSync(candidate)) return candidate;
+    } catch {
+    }
+  }
+  const byBundleName = path9.join(macOS, path9.basename(exe, ".app"));
+  if (fs9.existsSync(byBundleName)) return byBundleName;
+  try {
+    const entries = fs9.readdirSync(macOS);
+    if (entries.length === 1) return path9.join(macOS, entries[0]);
+  } catch {
+  }
+  return exe;
+}
+function injectionBlockedReason(exe) {
+  const r = spawnSync(
+    "codesign",
+    ["-d", "-v", "--entitlements", "-", "--xml", exe],
+    { encoding: "utf8" }
+  );
+  const output = `${r.stderr ?? ""}${r.stdout ?? ""}`;
+  if (!/flags=[^\s]*runtime/.test(output)) return null;
+  const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
+  const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
+  if (hasDyld && hasLibrary) return null;
+  return `${path9.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+
+  /usr/bin/codesign --force --deep --sign - --options runtime \\
+    --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
+    "<the .app>"
+
+This invalidates the application's signature and notarization, so do it to a development build rather than to a shipping copy.`;
+}
+function captureEnvironment(library, port, log, validation = false, stacktraces = false) {
+  const env = {
+    // A stack at every object creation (src/metal/src/stacktrace.mm), the launch dialog's option.
+    MTLINSP_STACKTRACES: stacktraces ? "1" : "0",
+    // Appended rather than replacing: another inserted library is the caller's business.
+    DYLD_INSERT_LIBRARIES: [library, ...process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : []].join(":"),
+    MTLINSP_PORT: String(port),
+    MTLINSP_LOG: log ? "1" : "0",
+    // Lets the library write an Xcode GPU trace of a frame on request (src/metal/src/gpu_trace.mm);
+    // without it MTLCaptureManager refuses the document destination.
+    ...process.env.METAL_CAPTURE_ENABLED ? {} : { METAL_CAPTURE_ENABLED: "1" }
+  };
+  if (validation) {
+    const defaults = {
+      MTL_DEBUG_LAYER: "1",
+      MTL_DEBUG_LAYER_ERROR_MODE: "nslog",
+      MTL_DEBUG_LAYER_WARNING_MODE: "nslog",
+      MTL_SHADER_VALIDATION: "1",
+      MTL_SHADER_VALIDATION_REPORT_TO_STDERR: "1"
+    };
+    for (const [key, value] of Object.entries(defaults)) {
+      if (!process.env[key]) env[key] = value;
+    }
+  }
+  return env;
+}
+
+// src/main/d3d12.ts
+import fs10 from "node:fs";
+import path10 from "node:path";
+var CAPTURE_LIBRARY2 = "dxinsp_capture.dll";
+var LAUNCHER = "dxinsp_launch.exe";
+var SHADER_TOOL = "dxinsp_shader.exe";
+function d3d12ToolDirs(roots, packaged = []) {
+  const dirs = [];
+  if (process.env.INSPECTOR_D3D12_DIR) dirs.push(process.env.INSPECTOR_D3D12_DIR);
+  for (const root of roots) {
+    const bin = path10.join(root, "build", "bin");
+    dirs.push(path10.join(bin, "Release"), path10.join(bin, "RelWithDebInfo"), path10.join(bin, "Debug"), bin);
+  }
+  dirs.push(...packaged);
+  return dirs;
+}
+function findD3D12Tools(roots, packaged = []) {
+  for (const dir of d3d12ToolDirs(roots, packaged)) {
+    const library = path10.join(dir, CAPTURE_LIBRARY2);
+    const launcher = path10.join(dir, LAUNCHER);
+    if (!fs10.existsSync(library) || !fs10.existsSync(launcher)) continue;
+    const shaderTool = path10.join(dir, SHADER_TOOL);
+    return { dir, library, launcher, shaderTool: fs10.existsSync(shaderTool) ? shaderTool : null };
+  }
+  return null;
+}
+function findD3D12ShaderTool(roots, packaged = []) {
+  for (const dir of d3d12ToolDirs(roots, packaged)) {
+    const tool = path10.join(dir, SHADER_TOOL);
+    if (fs10.existsSync(tool)) return tool;
+  }
+  return null;
+}
+function d3d12Environment(o) {
+  return {
+    DXINSP_PORT: String(o.port),
+    DXINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {},
+    DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...o.symbolDirs ? { DXINSP_SYMBOL_PATH: o.symbolDirs } : {},
+    DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
+    ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
+  };
+}
+function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false, extraDlls = []) {
+  return {
+    exe: tools.launcher,
+    args: [
+      "--dll",
+      tools.library,
+      ...extraDlls.flatMap((d) => ["--dll", d]),
+      ...cwd ? ["--cwd", cwd] : [],
+      ...followChildren ? ["--follow-children"] : [],
+      ...follow.flatMap((f) => ["--follow", f]),
+      "--",
+      exe,
+      ...args
+    ]
+  };
+}
+function watchLaunch(tools, o) {
+  const { image, timeoutSeconds, once, follow, followChildren, extraDlls, extraEnv, ...environment } = o;
+  const env = Object.entries({ ...d3d12Environment(environment), ...extraEnv }).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+  return {
+    exe: tools.launcher,
+    args: [
+      "--watch",
+      image,
+      "--dll",
+      tools.library,
+      ...(extraDlls ?? []).flatMap((d) => ["--dll", d]),
+      ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
+      ...once ? ["--once"] : [],
+      ...followChildren ? ["--follow-children"] : [],
+      ...(follow ?? []).flatMap((f) => ["--follow", f]),
+      ...env
+    ]
+  };
+}
+function windowsLaunch(o) {
+  const env = { ...o.env };
+  const notes = [];
+  let exe = o.exe;
+  let args = o.args;
+  if (o.vulkan) {
+    Object.assign(env, vulkanLayerEnvironment(o.vulkan));
+    notes.push(`layer: ${o.vulkan.layerDir}`);
+  } else {
+    notes.push("Vulkan layer not found: build it (docs/BUILDING.md); only D3D12 will be captured");
+  }
+  const plugins2 = (o.plugins ?? []).filter((p) => {
+    if (p.missing.length) notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
+    else if (p.inject.length && !o.d3d12) notes.push(`${p.plugin.manifest.name} capture library: not injected, since the launcher that injects it (the D3D12 tools) was not found`);
+    else return true;
+    return false;
+  });
+  for (const p of plugins2) {
+    Object.assign(env, p.env);
+    notes.push(`${p.plugin.manifest.name} capture library: ${p.inject.join(", ")} (plugin ${p.plugin.dir})`);
+  }
+  if (o.d3d12) {
+    const { tools, ...options } = o.d3d12;
+    Object.assign(env, d3d12Environment(options));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false, plugins2.flatMap((p) => p.inject)));
+    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
+    if (o.followChildren) notes.push("capturing every process the target starts");
+    if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
+  } else {
+    notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
+  }
+  return { exe, args, env, notes };
+}
+
+// src/renderer/stack_requests.ts
+var REQUEST_TIMEOUT_MS = 15e3;
+function requestStacks(session, ids) {
+  const db = session.database;
+  const out = /* @__PURE__ */ new Map();
+  const missing = [];
+  for (const id of ids) {
+    const cached = db.stacks.get(id);
+    if (cached) out.set(id, cached);
+    else missing.push(id);
+  }
+  if (!missing.length || db.stacksAvailable === false) return Promise.resolve(out);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = (ok) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onStacktraces.disconnect(listener);
+      if (!ok) {
+        resolve(out.size ? out : null);
+        return;
+      }
+      for (const id of missing) {
+        const s = db.stacks.get(id);
+        if (s) out.set(id, s);
+      }
+      resolve(out);
+    };
+    const listener = () => finish2(true);
+    const timer = setTimeout(() => finish2(false), REQUEST_TIMEOUT_MS);
+    db.onStacktraces.addListener(listener);
+    void session.send({ action: "RequestStacktraces", ids: missing }).then((ok) => {
+      if (!ok) finish2(false);
+    });
+  });
+}
+async function resolveSymbols(session, addresses, symbolizeOnHost2) {
+  const out = await resolveFromLayer(session, addresses);
+  if (symbolizeOnHost2) await symbolizeOnHost2(out);
+  return out;
+}
+function resolveFromLayer(session, addresses) {
+  const db = session.database;
+  const out = /* @__PURE__ */ new Map();
+  const missing = [];
+  for (const a of addresses) {
+    const cached = db.symbols.get(a);
+    if (cached) out.set(a, cached);
+    else if (!missing.includes(a)) missing.push(a);
+  }
+  if (!missing.length) return Promise.resolve(out);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = () => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onSymbols.disconnect(listener);
+      for (const a of missing) {
+        const f = db.symbols.get(a);
+        if (f) out.set(a, f);
+      }
+      resolve(out);
+    };
+    const listener = () => finish2();
+    const timer = setTimeout(finish2, REQUEST_TIMEOUT_MS);
+    db.onSymbols.addListener(listener);
+    void session.send({ action: "RequestSymbols", addresses: missing }).then((ok) => {
+      if (!ok) finish2();
+    });
+  });
+}
+
+// src/renderer/capture_file.ts
+var BLOB_TIMEOUT_MS = 15e3;
+function fetchBlob(session, object, index) {
+  const db = session.database;
+  const key = `${object.id}:${index}`;
+  const cached = db.blobData.get(key);
+  if (cached) return Promise.resolve(cached);
+  if (!session.connected) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    let done = false;
+    const finish2 = (data) => {
+      if (done) return;
+      done = true;
+      clearTimeout(timer);
+      db.onObjectBlob.disconnect(listener);
+      resolve(data);
+    };
+    const listener = (id, idx, data) => {
+      if (id === object.id && idx === index) finish2(data);
+    };
+    const timer = setTimeout(() => finish2(null), BLOB_TIMEOUT_MS);
+    db.onObjectBlob.addListener(listener);
+    void session.send({ action: "RequestBlob", id: object.id, index }).then((ok) => {
+      if (!ok) finish2(null);
+    });
+  });
+}
+function capturedIds(db, data) {
+  const ids = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) {
+    if (c2.object) ids.add(c2.object.__id);
+    if (c2.secondary) ids.add(c2.secondary);
+    db.collectReferences(c2.args, ids);
+    db.collectReferences(c2.descriptors, ids);
+  }
+  for (const t of data.textures) ids.add(t.info.id);
+  for (const b of data.buffers.values()) ids.add(b.info.buffer);
+  return ids;
+}
+function referencedObjects(session, data) {
+  const db = session.database;
+  const ids = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) {
+    if (c2.object) ids.add(c2.object.__id);
+    if (c2.secondary) ids.add(c2.secondary);
+    db.collectReferences(c2.args, ids);
+    db.collectReferences(c2.descriptors, ids);
+    db.collectReferences(c2.replaced, ids);
+  }
+  for (const t of data.textures) {
+    ids.add(t.info.id);
+    ids.add(t.info.commandBuffer);
+  }
+  for (const b of data.buffers.values()) {
+    ids.add(b.info.buffer);
+    ids.add(b.info.commandBuffer);
+  }
+  for (const v of db.validation) db.collectReferences(v.objects, ids);
+  for (const o of db.objectsByType.get("VkAccelerationStructureKHR")?.values() ?? []) ids.add(o.id);
+  for (const o of db.objectsByType.get("VkAccelerationStructureNV")?.values() ?? []) ids.add(o.id);
+  for (const o of db.objectsByType.get("ID3D12RaytracingAccelerationStructure")?.values() ?? []) ids.add(o.id);
+  const out = /* @__PURE__ */ new Map();
+  const queue = [...ids];
+  while (queue.length) {
+    const id = queue.pop();
+    if (out.has(id)) continue;
+    const o = db.getObject(id);
+    if (!o) continue;
+    out.set(id, o);
+    if (o.parentId && !out.has(o.parentId)) queue.push(o.parentId);
+    for (const dep of o.dependencies) if (!out.has(dep.id)) queue.push(dep.id);
+    const more = /* @__PURE__ */ new Set();
+    db.collectReferences(o.updates, more);
+    if (o.isDeleted) db.collectReferences(o.args, more);
+    for (const m of more) if (!out.has(m)) queue.push(m);
+  }
+  return [...out.values()].sort((a, b) => a.id - b.id);
+}
+async function serializeCapture(session, data, options = {}) {
+  const onProgress = options.onProgress;
+  const payloads = [];
+  let payloadBytes = 0;
+  const addPayload = (bytes) => {
+    if (!bytes) return void 0;
+    const p = [payloadBytes, bytes.byteLength];
+    payloads.push(bytes);
+    payloadBytes += bytes.byteLength;
+    return p;
+  };
+  const objects = referencedObjects(session, data);
+  const records = [];
+  let fetched = 0;
+  const withBlobs = objects.filter((o) => o.blobs.length).length;
+  for (const o of objects) {
+    const blobs = [];
+    for (let i = 0; i < o.blobs.length; i++) {
+      const b = o.blobs[i];
+      if (onProgress) onProgress(`saving: shader ${++fetched} of ${withBlobs}...`);
+      const bytes = await fetchBlob(session, o, i);
+      blobs.push({ name: b.name, size: b.size, ...bytes ? { payload: addPayload(bytes) } : {} });
+    }
+    records.push({
+      id: o.id,
+      parent: o.parentId,
+      type: o.type,
+      cmd: o.cmd,
+      index: o.index,
+      handle: o.handle,
+      label: o.label || null,
+      args: o.args,
+      blobs,
+      updates: o.updates,
+      deleted: o.isDeleted
+    });
+  }
+  const db = session.database;
+  const addresses = /* @__PURE__ */ new Set();
+  for (const c2 of data.commands) for (const a of c2.stack ?? []) addresses.add(a);
+  let symbols;
+  if (addresses.size && !options.forReplay) {
+    if (onProgress) onProgress("saving: symbols...");
+    const resolved = await (options.resolveSymbols ?? ((a) => resolveSymbols(session, a)))([...addresses]);
+    symbols = {};
+    for (const [a, f] of resolved) symbols[a] = f;
+  }
+  let stacks;
+  if (!options.forReplay && db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
+    if (onProgress) onProgress("saving: stack traces...");
+    const got = await requestStacks(session, objects.map((o) => o.id));
+    if (got && db.stacksAvailable !== false) {
+      stacks = {};
+      for (const [id, frames] of got) if (frames.length) stacks[id] = frames;
+    }
+  }
+  if (onProgress) onProgress("saving: writing...");
+  const manifest = {
+    format: CAPTURE_FORMAT,
+    version: CAPTURE_VERSION,
+    api: data.api,
+    application: "GPU Inspector",
+    savedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    source: { name: session.name },
+    frame: data.frame,
+    frames: data.frames,
+    ...data.requestLabel ? { label: data.requestLabel } : {},
+    frameTimeMs: db.frameTimeMs,
+    submitMs: db.submitMs,
+    refreshMs: db.refreshMs,
+    refreshSource: db.refreshSource,
+    displayRefreshMs: db.displayRefreshMs,
+    frameBoundary: db.frameBoundary,
+    objects: records,
+    commands: data.commands,
+    textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
+    buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
+    passTimings: [...data.passTimings.values()],
+    ...data.passTimingOrigin !== null ? { passTimingOrigin: data.passTimingOrigin } : {},
+    ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
+    ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
+    // The mask goes out as a payload, like a texture's pixels: one byte per pixel of the pass.
+    ...data.drawOverlays.size ? { drawOverlays: [...data.drawOverlays.values()].map(({ mask, ...info }) => ({ info, ...mask ? { payload: addPayload(mask) } : {} })) } : {},
+    ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
+    ...data.hwCounters ? { hwCounters: data.hwCounters } : {},
+    ...data.cpuTimeline ? { cpuTimeline: data.cpuTimeline } : {},
+    ...data.ablations.length ? { ablations: data.ablations } : {},
+    validation: db.validation,
+    ...symbols ? { symbols } : {},
+    ...stacks ? { stacks } : {}
+  };
+  return encodeCaptureFile(manifest, payloads, {
+    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
+    // As a hook rather than a map over the list, so a large capture never holds a second copy of it.
+    element: { commands: (c2) => {
+      const { children: _children, ...rest } = c2;
+      return rest;
+    } }
+  });
+}
+
+// src/mcp/live_session.ts
+var MAX_LOG_LINES = 2e3;
+var MAX_FRAME_STATS = 600;
+var DEFAULT_QUIET_MS = 2e3;
+var MAX_QUIET_MS = 3e4;
+var SNAPSHOT_TIMEOUT_MS = 1e4;
+var KILL_TIMEOUT_MS = 3e3;
+var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
+  "CaptureFrameResults",
+  "CaptureFrameCommands",
+  "CaptureTextureFrames",
+  "CaptureTextureData",
+  "CaptureBuffers",
+  "CaptureBufferData",
+  "CapturePassTimings",
+  "CaptureOverdraw",
+  "CaptureOverdrawData",
+  "CaptureDrawStats",
+  "CaptureDrawOverlay",
+  "CaptureDrawOverlayData",
+  "CaptureMeshOutput",
+  "CaptureMeshOutputData",
+  "CapturePixelHistory",
+  "CaptureCpuTimeline"
+]);
+var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+function capturesDir() {
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path11.join(os7.tmpdir(), "gpu-inspector-captures");
+}
+function checkoutRoots() {
+  const roots = [];
+  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
+  roots.push(path11.resolve(path11.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
+  return roots;
+}
+function installedLayerDirs() {
+  const home = os7.homedir();
+  if (process.platform === "win32") {
+    const local = process.env.LOCALAPPDATA ?? path11.join(home, "AppData", "Local");
+    const names = ["GPUInspector", "GPU Inspector", "gpu-inspector"];
+    const apps = names.map((name) => path11.join(local, "Programs", name));
+    for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
+      if (programFiles) apps.push(...names.map((name) => path11.join(programFiles, name)));
+    }
+    return apps.map((dir) => path11.join(dir, "resources", "layer"));
+  }
+  if (process.platform === "darwin") {
+    const dirs = [];
+    for (const dir of ["/Applications", path11.join(home, "Applications")]) {
+      for (const bundle of ["GPUInspector.app", "GPU Inspector.app"]) dirs.push(path11.join(dir, bundle, "Contents", "Resources", "layer"));
+    }
+    return dirs;
+  }
+  return ["/opt/GPUInspector/resources/layer", "/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
+}
+function androidLayer() {
+  const candidates = [
+    process.env.INSPECTOR_ANDROID_LAYER_DIR,
+    ...checkoutRoots().map((root) => path11.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path11.join(dir, "android"))
+  ].filter((d) => !!d);
+  return findAndroidLayer(candidates);
+}
+function applicationName(db) {
+  for (const o of db.objectsByType.get("VkInstance")?.values() ?? []) {
+    const info = o.descriptor?.pApplicationInfo;
+    const name = isObject(info) ? str(info.pApplicationName) : "";
+    if (name) return name;
+  }
+  return null;
+}
+var LiveSession = class {
+  constructor(id, name, port, launched) {
+    this.id = id;
+    this.name = name;
+    this.port = port;
+    this.launched = launched;
+    const db = this.database;
+    db.onFrameStats.addListener((msg) => {
+      this.frameStats.push({ at: Date.now(), msg });
+      if (this.frameStats.length > MAX_FRAME_STATS) this.frameStats.splice(0, this.frameStats.length - MAX_FRAME_STATS);
+    });
+    db.onValidationMessage.addListener((entry2, isNew) => {
+      if (isNew) this.appendLog(`validation ${entry2.severity}${entry2.idName ? ` ${entry2.idName}` : ""}: ${entry2.message.split("\n")[0].slice(0, 300)}`);
+    });
+    db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
+    db.onDeviceLost.addListener((r) => this.appendLog(`GPU device lost (${r.call}): ${r.message}`));
+    db.onOtherMessage.addListener((msg) => {
+      if (msg.action === "ShaderReplaced") {
+        this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? msg.replacement ? `applied as object ${msg.replacement}` : "restored" : `failed: ${msg.error ?? "unknown error"}`}`);
+      } else if (msg.action === "AppCaptureRequest") {
+        void this._appCapture(Math.max(1, Math.floor(msg.frameCount) || 1), typeof msg.label === "string" ? msg.label.trim().slice(0, 200) : "");
+      }
+    });
+  }
+  database = new ObjectDatabase();
+  log = [];
+  /** Frame reports with the time each arrived. */
+  frameStats = [];
+  startedAt = Date.now();
+  state = "connecting";
+  detail = "";
+  pid = null;
+  exitCode = null;
+  _proc = null;
+  _socket = null;
+  _listeners = /* @__PURE__ */ new Set();
+  _capturing = false;
+  /** Set while stop() terminates the application, so its exit reads as that rather than as a crash. */
+  _stopping = false;
+  /** The launched application is gone: it exited, failed to start, or was stopped. */
+  _ended = false;
+  /**
+   * A launched target that is not a child process of this server (an Android application): how
+   * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
+   */
+  remote = null;
+  /** The captures the application asked for itself, oldest first. */
+  appCaptures = [];
+  /** Told of each app-requested capture's saved file, so the server can open it in its store. */
+  onAppCaptureSaved = null;
+  /**
+   * The application called gpu_inspector_capture (include/gpu_inspector.h): the same capture the
+   * desktop UI would take, with the defaults capture_frames uses, saved under the application's
+   * label and handed to the store. One already being taken means the capture library ignores
+   * the request, so it is recorded as dropped rather than waited on.
+   */
+  async _appCapture(frameCount, label) {
+    const what = `${frameCount} frame${frameCount === 1 ? "" : "s"}${label ? ` "${label}"` : ""}`;
+    const record = { at: Date.now(), label, frameCount, state: "capturing" };
+    this.appCaptures.push(record);
+    if (this._capturing) {
+      record.state = "dropped";
+      this.appendLog(`the application asked for a capture (${what}) while one was being taken; the capture library ignores it`);
+      return;
+    }
+    this.appendLog(`the application asked for a capture: ${what}`);
+    try {
+      const result = await this.capture({
+        frames: frameCount,
+        profilePasses: true,
+        renderTargets: true,
+        buffers: true,
+        images: true,
+        stacktraces: false,
+        maxBufferBytes: 128 * 1024,
+        timeoutMs: 6e4
+      });
+      if (label) result.data.requestLabel = label;
+      const file = await this.saveCapture(result.data);
+      record.state = "saved";
+      record.file = file;
+      record.frame = result.data.frame;
+      this.appendLog(`the application's capture (${what}) was saved as ${file}`);
+      this.onAppCaptureSaved?.(this, file);
+    } catch (e) {
+      record.state = "failed";
+      record.error = e instanceof Error ? e.message : String(e);
+      this.appendLog(`the application's capture (${what}) failed: ${record.error}`);
+    }
+  }
+  get connected() {
+    return this._socket !== null && !this._socket.destroyed;
+  }
+  /**
+   * The API the capture library reports objects of, by their type names' prefixes (backend.ts):
+   * a built-in API's, or a plugin's; null before any arrived.
+   */
+  get api() {
+    for (const type of this.database.objectsByType.keys()) {
+      const b = backendForObjectType(type);
+      if (b && b.id !== "vulkan") return b.id;
+    }
+    return this.database.allObjects.size ? "vulkan" : null;
+  }
+  appendLog(line) {
+    this.log.push(line);
+    if (this.log.length > MAX_LOG_LINES) this.log.splice(0, this.log.length - MAX_LOG_LINES);
+  }
+  setState(state, detail = "") {
+    this.state = state;
+    this.detail = detail;
+    this.appendLog(`[${state}]${detail ? ` ${detail}` : ""}`);
+  }
+  send(msg) {
+    if (!this._socket || this._socket.destroyed) return Promise.resolve(false);
+    this._socket.write(encodeRequest(msg));
+    return Promise.resolve(true);
+  }
+  /** Hears every message from the capture library, after the object database; returns the unsubscribe. */
+  onMessage(listener) {
+    this._listeners.add(listener);
+    return () => {
+      this._listeners.delete(listener);
+    };
+  }
+  /** The first message `match` accepts (its return value), or null after `timeoutMs`. */
+  waitFor(match, timeoutMs) {
+    return new Promise((resolve) => {
+      const off = this.onMessage((msg) => {
+        const hit = match(msg);
+        if (hit === void 0) return;
+        clearTimeout(timer);
+        off();
+        resolve(hit);
+      });
+      const timer = setTimeout(() => {
+        off();
+        resolve(null);
+      }, timeoutMs);
+    });
+  }
+  /** Starts the application; its output goes to the session's log. */
+  startProcess(exe, args, cwd, env) {
+    const proc = spawn3(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
+    this._proc = proc;
+    this.pid = proc.pid ?? null;
+    for (const stream of [proc.stdout, proc.stderr]) {
+      let rest = "";
+      stream?.on("data", (d) => {
+        rest += d.toString("utf8");
+        const lines = rest.split(/\r?\n/);
+        rest = lines.pop() ?? "";
+        for (const line of lines) if (line.length) this.appendLog(line);
+      });
+    }
+    proc.on("exit", (code, signal) => {
+      if (this._proc !== proc) return;
+      this._proc = null;
+      this.pid = null;
+      this._ended = true;
+      this.exitCode = String(signal ?? code);
+      this._disconnect();
+      this.setState("exited", this._stopping ? "terminated by stop_app" : `code ${this.exitCode}`);
+    });
+    proc.on("error", (e) => {
+      if (this._proc !== proc) return;
+      this._proc = null;
+      this.pid = null;
+      this._disconnect();
+      this._ended = true;
+      this.setState("error", e.message);
+    });
+  }
+  /**
+   * Connects to the capture library, retrying until it answers, the launched process exits, or
+   * `timeoutMs` passes; resolves once the snapshot of live objects that follows a connection is in.
+   */
+  async connect(timeoutMs) {
+    const deadline = Date.now() + timeoutMs;
+    this.setState("connecting", `port ${this.port}`);
+    let attempts = 0;
+    while (Date.now() < deadline) {
+      if (this._ended) return false;
+      const sock = await this._tryConnect();
+      attempts++;
+      if (sock) {
+        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS, sock);
+        this._attach(sock);
+        if (await snapshot !== "closed" || this.connected) {
+          const name = applicationName(this.database);
+          if (name && !this.launched) this.name = name;
+          return this.connected;
+        }
+      } else if (this.remote?.repair && attempts % 4 === 0) {
+        await this.remote.repair().catch(() => void 0);
+      }
+      await sleep(this.launched && !this.remote ? 250 : 500);
+    }
+    this.setState("disconnected", `nothing answered on port ${this.port}`);
+    return false;
+  }
+  _tryConnect() {
+    return new Promise((resolve) => {
+      const sock = net2.createConnection({ host: "127.0.0.1", port: this.port });
+      sock.once("connect", () => {
+        sock.removeAllListeners("error");
+        resolve(sock);
+      });
+      sock.once("error", () => {
+        sock.destroy();
+        resolve(null);
+      });
+    });
+  }
+  _attach(sock) {
+    sock.setNoDelay(true);
+    this._socket = sock;
+    const reader = new FrameReader();
+    let heard = false;
+    sock.on("data", (chunk2) => {
+      if (!heard) {
+        heard = true;
+        this.setState("connected", `port ${this.port}`);
+      }
+      const messages = reader.push(chunk2, (e) => this.appendLog(`bad ${e.kind === "json" ? "JSON" : "binary header"} from the capture library: ${e.error}`));
+      for (const msg of messages) {
+        this.database.handleMessage(msg);
+        for (const listener of [...this._listeners]) listener(msg);
+      }
+    });
+    const gone = () => {
+      if (this._socket !== sock) return;
+      this._socket = null;
+      if (this.state === "connected") this.setState("disconnected", "the connection closed (the application exited, or another client connected to it)");
+    };
+    sock.on("error", gone);
+    sock.on("close", gone);
+    void this.send({ action: "Ping" });
+  }
+  /**
+   * Resolves when the snapshot the capture library sends on connection has arrived, when the
+   * socket closes first ("closed" if no snapshot had begun), or after `timeoutMs`.
+   */
+  _waitForSnapshot(timeoutMs, sock) {
+    const db = this.database;
+    return new Promise((resolve) => {
+      let started = false;
+      const done = (outcome) => {
+        clearTimeout(timer);
+        db.onSnapshotBegin.disconnect(begin);
+        db.onAddObject.disconnect(add);
+        sock.off("close", closed);
+        resolve(outcome);
+      };
+      const begin = (count2) => {
+        started = true;
+        if (count2 === 0) done("snapshot");
+      };
+      const add = (_object, inSnapshot) => {
+        if (started && !inSnapshot) done("snapshot");
+      };
+      const closed = () => done(started ? "snapshot" : "closed");
+      const timer = setTimeout(() => done("timeout"), timeoutMs);
+      db.onSnapshotBegin.addListener(begin);
+      db.onAddObject.addListener(add);
+      sock.once("close", closed);
+    });
+  }
+  _disconnect() {
+    const sock = this._socket;
+    this._socket = null;
+    sock?.destroy();
+  }
+  /**
+   * Requests a capture and waits for all of it: until the capture library marks its end, or, for
+   * one built before that marker existed, until the stream has been silent for a while after the
+   * commands and buffers are in.
+   */
+  async capture(o) {
+    if (!this.connected) throw new Error(`${this.id} is not connected (${this.state}${this.detail ? `: ${this.detail}` : ""}).`);
+    if (this._capturing) throw new Error(`${this.id} is already capturing.`);
+    this._capturing = true;
+    const data = new CaptureData();
+    const started = Date.now();
+    let commandsComplete = false;
+    let marker = false;
+    let lastTraffic = 0;
+    const onCommands = () => {
+      commandsComplete = true;
+    };
+    data.onCommandsComplete.addListener(onCommands);
+    const off = this.onMessage((msg) => {
+      if (msg.action === "CaptureComplete") {
+        marker = true;
+      } else if (CAPTURE_ACTIONS.has(msg.action)) {
+        lastTraffic = Date.now();
+        data.handleMessage(msg);
+      }
+    });
+    const quietMs = Number(process.env.GPU_INSPECTOR_CAPTURE_QUIET_MS) || DEFAULT_QUIET_MS;
+    try {
+      const request = {
+        action: "Capture",
+        frameCount: o.frames,
+        ...o.atFrame !== void 0 ? { atFrame: o.atFrame } : {},
+        captureTextures: o.renderTargets,
+        captureBuffers: o.buffers,
+        captureImages: o.images,
+        profilePasses: o.profilePasses,
+        stacktraces: o.stacktraces,
+        maxBufferSize: o.maxBufferBytes,
+        ...o.overdraw ? { overdraw: true } : {},
+        ...o.pixelHistory ? { pixelHistory: o.pixelHistory } : {}
+      };
+      await this.send(request);
+      for (; ; ) {
+        await sleep(50);
+        const now = Date.now();
+        const silence = lastTraffic ? now - lastTraffic : 0;
+        const loading = data.buffersLoading || data.texturesLoading;
+        const complete = marker ? "marker" : commandsComplete && silence >= (loading ? Math.max(quietMs, MAX_QUIET_MS) : quietMs) ? "quiet" : null;
+        if (complete) {
+          this.database.pinCaptured(capturedIds(this.database, data));
+          return { data, completion: complete, elapsedMs: now - started };
+        }
+        if (!this.connected) {
+          throw new Error(data.commands.length ? "The connection was lost while the capture was streaming." : "The connection was lost before the capture arrived.");
+        }
+        if (now - started > o.timeoutMs) {
+          throw new Error(lastTraffic ? `The capture did not finish streaming within ${o.timeoutMs / 1e3} s.` : `No capture arrived within ${o.timeoutMs / 1e3} s: a capture starts at ${o.atFrame !== void 0 ? `frame ${o.atFrame}` : "the next frame"}, so the application may not be rendering (minimized, paused, or waiting).`);
+        }
+      }
+    } finally {
+      off();
+      data.onCommandsComplete.disconnect(onCommands);
+      this._capturing = false;
+    }
+  }
+  /** Saves a capture with the objects it references, fetching their shaders from the capture library; returns the file. */
+  async saveCapture(data, file) {
+    const bytes = await serializeCapture(this, data, {
+      resolveSymbols: (addresses) => resolveSymbols(this, addresses, (frames) => symbolizeSymbolMap(this.database, frames))
+    });
+    let target;
+    if (file) {
+      target = path11.resolve(file);
+      fs11.mkdirSync(path11.dirname(target), { recursive: true });
+    } else {
+      const dir = capturesDir();
+      fs11.mkdirSync(dir, { recursive: true });
+      const name = captureFileName(this.name, data.frame, data.frames, data.requestLabel);
+      target = path11.join(dir, name);
+      for (let n = 2; fs11.existsSync(target); n++) target = path11.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+    }
+    fs11.writeFileSync(target, bytes);
+    return target;
+  }
+  /**
+   * Rebuilds a pipeline with one stage's code replaced (Vulkan); the layer's answer, or null without
+   * one. The request names the stage by its flag, the answer by the layer's stage name ("fragment").
+   */
+  async replaceShader(pipeline, stageFlag, stageName, spirv, timeoutMs = 15e3) {
+    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline && (msg.stage === stageName || msg.stage === stageFlag) ? msg : void 0, timeoutMs);
+    await this.send({ action: "ReplaceShader", pipeline, stage: stageFlag, spirv: Buffer.from(spirv).toString("base64") });
+    return answer;
+  }
+  /** Drops the replacement of one stage (or every stage) of a pipeline. */
+  async restoreShader(pipeline, stageFlag, timeoutMs = 15e3) {
+    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline ? msg : void 0, timeoutMs);
+    await this.send({ action: "RestoreShader", pipeline, ...stageFlag ? { stage: stageFlag } : {} });
+    return answer;
+  }
+  /** One subresource of a live image, which the capture library reads back at the application's next frame; null without an answer. */
+  async readImage(id, mip, layer, timeoutMs) {
+    const answer = this.waitFor((msg) => msg.action === "ImageData" && msg.id === id ? msg : void 0, timeoutMs);
+    await this.send({ action: "RequestImage", id, mip, layer });
+    return answer;
+  }
+  /** Reads a descriptor set's current contents into its object's updates (`bindings`); false without an answer. */
+  async readDescriptorSet(id, timeoutMs = 1e4) {
+    const answer = this.waitFor((msg) => msg.action === "ObjectUpdate" && msg.id === id && "bindings" in msg ? true : void 0, timeoutMs);
+    await this.send({ action: "RequestDescriptorSet", id });
+    return await answer ?? false;
+  }
+  /** A remote target ended: it exited on its own, failed to start, or was stopped. */
+  remoteEnded(state, detail) {
+    if (this._ended) return;
+    this._ended = true;
+    this.pid = null;
+    this._disconnect();
+    this.setState(state, detail);
+  }
+  /** Terminates a launched application; an attached one is only disconnected. */
+  async stop() {
+    const proc = this._proc;
+    const remote = this.remote;
+    this._disconnect();
+    if (remote) {
+      this.remote = null;
+      if (!this._ended) {
+        this._stopping = true;
+        await remote.stop().catch(() => void 0);
+        this.remoteEnded("exited", "terminated by stop_app");
+      }
+      return;
+    }
+    if (!proc) {
+      if (this.state === "connected" || this.state === "connecting") this.setState("disconnected", "detached");
+      return;
+    }
+    this._stopping = true;
+    await new Promise((resolve) => {
+      const timer = setTimeout(resolve, KILL_TIMEOUT_MS);
+      proc.once("exit", () => {
+        clearTimeout(timer);
+        resolve();
+      });
+      try {
+        terminate(proc);
+      } catch {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+  }
+};
+var SessionManager = class {
+  _sessions = /* @__PURE__ */ new Map();
+  /** Given to every session (LiveSession.onAppCaptureSaved): the server opens the file in its capture store. */
+  onAppCaptureSaved = null;
+  _add(session) {
+    session.onAppCaptureSaved = (s, file) => this.onAppCaptureSaved?.(s, file);
+    this._sessions.set(session.id, session);
+  }
+  _counter = 0;
+  _latest = null;
+  /** Launches an application with the capture library in it and waits for it to connect. */
+  async launch(o, waitMs) {
+    const requested = path11.resolve(o.exe);
+    if (!fs11.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    let exe = requested;
+    let spawnArgs = args;
+    let env;
+    const notes = [];
+    const cwd = o.cwd && fs11.existsSync(o.cwd) ? o.cwd : path11.dirname(requested);
+    if (process.platform === "darwin") {
+      const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
+      if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
+      exe = resolveExecutable(requested);
+      const blocked = injectionBlockedReason(exe);
+      if (blocked) throw new Error(blocked);
+      env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
+      notes.push(`capture library: ${library}`);
+      notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "DYLD_INSERT_LIBRARIES"));
+    } else {
+      const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
+      const d3d12 = process.platform === "win32" ? findD3D12Tools(checkoutRoots(), installedLayerDirs()) : null;
+      if (!layerDir && !d3d12) {
+        throw new Error(process.platform === "win32" ? "Neither GPU Inspector's Vulkan layer nor its D3D12 capture library was found: build them (docs/BUILDING.md), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR / INSPECTOR_D3D12_DIR) to the directory holding them." : "The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
+      }
+      const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
+      const vulkan = layerDir ? {
+        layerDir,
+        validationDir,
+        port,
+        log: true,
+        recordAlways: !!o.recordAlways,
+        breadcrumbs: !!o.breadcrumbs,
+        shaderStatistics: !!o.shaderStatistics,
+        stacktraces: o.stacktraces ?? true,
+        // set_search_paths' symbolDirs are where a PDB that is not beside its module is looked for,
+        // by the capture library's own symbolizer as well as by this server's.
+        symbolDirs: searchPaths("symbolDirs").dirs.join(";"),
+        validation: !!o.validation,
+        syncValidation: !!o.syncValidation,
+        gpuValidation: !!o.gpuValidation
+      } : null;
+      const validationNote = o.validation && layerDir ? validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : null;
+      if (process.platform === "win32") {
+        const launch = windowsLaunch({
+          exe: requested,
+          args,
+          cwd,
+          env: { ...process.env, ...o.env },
+          vulkan,
+          follow: o.follow,
+          plugins: launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true),
+          d3d12: d3d12 ? {
+            tools: d3d12,
+            port,
+            log: true,
+            recordAlways: !!o.recordAlways,
+            stacktraces: o.stacktraces ?? true,
+            symbolDirs: searchPaths("symbolDirs").dirs.join(";"),
+            validation: !!o.validation
+          } : null
+        });
+        exe = launch.exe;
+        spawnArgs = launch.args;
+        env = launch.env;
+        notes.push(...launch.notes);
+      } else {
+        env = { ...process.env, ...o.env, ...vulkanLayerEnvironment(vulkan) };
+        notes.push(`layer: ${layerDir}`);
+        notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "LD_PRELOAD"));
+      }
+      if (validationNote) notes.push(validationNote);
+    }
+    const session = new LiveSession(`app-${++this._counter}`, `${path11.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
+    for (const note of notes) session.appendLog(note);
+    this._add(session);
+    this._latest = session;
+    session.startProcess(exe, spawnArgs, cwd, env);
+    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
+  }
+  /**
+   * Watches for a Direct3D 12 application to start and injects the capture library into it as it
+   * does, which is what D3D12 has in place of the Vulkan implicit layer (main/d3d12.ts): the
+   * session's process is dxinsp_launch.exe --watch, and it stands in for the application afterwards,
+   * so stopping the session ends the watch and never an application this server did not start.
+   *
+   * It races the application's start, so the watch has to be running before the application is
+   * launched; a process that already has a device cannot be caught, and the capture library then
+   * never opens its port, which is what a connection that does not come means.
+   */
+  async waitForApp(o, waitMs) {
+    if (process.platform !== "win32") throw new Error("Waiting for an application to start is a Windows and Direct3D 12 feature; on other platforms launch_app starts it with the capture library in it.");
+    const image = path11.basename(o.image);
+    if (!image) throw new Error(`Pass the application's executable name ("TestVulkan.exe") or its full path as image.`);
+    const d3d12 = findD3D12Tools(checkoutRoots(), installedLayerDirs());
+    if (!d3d12) {
+      throw new Error("GPU Inspector's D3D12 capture library was not found: build it (src/d3d12/README.md), install GPU Inspector, or set INSPECTOR_D3D12_DIR to the directory holding dxinsp_capture.dll and dxinsp_launch.exe.");
+    }
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const extras = launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true).filter((p) => !p.missing.length && p.inject.length);
+    const watch = watchLaunch(d3d12, {
+      extraDlls: extras.flatMap((p) => p.inject),
+      extraEnv: Object.assign({}, ...extras.map((p) => p.env)),
+      image: o.image,
+      timeoutSeconds: Math.ceil(waitMs / 1e3),
+      once: true,
+      port,
+      log: true,
+      recordAlways: !!o.recordAlways,
+      stacktraces: o.stacktraces ?? true,
+      validation: !!o.validation
+    });
+    const session = new LiveSession(`app-${++this._counter}`, `${image} when it starts (D3D12)`, port, true);
+    session.appendLog(`watching for ${image}: ${watch.exe} ${watch.args.join(" ")}`);
+    session.appendLog(`D3D12 capture library: ${d3d12.library}`);
+    this._add(session);
+    this._latest = session;
+    session.startProcess(watch.exe, watch.args, d3d12.dir, { ...process.env });
+    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
+    return session;
+  }
+  /** The Android devices adb sees, and where the Android layer is; adb null when it was not found. */
+  async androidDevices() {
+    const adb2 = findAdb();
+    return { adb: adb2, devices: adb2 ? await listDevices(adb2) : [], layer: androidLayer()?.dir ?? null };
+  }
+  /**
+   * Starts an Android package on a device with the layer installed and enabled for it, and waits
+   * for the layer to connect over the adb forward. A launch that fails on the device is reported
+   * through the session's state and log rather than thrown.
+   */
+  async launchAndroid(o, waitMs) {
+    const adb2 = findAdb();
+    if (!adb2) throw new Error("adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB.");
+    const plugin = androidPluginFor(o.api);
+    if (plugin === void 0) throw new Error(`No plugin captures ${o.api} on Android: list_android_devices lists the APIs there are.`);
+    const layer = androidLayer();
+    if (!layer && !plugin) {
+      throw new Error("The Android layer was not found: build it with tools/build_android.py in the GPU Inspector checkout (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR.");
+    }
+    const devices = await listDevices(adb2);
+    const listed = devices.length ? devices.map((d) => `${d.serial} (${d.state}${d.model ? `, ${d.model}` : ""})`).join(", ") : "none";
+    let device;
+    if (o.device) {
+      device = devices.find((d) => d.serial === o.device);
+      if (!device) throw new Error(`No device ${o.device}: adb lists ${listed}.`);
+      if (device.state !== "device") throw new Error(`${o.device} is ${device.state}${device.state === "unauthorized" ? ": accept the USB debugging prompt on the device" : ""}.`);
+    } else {
+      const usable = devices.filter((d) => d.state === "device");
+      if (usable.length !== 1) {
+        throw new Error(usable.length ? `${usable.length} devices are connected (${listed}): pass device.` : `No Android device is connected and authorized (adb lists ${listed}).`);
+      }
+      device = usable[0];
+    }
+    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
+    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
+    const serial = device.serial;
+    const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
+    this._add(session);
+    this._latest = session;
+    const target = new AndroidTarget({
+      adb: adb2,
+      serial,
+      package: o.package,
+      activity: o.activity ?? "",
+      port,
+      log: true,
+      recordAlways: !!o.recordAlways,
+      stacktraces: o.stacktraces ?? true,
+      layer,
+      plugin: plugin ? (abilist) => pluginAndroidLaunch(plugin, abilist, o.package, { port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true }) : null,
+      onLog: (line) => session.appendLog(line),
+      onExit: () => session.remoteEnded("exited", "the application exited on the device")
+    });
+    const stop = async () => {
+      await target.stop();
+      await disableLayer(adb2, serial);
+    };
+    session.remote = { stop, repair: () => target.ensureForward() };
+    session.appendLog(`launching ${o.package} on ${serial} (${device.model || "unknown model"}, Android API ${device.sdk}, ${device.abi})`);
+    try {
+      await target.start();
+    } catch (e) {
+      session.remote = null;
+      await stop().catch(() => void 0);
+      session.remoteEnded("error", e instanceof Error ? e.message : String(e));
+      return session;
+    }
+    session.pid = target.pid;
+    await session.connect(waitMs);
+    return session;
+  }
+  /** Attaches to an application whose capture library already listens on `port`. */
+  async attach(port, waitMs) {
+    const session = new LiveSession(`app-${++this._counter}`, `port ${port}`, port, false);
+    if (!await session.connect(waitMs)) {
+      throw new Error(`Nothing answered on port ${port} within ${waitMs / 1e3} s. An application listens there when it was started with GPU Inspector's capture library (VKINSP_PORT, or MTLINSP_PORT on macOS).`);
+    }
+    this._add(session);
+    this._latest = session;
+    return session;
+  }
+  /** A session by id, or the one started most recently. */
+  get(id) {
+    if (!id) {
+      if (!this._latest) throw new Error("No live session: launch_app starts an application with the capture library, attach_app connects to one already running.");
+      return this._latest;
+    }
+    const s = this._sessions.get(id);
+    if (!s) throw new Error(`No live session "${id}". ${this._sessions.size ? `Sessions: ${[...this._sessions.keys()].join(", ")}.` : "There are none."}`);
+    return s;
+  }
+  list() {
+    return [...this._sessions.values()];
+  }
+  async stopAll() {
+    await Promise.all([...this._sessions.values()].map((s) => s.stop()));
+  }
+};
+
 // src/mcp/command_tools.ts
 var KINDS = ["all", "draw", "dispatch", "action", "pass", "bind", "label", "submit", "issue", "validation"];
 var SEVERITY_ORDER = ["error", "warning", "info", "verbose"];
@@ -12571,17 +14938,53 @@ function commandTools(store) {
     },
     {
       name: "get_validation",
-      description: "The validation messages the capture carries (from the Khronos validation layer, the driver, or Metal's validation layer, when enabled at launch), with repeat counts, the objects they name, and the captured command each fired on when the layer could tell. Errors are real bugs; report them first.",
+      description: "The validation messages the capture carries (from the Khronos validation layer, the driver, or Metal's validation layer, when enabled at launch), with repeat counts, the objects they name, and the captured command each fired on when the layer could tell. Errors are real bugs; report them first. With replay: true, a Vulkan capture is replayed on this machine's GPU under the validation layer instead, whether or not it was launched with one: every message with the captured command it fired on (a capture from another machine, or taken without validation).",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         severity: { type: "string", enum: ["error", "warning", "info", "verbose", "all"], description: "Only this severity (default all)." },
+        replay: { type: "boolean", description: "Replay the frame under the validation layer (Vulkan captures; needs the Vulkan SDK's layer) rather than reading the messages the capture carries." },
+        sync: { type: "boolean", description: "With replay: synchronization validation too (hazards between commands). Slower; the replay's own read-back barriers can hide a hazard the application has." },
         ...PAGE_PARAMS
       }),
       readOnly: true,
-      handler: (args) => {
+      handler: async (args) => {
         const c2 = store.resolve(stringArg(args, "capture"));
         const db = c2.db;
         const severity = enumArg(args, "severity", ["error", "warning", "info", "verbose", "all"], "all");
+        if (boolArg(args, "replay", false)) {
+          if (c2.data.api !== "vulkan") throw new Error("replay validates Vulkan captures; a Metal or Direct3D 12 capture carries the messages it was taken with.");
+          const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
+          if (!tool) throw new Error(`validating a capture replays it, and ${NO_REPLAY_TOOL}`);
+          const run2 = await replayServers.run(tool, c2.path, { kind: "validate", sync: boolArg(args, "sync", false) });
+          if (!run2.data) throw new Error(`the replay could not validate the frame: ${run2.error ?? "no data"}
+${run2.output}`);
+          const v = parseReplayValidation(run2.data);
+          const counts = replayValidationCounts(v);
+          const list2 = v.messages.filter((m) => severity === "all" || m.severity === severity);
+          const p2 = page(list2, args, 50, 200);
+          return jsonResult({
+            capture: c2.id,
+            replayed: true,
+            device: v.device,
+            errors: counts.errors,
+            warnings: counts.warnings,
+            linkedToCommands: counts.linked,
+            total: p2.total,
+            offset: p2.offset,
+            nextOffset: p2.nextOffset,
+            messages: p2.items.map((m) => ({
+              severity: m.severity,
+              id: m.id || void 0,
+              count: m.count > 1 ? m.count : void 0,
+              command: m.command >= 0 ? m.command : void 0,
+              method: m.command >= 0 ? c2.data.commands[m.command]?.method : void 0,
+              phase: m.phase || void 0,
+              message: clip(m.message, 1500)
+            })),
+            replayProblems: v.problems.length ? v.problems.slice(0, 10) : void 0,
+            note: !v.layer ? "The Khronos validation layer is not installed on this machine (it comes with the Vulkan SDK), so the replay reports nothing." : !v.messages.length ? "No messages: every call the layer checked is legal." : v.problems.length ? "A message near a replay problem may be the replay's own rather than the application's." : void 0
+          });
+        }
         const list = db.validation.filter((v) => severity === "all" || v.severity === severity);
         const [errors, warnings] = db.validationCounts;
         const p = page(list, args, 50, 200);
@@ -12601,585 +15004,12 @@ function commandTools(store) {
   ];
 }
 
-// src/main/replay.ts
-import { spawn } from "node:child_process";
-import fs5 from "node:fs";
-import os3 from "node:os";
-import path4 from "node:path";
-var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
-function findReplayTool(roots, layerDirs) {
-  const candidates = [
-    process.env.INSPECTOR_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path4.join(dir, REPLAY_TOOL))
-  ].filter((f) => !!f);
-  return candidates.find((f) => fs5.existsSync(f)) ?? null;
-}
-var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
-var D3D12_REPLAY_TOOL = "dxinsp_replay.exe";
-function findD3D12ReplayTool(roots, layerDirs) {
-  if (process.platform !== "win32") return null;
-  const candidates = [
-    process.env.INSPECTOR_D3D12_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, D3D12_REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path4.join(dir, D3D12_REPLAY_TOOL))
-  ].filter((f) => !!f);
-  return candidates.find((f) => fs5.existsSync(f)) ?? null;
-}
-var NO_D3D12_REPLAY_TOOL = process.platform === "win32" ? `${D3D12_REPLAY_TOOL} not found. Build it (cmake --build build --target dxinsp_replay), or set INSPECTOR_D3D12_REPLAY to its path.` : "a Direct3D 12 capture replays on Windows only.";
-var METAL_REPLAY_TOOL = "mtlinsp_replay";
-function findMetalReplayTool(roots, layerDirs) {
-  if (process.platform !== "darwin") return null;
-  const candidates = [
-    process.env.INSPECTOR_METAL_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, METAL_REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path4.join(dir, METAL_REPLAY_TOOL))
-  ].filter((f) => !!f);
-  return candidates.find((f) => fs5.existsSync(f)) ?? null;
-}
-var NO_METAL_REPLAY_TOOL = process.platform === "darwin" ? `${METAL_REPLAY_TOOL} not found. Build it (cmake --build build --target mtlinsp_replay), or set INSPECTOR_METAL_REPLAY to its path.` : "a Metal capture replays on macOS only.";
-function findExportTool(api, roots, layerDirs) {
-  if (api === "d3d12") return { tool: findD3D12ReplayTool(roots, layerDirs), missing: NO_D3D12_REPLAY_TOOL };
-  if (api === "metal") return { tool: findMetalReplayTool(roots, layerDirs), missing: NO_METAL_REPLAY_TOOL };
-  if (api === "vulkan") return { tool: findReplayTool(roots, layerDirs), missing: NO_REPLAY_TOOL };
-  return { tool: null, missing: `Export to C++ writes what a replay does, and there is no replay for a ${api ?? "capture"} capture.` };
-}
-function needsOwnProcess(analysis) {
-  return analysis.kind === "export" || analysis.kind === "replace";
-}
-function tail(text, lines = 12) {
-  return text.trim().split(/\r?\n/).slice(-lines).join("\n");
-}
-function inputFile(analysis) {
-  if (analysis.kind !== "ablate" && analysis.kind !== "replace") return null;
-  const file = tempOutput(`${analysis.kind}_request`);
-  fs5.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
-  return file;
-}
-function removeFile(file) {
-  if (!file) return;
-  try {
-    fs5.unlinkSync(file);
-  } catch {
-  }
-}
-function analysisArgs(analysis, out, input) {
-  if (analysis.kind === "ablate") return ["--ablate", input ?? "", "--ablate-data", out];
-  if (analysis.kind === "replace") return ["--replace", input ?? "", "--target-data", out];
-  if (analysis.kind === "overdraw") return ["--overdraw-data", out];
-  if (analysis.kind === "draws") return ["--draw-data", out];
-  if (analysis.kind === "counters") {
-    return [
-      ...(analysis.counters ?? []).flatMap((c2) => ["--counter", c2]),
-      ...analysis.perDraw ? ["--counter-draws"] : [],
-      "--counter-data",
-      out
-    ];
-  }
-  if (analysis.kind === "list-counters") return ["--list-counters", "--counter-data", out];
-  if (analysis.kind === "export") return ["--export", analysis.dir, "--export-data", out];
-  if (analysis.kind === "overlay" || analysis.kind === "mesh") {
-    const flag = `--${analysis.kind}`;
-    return [...analysis.commands.flatMap((c2) => [flag, String(Math.max(0, Math.floor(c2)))]), `${flag}-data`, out];
-  }
-  const n = (v) => String(Math.max(0, Math.floor(v ?? 0)));
-  return ["--pixel", n(analysis.image), n(analysis.x), n(analysis.y), "--mip", n(analysis.mip), "--layer", n(analysis.layer), "--pixel-data", out];
-}
-function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
-  return new Promise((resolve) => {
-    const out = path4.join(os3.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
-    let output = "";
-    let done = false;
-    let timedOut = false;
-    const input = inputFile(analysis);
-    const child = spawn(tool, [capturePath, ...analysisArgs(analysis, out, input)], { stdio: ["ignore", "pipe", "pipe"], windowsHide: true });
-    const timer = setTimeout(() => {
-      timedOut = true;
-      child.kill();
-    }, timeoutMs);
-    const collect = (chunk2) => {
-      output += chunk2.toString();
-      if (output.length > 256 * 1024) output = output.slice(-128 * 1024);
-    };
-    child.stdout?.on("data", collect);
-    child.stderr?.on("data", collect);
-    const finish2 = (error) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      removeFile(input);
-      let data = null;
-      try {
-        data = new Uint8Array(fs5.readFileSync(out));
-        fs5.unlinkSync(out);
-      } catch {
-      }
-      if (data) {
-        resolve({ data, output: tail(output) });
-        return;
-      }
-      resolve({
-        data: null,
-        output: tail(output),
-        error: error ?? (timedOut ? `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` : `the replay wrote no data:
-${tail(output)}`)
-      });
-    };
-    child.on("error", (e) => finish2(`could not run ${tool}: ${e.message}`));
-    child.on("close", () => finish2(null));
-  });
-}
-function serveRequest(id, analysis, out, input) {
-  if (analysis.kind === "pixel") {
-    return { id, kind: "pixel", image: analysis.image, x: analysis.x, y: analysis.y, mip: analysis.mip ?? 0, layer: analysis.layer ?? 0, out };
-  }
-  if (analysis.kind === "ablate") return { id, kind: "ablate", in: input, out };
-  if (analysis.kind === "replace") return { id, kind: "replace", in: input, out };
-  return { id, ...analysis, out };
-}
-function tempOutput(kind) {
-  return path4.join(os3.tmpdir(), `vkinsp_${kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
-}
-var ReplayServer = class {
-  tool;
-  capturePath;
-  lastUsed = Date.now();
-  _child;
-  _ready;
-  _resolveReady = () => {
-  };
-  _pending = /* @__PURE__ */ new Map();
-  _nextId = 1;
-  _output = "";
-  _exited = false;
-  constructor(tool, capturePath) {
-    this.tool = tool;
-    this.capturePath = capturePath;
-    this._ready = new Promise((resolve) => {
-      this._resolveReady = resolve;
-    });
-    this._child = spawn(tool, [capturePath, "--serve"], { stdio: ["pipe", "pipe", "pipe"], windowsHide: true });
-    let buffered = "";
-    this._child.stdout?.on("data", (chunk2) => {
-      buffered += chunk2.toString();
-      let newline;
-      while ((newline = buffered.indexOf("\n")) >= 0) {
-        const line = buffered.slice(0, newline).replace(/\r$/, "");
-        buffered = buffered.slice(newline + 1);
-        this._line(line);
-      }
-    });
-    this._child.stderr?.on("data", (chunk2) => this._collect(chunk2.toString()));
-    this._child.stdin?.on("error", () => {
-    });
-    this._child.on("error", (e) => this._exit(`could not run ${tool}: ${e.message}`));
-    this._child.on("exit", (code) => this._exit(`the replay process exited (${code ?? "killed"})`));
-  }
-  get alive() {
-    return !this._exited;
-  }
-  /**
-   * Replays the frame for an analysis and reads the file it wrote. `fallback` is set when the answer
-   * is not the analysis's: the process could not start (a tool from before --serve) or exited.
-   */
-  async run(analysis, timeoutMs = 10 * 60 * 1e3) {
-    this.lastUsed = Date.now();
-    const startError = await this._ready;
-    if (startError) return { data: null, output: tail(this._output), error: startError, fallback: true };
-    const id = this._nextId++;
-    const out = tempOutput(analysis.kind);
-    const input = inputFile(analysis);
-    const answer = await new Promise((resolve) => {
-      const timer = setTimeout(() => {
-        this._pending.delete(id);
-        this.dispose();
-        resolve({ id, ok: false, error: `the replay did not finish within ${Math.round(timeoutMs / 1e3)} s` });
-      }, timeoutMs);
-      this._pending.set(id, (a) => {
-        clearTimeout(timer);
-        resolve(a);
-      });
-      this._child.stdin?.write(JSON.stringify(serveRequest(id, analysis, out, input)) + "\n");
-    });
-    removeFile(input);
-    this.lastUsed = Date.now();
-    let data = null;
-    try {
-      data = new Uint8Array(fs5.readFileSync(out));
-      fs5.unlinkSync(out);
-    } catch {
-    }
-    if (answer.ok && data) return { data, output: tail(this._output) };
-    return { data: null, output: tail(this._output), error: answer.error ?? "the replay wrote no data", fallback: this._exited };
-  }
-  /** Stops the process: asked to quit, and killed if it does not. */
-  dispose() {
-    if (this._exited) return;
-    try {
-      this._child.stdin?.write(JSON.stringify({ kind: "quit" }) + "\n");
-      this._child.stdin?.end();
-    } catch {
-    }
-    setTimeout(() => {
-      if (!this._exited) this._child.kill();
-    }, 2e3).unref();
-  }
-  _line(line) {
-    if (!line.startsWith("@replay ")) {
-      this._collect(line + "\n");
-      return;
-    }
-    let answer;
-    try {
-      answer = JSON.parse(line.slice(8));
-    } catch {
-      return;
-    }
-    if (answer.ready !== void 0) {
-      this._resolveReady(answer.ready ? null : answer.error ?? "the replay could not start");
-      return;
-    }
-    if (answer.id === void 0) return;
-    const resolve = this._pending.get(answer.id);
-    this._pending.delete(answer.id);
-    resolve?.(answer);
-  }
-  _collect(text) {
-    this._output += text;
-    if (this._output.length > 256 * 1024) this._output = this._output.slice(-128 * 1024);
-  }
-  _exit(message) {
-    if (this._exited) return;
-    this._exited = true;
-    this._resolveReady(message);
-    for (const [id, resolve] of this._pending) resolve({ id, ok: false, error: message });
-    this._pending.clear();
-  }
-};
-var ReplayServerPool = class {
-  constructor(max = 3, idleMs = 5 * 60 * 1e3) {
-    this.max = max;
-    this.idleMs = idleMs;
-  }
-  _servers = /* @__PURE__ */ new Map();
-  _sweep = null;
-  /** Runs an analysis in the capture's replay, starting one if needed; a process that cannot serve falls back to a one-shot replay. */
-  async run(tool, capturePath, analysis, timeoutMs) {
-    let stamp = 0;
-    try {
-      stamp = fs5.statSync(capturePath).mtimeMs;
-    } catch {
-      return { data: null, output: "", error: `${capturePath} does not exist` };
-    }
-    if (needsOwnProcess(analysis)) return runReplay(tool, capturePath, analysis, timeoutMs);
-    const key = `${tool}
-${path4.resolve(capturePath)}
-${stamp}`;
-    let server = this._servers.get(key);
-    if (!server || !server.alive) {
-      server?.dispose();
-      server = new ReplayServer(tool, capturePath);
-      this._servers.set(key, server);
-      this._trim();
-    }
-    this._scheduleSweep();
-    const result = await server.run(analysis, timeoutMs);
-    if (!server.alive) this._servers.delete(key);
-    if (result.fallback) return runReplay(tool, capturePath, analysis, timeoutMs);
-    return result;
-  }
-  /** Stops the replays of a capture file (it is closed, or about to be deleted). */
-  release(capturePath) {
-    const resolved = path4.resolve(capturePath);
-    for (const [key, server] of this._servers) {
-      if (path4.resolve(server.capturePath) !== resolved) continue;
-      server.dispose();
-      this._servers.delete(key);
-    }
-  }
-  disposeAll() {
-    for (const server of this._servers.values()) server.dispose();
-    this._servers.clear();
-  }
-  _trim() {
-    const live = [...this._servers.entries()].sort((a, b) => a[1].lastUsed - b[1].lastUsed);
-    while (live.length > this.max) {
-      const [key, server] = live.shift();
-      server.dispose();
-      this._servers.delete(key);
-    }
-  }
-  _scheduleSweep() {
-    if (this._sweep) return;
-    this._sweep = setInterval(() => {
-      const now = Date.now();
-      for (const [key, server] of this._servers) {
-        if (now - server.lastUsed < this.idleMs) continue;
-        server.dispose();
-        this._servers.delete(key);
-      }
-      if (!this._servers.size && this._sweep) {
-        clearInterval(this._sweep);
-        this._sweep = null;
-      }
-    }, 30 * 1e3);
-    this._sweep.unref();
-  }
-};
-var replayServers = new ReplayServerPool();
-
 // src/main/shader_tools.ts
-import { execFile as execFile3 } from "node:child_process";
-import fs8 from "node:fs";
-import os5 from "node:os";
-import path7 from "node:path";
-import { fileURLToPath } from "node:url";
-
-// src/main/d3d12.ts
-import fs7 from "node:fs";
-import path6 from "node:path";
-
-// src/main/launch_env.ts
-import { execFile as execFile2, execFileSync } from "node:child_process";
-import fs6 from "node:fs";
-import net from "node:net";
-import os4 from "node:os";
-import path5 from "node:path";
-var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
-var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
-var DEFAULT_PORT = 47531;
-function findLayerDir(roots, packaged = []) {
-  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
-  const candidates = [];
-  for (const root of roots) {
-    const bin = path5.join(root, "build", "bin");
-    candidates.push(path5.join(bin, "Release"), path5.join(bin, "RelWithDebInfo"), path5.join(bin, "Debug"), bin);
-  }
-  candidates.push(...packaged);
-  for (const dir of candidates) {
-    if (fs6.existsSync(path5.join(dir, `${LAYER_NAME}.json`))) return dir;
-  }
-  return null;
-}
-function findValidationLayerDir() {
-  const manifest = "VkLayer_khronos_validation.json";
-  const candidates = [];
-  const sdk = process.env.VULKAN_SDK;
-  if (sdk) candidates.push(path5.join(sdk, "Bin"), path5.join(sdk, "share", "vulkan", "explicit_layer.d"), path5.join(sdk, "etc", "vulkan", "explicit_layer.d"));
-  if (process.platform === "win32") {
-    for (const root of ["C:\\VulkanSDK", path5.join(os4.homedir(), "VulkanSDK")]) {
-      try {
-        const versions = fs6.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
-        for (const v of versions) candidates.push(path5.join(root, v, "Bin"));
-      } catch {
-      }
-    }
-  } else {
-    candidates.push(
-      "/usr/share/vulkan/explicit_layer.d",
-      "/usr/local/share/vulkan/explicit_layer.d",
-      "/etc/vulkan/explicit_layer.d",
-      path5.join(os4.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
-    );
-  }
-  for (const c2 of candidates) if (fs6.existsSync(path5.join(c2, manifest))) return c2;
-  return null;
-}
-function vulkanLayerEnvironment(o) {
-  const layers = [LAYER_NAME, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
-  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
-  return {
-    VK_ADD_LAYER_PATH: layerPaths.join(path5.delimiter),
-    // The layer's manifest among the implicit layers as well, ahead of the registered ones. Once a
-    // GPU Inspector is installed (or "Set for my account" ran), its layer is registered as an
-    // implicit layer of the same name, and VK_LOADER_LAYERS_ENABLE force-enables that one rather
-    // than the one in VK_ADD_LAYER_PATH: a launch from any other build silently ran the installed
-    // layer. The implicit search is added to, not replaced, so the driver's own layers stay.
-    VK_ADD_IMPLICIT_LAYER_PATH: [o.layerDir, ...process.env.VK_ADD_IMPLICIT_LAYER_PATH ? [process.env.VK_ADD_IMPLICIT_LAYER_PATH] : []].join(path5.delimiter),
-    VK_LOADER_LAYERS_ENABLE: layers.join(","),
-    // Older loaders:
-    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path5.delimiter),
-    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path5.delimiter),
-    VKINSP_PORT: String(o.port),
-    VKINSP_LOG: o.log ? "1" : "0",
-    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
-    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
-    ...o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {},
-    ...o.shaderStatistics ? { VKINSP_SHADER_STATISTICS: "1" } : {},
-    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
-    ...o.symbolDirs ? { VKINSP_SYMBOL_PATH: o.symbolDirs } : {},
-    // The validation layer stops reporting a message after a few repeats (its
-    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
-    // attaches a message to the captured command it fired on, which needs every occurrence.
-    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
-    // Synchronization and GPU-assisted validation: the settings-file names for current layers, and
-    // the enable list for older ones, which takes several separated by the platform's path
-    // separator — so the two are built together rather than one overwriting the other.
-    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true" } : {},
-    ...o.validation && o.gpuValidation ? { VK_LAYER_VALIDATE_GPU_BASED: "GPU_BASED_GPU_ASSISTED" } : {},
-    ...o.validation && (o.syncValidation || o.gpuValidation) ? { VK_LAYER_ENABLES: [
-      ...o.syncValidation ? ["VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"] : [],
-      ...o.gpuValidation ? ["VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"] : []
-    ].join(path5.delimiter) } : {}
-  };
-}
-function splitArgs(s) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-}
-function portFree(port) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once("error", () => resolve(false));
-    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
-  });
-}
-async function findFreePort(start, taken = () => false) {
-  for (let port = start; port < start + 100 && port < 65536; port++) {
-    if (taken(port)) continue;
-    if (await portFree(port)) return port;
-  }
-  return start;
-}
-function terminate(proc, wait = false) {
-  if (process.platform === "win32" && proc.pid) {
-    const args = ["/PID", String(proc.pid), "/T", "/F"];
-    if (wait) {
-      try {
-        execFileSync("taskkill", args, { stdio: "ignore" });
-        return;
-      } catch {
-      }
-    } else {
-      execFile2("taskkill", args, () => {
-        try {
-          proc.kill();
-        } catch {
-        }
-      });
-      return;
-    }
-  }
-  try {
-    proc.kill();
-  } catch {
-  }
-}
-
-// src/main/d3d12.ts
-var CAPTURE_LIBRARY = "dxinsp_capture.dll";
-var LAUNCHER = "dxinsp_launch.exe";
-var SHADER_TOOL = "dxinsp_shader.exe";
-function d3d12ToolDirs(roots, packaged = []) {
-  const dirs = [];
-  if (process.env.INSPECTOR_D3D12_DIR) dirs.push(process.env.INSPECTOR_D3D12_DIR);
-  for (const root of roots) {
-    const bin = path6.join(root, "build", "bin");
-    dirs.push(path6.join(bin, "Release"), path6.join(bin, "RelWithDebInfo"), path6.join(bin, "Debug"), bin);
-  }
-  dirs.push(...packaged);
-  return dirs;
-}
-function findD3D12Tools(roots, packaged = []) {
-  for (const dir of d3d12ToolDirs(roots, packaged)) {
-    const library = path6.join(dir, CAPTURE_LIBRARY);
-    const launcher = path6.join(dir, LAUNCHER);
-    if (!fs7.existsSync(library) || !fs7.existsSync(launcher)) continue;
-    const shaderTool = path6.join(dir, SHADER_TOOL);
-    return { dir, library, launcher, shaderTool: fs7.existsSync(shaderTool) ? shaderTool : null };
-  }
-  return null;
-}
-function findD3D12ShaderTool(roots, packaged = []) {
-  for (const dir of d3d12ToolDirs(roots, packaged)) {
-    const tool = path6.join(dir, SHADER_TOOL);
-    if (fs7.existsSync(tool)) return tool;
-  }
-  return null;
-}
-function d3d12Environment(o) {
-  return {
-    DXINSP_PORT: String(o.port),
-    DXINSP_LOG: o.log ? "1" : "0",
-    ...o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {},
-    DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
-    DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
-    ...o.symbolDirs ? { DXINSP_SYMBOL_PATH: o.symbolDirs } : {},
-    DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
-    ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
-  };
-}
-function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false, extraDlls = []) {
-  return {
-    exe: tools.launcher,
-    args: [
-      "--dll",
-      tools.library,
-      ...extraDlls.flatMap((d) => ["--dll", d]),
-      ...cwd ? ["--cwd", cwd] : [],
-      ...followChildren ? ["--follow-children"] : [],
-      ...follow.flatMap((f) => ["--follow", f]),
-      "--",
-      exe,
-      ...args
-    ]
-  };
-}
-function watchLaunch(tools, o) {
-  const { image, timeoutSeconds, once, follow, followChildren, extraDlls, extraEnv, ...environment } = o;
-  const env = Object.entries({ ...d3d12Environment(environment), ...extraEnv }).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-  return {
-    exe: tools.launcher,
-    args: [
-      "--watch",
-      image,
-      "--dll",
-      tools.library,
-      ...(extraDlls ?? []).flatMap((d) => ["--dll", d]),
-      ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
-      ...once ? ["--once"] : [],
-      ...followChildren ? ["--follow-children"] : [],
-      ...(follow ?? []).flatMap((f) => ["--follow", f]),
-      ...env
-    ]
-  };
-}
-function windowsLaunch(o) {
-  const env = { ...o.env };
-  const notes = [];
-  let exe = o.exe;
-  let args = o.args;
-  if (o.vulkan) {
-    Object.assign(env, vulkanLayerEnvironment(o.vulkan));
-    notes.push(`layer: ${o.vulkan.layerDir}`);
-  } else {
-    notes.push("Vulkan layer not found: build it (docs/BUILDING.md); only D3D12 will be captured");
-  }
-  const plugins2 = (o.plugins ?? []).filter((p) => {
-    if (p.missing.length) notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
-    else if (p.inject.length && !o.d3d12) notes.push(`${p.plugin.manifest.name} capture library: not injected, since the launcher that injects it (the D3D12 tools) was not found`);
-    else return true;
-    return false;
-  });
-  for (const p of plugins2) {
-    Object.assign(env, p.env);
-    notes.push(`${p.plugin.manifest.name} capture library: ${p.inject.join(", ")} (plugin ${p.plugin.dir})`);
-  }
-  if (o.d3d12) {
-    const { tools, ...options } = o.d3d12;
-    Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false, plugins2.flatMap((p) => p.inject)));
-    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
-    if (o.followChildren) notes.push("capturing every process the target starts");
-    if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
-  } else {
-    notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
-  }
-  return { exe, args, env, notes };
-}
+import { execFile as execFile4 } from "node:child_process";
+import fs12 from "node:fs";
+import os8 from "node:os";
+import path12 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/shared/hlsl_debug.ts
 var HLSL_BINDING_SHIFT = 65536;
@@ -13197,15 +15027,15 @@ function hlslBindingName(set, binding) {
 // src/main/shader_tools.ts
 var tempCounter = 0;
 function tempBase() {
-  return path7.join(os5.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
+  return path12.join(os8.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
 }
-var moduleDir = path7.dirname(fileURLToPath(import.meta.url));
+var moduleDir2 = path12.dirname(fileURLToPath3(import.meta.url));
 function findTool(name) {
   const exe = process.platform === "win32" ? `${name}.exe` : name;
   const candidates = [];
-  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path7.join(process.env.INSPECTOR_TOOLS_DIR, exe));
-  if (process.env.VULKAN_SDK) candidates.push(path7.join(process.env.VULKAN_SDK, "Bin", exe), path7.join(process.env.VULKAN_SDK, "bin", exe));
-  for (const c2 of candidates) if (fs8.existsSync(c2)) return c2;
+  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path12.join(process.env.INSPECTOR_TOOLS_DIR, exe));
+  if (process.env.VULKAN_SDK) candidates.push(path12.join(process.env.VULKAN_SDK, "Bin", exe), path12.join(process.env.VULKAN_SDK, "bin", exe));
+  for (const c2 of candidates) if (fs12.existsSync(c2)) return c2;
   return exe;
 }
 function isDxbc(bytes) {
@@ -13213,16 +15043,16 @@ function isDxbc(bytes) {
 }
 function findShaderTool() {
   if (process.env.INSPECTOR_TOOLS_DIR) {
-    const c2 = path7.join(process.env.INSPECTOR_TOOLS_DIR, SHADER_TOOL);
-    if (fs8.existsSync(c2)) return c2;
+    const c2 = path12.join(process.env.INSPECTOR_TOOLS_DIR, SHADER_TOOL);
+    if (fs12.existsSync(c2)) return c2;
   }
   const roots = [
-    path7.resolve(moduleDir, "..", ".."),
-    path7.resolve(moduleDir, "..", "..", ".."),
-    path7.resolve(moduleDir, "..", "..", "..", "..")
+    path12.resolve(moduleDir2, "..", ".."),
+    path12.resolve(moduleDir2, "..", "..", ".."),
+    path12.resolve(moduleDir2, "..", "..", "..", "..")
   ];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  const packaged = process.resourcesPath ? [path7.join(process.resourcesPath, "layer")] : [];
+  const packaged = process.resourcesPath ? [path12.join(process.resourcesPath, "layer")] : [];
   return findD3D12ShaderTool(roots, packaged);
 }
 var NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (src/d3d12/README.md)`;
@@ -13249,12 +15079,12 @@ function dxbcSources(bytes, pdbDirs = []) {
   if (!tool) return Promise.resolve({ ok: false, text: NO_SHADER_TOOL });
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.dxbc`;
-    fs8.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    fs12.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
     const args = ["--sources", tmp];
-    for (const dir of pdbDirs) if (dir && fs8.existsSync(dir)) args.push("--pdb-dir", dir);
-    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    for (const dir of pdbDirs) if (dir && fs12.existsSync(dir)) args.push("--pdb-dir", dir);
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs8.unlinkSync(tmp);
+        fs12.unlinkSync(tmp);
       } catch {
       }
       if (err) {
@@ -13288,10 +15118,10 @@ ${s.text.endsWith("\n") ? s.text : `${s.text}
   if (!tool) return { ok: false, text: NO_SHADER_TOOL };
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.dxbc`;
-    fs8.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    execFile3(tool, ["--disassemble", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    fs12.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    execFile4(tool, ["--disassemble", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs8.unlinkSync(tmp);
+        fs12.unlinkSync(tmp);
       } catch {
       }
       if (err) resolve({ ok: false, text: err.code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
@@ -13309,18 +15139,18 @@ function assembleDxil(text) {
     const base = tempBase();
     const source = `${base}.ll`;
     const out = `${base}.dxil`;
-    fs8.writeFileSync(source, text);
-    execFile3(tool, ["--assemble", source, "--out", out], { maxBuffer: 4 * 1024 * 1024 }, (err, _stdout, stderr) => {
+    fs12.writeFileSync(source, text);
+    execFile4(tool, ["--assemble", source, "--out", out], { maxBuffer: 4 * 1024 * 1024 }, (err, _stdout, stderr) => {
       let container = null;
       if (!err) {
         try {
-          container = new Uint8Array(fs8.readFileSync(out));
+          container = new Uint8Array(fs12.readFileSync(out));
         } catch {
         }
       }
       for (const f of [source, out]) {
         try {
-          fs8.unlinkSync(f);
+          fs12.unlinkSync(f);
         } catch {
         }
       }
@@ -13333,7 +15163,7 @@ function shaderText(spirv, mode, options = {}) {
   if (isDxbc(spirv)) return dxbcText(spirv, mode, options.pdbDirs);
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
-    fs8.writeFileSync(tmp, Buffer.from(spirv));
+    fs12.writeFileSync(tmp, Buffer.from(spirv));
     let tool;
     let args;
     if (mode === "dis") {
@@ -13348,12 +15178,12 @@ function shaderText(spirv, mode, options = {}) {
       if (options.entry) args.push("--entry", options.entry.name, "--stage", GLSL_STAGES[options.entry.stage] ?? "frag");
       if (options.forceTemporary) args.push("--force-temporary");
     }
-    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs8.unlinkSync(tmp);
+        fs12.unlinkSync(tmp);
       } catch {
       }
-      if (err) resolve({ ok: false, text: `${path7.basename(tool)} failed: ${stderr || err.message}` });
+      if (err) resolve({ ok: false, text: `${path12.basename(tool)} failed: ${stderr || err.message}` });
       else resolve({ ok: true, text: stdout });
     });
   });
@@ -13361,10 +15191,10 @@ function shaderText(spirv, mode, options = {}) {
 function validateSpirv(spirv) {
   return new Promise((resolve) => {
     const tmp = `${tempBase()}.spv`;
-    fs8.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
-    execFile3(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+    fs12.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
+    execFile4(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
       try {
-        fs8.unlinkSync(tmp);
+        fs12.unlinkSync(tmp);
       } catch {
       }
       if (!err) resolve(null);
@@ -13418,12 +15248,12 @@ function needsIncludeExtension(source) {
 function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
   return new Promise((resolve) => {
     const base = tempBase();
-    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs8.existsSync(d));
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs12.existsSync(d));
     const debugName = language === "glsl" ? options.debugFileName : void 0;
-    const dir = debugName ? fs8.mkdtempSync(`${base}_`) : null;
-    const src = dir ? path7.join(dir, debugName) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
+    const dir = debugName ? fs12.mkdtempSync(`${base}_`) : null;
+    const src = dir ? path12.join(dir, debugName) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
     const out = base + ".spv";
-    fs8.writeFileSync(src, source);
+    fs12.writeFileSync(src, source);
     const entry2 = entryPoint || "main";
     let tool;
     let args;
@@ -13454,22 +15284,22 @@ function compileShader(source, language, stage, entryPoint, spirvVersion, option
       for (const dir2 of includeDirs) args.push(`-I${dir2}`);
       if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
     }
-    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? void 0 }, (err, stdout, stderr) => {
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? void 0 }, (err, stdout, stderr) => {
       const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
       let spirv;
       try {
-        if (fs8.existsSync(out)) spirv = new Uint8Array(fs8.readFileSync(out));
+        if (fs12.existsSync(out)) spirv = new Uint8Array(fs12.readFileSync(out));
       } catch {
         spirv = void 0;
       }
       for (const f of [src, out]) {
         try {
-          fs8.unlinkSync(f);
+          fs12.unlinkSync(f);
         } catch {
         }
       }
-      if (dir) fs8.rmSync(dir, { recursive: true, force: true });
-      const name = path7.basename(tool);
+      if (dir) fs12.rmSync(dir, { recursive: true, force: true });
+      const name = path12.basename(tool);
       if (err || !spirv || spirv.byteLength < 20) {
         const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
         resolve({ ok: false, log: reason, tool: name });
@@ -13494,24 +15324,24 @@ function compileDxil(source, stage, entryPoint, shaderModel = "6_0", options = {
   if (!prefix) return Promise.resolve({ ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" });
   return new Promise((resolve) => {
     const base = tempBase();
-    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs8.existsSync(d));
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs12.existsSync(d));
     const src = `${base}.hlsl`;
     const out = `${base}.dxil`;
-    fs8.writeFileSync(src, source);
+    fs12.writeFileSync(src, source);
     const tool = findTool("dxc");
     const args = ["-T", `${prefix}_${shaderModel.replace(/^[^0-9]*/, "").replace(".", "_") || "6_0"}`, "-E", entryPoint || "main", "-Zi", "-Qembed_debug", "-Fo", out, src];
     for (const dir of includeDirs) args.push("-I", dir);
-    execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
       const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
       let bytecode;
       try {
-        if (fs8.existsSync(out)) bytecode = new Uint8Array(fs8.readFileSync(out));
+        if (fs12.existsSync(out)) bytecode = new Uint8Array(fs12.readFileSync(out));
       } catch {
         bytecode = void 0;
       }
       for (const f of [src, out]) {
         try {
-          fs8.unlinkSync(f);
+          fs12.unlinkSync(f);
         } catch {
         }
       }
@@ -13545,33 +15375,33 @@ async function compileHlslForDebugging(container, stage, entryPoint, options = {
   const mainName = compile?.mainFile ?? "";
   const same = (a, b) => relativeSourcePath(a).toLowerCase() === relativeSourcePath(b).toLowerCase();
   const defines = new RegExp(`\\b${entry2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`);
-  const main = files.find((f) => mainName && same(f.name, mainName)) ?? files.find((f) => mainName && path7.basename(relativeSourcePath(f.name)).toLowerCase() === path7.basename(relativeSourcePath(mainName)).toLowerCase()) ?? files.find((f) => defines.test(f.text)) ?? files[0];
-  const dir = fs8.mkdtempSync(`${tempBase()}_`);
+  const main = files.find((f) => mainName && same(f.name, mainName)) ?? files.find((f) => mainName && path12.basename(relativeSourcePath(f.name)).toLowerCase() === path12.basename(relativeSourcePath(mainName)).toLowerCase()) ?? files.find((f) => defines.test(f.text)) ?? files[0];
+  const dir = fs12.mkdtempSync(`${tempBase()}_`);
   try {
     const written = /* @__PURE__ */ new Map();
     for (const f of files) {
       const rel = relativeSourcePath(f.name);
       if (written.has(rel)) continue;
-      const p = path7.join(dir, rel);
-      fs8.mkdirSync(path7.dirname(p), { recursive: true });
-      fs8.writeFileSync(p, f.text);
+      const p = path12.join(dir, rel);
+      fs12.mkdirSync(path12.dirname(p), { recursive: true });
+      fs12.writeFileSync(p, f.text);
       written.set(rel, p);
     }
     const mainPath = written.get(relativeSourcePath(main.name));
-    const out = path7.join(dir, "debug.spv");
+    const out = path12.join(dir, "debug.spv");
     const tool = findTool("dxc");
     const args = ["-spirv", "-T", profile, "-E", entry2, "-fspv-target-env=vulkan1.2", "-fspv-debug=line", "-fspv-debug=source", "-fspv-reflect", "-fvk-use-dx-layout", ...HLSL_SHIFT_ARGS];
     for (const d of compile?.defines ?? []) args.push("-D", d);
     for (const a of compile?.args ?? []) args.push(a);
     args.push("-O0", "-I", dir);
-    for (const inc of (options.includeDirs ?? []).filter((d) => d && fs8.existsSync(d))) args.push("-I", inc);
-    args.push("-Fo", out, path7.basename(mainPath));
+    for (const inc of (options.includeDirs ?? []).filter((d) => d && fs12.existsSync(d))) args.push("-I", inc);
+    args.push("-Fo", out, path12.basename(mainPath));
     return await new Promise((resolve) => {
-      execFile3(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: path7.dirname(mainPath) }, (err, stdout, stderr) => {
+      execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: path12.dirname(mainPath) }, (err, stdout, stderr) => {
         const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
         let spirv;
         try {
-          if (fs8.existsSync(out)) spirv = new Uint8Array(fs8.readFileSync(out));
+          if (fs12.existsSync(out)) spirv = new Uint8Array(fs12.readFileSync(out));
         } catch {
           spirv = void 0;
         }
@@ -13584,7 +15414,7 @@ async function compileHlslForDebugging(container, stage, entryPoint, options = {
       });
     });
   } finally {
-    fs8.rmSync(dir, { recursive: true, force: true });
+    fs12.rmSync(dir, { recursive: true, force: true });
   }
 }
 var DECOMPILED_FILE = "decompiled.glsl";
@@ -16510,7 +18340,7 @@ function tokenize(text, defines = /* @__PURE__ */ new Map()) {
     }
     if (!active()) continue;
     if (token.kind === "identifier" && macros.has(token.text)) {
-      expand(token, scanner, macros, out, diagnostics);
+      expand2(token, scanner, macros, out, diagnostics);
       continue;
     }
     out.push(token);
@@ -16636,7 +18466,7 @@ function define(rest, macros, line, diagnostics) {
   macros.set(name.text, { name: name.text, params: null, variadic: false, body: rest.slice(1) });
 }
 var MAX_EXPANSIONS = 4e3;
-function expand(token, scanner, macros, out, diagnostics) {
+function expand2(token, scanner, macros, out, diagnostics) {
   const pending = [token];
   let guard = 0;
   while (pending.length) {
@@ -28643,1762 +30473,6 @@ function coveredPixel(state, mesh, raster = rasterStateOf(state)) {
   }
   return null;
 }
-
-// src/main/plugins.ts
-import fs9 from "node:fs";
-import os6 from "node:os";
-import path8 from "node:path";
-
-// src/shared/protocol.ts
-var PLUGIN_SDK_VERSION = 1;
-
-// src/main/plugins.ts
-function userPluginDir() {
-  if (process.env.GPU_INSPECTOR_HOME) return path8.join(process.env.GPU_INSPECTOR_HOME, "plugins");
-  const home = os6.homedir();
-  if (process.platform === "win32") return path8.join(process.env.APPDATA ?? path8.join(home, "AppData", "Roaming"), "gpu-inspector", "plugins");
-  if (process.platform === "darwin") return path8.join(home, "Library", "Application Support", "gpu-inspector", "plugins");
-  return path8.join(process.env.XDG_CONFIG_HOME ?? path8.join(home, ".config"), "gpu-inspector", "plugins");
-}
-function pluginSearchDirs(checkoutRoots2, packaged = []) {
-  const dirs = [];
-  for (const d of (process.env.GPU_INSPECTOR_PLUGINS ?? "").split(path8.delimiter)) if (d.trim()) dirs.push(d.trim());
-  dirs.push(userPluginDir());
-  for (const root of checkoutRoots2) dirs.push(path8.join(root, "build", "plugins"));
-  dirs.push(...packaged);
-  return dirs;
-}
-function readManifest(dir) {
-  const file = path8.join(dir, "plugin.json");
-  if (!fs9.existsSync(file)) return null;
-  let manifest;
-  try {
-    manifest = JSON.parse(fs9.readFileSync(file, "utf8"));
-  } catch (e) {
-    const id = path8.basename(dir);
-    return { manifest: { id, name: id, version: "", sdk: 0 }, dir, backend: null, error: `plugin.json does not parse: ${e.message}` };
-  }
-  const plugin = { manifest, dir, backend: null, error: null };
-  if (typeof manifest.id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(manifest.id)) {
-    plugin.error = "plugin.json needs an id: lower case letters, digits, - and _";
-    manifest.id = typeof manifest.id === "string" && manifest.id ? manifest.id : path8.basename(dir);
-    return plugin;
-  }
-  manifest.name ||= manifest.id;
-  manifest.version ||= "";
-  manifest.api ||= manifest.id;
-  if (typeof manifest.sdk !== "number" || manifest.sdk > PLUGIN_SDK_VERSION) {
-    plugin.error = `written for plugin SDK ${String(manifest.sdk)}; this GPU Inspector implements ${PLUGIN_SDK_VERSION}`;
-    return plugin;
-  }
-  if (manifest.backend) {
-    const backend = path8.resolve(dir, manifest.backend);
-    if (!isInside(dir, backend)) plugin.error = "the backend module is outside the plugin's directory";
-    else if (!fs9.existsSync(backend)) plugin.error = `the backend module ${manifest.backend} is missing (is the plugin built?)`;
-    else plugin.backend = backend;
-  }
-  return plugin;
-}
-function isInside(dir, file) {
-  const rel = path8.relative(path8.resolve(dir), path8.resolve(file));
-  return rel === "" || !rel.startsWith("..") && !path8.isAbsolute(rel);
-}
-function findPlugins(dirs) {
-  const found2 = /* @__PURE__ */ new Map();
-  const consider = (dir) => {
-    const p = readManifest(dir);
-    if (p && !found2.has(p.manifest.id)) found2.set(p.manifest.id, p);
-  };
-  for (const dir of dirs) {
-    let entries;
-    try {
-      if (!fs9.statSync(dir).isDirectory()) continue;
-      if (fs9.existsSync(path8.join(dir, "plugin.json"))) {
-        consider(dir);
-        continue;
-      }
-      entries = fs9.readdirSync(dir, { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const e of entries) if (e.isDirectory()) consider(path8.join(dir, e.name));
-  }
-  return [...found2.values()];
-}
-function expand2(value, plugin, s) {
-  return value.replace(/\$\{port\}/g, String(s.port)).replace(/\$\{log\}/g, s.log ? "1" : "0").replace(/\$\{recordAlways\}/g, s.recordAlways ? "1" : "0").replace(/\$\{stacktraces\}/g, s.stacktraces ? "1" : "0").replace(/\$\{pluginDir\}/g, plugin.dir);
-}
-function pluginLaunches(plugins2, settings, platform = process.platform) {
-  const out = [];
-  for (const plugin of plugins2) {
-    if (plugin.error) continue;
-    const c2 = plugin.manifest.capture?.[platform];
-    if (!c2) continue;
-    const resolve = (files) => (files ?? []).map((f) => path8.resolve(plugin.dir, f));
-    const inject = platform === "win32" ? resolve(c2.inject) : [];
-    const preload = platform === "win32" ? [] : resolve(c2.preload);
-    const env = {};
-    for (const [k, v] of Object.entries(c2.env ?? {})) env[k] = expand2(String(v), plugin, settings);
-    const missing = [...inject, ...preload].filter((f) => !fs9.existsSync(f));
-    if (!inject.length && !preload.length && !Object.keys(env).length) continue;
-    out.push({ plugin, inject, preload, env, missing });
-  }
-  return out;
-}
-function applyPreloads(env, launches, variable) {
-  const notes = [];
-  const preload = [];
-  for (const p of launches) {
-    if (p.missing.length) {
-      notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
-      continue;
-    }
-    if (!p.preload.length) continue;
-    Object.assign(env, p.env);
-    preload.push(...p.preload);
-    notes.push(`${p.plugin.manifest.name} capture library: ${p.preload.join(", ")} (plugin ${p.plugin.dir})`);
-  }
-  if (preload.length) env[variable] = [...preload, ...env[variable] ? [env[variable]] : []].join(":");
-  return notes;
-}
-function androidPlugins(plugins2) {
-  return plugins2.filter((p) => !p.error && p.manifest.capture?.android?.glesLayer && p.manifest.capture.android.socket);
-}
-function pluginAndroidLaunch(plugin, abilist, pkg, settings) {
-  const a = plugin.manifest.capture.android;
-  const expandAndroid = (v) => expand2(v, plugin, settings).replace(/\$\{package\}/g, pkg);
-  const properties = {};
-  for (const [k, v] of Object.entries(a.properties ?? {})) properties[k] = expandAndroid(String(v));
-  const socket = expandAndroid(a.socket);
-  const layerName = path8.basename(a.glesLayer);
-  for (const abi of abilist) {
-    const library = path8.resolve(plugin.dir, a.glesLayer.replace(/\$\{abi\}/g, abi));
-    if (isInside(plugin.dir, library) && fs9.existsSync(library)) return { plugin, library, abi, layerName, socket, properties, error: null };
-  }
-  return {
-    plugin,
-    library: null,
-    abi: "",
-    layerName,
-    socket,
-    properties,
-    error: `${plugin.manifest.name} has no Android library for ${abilist.join(", ") || "the device"}: build it with tools/build_android.py`
-  };
-}
-function pluginInfo(p) {
-  const rel = p.backend ? path8.relative(p.dir, p.backend).split(path8.sep).map(encodeURIComponent).join("/") : null;
-  return {
-    id: p.manifest.id,
-    name: p.manifest.name,
-    version: p.manifest.version,
-    api: p.manifest.api ?? p.manifest.id,
-    dir: p.dir,
-    backendUrl: rel ? `${PLUGIN_SCHEME}://${p.manifest.id}/${rel}` : null,
-    error: p.error
-  };
-}
-var PLUGIN_SCHEME = "gpuinsp-plugin";
-
-// src/mcp/plugins.ts
-import path9 from "node:path";
-import { pathToFileURL } from "node:url";
-
-// src/renderer/plugin_host.ts
-function pluginHost(context) {
-  return {
-    sdkVersion: PLUGIN_SDK_VERSION,
-    context,
-    emptySets: EMPTY_SETS,
-    util: { isObject, isHandleRef, num, str, refId, fmt, formatBytes }
-  };
-}
-async function activatePlugin(mod, info, context) {
-  const m = mod;
-  if (!m || typeof m.activate !== "function") throw new Error("the backend module exports no activate function");
-  const got = await m.activate(pluginHost(context));
-  const backends = Array.isArray(got) ? got : [got];
-  if (!backends.some((b) => b && b.id === info.api)) throw new Error(`activate returned no backend for "${info.api}", the api plugin.json names`);
-  for (const b of backends) {
-    registerBackend(Object.setPrototypeOf({ plugin: { id: info.id, version: info.version, dir: info.dir } }, b));
-  }
-  return registeredBackends().filter((b) => backends.some((x) => x.id === b.id));
-}
-
-// src/mcp/plugins.ts
-var found = null;
-function plugins() {
-  found ??= findPlugins(pluginSearchDirs(checkoutRoots(), installedLayerDirs().map((d) => path9.join(path9.dirname(d), "plugins"))));
-  return found;
-}
-async function loadPluginBackends() {
-  for (const p of plugins()) {
-    if (p.error || !p.backend) {
-      if (p.error) process.stderr.write(`gpu-inspector MCP server: plugin ${p.manifest.id}: ${p.error}
-`);
-      continue;
-    }
-    try {
-      await activatePlugin(await import(pathToFileURL(p.backend).href), pluginInfo(p), "mcp");
-    } catch (e) {
-      process.stderr.write(`gpu-inspector MCP server: plugin ${p.manifest.id}: the backend did not load: ${e.message}
-`);
-    }
-  }
-}
-function androidPluginFor(api) {
-  if (!api || api.toLowerCase() === "vulkan") return null;
-  return androidPlugins(plugins()).find((p) => (p.manifest.api ?? p.manifest.id) === api || p.manifest.id === api);
-}
-function androidApis() {
-  return ["vulkan", ...androidPlugins(plugins()).map((p) => p.manifest.api ?? p.manifest.id)];
-}
-function launchPlugins(port, recordAlways, stacktraces) {
-  return pluginLaunches(plugins(), { port, log: true, recordAlways, stacktraces });
-}
-
-// src/mcp/live_session.ts
-import { spawn as spawn3 } from "node:child_process";
-import fs12 from "node:fs";
-import net2 from "node:net";
-import os8 from "node:os";
-import path12 from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-
-// src/main/android.ts
-import { execFile as execFile4, execFileSync as execFileSync2, spawn as spawn2 } from "node:child_process";
-import crypto from "node:crypto";
-import fs10 from "node:fs";
-import os7 from "node:os";
-import path10 from "node:path";
-var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
-var LAYER_LIB = "libVkLayer_inspector_capture.so";
-var LAYER_APK = "gpu_inspector_layer.apk";
-var DEVICE_TMP = "/data/local/tmp";
-var ADB_TIMEOUT_MS = 2e4;
-var INSTALL_TIMEOUT_MS = 18e4;
-var START_TIMEOUT_MS = 6e4;
-var PID_RETRIES = 20;
-var PID_RETRY_MS = 500;
-var POLL_MS = 2e3;
-var MIN_SDK = 28;
-var LAYER_APP_SDK = 29;
-function findAdb() {
-  const exe = process.platform === "win32" ? "adb.exe" : "adb";
-  const candidates = [];
-  if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
-  for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
-    if (process.env[v]) candidates.push(path10.join(process.env[v], "platform-tools", exe));
-  }
-  if (process.platform === "win32") {
-    if (process.env.LOCALAPPDATA) candidates.push(path10.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
-  } else if (process.platform === "darwin") {
-    candidates.push(path10.join(os7.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
-  } else {
-    candidates.push(path10.join(os7.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
-  }
-  for (const c2 of candidates) if (fs10.existsSync(c2)) return c2;
-  for (const dir of (process.env.PATH ?? "").split(path10.delimiter)) {
-    if (dir && fs10.existsSync(path10.join(dir, exe))) return path10.join(dir, exe);
-  }
-  return null;
-}
-function adbArgs(serial, args) {
-  return serial ? ["-s", serial, ...args] : args;
-}
-function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
-  return new Promise((resolve, reject) => {
-    execFile4(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
-      if (err) {
-        const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
-        reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
-      } else {
-        resolve(stdout);
-      }
-    });
-  });
-}
-function shell(adbPath, serial, command, timeoutMs = ADB_TIMEOUT_MS) {
-  return adb(adbPath, serial, ["shell", command], timeoutMs);
-}
-function parseDevices(text) {
-  const out = [];
-  for (const raw of text.split(/\r?\n/)) {
-    const line = raw.trim();
-    if (!line || line.startsWith("List of devices") || line.startsWith("*")) continue;
-    const parts2 = line.split(/\s+/);
-    if (parts2.length < 2) continue;
-    const model = parts2.find((p) => p.startsWith("model:"))?.substring(6).replace(/_/g, " ") ?? "";
-    out.push({ serial: parts2[0], state: parts2[1], model });
-  }
-  return out;
-}
-async function listDevices(adbPath) {
-  const listed = parseDevices(await adb(adbPath, null, ["devices", "-l"]));
-  const devices = [];
-  for (const d of listed) {
-    const dev = { serial: d.serial, state: d.state, model: d.model, sdk: 0, abi: "" };
-    if (d.state === "device") {
-      try {
-        const props = (await shell(adbPath, d.serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.manufacturer; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
-        dev.sdk = Number(props[0]) || 0;
-        dev.abi = props[1] ?? "";
-        if (!dev.model) dev.model = [props[2], props[3]].filter(Boolean).join(" ");
-      } catch {
-      }
-    }
-    devices.push(dev);
-  }
-  return devices;
-}
-async function listPackages(adbPath, serial) {
-  const text = await shell(adbPath, serial, "pm list packages -3");
-  return text.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.startsWith("package:")).map((l) => l.substring(8)).sort();
-}
-async function resolveActivity(adbPath, serial, pkg) {
-  try {
-    const text = await shell(adbPath, serial, `cmd package resolve-activity --brief ${pkg}`);
-    const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    const component = lines.reverse().find((l) => l.startsWith(`${pkg}/`));
-    return component ?? null;
-  } catch {
-    return null;
-  }
-}
-function findAndroidLayer(candidates) {
-  for (const dir of candidates) {
-    const libRoot = path10.join(dir, "lib");
-    if (!fs10.existsSync(libRoot)) continue;
-    const libs = {};
-    for (const abi of fs10.readdirSync(libRoot)) {
-      const lib = path10.join(libRoot, abi, LAYER_LIB);
-      if (fs10.existsSync(lib)) libs[abi] = lib;
-    }
-    if (!Object.keys(libs).length) continue;
-    const apk = path10.join(dir, LAYER_APK);
-    let apkInfo = null;
-    if (fs10.existsSync(apk)) {
-      try {
-        apkInfo = JSON.parse(fs10.readFileSync(`${apk}.json`, "utf8"));
-      } catch {
-        apkInfo = null;
-      }
-    }
-    return { dir, libs, apk: apkInfo ? apk : null, apkInfo };
-  }
-  return null;
-}
-var AndroidTarget = class {
-  constructor(opts) {
-    this.opts = opts;
-    this._socket = `vkinsp:${opts.port}:${opts.package}`;
-  }
-  pid = null;
-  _logcat = null;
-  _poll = null;
-  _polling = false;
-  _stopped = false;
-  /** The capture library's socket and log tag on the device: the Vulkan layer's, or the plugin's. */
-  _socket;
-  _tag = "vkinsp";
-  /** Installs and enables the layer, starts the application and the watches. Rejects with a readable message. */
-  async start() {
-    const { adb: adbPath, serial, package: pkg, port } = this.opts;
-    const log = this.opts.onLog;
-    const props = (await shell(adbPath, serial, "getprop ro.build.version.sdk; getprop ro.product.cpu.abi; getprop ro.product.cpu.abilist; getprop ro.product.model")).split(/\r?\n/).map((s) => s.trim());
-    const sdk = Number(props[0]) || 0;
-    const abi = props[1] ?? "";
-    const abilist = (props[2] ?? abi).split(",").map((s) => s.trim()).filter(Boolean);
-    log(`device ${serial}: ${props[3] ?? ""}, Android API ${sdk}, ${abi}`);
-    const plugin = this.opts.plugin ? this.opts.plugin(abilist) : null;
-    if (plugin) {
-      const name = plugin.plugin.manifest.name;
-      if (sdk < LAYER_APP_SDK) throw new Error(`Android 10 (API ${LAYER_APP_SDK}) or newer is required for ${name} layers; the device runs API ${sdk}`);
-      if (plugin.error || !plugin.library) throw new Error(plugin.error ?? `${name} has no Android library`);
-      this._socket = plugin.socket;
-      this._tag = plugin.socket.split(":")[0] || this._tag;
-      log(`layer: ${await this._copyIntoDataDir(plugin.library, plugin.layerName, plugin.abi)}`);
-      await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
-      await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
-      await shell(adbPath, serial, `settings put global gpu_debug_layers_gles ${plugin.layerName}`);
-      for (const key of ["gpu_debug_layers", "gpu_debug_layer_app"]) await shell(adbPath, serial, `settings delete global ${key}`);
-      for (const [key, value] of Object.entries(plugin.properties)) await shell(adbPath, serial, `setprop ${key} ${value}`);
-    } else {
-      if (sdk < MIN_SDK) throw new Error(`Android 9 (API ${MIN_SDK}) or newer is required for Vulkan layers; the device runs API ${sdk}`);
-      if (!this.opts.layer) throw new Error("Android layer not found: build it with tools/build_android.py (see docs/ARCHITECTURE.md)");
-      const how = await this._installLayer(sdk, abilist, this.opts.layer);
-      log(`layer: ${how}`);
-      await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
-      await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
-      await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME2}`);
-      if (sdk >= LAYER_APP_SDK) await shell(adbPath, serial, "settings delete global gpu_debug_layers_gles");
-      await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
-      await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
-      await shell(adbPath, serial, `setprop debug.vkinsp.record_always ${this.opts.recordAlways ? 1 : 0}`);
-      await shell(adbPath, serial, `setprop debug.vkinsp.stacktraces ${this.opts.stacktraces ? 1 : 0}`);
-    }
-    await shell(adbPath, serial, `am force-stop ${pkg}`);
-    for (let i = 0; i < 20 && !this._stopped; ++i) {
-      const pid = await this._findPid();
-      if (pid === null) break;
-      if (i === 0) log(`waiting for the previous instance (pid ${pid}) to exit`);
-      await new Promise((r) => setTimeout(r, 250));
-    }
-    if (!this._stopped) {
-      const unix = await shell(adbPath, serial, "cat /proc/net/unix").catch(() => "");
-      if (unix.includes(`@${this.socketName}`)) log(`warning: @${this.socketName} is still held on the device by another process; the layer waits for it`);
-    }
-    await adb(adbPath, serial, ["forward", `tcp:${port}`, `localabstract:${this.socketName}`]);
-    log(`forwarding localhost:${port} to the device's @${this.socketName}`);
-    if (this._stopped) return;
-    this._startLogcat();
-    let activity = this.opts.activity.trim();
-    if (!activity) activity = await resolveActivity(adbPath, serial, pkg) ?? "";
-    if (activity && !activity.includes("/")) activity = `${pkg}/${activity}`;
-    if (activity) {
-      log(`starting ${activity}`);
-      const out = await shell(adbPath, serial, `am start -S -n ${activity}`, START_TIMEOUT_MS);
-      const error = out.split(/\r?\n/).find((l) => /^Error/.test(l.trim()));
-      if (error) throw new Error(`${error.trim()} (activity ${activity})`);
-    } else {
-      log(`starting ${pkg} (no launchable activity resolved; using the launcher intent)`);
-      const out = await shell(adbPath, serial, `monkey -p ${pkg} -c android.intent.category.LAUNCHER 1`, START_TIMEOUT_MS);
-      if (/No activities found|monkey aborted/i.test(out)) throw new Error(`no launchable activity in ${pkg}`);
-    }
-    for (let i = 0; i < PID_RETRIES && this.pid === null && !this._stopped; ++i) {
-      this.pid = await this._findPid();
-      if (this.pid === null) await new Promise((r) => setTimeout(r, PID_RETRY_MS));
-      if (this.pid === null && i === 4) await this._launchDiagnostics(true);
-    }
-    if (this._stopped) return;
-    if (this.pid === null) throw new Error(`${pkg} did not start (no process found)`);
-    await this._launchDiagnostics(false);
-    this._poll = setInterval(() => void this._pollProcess(), POLL_MS);
-  }
-  /** The capture library's abstract socket on the device: the port and the package (see transport.cpp). */
-  get socketName() {
-    return this._socket;
-  }
-  /**
-   * Re-establishes the port forward when it is gone. adb drops a device's forwards whenever the
-   * device disconnects, and a headset's USB link blips when it changes power state, so a
-   * connection attempt refused on the host side is checked against `adb forward --list`.
-   * Resolves true when the forward had to be re-created.
-   */
-  async ensureForward() {
-    if (this._stopped) return false;
-    const { adb: adbPath, serial, port } = this.opts;
-    const target = `localabstract:${this.socketName}`;
-    const list = await adb(adbPath, serial, ["forward", "--list"]);
-    const present = list.split(/\r?\n/).some((l) => {
-      const f = l.trim().split(/\s+/);
-      return f[0] === serial && f[1] === `tcp:${port}` && f[2] === target;
-    });
-    if (present || this._stopped) return false;
-    await adb(adbPath, serial, ["forward", `tcp:${port}`, target]);
-    this.opts.onLog(`the port forward was gone (device reconnected?): forwarding localhost:${port} to @${this.socketName} again`);
-    return true;
-  }
-  /** Terminates the application, the port forward and the watches. */
-  async stop() {
-    this._stopWatching();
-    const { adb: adbPath, serial, package: pkg, port } = this.opts;
-    try {
-      await shell(adbPath, serial, `am force-stop ${pkg}`);
-    } catch {
-    }
-    try {
-      await adb(adbPath, serial, ["forward", "--remove", `tcp:${port}`]);
-    } catch {
-    }
-  }
-  /** stop() for application exit, where nothing can be awaited. */
-  stopSync() {
-    this._stopWatching();
-    const { adb: adbPath, serial, package: pkg, port } = this.opts;
-    for (const args of [["shell", `am force-stop ${pkg}`], ["forward", "--remove", `tcp:${port}`]]) {
-      try {
-        execFileSync2(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
-      } catch {
-      }
-    }
-  }
-  _stopWatching() {
-    this._stopped = true;
-    if (this._poll) {
-      clearInterval(this._poll);
-      this._poll = null;
-    }
-    if (this._logcat) {
-      try {
-        this._logcat.kill();
-      } catch {
-      }
-      this._logcat = null;
-    }
-  }
-  /**
-   * Gets the layer where the device's loader will find it. Android 10+ with the layer APK:
-   * install it (when the installed version differs) and point gpu_debug_layer_app at it. Otherwise
-   * copy the .so into the target's data directory with run-as, skipped when the copy there
-   * already matches.
-   */
-  async _installLayer(sdk, abilist, layer) {
-    const { adb: adbPath, serial } = this.opts;
-    const apkAbi = layer.apkInfo ? abilist.find((a) => layer.apkInfo.abis.includes(a)) : void 0;
-    if (sdk >= LAYER_APP_SDK && layer.apk && layer.apkInfo && apkAbi) {
-      const info = layer.apkInfo;
-      let installed = "";
-      try {
-        const dump = await shell(adbPath, serial, `dumpsys package ${info.package}`);
-        installed = /versionName=(\S+)/.exec(dump)?.[1] ?? "";
-      } catch {
-        installed = "";
-      }
-      if (installed !== info.versionName) {
-        this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
-        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
-      }
-      await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
-      return `${info.package} ${info.versionName} (${apkAbi})`;
-    }
-    const abi = abilist.find((a) => layer.libs[a]);
-    if (!abi) {
-      throw new Error(`no Android layer built for ${abilist.join(", ")}: run tools/build_android.py --abi ${abilist[0] ?? "arm64-v8a"}`);
-    }
-    const how = await this._copyIntoDataDir(layer.libs[abi], LAYER_LIB, abi);
-    await shell(adbPath, serial, "settings delete global gpu_debug_layer_app");
-    return how;
-  }
-  /**
-   * Copies a layer library into the target's data directory with run-as, where the loaders look when
-   * the debug layer settings are on; skipped when the copy there already matches.
-   */
-  async _copyIntoDataDir(lib, name, abi) {
-    const { adb: adbPath, serial, package: pkg } = this.opts;
-    const local = crypto.createHash("md5").update(fs10.readFileSync(lib)).digest("hex");
-    let remote = "";
-    try {
-      remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${name}`)).trim().split(/\s+/)[0] ?? "";
-    } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      if (/not debuggable|is not debuggable|Could not set capabilities|run-as: Package/.test(message)) {
-        throw new Error(`${pkg} is not debuggable: Android only loads layers into debuggable applications (a Unity Development Build) or on rooted devices`);
-      }
-      remote = "";
-    }
-    if (remote !== local) {
-      this.opts.onLog(`copying ${name} (${abi}) into ${pkg}'s data directory`);
-      await adb(adbPath, serial, ["push", lib, `${DEVICE_TMP}/${name}`], INSTALL_TIMEOUT_MS);
-      try {
-        await shell(adbPath, serial, `run-as ${pkg} cp ${DEVICE_TMP}/${name} . && run-as ${pkg} chmod 700 ${name}`);
-      } catch (e) {
-        const message = e instanceof Error ? e.message : String(e);
-        throw new Error(`could not copy the layer into ${pkg}: ${message}. The application must be debuggable (a Unity Development Build).`);
-      }
-    }
-    return `${name} (${abi}) in ${pkg}'s data directory`;
-  }
-  _startLogcat() {
-    const { adb: adbPath, serial } = this.opts;
-    const tag = this._tag;
-    const proc = spawn2(adbPath, adbArgs(serial, ["logcat", "-v", "tag", "-T", "1", `${tag}:*`, "DEBUG:E", "AndroidRuntime:E", "*:S"]), { stdio: ["ignore", "pipe", "ignore"], windowsHide: true });
-    this._logcat = proc;
-    let rest = "";
-    proc.stdout?.on("data", (d) => {
-      rest += d.toString("utf8");
-      const lines = rest.split(/\r?\n/);
-      rest = lines.pop() ?? "";
-      for (const line of lines) {
-        if (!line.length || line.startsWith("--------- beginning of")) continue;
-        const prefix = `I/${tag}`;
-        this.opts.onLog(line.startsWith(prefix) && /^\s*:/.test(line.slice(prefix.length)) ? `[${tag}] ${line.slice(prefix.length).replace(/^\s*:\s?/, "")}` : line);
-      }
-    });
-    proc.on("exit", () => {
-      if (this._logcat === proc) this._logcat = null;
-    });
-    proc.on("error", () => {
-      if (this._logcat === proc) this._logcat = null;
-    });
-  }
-  /**
-   * What can keep a launch from running, in the Log: a device that is asleep (an OpenXR session
-   * stays idle until the headset is worn), and on a headset the shell's "controllers required"
-   * dialog, which a launch attempted without controllers or tracked hands leaves behind and
-   * which then blocks every later launch until the shell restarts.
-   */
-  async _launchDiagnostics(noProcess) {
-    const { adb: adbPath, serial } = this.opts;
-    const log = this.opts.onLog;
-    try {
-      const power = await shell(adbPath, serial, "dumpsys power | grep -m1 mWakefulness=");
-      const state = /mWakefulness=(\w+)/.exec(power)?.[1];
-      if (state && state !== "Awake") log(`the device is ${state.toLowerCase()}: an OpenXR session stays idle (no frames) until the headset is worn or woken (adb shell input keyevent KEYCODE_WAKEUP)`);
-    } catch {
-    }
-    try {
-      const windows = await shell(adbPath, serial, "dumpsys window windows | grep -c -i launchcheck");
-      if (Number(windows.trim()) > 0) {
-        log(`the headset shell is showing its launch check dialog ("controllers required"), which blocks ${noProcess ? "this launch" : "launches"}: put the headset on with controllers or tracked hands, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
-      }
-    } catch {
-    }
-    if (!noProcess) return;
-    try {
-      const blocked = await shell(adbPath, serial, "logcat -d -t 300 | grep 'Launch is blocked because' | tail -1");
-      const reason = /Launch is blocked because:\s*([^.]*?)\.?\s*(?:Caching|$)/.exec(blocked)?.[1]?.trim();
-      if (reason) log(`the headset shell blocked the launch: ${reason}. Put the headset on and dismiss the dialog, or restart the shell (adb shell am force-stop com.oculus.vrshell)`);
-    } catch {
-    }
-  }
-  async _findPid() {
-    try {
-      const out = (await shell(this.opts.adb, this.opts.serial, `pidof ${this.opts.package}`)).trim();
-      const pid = Number(out.split(/\s+/)[0]);
-      return pid > 0 ? pid : null;
-    } catch {
-      return null;
-    }
-  }
-  async _pollProcess() {
-    if (this._polling || this._stopped) return;
-    this._polling = true;
-    try {
-      const pid = await this._findPid();
-      if (this._stopped) return;
-      if (pid === null || this.pid !== null && pid !== this.pid) {
-        this._stopWatching();
-        this.opts.onExit();
-      }
-    } finally {
-      this._polling = false;
-    }
-  }
-};
-async function disableLayer(adbPath, serial) {
-  for (const key of ["enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app", "gpu_debug_layers_gles"]) {
-    try {
-      await shell(adbPath, serial, `settings delete global ${key}`);
-    } catch {
-    }
-  }
-}
-
-// src/main/layer_protocol.ts
-function encodeRequest(msg) {
-  const payload = Buffer.from(JSON.stringify(msg), "utf8");
-  const header = Buffer.alloc(5);
-  header.writeUInt32LE(payload.length, 0);
-  header.writeUInt8(0, 4);
-  return Buffer.concat([header, payload]);
-}
-var FrameReader = class {
-  _buffered = Buffer.alloc(0);
-  /** The messages `chunk` completes, in order; a frame that does not parse goes to `onError` and is skipped. */
-  push(chunk2, onError) {
-    this._buffered = this._buffered.length ? Buffer.concat([this._buffered, chunk2]) : chunk2;
-    const out = [];
-    while (this._buffered.length >= 5) {
-      const len = this._buffered.readUInt32LE(0);
-      const kind = this._buffered.readUInt8(4);
-      if (this._buffered.length < 5 + len) break;
-      const payload = this._buffered.subarray(5, 5 + len);
-      this._buffered = this._buffered.subarray(5 + len);
-      if (kind === 0) {
-        try {
-          out.push(JSON.parse(payload.toString("utf8")));
-        } catch (e) {
-          onError?.({ kind: "json", error: String(e), payload });
-        }
-      } else if (kind === 1) {
-        const hl = payload.readUInt32LE(0);
-        let header;
-        try {
-          header = JSON.parse(payload.subarray(4, 4 + hl).toString("utf8"));
-        } catch (e) {
-          onError?.({ kind: "header", error: String(e), payload });
-          continue;
-        }
-        out.push({ ...header, __binary: new Uint8Array(payload.subarray(4 + hl)) });
-      }
-    }
-    return out;
-  }
-};
-
-// src/main/metal.ts
-import { execFileSync as execFileSync3, spawnSync } from "node:child_process";
-import fs11 from "node:fs";
-import path11 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
-var moduleDir2 = path11.dirname(fileURLToPath2(import.meta.url));
-var CAPTURE_LIBRARY2 = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path11.resolve(moduleDir2, "..", "..", "..", "..")], packaged = [path11.join(process.resourcesPath ?? "", "layer")]) {
-  const candidates = [];
-  if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
-  for (const root of roots) {
-    for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-      candidates.push(path11.join(root, dir, CAPTURE_LIBRARY2));
-    }
-  }
-  for (const dir of packaged) candidates.push(path11.join(dir, CAPTURE_LIBRARY2));
-  return candidates.find((p) => fs11.existsSync(p)) ?? null;
-}
-function resolveExecutable(exe) {
-  if (!exe.endsWith(".app")) return exe;
-  const macOS = path11.join(exe, "Contents", "MacOS");
-  const plist = path11.join(exe, "Contents", "Info.plist");
-  if (fs11.existsSync(plist)) {
-    try {
-      const name = execFileSync3(
-        "/usr/libexec/PlistBuddy",
-        ["-c", "Print :CFBundleExecutable", plist],
-        { encoding: "utf8" }
-      ).trim();
-      const candidate = path11.join(macOS, name);
-      if (name && fs11.existsSync(candidate)) return candidate;
-    } catch {
-    }
-  }
-  const byBundleName = path11.join(macOS, path11.basename(exe, ".app"));
-  if (fs11.existsSync(byBundleName)) return byBundleName;
-  try {
-    const entries = fs11.readdirSync(macOS);
-    if (entries.length === 1) return path11.join(macOS, entries[0]);
-  } catch {
-  }
-  return exe;
-}
-function injectionBlockedReason(exe) {
-  const r = spawnSync(
-    "codesign",
-    ["-d", "-v", "--entitlements", "-", "--xml", exe],
-    { encoding: "utf8" }
-  );
-  const output = `${r.stderr ?? ""}${r.stdout ?? ""}`;
-  if (!/flags=[^\s]*runtime/.test(output)) return null;
-  const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
-  const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
-  if (hasDyld && hasLibrary) return null;
-  return `${path11.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
-
-  /usr/bin/codesign --force --deep --sign - --options runtime \\
-    --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
-    "<the .app>"
-
-This invalidates the application's signature and notarization, so do it to a development build rather than to a shipping copy.`;
-}
-function captureEnvironment(library, port, log, validation = false, stacktraces = false) {
-  const env = {
-    // A stack at every object creation (src/metal/src/stacktrace.mm), the launch dialog's option.
-    MTLINSP_STACKTRACES: stacktraces ? "1" : "0",
-    // Appended rather than replacing: another inserted library is the caller's business.
-    DYLD_INSERT_LIBRARIES: [library, ...process.env.DYLD_INSERT_LIBRARIES ? [process.env.DYLD_INSERT_LIBRARIES] : []].join(":"),
-    MTLINSP_PORT: String(port),
-    MTLINSP_LOG: log ? "1" : "0",
-    // Lets the library write an Xcode GPU trace of a frame on request (src/metal/src/gpu_trace.mm);
-    // without it MTLCaptureManager refuses the document destination.
-    ...process.env.METAL_CAPTURE_ENABLED ? {} : { METAL_CAPTURE_ENABLED: "1" }
-  };
-  if (validation) {
-    const defaults = {
-      MTL_DEBUG_LAYER: "1",
-      MTL_DEBUG_LAYER_ERROR_MODE: "nslog",
-      MTL_DEBUG_LAYER_WARNING_MODE: "nslog",
-      MTL_SHADER_VALIDATION: "1",
-      MTL_SHADER_VALIDATION_REPORT_TO_STDERR: "1"
-    };
-    for (const [key, value] of Object.entries(defaults)) {
-      if (!process.env[key]) env[key] = value;
-    }
-  }
-  return env;
-}
-
-// src/renderer/stack_requests.ts
-var REQUEST_TIMEOUT_MS = 15e3;
-function requestStacks(session, ids) {
-  const db = session.database;
-  const out = /* @__PURE__ */ new Map();
-  const missing = [];
-  for (const id of ids) {
-    const cached = db.stacks.get(id);
-    if (cached) out.set(id, cached);
-    else missing.push(id);
-  }
-  if (!missing.length || db.stacksAvailable === false) return Promise.resolve(out);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish2 = (ok) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onStacktraces.disconnect(listener);
-      if (!ok) {
-        resolve(out.size ? out : null);
-        return;
-      }
-      for (const id of missing) {
-        const s = db.stacks.get(id);
-        if (s) out.set(id, s);
-      }
-      resolve(out);
-    };
-    const listener = () => finish2(true);
-    const timer = setTimeout(() => finish2(false), REQUEST_TIMEOUT_MS);
-    db.onStacktraces.addListener(listener);
-    void session.send({ action: "RequestStacktraces", ids: missing }).then((ok) => {
-      if (!ok) finish2(false);
-    });
-  });
-}
-async function resolveSymbols(session, addresses, symbolizeOnHost2) {
-  const out = await resolveFromLayer(session, addresses);
-  if (symbolizeOnHost2) await symbolizeOnHost2(out);
-  return out;
-}
-function resolveFromLayer(session, addresses) {
-  const db = session.database;
-  const out = /* @__PURE__ */ new Map();
-  const missing = [];
-  for (const a of addresses) {
-    const cached = db.symbols.get(a);
-    if (cached) out.set(a, cached);
-    else if (!missing.includes(a)) missing.push(a);
-  }
-  if (!missing.length) return Promise.resolve(out);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish2 = () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onSymbols.disconnect(listener);
-      for (const a of missing) {
-        const f = db.symbols.get(a);
-        if (f) out.set(a, f);
-      }
-      resolve(out);
-    };
-    const listener = () => finish2();
-    const timer = setTimeout(finish2, REQUEST_TIMEOUT_MS);
-    db.onSymbols.addListener(listener);
-    void session.send({ action: "RequestSymbols", addresses: missing }).then((ok) => {
-      if (!ok) finish2();
-    });
-  });
-}
-
-// src/renderer/capture_file.ts
-var BLOB_TIMEOUT_MS = 15e3;
-function fetchBlob(session, object, index) {
-  const db = session.database;
-  const key = `${object.id}:${index}`;
-  const cached = db.blobData.get(key);
-  if (cached) return Promise.resolve(cached);
-  if (!session.connected) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    let done = false;
-    const finish2 = (data) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      db.onObjectBlob.disconnect(listener);
-      resolve(data);
-    };
-    const listener = (id, idx, data) => {
-      if (id === object.id && idx === index) finish2(data);
-    };
-    const timer = setTimeout(() => finish2(null), BLOB_TIMEOUT_MS);
-    db.onObjectBlob.addListener(listener);
-    void session.send({ action: "RequestBlob", id: object.id, index }).then((ok) => {
-      if (!ok) finish2(null);
-    });
-  });
-}
-function capturedIds(db, data) {
-  const ids = /* @__PURE__ */ new Set();
-  for (const c2 of data.commands) {
-    if (c2.object) ids.add(c2.object.__id);
-    if (c2.secondary) ids.add(c2.secondary);
-    db.collectReferences(c2.args, ids);
-    db.collectReferences(c2.descriptors, ids);
-  }
-  for (const t of data.textures) ids.add(t.info.id);
-  for (const b of data.buffers.values()) ids.add(b.info.buffer);
-  return ids;
-}
-function referencedObjects(session, data) {
-  const db = session.database;
-  const ids = /* @__PURE__ */ new Set();
-  for (const c2 of data.commands) {
-    if (c2.object) ids.add(c2.object.__id);
-    if (c2.secondary) ids.add(c2.secondary);
-    db.collectReferences(c2.args, ids);
-    db.collectReferences(c2.descriptors, ids);
-    db.collectReferences(c2.replaced, ids);
-  }
-  for (const t of data.textures) {
-    ids.add(t.info.id);
-    ids.add(t.info.commandBuffer);
-  }
-  for (const b of data.buffers.values()) {
-    ids.add(b.info.buffer);
-    ids.add(b.info.commandBuffer);
-  }
-  for (const v of db.validation) db.collectReferences(v.objects, ids);
-  for (const o of db.objectsByType.get("VkAccelerationStructureKHR")?.values() ?? []) ids.add(o.id);
-  for (const o of db.objectsByType.get("VkAccelerationStructureNV")?.values() ?? []) ids.add(o.id);
-  for (const o of db.objectsByType.get("ID3D12RaytracingAccelerationStructure")?.values() ?? []) ids.add(o.id);
-  const out = /* @__PURE__ */ new Map();
-  const queue = [...ids];
-  while (queue.length) {
-    const id = queue.pop();
-    if (out.has(id)) continue;
-    const o = db.getObject(id);
-    if (!o) continue;
-    out.set(id, o);
-    if (o.parentId && !out.has(o.parentId)) queue.push(o.parentId);
-    for (const dep of o.dependencies) if (!out.has(dep.id)) queue.push(dep.id);
-    const more = /* @__PURE__ */ new Set();
-    db.collectReferences(o.updates, more);
-    if (o.isDeleted) db.collectReferences(o.args, more);
-    for (const m of more) if (!out.has(m)) queue.push(m);
-  }
-  return [...out.values()].sort((a, b) => a.id - b.id);
-}
-async function serializeCapture(session, data, options = {}) {
-  const onProgress = options.onProgress;
-  const payloads = [];
-  let payloadBytes = 0;
-  const addPayload = (bytes) => {
-    if (!bytes) return void 0;
-    const p = [payloadBytes, bytes.byteLength];
-    payloads.push(bytes);
-    payloadBytes += bytes.byteLength;
-    return p;
-  };
-  const objects = referencedObjects(session, data);
-  const records = [];
-  let fetched = 0;
-  const withBlobs = objects.filter((o) => o.blobs.length).length;
-  for (const o of objects) {
-    const blobs = [];
-    for (let i = 0; i < o.blobs.length; i++) {
-      const b = o.blobs[i];
-      if (onProgress) onProgress(`saving: shader ${++fetched} of ${withBlobs}...`);
-      const bytes = await fetchBlob(session, o, i);
-      blobs.push({ name: b.name, size: b.size, ...bytes ? { payload: addPayload(bytes) } : {} });
-    }
-    records.push({
-      id: o.id,
-      parent: o.parentId,
-      type: o.type,
-      cmd: o.cmd,
-      index: o.index,
-      handle: o.handle,
-      label: o.label || null,
-      args: o.args,
-      blobs,
-      updates: o.updates,
-      deleted: o.isDeleted
-    });
-  }
-  const db = session.database;
-  const addresses = /* @__PURE__ */ new Set();
-  for (const c2 of data.commands) for (const a of c2.stack ?? []) addresses.add(a);
-  let symbols;
-  if (addresses.size && !options.forReplay) {
-    if (onProgress) onProgress("saving: symbols...");
-    const resolved = await (options.resolveSymbols ?? ((a) => resolveSymbols(session, a)))([...addresses]);
-    symbols = {};
-    for (const [a, f] of resolved) symbols[a] = f;
-  }
-  let stacks;
-  if (!options.forReplay && db.stacksAvailable !== false && (session.connected || db.stacks.size)) {
-    if (onProgress) onProgress("saving: stack traces...");
-    const got = await requestStacks(session, objects.map((o) => o.id));
-    if (got && db.stacksAvailable !== false) {
-      stacks = {};
-      for (const [id, frames] of got) if (frames.length) stacks[id] = frames;
-    }
-  }
-  if (onProgress) onProgress("saving: writing...");
-  const manifest = {
-    format: CAPTURE_FORMAT,
-    version: CAPTURE_VERSION,
-    api: data.api,
-    application: "GPU Inspector",
-    savedAt: (/* @__PURE__ */ new Date()).toISOString(),
-    source: { name: session.name },
-    frame: data.frame,
-    frames: data.frames,
-    ...data.requestLabel ? { label: data.requestLabel } : {},
-    frameTimeMs: db.frameTimeMs,
-    submitMs: db.submitMs,
-    refreshMs: db.refreshMs,
-    refreshSource: db.refreshSource,
-    displayRefreshMs: db.displayRefreshMs,
-    frameBoundary: db.frameBoundary,
-    objects: records,
-    commands: data.commands,
-    textures: data.textures.map((t) => ({ info: t.info, ...t.data ? { payload: addPayload(t.data) } : {} })),
-    buffers: [...data.buffers.values()].map((b) => ({ info: b.info, ...b.data ? { payload: addPayload(b.data) } : {} })),
-    passTimings: [...data.passTimings.values()],
-    ...data.passTimingOrigin !== null ? { passTimingOrigin: data.passTimingOrigin } : {},
-    ...data.overdraw.length ? { overdraw: data.overdraw.map((o) => ({ info: o.info, ...o.data ? { payload: addPayload(o.data) } : {} })) } : {},
-    ...data.pixelHistory ? { pixelHistory: data.pixelHistory } : {},
-    // The mask goes out as a payload, like a texture's pixels: one byte per pixel of the pass.
-    ...data.drawOverlays.size ? { drawOverlays: [...data.drawOverlays.values()].map(({ mask, ...info }) => ({ info, ...mask ? { payload: addPayload(mask) } : {} })) } : {},
-    ...data.drawStats?.length ? { drawStats: data.drawStats } : {},
-    ...data.hwCounters ? { hwCounters: data.hwCounters } : {},
-    ...data.cpuTimeline ? { cpuTimeline: data.cpuTimeline } : {},
-    ...data.ablations.length ? { ablations: data.ablations } : {},
-    validation: db.validation,
-    ...symbols ? { symbols } : {},
-    ...stacks ? { stacks } : {}
-  };
-  return encodeCaptureFile(manifest, payloads, {
-    // Secondary command buffers are already inlined into the list; their nested copies are dropped.
-    // As a hook rather than a map over the list, so a large capture never holds a second copy of it.
-    element: { commands: (c2) => {
-      const { children: _children, ...rest } = c2;
-      return rest;
-    } }
-  });
-}
-
-// src/mcp/live_session.ts
-var MAX_LOG_LINES = 2e3;
-var MAX_FRAME_STATS = 600;
-var DEFAULT_QUIET_MS = 2e3;
-var MAX_QUIET_MS = 3e4;
-var SNAPSHOT_TIMEOUT_MS = 1e4;
-var KILL_TIMEOUT_MS = 3e3;
-var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
-  "CaptureFrameResults",
-  "CaptureFrameCommands",
-  "CaptureTextureFrames",
-  "CaptureTextureData",
-  "CaptureBuffers",
-  "CaptureBufferData",
-  "CapturePassTimings",
-  "CaptureOverdraw",
-  "CaptureOverdrawData",
-  "CaptureDrawStats",
-  "CaptureDrawOverlay",
-  "CaptureDrawOverlayData",
-  "CaptureMeshOutput",
-  "CaptureMeshOutputData",
-  "CapturePixelHistory",
-  "CaptureCpuTimeline"
-]);
-var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-function capturesDir() {
-  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path12.join(os8.tmpdir(), "gpu-inspector-captures");
-}
-function checkoutRoots() {
-  const roots = [];
-  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  roots.push(path12.resolve(path12.dirname(fileURLToPath3(import.meta.url)), "..", ".."));
-  return roots;
-}
-function installedLayerDirs() {
-  const home = os8.homedir();
-  if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path12.join(home, "AppData", "Local");
-    const names = ["GPUInspector", "GPU Inspector", "gpu-inspector"];
-    const apps = names.map((name) => path12.join(local, "Programs", name));
-    for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(...names.map((name) => path12.join(programFiles, name)));
-    }
-    return apps.map((dir) => path12.join(dir, "resources", "layer"));
-  }
-  if (process.platform === "darwin") {
-    const dirs = [];
-    for (const dir of ["/Applications", path12.join(home, "Applications")]) {
-      for (const bundle of ["GPUInspector.app", "GPU Inspector.app"]) dirs.push(path12.join(dir, bundle, "Contents", "Resources", "layer"));
-    }
-    return dirs;
-  }
-  return ["/opt/GPUInspector/resources/layer", "/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
-}
-function androidLayer() {
-  const candidates = [
-    process.env.INSPECTOR_ANDROID_LAYER_DIR,
-    ...checkoutRoots().map((root) => path12.join(root, "build", "android")),
-    ...installedLayerDirs().map((dir) => path12.join(dir, "android"))
-  ].filter((d) => !!d);
-  return findAndroidLayer(candidates);
-}
-function applicationName(db) {
-  for (const o of db.objectsByType.get("VkInstance")?.values() ?? []) {
-    const info = o.descriptor?.pApplicationInfo;
-    const name = isObject(info) ? str(info.pApplicationName) : "";
-    if (name) return name;
-  }
-  return null;
-}
-var LiveSession = class {
-  constructor(id, name, port, launched) {
-    this.id = id;
-    this.name = name;
-    this.port = port;
-    this.launched = launched;
-    const db = this.database;
-    db.onFrameStats.addListener((msg) => {
-      this.frameStats.push({ at: Date.now(), msg });
-      if (this.frameStats.length > MAX_FRAME_STATS) this.frameStats.splice(0, this.frameStats.length - MAX_FRAME_STATS);
-    });
-    db.onValidationMessage.addListener((entry2, isNew) => {
-      if (isNew) this.appendLog(`validation ${entry2.severity}${entry2.idName ? ` ${entry2.idName}` : ""}: ${entry2.message.split("\n")[0].slice(0, 300)}`);
-    });
-    db.onLeakReport.addListener((r) => this.appendLog(`leak report: ${r.ownerClass} ${r.owner} destroyed with ${r.count} live objects`));
-    db.onDeviceLost.addListener((r) => this.appendLog(`GPU device lost (${r.call}): ${r.message}`));
-    db.onOtherMessage.addListener((msg) => {
-      if (msg.action === "ShaderReplaced") {
-        this.appendLog(`shader edit: pipeline ${msg.pipeline} ${msg.stage}: ${msg.ok ? msg.replacement ? `applied as object ${msg.replacement}` : "restored" : `failed: ${msg.error ?? "unknown error"}`}`);
-      } else if (msg.action === "AppCaptureRequest") {
-        void this._appCapture(Math.max(1, Math.floor(msg.frameCount) || 1), typeof msg.label === "string" ? msg.label.trim().slice(0, 200) : "");
-      }
-    });
-  }
-  database = new ObjectDatabase();
-  log = [];
-  /** Frame reports with the time each arrived. */
-  frameStats = [];
-  startedAt = Date.now();
-  state = "connecting";
-  detail = "";
-  pid = null;
-  exitCode = null;
-  _proc = null;
-  _socket = null;
-  _listeners = /* @__PURE__ */ new Set();
-  _capturing = false;
-  /** Set while stop() terminates the application, so its exit reads as that rather than as a crash. */
-  _stopping = false;
-  /** The launched application is gone: it exited, failed to start, or was stopped. */
-  _ended = false;
-  /**
-   * A launched target that is not a child process of this server (an Android application): how
-   * to stop it, and how to repair the way to it when connections are refused (a lost adb forward).
-   */
-  remote = null;
-  /** The captures the application asked for itself, oldest first. */
-  appCaptures = [];
-  /** Told of each app-requested capture's saved file, so the server can open it in its store. */
-  onAppCaptureSaved = null;
-  /**
-   * The application called gpu_inspector_capture (include/gpu_inspector.h): the same capture the
-   * desktop UI would take, with the defaults capture_frames uses, saved under the application's
-   * label and handed to the store. One already being taken means the capture library ignores
-   * the request, so it is recorded as dropped rather than waited on.
-   */
-  async _appCapture(frameCount, label) {
-    const what = `${frameCount} frame${frameCount === 1 ? "" : "s"}${label ? ` "${label}"` : ""}`;
-    const record = { at: Date.now(), label, frameCount, state: "capturing" };
-    this.appCaptures.push(record);
-    if (this._capturing) {
-      record.state = "dropped";
-      this.appendLog(`the application asked for a capture (${what}) while one was being taken; the capture library ignores it`);
-      return;
-    }
-    this.appendLog(`the application asked for a capture: ${what}`);
-    try {
-      const result = await this.capture({
-        frames: frameCount,
-        profilePasses: true,
-        renderTargets: true,
-        buffers: true,
-        images: true,
-        stacktraces: false,
-        maxBufferBytes: 128 * 1024,
-        timeoutMs: 6e4
-      });
-      if (label) result.data.requestLabel = label;
-      const file = await this.saveCapture(result.data);
-      record.state = "saved";
-      record.file = file;
-      record.frame = result.data.frame;
-      this.appendLog(`the application's capture (${what}) was saved as ${file}`);
-      this.onAppCaptureSaved?.(this, file);
-    } catch (e) {
-      record.state = "failed";
-      record.error = e instanceof Error ? e.message : String(e);
-      this.appendLog(`the application's capture (${what}) failed: ${record.error}`);
-    }
-  }
-  get connected() {
-    return this._socket !== null && !this._socket.destroyed;
-  }
-  /**
-   * The API the capture library reports objects of, by their type names' prefixes (backend.ts):
-   * a built-in API's, or a plugin's; null before any arrived.
-   */
-  get api() {
-    for (const type of this.database.objectsByType.keys()) {
-      const b = backendForObjectType(type);
-      if (b && b.id !== "vulkan") return b.id;
-    }
-    return this.database.allObjects.size ? "vulkan" : null;
-  }
-  appendLog(line) {
-    this.log.push(line);
-    if (this.log.length > MAX_LOG_LINES) this.log.splice(0, this.log.length - MAX_LOG_LINES);
-  }
-  setState(state, detail = "") {
-    this.state = state;
-    this.detail = detail;
-    this.appendLog(`[${state}]${detail ? ` ${detail}` : ""}`);
-  }
-  send(msg) {
-    if (!this._socket || this._socket.destroyed) return Promise.resolve(false);
-    this._socket.write(encodeRequest(msg));
-    return Promise.resolve(true);
-  }
-  /** Hears every message from the capture library, after the object database; returns the unsubscribe. */
-  onMessage(listener) {
-    this._listeners.add(listener);
-    return () => {
-      this._listeners.delete(listener);
-    };
-  }
-  /** The first message `match` accepts (its return value), or null after `timeoutMs`. */
-  waitFor(match, timeoutMs) {
-    return new Promise((resolve) => {
-      const off = this.onMessage((msg) => {
-        const hit = match(msg);
-        if (hit === void 0) return;
-        clearTimeout(timer);
-        off();
-        resolve(hit);
-      });
-      const timer = setTimeout(() => {
-        off();
-        resolve(null);
-      }, timeoutMs);
-    });
-  }
-  /** Starts the application; its output goes to the session's log. */
-  startProcess(exe, args, cwd, env) {
-    const proc = spawn3(exe, args, { cwd, env, stdio: ["ignore", "pipe", "pipe"] });
-    this._proc = proc;
-    this.pid = proc.pid ?? null;
-    for (const stream of [proc.stdout, proc.stderr]) {
-      let rest = "";
-      stream?.on("data", (d) => {
-        rest += d.toString("utf8");
-        const lines = rest.split(/\r?\n/);
-        rest = lines.pop() ?? "";
-        for (const line of lines) if (line.length) this.appendLog(line);
-      });
-    }
-    proc.on("exit", (code, signal) => {
-      if (this._proc !== proc) return;
-      this._proc = null;
-      this.pid = null;
-      this._ended = true;
-      this.exitCode = String(signal ?? code);
-      this._disconnect();
-      this.setState("exited", this._stopping ? "terminated by stop_app" : `code ${this.exitCode}`);
-    });
-    proc.on("error", (e) => {
-      if (this._proc !== proc) return;
-      this._proc = null;
-      this.pid = null;
-      this._disconnect();
-      this._ended = true;
-      this.setState("error", e.message);
-    });
-  }
-  /**
-   * Connects to the capture library, retrying until it answers, the launched process exits, or
-   * `timeoutMs` passes; resolves once the snapshot of live objects that follows a connection is in.
-   */
-  async connect(timeoutMs) {
-    const deadline = Date.now() + timeoutMs;
-    this.setState("connecting", `port ${this.port}`);
-    let attempts = 0;
-    while (Date.now() < deadline) {
-      if (this._ended) return false;
-      const sock = await this._tryConnect();
-      attempts++;
-      if (sock) {
-        const snapshot = this._waitForSnapshot(SNAPSHOT_TIMEOUT_MS, sock);
-        this._attach(sock);
-        if (await snapshot !== "closed" || this.connected) {
-          const name = applicationName(this.database);
-          if (name && !this.launched) this.name = name;
-          return this.connected;
-        }
-      } else if (this.remote?.repair && attempts % 4 === 0) {
-        await this.remote.repair().catch(() => void 0);
-      }
-      await sleep(this.launched && !this.remote ? 250 : 500);
-    }
-    this.setState("disconnected", `nothing answered on port ${this.port}`);
-    return false;
-  }
-  _tryConnect() {
-    return new Promise((resolve) => {
-      const sock = net2.createConnection({ host: "127.0.0.1", port: this.port });
-      sock.once("connect", () => {
-        sock.removeAllListeners("error");
-        resolve(sock);
-      });
-      sock.once("error", () => {
-        sock.destroy();
-        resolve(null);
-      });
-    });
-  }
-  _attach(sock) {
-    sock.setNoDelay(true);
-    this._socket = sock;
-    const reader = new FrameReader();
-    let heard = false;
-    sock.on("data", (chunk2) => {
-      if (!heard) {
-        heard = true;
-        this.setState("connected", `port ${this.port}`);
-      }
-      const messages = reader.push(chunk2, (e) => this.appendLog(`bad ${e.kind === "json" ? "JSON" : "binary header"} from the capture library: ${e.error}`));
-      for (const msg of messages) {
-        this.database.handleMessage(msg);
-        for (const listener of [...this._listeners]) listener(msg);
-      }
-    });
-    const gone = () => {
-      if (this._socket !== sock) return;
-      this._socket = null;
-      if (this.state === "connected") this.setState("disconnected", "the connection closed (the application exited, or another client connected to it)");
-    };
-    sock.on("error", gone);
-    sock.on("close", gone);
-    void this.send({ action: "Ping" });
-  }
-  /**
-   * Resolves when the snapshot the capture library sends on connection has arrived, when the
-   * socket closes first ("closed" if no snapshot had begun), or after `timeoutMs`.
-   */
-  _waitForSnapshot(timeoutMs, sock) {
-    const db = this.database;
-    return new Promise((resolve) => {
-      let started = false;
-      const done = (outcome) => {
-        clearTimeout(timer);
-        db.onSnapshotBegin.disconnect(begin);
-        db.onAddObject.disconnect(add);
-        sock.off("close", closed);
-        resolve(outcome);
-      };
-      const begin = (count2) => {
-        started = true;
-        if (count2 === 0) done("snapshot");
-      };
-      const add = (_object, inSnapshot) => {
-        if (started && !inSnapshot) done("snapshot");
-      };
-      const closed = () => done(started ? "snapshot" : "closed");
-      const timer = setTimeout(() => done("timeout"), timeoutMs);
-      db.onSnapshotBegin.addListener(begin);
-      db.onAddObject.addListener(add);
-      sock.once("close", closed);
-    });
-  }
-  _disconnect() {
-    const sock = this._socket;
-    this._socket = null;
-    sock?.destroy();
-  }
-  /**
-   * Requests a capture and waits for all of it: until the capture library marks its end, or, for
-   * one built before that marker existed, until the stream has been silent for a while after the
-   * commands and buffers are in.
-   */
-  async capture(o) {
-    if (!this.connected) throw new Error(`${this.id} is not connected (${this.state}${this.detail ? `: ${this.detail}` : ""}).`);
-    if (this._capturing) throw new Error(`${this.id} is already capturing.`);
-    this._capturing = true;
-    const data = new CaptureData();
-    const started = Date.now();
-    let commandsComplete = false;
-    let marker = false;
-    let lastTraffic = 0;
-    const onCommands = () => {
-      commandsComplete = true;
-    };
-    data.onCommandsComplete.addListener(onCommands);
-    const off = this.onMessage((msg) => {
-      if (msg.action === "CaptureComplete") {
-        marker = true;
-      } else if (CAPTURE_ACTIONS.has(msg.action)) {
-        lastTraffic = Date.now();
-        data.handleMessage(msg);
-      }
-    });
-    const quietMs = Number(process.env.GPU_INSPECTOR_CAPTURE_QUIET_MS) || DEFAULT_QUIET_MS;
-    try {
-      const request = {
-        action: "Capture",
-        frameCount: o.frames,
-        ...o.atFrame !== void 0 ? { atFrame: o.atFrame } : {},
-        captureTextures: o.renderTargets,
-        captureBuffers: o.buffers,
-        captureImages: o.images,
-        profilePasses: o.profilePasses,
-        stacktraces: o.stacktraces,
-        maxBufferSize: o.maxBufferBytes,
-        ...o.overdraw ? { overdraw: true } : {},
-        ...o.pixelHistory ? { pixelHistory: o.pixelHistory } : {}
-      };
-      await this.send(request);
-      for (; ; ) {
-        await sleep(50);
-        const now = Date.now();
-        const silence = lastTraffic ? now - lastTraffic : 0;
-        const loading = data.buffersLoading || data.texturesLoading;
-        const complete = marker ? "marker" : commandsComplete && silence >= (loading ? Math.max(quietMs, MAX_QUIET_MS) : quietMs) ? "quiet" : null;
-        if (complete) {
-          this.database.pinCaptured(capturedIds(this.database, data));
-          return { data, completion: complete, elapsedMs: now - started };
-        }
-        if (!this.connected) {
-          throw new Error(data.commands.length ? "The connection was lost while the capture was streaming." : "The connection was lost before the capture arrived.");
-        }
-        if (now - started > o.timeoutMs) {
-          throw new Error(lastTraffic ? `The capture did not finish streaming within ${o.timeoutMs / 1e3} s.` : `No capture arrived within ${o.timeoutMs / 1e3} s: a capture starts at ${o.atFrame !== void 0 ? `frame ${o.atFrame}` : "the next frame"}, so the application may not be rendering (minimized, paused, or waiting).`);
-        }
-      }
-    } finally {
-      off();
-      data.onCommandsComplete.disconnect(onCommands);
-      this._capturing = false;
-    }
-  }
-  /** Saves a capture with the objects it references, fetching their shaders from the capture library; returns the file. */
-  async saveCapture(data, file) {
-    const bytes = await serializeCapture(this, data, {
-      resolveSymbols: (addresses) => resolveSymbols(this, addresses, (frames) => symbolizeSymbolMap(this.database, frames))
-    });
-    let target;
-    if (file) {
-      target = path12.resolve(file);
-      fs12.mkdirSync(path12.dirname(target), { recursive: true });
-    } else {
-      const dir = capturesDir();
-      fs12.mkdirSync(dir, { recursive: true });
-      const name = captureFileName(this.name, data.frame, data.frames, data.requestLabel);
-      target = path12.join(dir, name);
-      for (let n = 2; fs12.existsSync(target); n++) target = path12.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
-    }
-    fs12.writeFileSync(target, bytes);
-    return target;
-  }
-  /**
-   * Rebuilds a pipeline with one stage's code replaced (Vulkan); the layer's answer, or null without
-   * one. The request names the stage by its flag, the answer by the layer's stage name ("fragment").
-   */
-  async replaceShader(pipeline, stageFlag, stageName, spirv, timeoutMs = 15e3) {
-    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline && (msg.stage === stageName || msg.stage === stageFlag) ? msg : void 0, timeoutMs);
-    await this.send({ action: "ReplaceShader", pipeline, stage: stageFlag, spirv: Buffer.from(spirv).toString("base64") });
-    return answer;
-  }
-  /** Drops the replacement of one stage (or every stage) of a pipeline. */
-  async restoreShader(pipeline, stageFlag, timeoutMs = 15e3) {
-    const answer = this.waitFor((msg) => msg.action === "ShaderReplaced" && msg.pipeline === pipeline ? msg : void 0, timeoutMs);
-    await this.send({ action: "RestoreShader", pipeline, ...stageFlag ? { stage: stageFlag } : {} });
-    return answer;
-  }
-  /** One subresource of a live image, which the capture library reads back at the application's next frame; null without an answer. */
-  async readImage(id, mip, layer, timeoutMs) {
-    const answer = this.waitFor((msg) => msg.action === "ImageData" && msg.id === id ? msg : void 0, timeoutMs);
-    await this.send({ action: "RequestImage", id, mip, layer });
-    return answer;
-  }
-  /** Reads a descriptor set's current contents into its object's updates (`bindings`); false without an answer. */
-  async readDescriptorSet(id, timeoutMs = 1e4) {
-    const answer = this.waitFor((msg) => msg.action === "ObjectUpdate" && msg.id === id && "bindings" in msg ? true : void 0, timeoutMs);
-    await this.send({ action: "RequestDescriptorSet", id });
-    return await answer ?? false;
-  }
-  /** A remote target ended: it exited on its own, failed to start, or was stopped. */
-  remoteEnded(state, detail) {
-    if (this._ended) return;
-    this._ended = true;
-    this.pid = null;
-    this._disconnect();
-    this.setState(state, detail);
-  }
-  /** Terminates a launched application; an attached one is only disconnected. */
-  async stop() {
-    const proc = this._proc;
-    const remote = this.remote;
-    this._disconnect();
-    if (remote) {
-      this.remote = null;
-      if (!this._ended) {
-        this._stopping = true;
-        await remote.stop().catch(() => void 0);
-        this.remoteEnded("exited", "terminated by stop_app");
-      }
-      return;
-    }
-    if (!proc) {
-      if (this.state === "connected" || this.state === "connecting") this.setState("disconnected", "detached");
-      return;
-    }
-    this._stopping = true;
-    await new Promise((resolve) => {
-      const timer = setTimeout(resolve, KILL_TIMEOUT_MS);
-      proc.once("exit", () => {
-        clearTimeout(timer);
-        resolve();
-      });
-      try {
-        terminate(proc);
-      } catch {
-        clearTimeout(timer);
-        resolve();
-      }
-    });
-  }
-};
-var SessionManager = class {
-  _sessions = /* @__PURE__ */ new Map();
-  /** Given to every session (LiveSession.onAppCaptureSaved): the server opens the file in its capture store. */
-  onAppCaptureSaved = null;
-  _add(session) {
-    session.onAppCaptureSaved = (s, file) => this.onAppCaptureSaved?.(s, file);
-    this._sessions.set(session.id, session);
-  }
-  _counter = 0;
-  _latest = null;
-  /** Launches an application with the capture library in it and waits for it to connect. */
-  async launch(o, waitMs) {
-    const requested = path12.resolve(o.exe);
-    if (!fs12.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
-    const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
-    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
-    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
-    let exe = requested;
-    let spawnArgs = args;
-    let env;
-    const notes = [];
-    const cwd = o.cwd && fs12.existsSync(o.cwd) ? o.cwd : path12.dirname(requested);
-    if (process.platform === "darwin") {
-      const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
-      if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
-      exe = resolveExecutable(requested);
-      const blocked = injectionBlockedReason(exe);
-      if (blocked) throw new Error(blocked);
-      env = { ...process.env, ...o.env, ...captureEnvironment(library, port, true, !!o.validation, o.stacktraces ?? true) };
-      notes.push(`capture library: ${library}`);
-      notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "DYLD_INSERT_LIBRARIES"));
-    } else {
-      const layerDir = o.layerDir ?? findLayerDir(checkoutRoots(), installedLayerDirs());
-      const d3d12 = process.platform === "win32" ? findD3D12Tools(checkoutRoots(), installedLayerDirs()) : null;
-      if (!layerDir && !d3d12) {
-        throw new Error(process.platform === "win32" ? "Neither GPU Inspector's Vulkan layer nor its D3D12 capture library was found: build them (docs/BUILDING.md), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR / INSPECTOR_D3D12_DIR) to the directory holding them." : "The GPU Inspector Vulkan layer was not found: build it (see GPU Inspector's README), install GPU Inspector, or pass layerDir (or set INSPECTOR_LAYER_DIR) to the directory holding VK_LAYER_INSPECTOR_capture.json.");
-      }
-      const validationDir = o.validation && layerDir ? findValidationLayerDir() : null;
-      const vulkan = layerDir ? {
-        layerDir,
-        validationDir,
-        port,
-        log: true,
-        recordAlways: !!o.recordAlways,
-        breadcrumbs: !!o.breadcrumbs,
-        shaderStatistics: !!o.shaderStatistics,
-        stacktraces: o.stacktraces ?? true,
-        // set_search_paths' symbolDirs are where a PDB that is not beside its module is looked for,
-        // by the capture library's own symbolizer as well as by this server's.
-        symbolDirs: searchPaths("symbolDirs").dirs.join(";"),
-        validation: !!o.validation,
-        syncValidation: !!o.syncValidation,
-        gpuValidation: !!o.gpuValidation
-      } : null;
-      const validationNote = o.validation && layerDir ? validationDir ? `validation layer: ${validationDir}` : "validation layer not found (install the Vulkan SDK or set VULKAN_SDK)" : null;
-      if (process.platform === "win32") {
-        const launch = windowsLaunch({
-          exe: requested,
-          args,
-          cwd,
-          env: { ...process.env, ...o.env },
-          vulkan,
-          follow: o.follow,
-          plugins: launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true),
-          d3d12: d3d12 ? {
-            tools: d3d12,
-            port,
-            log: true,
-            recordAlways: !!o.recordAlways,
-            stacktraces: o.stacktraces ?? true,
-            symbolDirs: searchPaths("symbolDirs").dirs.join(";"),
-            validation: !!o.validation
-          } : null
-        });
-        exe = launch.exe;
-        spawnArgs = launch.args;
-        env = launch.env;
-        notes.push(...launch.notes);
-      } else {
-        env = { ...process.env, ...o.env, ...vulkanLayerEnvironment(vulkan) };
-        notes.push(`layer: ${layerDir}`);
-        notes.push(...applyPreloads(env, launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true), "LD_PRELOAD"));
-      }
-      if (validationNote) notes.push(validationNote);
-    }
-    const session = new LiveSession(`app-${++this._counter}`, `${path12.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
-    session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
-    for (const note of notes) session.appendLog(note);
-    this._add(session);
-    this._latest = session;
-    session.startProcess(exe, spawnArgs, cwd, env);
-    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
-    return session;
-  }
-  /**
-   * Watches for a Direct3D 12 application to start and injects the capture library into it as it
-   * does, which is what D3D12 has in place of the Vulkan implicit layer (main/d3d12.ts): the
-   * session's process is dxinsp_launch.exe --watch, and it stands in for the application afterwards,
-   * so stopping the session ends the watch and never an application this server did not start.
-   *
-   * It races the application's start, so the watch has to be running before the application is
-   * launched; a process that already has a device cannot be caught, and the capture library then
-   * never opens its port, which is what a connection that does not come means.
-   */
-  async waitForApp(o, waitMs) {
-    if (process.platform !== "win32") throw new Error("Waiting for an application to start is a Windows and Direct3D 12 feature; on other platforms launch_app starts it with the capture library in it.");
-    const image = path12.basename(o.image);
-    if (!image) throw new Error(`Pass the application's executable name ("TestVulkan.exe") or its full path as image.`);
-    const d3d12 = findD3D12Tools(checkoutRoots(), installedLayerDirs());
-    if (!d3d12) {
-      throw new Error("GPU Inspector's D3D12 capture library was not found: build it (src/d3d12/README.md), install GPU Inspector, or set INSPECTOR_D3D12_DIR to the directory holding dxinsp_capture.dll and dxinsp_launch.exe.");
-    }
-    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
-    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
-    const extras = launchPlugins(port, !!o.recordAlways, o.stacktraces ?? true).filter((p) => !p.missing.length && p.inject.length);
-    const watch = watchLaunch(d3d12, {
-      extraDlls: extras.flatMap((p) => p.inject),
-      extraEnv: Object.assign({}, ...extras.map((p) => p.env)),
-      image: o.image,
-      timeoutSeconds: Math.ceil(waitMs / 1e3),
-      once: true,
-      port,
-      log: true,
-      recordAlways: !!o.recordAlways,
-      stacktraces: o.stacktraces ?? true,
-      validation: !!o.validation
-    });
-    const session = new LiveSession(`app-${++this._counter}`, `${image} when it starts (D3D12)`, port, true);
-    session.appendLog(`watching for ${image}: ${watch.exe} ${watch.args.join(" ")}`);
-    session.appendLog(`D3D12 capture library: ${d3d12.library}`);
-    this._add(session);
-    this._latest = session;
-    session.startProcess(watch.exe, watch.args, d3d12.dir, { ...process.env });
-    if (await session.connect(waitMs) && o.recordAlways) await session.send({ action: "Settings", recordAlways: true });
-    return session;
-  }
-  /** The Android devices adb sees, and where the Android layer is; adb null when it was not found. */
-  async androidDevices() {
-    const adb2 = findAdb();
-    return { adb: adb2, devices: adb2 ? await listDevices(adb2) : [], layer: androidLayer()?.dir ?? null };
-  }
-  /**
-   * Starts an Android package on a device with the layer installed and enabled for it, and waits
-   * for the layer to connect over the adb forward. A launch that fails on the device is reported
-   * through the session's state and log rather than thrown.
-   */
-  async launchAndroid(o, waitMs) {
-    const adb2 = findAdb();
-    if (!adb2) throw new Error("adb was not found: install the Android SDK platform-tools, or set ANDROID_HOME or INSPECTOR_ADB.");
-    const plugin = androidPluginFor(o.api);
-    if (plugin === void 0) throw new Error(`No plugin captures ${o.api} on Android: list_android_devices lists the APIs there are.`);
-    const layer = androidLayer();
-    if (!layer && !plugin) {
-      throw new Error("The Android layer was not found: build it with tools/build_android.py in the GPU Inspector checkout (it needs the Android NDK), install GPU Inspector, or set INSPECTOR_ANDROID_LAYER_DIR.");
-    }
-    const devices = await listDevices(adb2);
-    const listed = devices.length ? devices.map((d) => `${d.serial} (${d.state}${d.model ? `, ${d.model}` : ""})`).join(", ") : "none";
-    let device;
-    if (o.device) {
-      device = devices.find((d) => d.serial === o.device);
-      if (!device) throw new Error(`No device ${o.device}: adb lists ${listed}.`);
-      if (device.state !== "device") throw new Error(`${o.device} is ${device.state}${device.state === "unauthorized" ? ": accept the USB debugging prompt on the device" : ""}.`);
-    } else {
-      const usable = devices.filter((d) => d.state === "device");
-      if (usable.length !== 1) {
-        throw new Error(usable.length ? `${usable.length} devices are connected (${listed}): pass device.` : `No Android device is connected and authorized (adb lists ${listed}).`);
-      }
-      device = usable[0];
-    }
-    const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
-    const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
-    const serial = device.serial;
-    const session = new LiveSession(`app-${++this._counter}`, `${o.package} (Android, ${device.model || serial})`, port, true);
-    this._add(session);
-    this._latest = session;
-    const target = new AndroidTarget({
-      adb: adb2,
-      serial,
-      package: o.package,
-      activity: o.activity ?? "",
-      port,
-      log: true,
-      recordAlways: !!o.recordAlways,
-      stacktraces: o.stacktraces ?? true,
-      layer,
-      plugin: plugin ? (abilist) => pluginAndroidLaunch(plugin, abilist, o.package, { port, log: true, recordAlways: !!o.recordAlways, stacktraces: o.stacktraces ?? true }) : null,
-      onLog: (line) => session.appendLog(line),
-      onExit: () => session.remoteEnded("exited", "the application exited on the device")
-    });
-    const stop = async () => {
-      await target.stop();
-      await disableLayer(adb2, serial);
-    };
-    session.remote = { stop, repair: () => target.ensureForward() };
-    session.appendLog(`launching ${o.package} on ${serial} (${device.model || "unknown model"}, Android API ${device.sdk}, ${device.abi})`);
-    try {
-      await target.start();
-    } catch (e) {
-      session.remote = null;
-      await stop().catch(() => void 0);
-      session.remoteEnded("error", e instanceof Error ? e.message : String(e));
-      return session;
-    }
-    session.pid = target.pid;
-    await session.connect(waitMs);
-    return session;
-  }
-  /** Attaches to an application whose capture library already listens on `port`. */
-  async attach(port, waitMs) {
-    const session = new LiveSession(`app-${++this._counter}`, `port ${port}`, port, false);
-    if (!await session.connect(waitMs)) {
-      throw new Error(`Nothing answered on port ${port} within ${waitMs / 1e3} s. An application listens there when it was started with GPU Inspector's capture library (VKINSP_PORT, or MTLINSP_PORT on macOS).`);
-    }
-    this._add(session);
-    this._latest = session;
-    return session;
-  }
-  /** A session by id, or the one started most recently. */
-  get(id) {
-    if (!id) {
-      if (!this._latest) throw new Error("No live session: launch_app starts an application with the capture library, attach_app connects to one already running.");
-      return this._latest;
-    }
-    const s = this._sessions.get(id);
-    if (!s) throw new Error(`No live session "${id}". ${this._sessions.size ? `Sessions: ${[...this._sessions.keys()].join(", ")}.` : "There are none."}`);
-    return s;
-  }
-  list() {
-    return [...this._sessions.values()];
-  }
-  async stopAll() {
-    await Promise.all([...this._sessions.values()].map((s) => s.stop()));
-  }
-};
 
 // src/mcp/debug_tools.ts
 var MAX_TRACE = 400;

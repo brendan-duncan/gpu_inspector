@@ -1414,6 +1414,7 @@ function replayFor(opts: ReplayRequest, analysis: ReplayAnalysis): Promise<Repla
 }
 
 ipcMain.handle("inspector:measureOverdraw", (_e, opts: ReplayRequest): Promise<OverdrawRun> => replayFor(opts, { kind: "overdraw" }));
+ipcMain.handle("inspector:validateCapture", (_e, opts: ReplayRequest & { sync?: boolean }): Promise<ReplayRun> => replayFor(opts, { kind: "validate", sync: !!opts.sync }));
 // A capture closed, or changed so that it is serialized again: its replay stops and its file goes.
 ipcMain.handle("inspector:releaseReplay", (_e, key: string) => releaseReplayKey(key));
 // Vulkan per-draw timing and counters: the frame replayed with queries around each draw

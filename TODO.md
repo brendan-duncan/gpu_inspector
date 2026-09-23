@@ -1012,8 +1012,16 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
       validation and D3D12's `SetEnableGPUBasedValidation`, which catch the out-of-bounds descriptor
       and buffer access no CPU-side check can see. `test/triangle --oob` writes past its storage
       buffer from the shader and is reported as `VUID-vkCmdDispatch-storageBuffers-06936`.
-      Still open from this item: running a capture again under validation after the fact, which
-      `vkinsp_replay --validate` already does for the replay but not as a report in the UI.
+      Running a capture again under validation after the fact: the **Validate** report
+      (`renderer/replay_validation.ts`, `_view.ts`; `showValidate` in `capture_panel.ts`) replays the
+      file with `vkinsp_replay --validate --validate-data`, which now records the captured command
+      each message fired on and the phase (setup / frame / submit: `ValidationRecord`,
+      `ReplayReport::currentCommand`), so the rows open the command and the command list marks it.
+      Synchronization validation is a second run with the layer's setting in the environment; the
+      MCP's `get_validation` takes `replay: true` and `sync`. The `validate-report` UI case captures
+      `--bad-scissor` *without* the layer and finds `VUID-vkCmdSetScissor-x-00595` at the
+      vkCmdSetScissor command by replay. GPU-assisted validation is not offered on the replay yet
+      (`VK_LAYER_VALIDATE_GPU_BASED`, the same environment path; the `--oob` case would check it).
 - [ ] Replay on another device to tell a driver bug from an application bug (PIX replays on WARP):
       replay on lavapipe or SwiftShader and compare the render targets with the hardware result,
       which the replay's own comparison mostly does already.
