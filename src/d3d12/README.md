@@ -284,11 +284,20 @@ the boundaries the UI's pass model needs, and says so in the stream:
   `CaptureTextureInfo.passIndex` and a `PassTiming.passIndex` refer to.
 * A render pass the application **suspends** across command lists
   (`D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS` / `_RESUMING_PASS`, which Unity's URP uses) carries
-  nothing of the library's. Between a suspension and its resume Direct3D allows no
-  GPU-work-generating call at all: a query, a barrier or a copy there makes `Close` return `E_FAIL`,
-  and an application that checks it -- Unity does -- treats that as a lost device and exits. So a
-  split pass is recorded like any other and has no timings, no counters and no render target
-  read-back; the app's `suspended-pass` finding says how many there were.
+  almost nothing of the library's. Between a suspension and its resume Direct3D allows no copy and
+  no `ResolveQueryData`: one there makes `Close` return `E_FAIL`, and an application that checks it
+  -- Unity does -- treats that as a lost device and exits. So a split pass has no render target
+  read-back, and the app's `suspended-pass` finding says how many there were.
+  **It is timed, though.** A timestamp is a single `EndQuery`, which is allowed inside a pass
+  region, so each segment takes one at each end -- the begin where the pass begins, the end
+  *before* `EndRenderPass` is forwarded (`EndSplitPassTimestamp`), since after that the pass is
+  suspended and the runtime takes nothing. What used to make this impossible was the resolve, which
+  the library wrote into the application's list beside the query; it now resolves every pass's
+  queries itself, from a list of its own, once the frame's work has been waited for
+  (`Impl::ResolveQueries`). Counters are still not taken: `BeginQuery` / `EndQuery` pairs for
+  pipeline statistics and occlusion are not allowed inside a render pass region at all, which is
+  why no pass of the render-pass API has them. Measured on a Unity URP player, where 46 to 74 of a
+  frame's ~58 pass segments are suspended: the frame went from about 11 timed passes to all 58.
   What its draws *read* is still taken: the copies of the buffers and textures they bind are held
   per list (`RecorderSlot::afterSubmit`) and recorded into a list of the library's own, executed on
   the same queue right after the submission. That is after the draws, which is right for what a

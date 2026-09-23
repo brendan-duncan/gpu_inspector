@@ -1972,6 +1972,9 @@ void STDMETHODCALLTYPE Hook_EndRenderPass(List* This)
     if (Internal())
         return orig(This);
     CommandRecorder* rec = Rec(This);
+    // A split pass's end timestamp goes in here, inside the pass region: after the forward the pass
+    // is suspended and the runtime rejects every query (capture.h, EndSplitPassTimestamp).
+    Cap().EndSplitPassTimestamp(rec);
     CommandScope scope(rec);
     orig(This);
     // The vtable changes with the list's state here as well: after a pass that ends suspended

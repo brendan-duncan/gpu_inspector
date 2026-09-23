@@ -168,6 +168,13 @@ public:
      */
     void EndOpenPass(ID3D12GraphicsCommandList* list, bool synthetic);
     /**
+     * Before EndRenderPass is forwarded: writes a split pass's end timestamp while the list is
+     * still inside the pass region. Once the pass is suspended the runtime takes nothing, and
+     * EndPass -- which runs after the forward -- is too late for it. A pass that is not split
+     * writes its end timestamp there as before.
+     */
+    void EndSplitPassTimestamp(CommandRecorder* rec);
+    /**
      * After OMSetRenderTargets / BeginRenderPass was forwarded and recorded: opens a pass on the
      * targets (already resolved through the descriptor tracker), reserving its queries and writing
      * the begin timestamp. Returns the pass index within the list.

@@ -7611,7 +7611,7 @@ var D3D12FrameAnalysis = class {
         "suspended-pass",
         "low",
         "high",
-        `${suspended.count} render pass${suspended.count === 1 ? " is" : "es are"} suspended across command lists (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS / _RESUMING_PASS). Between a suspension and its resume Direct3D allows no work at all on the list, so these passes have no timings and their render targets were not read back; their commands are all here.`,
+        `${suspended.count} render pass${suspended.count === 1 ? " is" : "es are"} suspended across command lists (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS / _RESUMING_PASS). Between a suspension and its resume Direct3D allows no copy on the list, so their render targets were not read back; their commands and their GPU times are all here.`,
         suspended
       );
     }

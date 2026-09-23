@@ -1593,17 +1593,29 @@ library does not read back yet.
       player: without it, a capture landing on such a frame read 0 timings of its 29 timeable
       passes; with it, every timeable pass is timed, 10 of the 11 in one run coming from lists
       recorded before the frame (the log says how many).
-- [ ] The rest of what a Unity frame does not measure: **46 to 74 of its ~58 render pass segments are
-      suspended across command lists**, and a suspended pass takes no queries and no target read-back
-      by construction -- nothing may be added between a suspension and its resume, and a
-      `ResolveQueryData` there closes the list with E_FAIL (which is how the player was lost before).
-      That is now the dominant reason a Unity frame is measured thinly, not recording ahead. What
-      would fix it: stop resolving queries inside the application's lists. A timestamp is a single
-      `EndQuery` and is legal anywhere, so every segment could take one at each end; only the
-      resolve is forbidden mid-pass, and it does not have to be in the application's list at all --
-      the capture could resolve the whole used range once, from a list of its own, after the frame's
-      work is waited for at the finish. That also removes the E_FAIL hazard the split-pass rule
-      exists to avoid.
+- [x] A render pass suspended across command lists is timed. 46 to 74 of a Unity frame's ~58 pass
+      segments are suspended, and a suspended pass took no queries at all, so most of such a frame
+      had no GPU time. What actually forbade them was the *resolve*: a `ResolveQueryData` between a
+      suspension and its resume closes the list with E_FAIL, which is how the player was lost once.
+      A timestamp itself is a single `EndQuery`, which Direct3D allows inside a pass region, so each
+      segment now takes one at each end -- the begin where the pass begins, the end before
+      `EndRenderPass` is forwarded (`CaptureManager::EndSplitPassTimestamp`), since after that the
+      pass is suspended -- and nothing of the capture's is resolved in the application's lists any
+      more: `Impl::ResolveQueries` resolves every pass's queries from a list of the capture's own,
+      on a direct queue of the device, once the frame's work has been waited for at the finish. Only
+      the passes whose list actually ran are resolved, since resolving a query that was never
+      written is undefined where an unresolved slot reads as the zeros that mean "never ran". A list
+      recorded again drops the measurements of the recording it replaced (`DropUnrunMeasurements`),
+      which a warm-up frame's entries would otherwise keep beside the new ones.
+      `test/d3d12_triangle --suspend` splits its pass across two lists and the `d3d12-suspend` UI
+      case covers it, with the debug layer on. On the URP player: 11 of 58 passes timed before, 21
+      to 58 after, and the Frame Stats page reads *"the GPU ran 58 passes over 2.40 ms"* on a frame
+      that had no GPU time at all before. Checked on an RTX 4080 with the debug layer silent, and
+      against a heavier second half to prove the resumed segment is really measured (3.07 us for the
+      first half, 5.12 us for a second half of 2000 instances).
+      Still not taken on a split pass: the render targets (a copy there is what Direct3D forbids)
+      and pipeline statistics, which no pass of the render-pass API carries -- a `BeginQuery` /
+      `EndQuery` pair is not allowed inside a pass region, only timestamps are.
 - [ ] Lists recorded more than one frame ahead, which the warm-up frame does not reach: recording
       from two frames ahead, or keeping the last frame's recordings and using them when a list is
       submitted unchanged, would cover them. Not seen on the URP player, whose captured frames were

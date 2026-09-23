@@ -1945,6 +1945,25 @@ def d3d12_cases(triangle):
     launch = [f"--launch={triangle}"]
     saved = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12.gpucap")
 
+    def d3d12_suspend(state, log):
+        # --suspend: one render pass suspended at the end of a command list and resumed in the next,
+        # the way an engine that records a frame's passes on worker threads builds them (Unity does).
+        # Direct3D forbids a ResolveQueryData between the suspension and its resume -- a list holding
+        # one closes with E_FAIL, which the application reads as a lost device -- so the capture ends
+        # the passes' queries in place and resolves all of them itself at the finish. Both segments
+        # therefore have to be timed, and the debug layer has to be silent about it.
+        c = capture(state)
+        f = findings(state)
+        # timings=False in the shared check: it also asks for pipeline statistics, which no pass of
+        # the render-pass API carries (Direct3D allows only timestamp queries inside a pass region).
+        # The pass timings this case is about are checked on their own below.
+        return check_connected(state, log) + check_capture_basic(state, log, min_draws=2, textures=1, timings=False) + \
+            expect((c.get("passTimings") or 0) >= 2,
+                   f"{c.get('passTimings')} pass timings: both halves of a suspended render pass are timed") + \
+            expect(f.get("suspended-pass") == 2, f"suspended-pass findings {f.get('suspended-pass')} (expected 2)") + \
+            expect((session(state).get("validationErrors") or 0) == 0,
+                   "the debug layer reported an error: the capture's queries are not allowed where they were put")
+
     def d3d12_open(state, log):
         c = capture(state)
         return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") +             expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands in the reopened file") +             expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws in the reopened file") +             expect((c.get("texturesLoaded") or 0) >= 2, "the reopened file lost its render targets")
@@ -1974,6 +1993,7 @@ def d3d12_cases(triangle):
         Case("d3d12-plain", launch + ["--args=--compute", "--debug-capture", "--debug-command=22", "--debug-expand=Vertex Shader",
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
+        Case("d3d12-suspend", launch + ["--args=--suspend", "--validation", "--debug-capture"], d3d12_suspend, delay_ms=16000),
         Case("d3d12-timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
         Case("d3d12-capture-on-hitch", launch + ["--args=--hitch-every 90", "--debug-timing=5000", "--debug-capture-on-hitch"],
              capture_on_hitch, delay_ms=15000),

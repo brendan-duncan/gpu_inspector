@@ -13,7 +13,7 @@
 //   tiny-draws                   many draws of a handful of vertices
 //   single-threadgroup-dispatch  a dispatch of one thread group
 //   unrecorded-list              a submitted command list the capture holds no commands of
-//   suspended-pass               a render pass suspended across command lists, which carries no measurement
+//   suspended-pass               a render pass suspended across command lists, whose targets are not read back
 //   binding-table-alignment      a DispatchRays whose shader binding table breaks DXR's alignment rules
 //   empty-binding-table          a DispatchRays with no ray generation record, which traces nothing
 //
@@ -327,8 +327,8 @@ export class D3D12FrameAnalysis {
       this._addFolded("suspended-pass", "low", "high",
         `${suspended.count} render pass${suspended.count === 1 ? " is" : "es are"} suspended across command lists `
         + "(D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS / _RESUMING_PASS). Between a suspension and its resume Direct3D allows "
-        + "no work at all on the list, so these passes have no timings and their render targets were not read back; "
-        + "their commands are all here.", suspended);
+        + "no copy on the list, so their render targets were not read back; their commands and their GPU times are all here.",
+      suspended);
     }
     if (undefinedLoad.count) {
       this._addFolded("undefined-load", "high", "high", `${undefinedLoad.count} render pass${undefinedLoad.count === 1 ? "" : "es"} PRESERVE${undefinedLoad.count === 1 ? "s" : ""} a target the previous render pass on it ended with D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_DISCARD: the contents are undefined. Either preserve it there, or begin with CLEAR or DISCARD here.`, undefinedLoad);

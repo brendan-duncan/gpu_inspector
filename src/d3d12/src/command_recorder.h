@@ -68,14 +68,22 @@ struct ActivePass
     bool renderPassApi = false;           // BeginRenderPass/EndRenderPass rather than OMSetRenderTargets
     /**
      * The pass is suspended across command lists: BeginRenderPass carried SUSPENDING or RESUMING.
-     * Between a suspension and its resume no GPU work of any kind may be issued -- not a query,
-     * not a barrier, not a copy -- and a list that holds any closes with E_FAIL, which is fatal to
-     * the application. So the capture adds nothing to a split pass: it is recorded, and it has no
-     * timings and no read-back (README.md, "Passes").
+     * Between a suspension and its resume no GPU work of any kind may be issued -- not a copy, not
+     * a barrier, not a ResolveQueryData -- and a list that holds any closes with E_FAIL, which is
+     * fatal to the application. So the capture adds no copies and no read-back to a split pass
+     * (README.md, "Passes"). It does take a timestamp pair: a timestamp is a single EndQuery, which
+     * is allowed inside the pass region, and nothing is resolved in the application's lists any
+     * more -- the capture resolves every query itself at the finish.
      */
     bool split = false;
     /** The pass ends suspended: the list takes no GPU work after it either, until it is closed. */
     bool suspending = false;
+    /**
+     * The end timestamp has been written. A split pass writes it *before* EndRenderPass is
+     * forwarded (Hook_EndRenderPass), since after that the pass is suspended and the runtime takes
+     * nothing; every other pass writes it where the pass ends, as before.
+     */
+    bool timestampEnded = false;
     std::vector<BoundTarget> targets;
     uint32_t passIndex = 0;
     uint32_t width = 0;

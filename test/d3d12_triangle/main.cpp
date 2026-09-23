@@ -6,7 +6,7 @@
 // barriers and presents.
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
-//                        [--render-pass] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
+//                        [--render-pass] [--suspend] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
 //                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas]]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
@@ -205,6 +205,11 @@ struct App
     // --render-pass: BeginRenderPass / EndRenderPass with CLEAR and PRESERVE accesses instead of
     // OMSetRenderTargets and the clears (ID3D12GraphicsCommandList4).
     bool renderPass = false;
+    // --suspend: the render pass is suspended at the end of one command list and resumed in the
+    // next, which is how an engine that records a frame's passes on worker threads builds them
+    // (Unity does). Implies --render-pass; the two lists go in one ExecuteCommandLists, since a
+    // suspended pass has to be resumed by the next list the queue runs.
+    bool suspend = false;
     // --compute: every frame dispatches wave.hlsl into a UAV before the draw. Nothing reads it.
     bool compute = false;
     // --offscreen: no swap chain, no present; renders into its own targets, as Chrome's Dawn
@@ -260,6 +265,11 @@ struct App
     ComPtr<ID3D12CommandAllocator> allocators[kFrameCount];
     ComPtr<ID3D12GraphicsCommandList> list;
     ComPtr<ID3D12GraphicsCommandList4> list4;   // --render-pass
+    // --suspend: the list the suspended pass is resumed in, with an allocator per frame slot so it
+    // is only reset once the frame it was submitted in has finished.
+    ComPtr<ID3D12CommandAllocator> resumeAllocators[kFrameCount];
+    ComPtr<ID3D12GraphicsCommandList> resumeList;
+    ComPtr<ID3D12GraphicsCommandList4> resumeList4;
     ComPtr<ID3D12Fence> fence;
     HANDLE fenceEvent = nullptr;
     uint64_t fenceValues[kFrameCount]{};
@@ -525,6 +535,16 @@ struct App
         {
             fprintf(stderr, "--render-pass: ID3D12GraphicsCommandList4 is not available (Windows 10 1809 or newer)\n");
             exit(1);
+        }
+        if (suspend)
+        {
+            for (uint32_t i = 0; i < kFrameCount; i++)
+                CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&resumeAllocators[i])));
+            CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, resumeAllocators[0].Get(), nullptr,
+                IID_PPV_ARGS(&resumeList)));
+            CHECK(resumeList->Close());
+            resumeList->SetName(L"Resume command list");
+            CHECK(resumeList.As(&resumeList4));
         }
 
         CHECK(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
@@ -1420,7 +1440,10 @@ struct App
             ds.StencilBeginningAccess.Clear.ClearValue = ds.DepthBeginningAccess.Clear.ClearValue;
             ds.DepthEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
             ds.StencilEndingAccess.Type = stencil ? D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE : D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS;
-            list4->BeginRenderPass(1, &rt, &ds, D3D12_RENDER_PASS_FLAG_NONE);
+            // --suspend: this half ends suspended and the next list resumes it, so both halves
+            // preserve the targets -- what carries over is exactly what PRESERVE means. (NO_ACCESS
+            // would say the view is not used by the pass at all, which the runtime rejects.)
+            list4->BeginRenderPass(1, &rt, &ds, suspend ? D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS : D3D12_RENDER_PASS_FLAG_NONE);
         }
         else
         {
@@ -1456,27 +1479,74 @@ struct App
         if (renderPass)
             list4->EndRenderPass();
 
+        // Everything after the pass goes in whichever list is last: the frame's own, or the one
+        // that resumed the suspended pass (--suspend).
+        ID3D12GraphicsCommandList* tail = list.Get();
+        if (suspend)
+        {
+            // The pass is suspended between these two lists: it ends in neither, and the runtime
+            // rejects anything that generates GPU work in between -- which is what the capture
+            // library has to record around (README.md, "Passes"). The queue runs them back to back
+            // in one ExecuteCommandLists, which is what a suspended pass requires.
+            EndRayTracing();
+            CHECK(list->Close());
+            CHECK(resumeAllocators[frameIndex]->Reset());
+            CHECK(resumeList->Reset(resumeAllocators[frameIndex].Get(), pipeline.Get()));
+            ID3D12DescriptorHeap* resumeHeaps[] = {srvHeap.Get()};
+            resumeList->SetDescriptorHeaps(1, resumeHeaps);
+            D3D12_RENDER_PASS_RENDER_TARGET_DESC rt{};
+            rt.cpuDescriptor = rtv;
+            rt.BeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
+            rt.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
+            D3D12_RENDER_PASS_DEPTH_STENCIL_DESC ds{};
+            ds.cpuDescriptor = dsv;
+            ds.DepthBeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
+            ds.StencilBeginningAccess.Type = stencil ? D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE
+                                                     : D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS;
+            ds.DepthEndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
+            ds.StencilEndingAccess.Type = stencil ? D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE
+                                                  : D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_NO_ACCESS;
+            resumeList4->BeginRenderPass(1, &rt, &ds, D3D12_RENDER_PASS_FLAG_RESUMING_PASS);
+            if (stencil)
+                resumeList->OMSetStencilRef(1);
+            resumeList->RSSetViewports(1, &viewport);
+            resumeList->RSSetScissorRects(1, &scissor);
+            resumeList->SetGraphicsRootSignature(rootSignature.Get());
+            resumeList->SetGraphicsRootDescriptorTable(0, SrvGpuHandle(2 * frameIndex));
+            // The second half's cube is tinted differently, so the two halves are told apart on
+            // the screen as well as in the capture.
+            RootConstants second{t, 1u};
+            resumeList->SetGraphicsRoot32BitConstants(1, sizeof(second) / 4, &second, 0);
+            resumeList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            resumeList->IASetVertexBuffers(0, 1, &vertexBufferView);
+            resumeList->IASetIndexBuffer(&indexBufferView);
+            resumeList->DrawIndexedInstanced(36, 2, 0, 0, 0);
+            resumeList4->EndRenderPass();
+            tail = resumeList.Get();
+        }
+
         if (msaa)
         {
             D3D12_RESOURCE_BARRIER toResolve = Transition(msaaTarget.Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_RESOLVE_SOURCE);
-            list->ResourceBarrier(1, &toResolve);
-            list->ResolveSubresource(backBuffer, 0, msaaTarget.Get(), 0, kColorFormat);
+            tail->ResourceBarrier(1, &toResolve);
+            tail->ResolveSubresource(backBuffer, 0, msaaTarget.Get(), 0, kColorFormat);
             D3D12_RESOURCE_BARRIER after[2] = {
                 Transition(msaaTarget.Get(), D3D12_RESOURCE_STATE_RESOLVE_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
                 Transition(backBuffer, D3D12_RESOURCE_STATE_RESOLVE_DEST, D3D12_RESOURCE_STATE_PRESENT),
             };
-            list->ResourceBarrier(2, after);
+            tail->ResourceBarrier(2, after);
         }
         else if (idleState != D3D12_RESOURCE_STATE_RENDER_TARGET)
         {
             D3D12_RESOURCE_BARRIER toPresent = Transition(backBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, idleState);
-            list->ResourceBarrier(1, &toPresent);
+            tail->ResourceBarrier(1, &toPresent);
         }
-        EndRayTracing();
+        if (!suspend)
+            EndRayTracing();
 
-        CHECK(list->Close());
-        ID3D12CommandList* lists[] = {list.Get()};
-        queue->ExecuteCommandLists(1, lists);
+        CHECK(tail->Close());
+        ID3D12CommandList* lists[] = {list.Get(), resumeList.Get()};
+        queue->ExecuteCommandLists(suspend ? 2 : 1, lists);
         if (!offscreen)
             CHECK(swapChain->Present(1, 0));
         CHECK(queue->Signal(fence.Get(), nextFenceValue));
@@ -1597,6 +1667,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
             app.indirect = true;
         else if (!strcmp(argv[i], "--render-pass"))
             app.renderPass = true;
+        else if (!strcmp(argv[i], "--suspend"))
+        {
+            app.suspend = true;
+            app.renderPass = true;   // a suspended pass is a render-pass-API pass
+        }
         else if (!strcmp(argv[i], "--compute"))
             app.compute = true;
         else if (!strcmp(argv[i], "--offscreen"))

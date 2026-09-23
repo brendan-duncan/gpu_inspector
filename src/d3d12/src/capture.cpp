@@ -314,6 +314,19 @@ void OrphanEntries(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list)
     }
 }
 
+/**
+ * A list is recorded again, so its last recording's measurements are gone with it: the queries were
+ * in the commands the Reset dropped, and that recording can never run in the capture now. An entry
+ * that already has a frame ran before the Reset and stays.
+ */
+template <typename Entry>
+void DropUnrunMeasurements(std::vector<Entry>& entries, ID3D12GraphicsCommandList* list)
+{
+    entries.erase(std::remove_if(entries.begin(), entries.end(),
+                      [&](const Entry& e) { return e.list == list && e.frame == UINT32_MAX; }),
+        entries.end());
+}
+
 /** An entry answered to another list than the one that queued it (Entry::sharedBy). */
 template <typename Entry>
 void ShareEntry(Entry& e, ID3D12GraphicsCommandList* list)
@@ -340,6 +353,9 @@ struct TimingEntry
     uint32_t slot = 0;
     bool hasStats = false;
     bool hasOcclusion = false;
+    /** The queries to resolve for this pass at the finish (UINT32_MAX: none of that kind). */
+    uint32_t statsQuery = UINT32_MAX;
+    uint32_t occlusionQuery = UINT32_MAX;
 };
 
 /**
@@ -601,6 +617,13 @@ struct CaptureManager::Impl
     std::vector<DeferredCopy>* HeldCopiesOf(CommandRecorder* rec);
     /** Records and executes the copies the submitted lists held for after it (RecorderSlot::afterSubmit). */
     void RunAfterSubmitCopies(ID3D12Device* device, ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
+    /**
+     * Resolves the captured passes' queries into the readback buffer, from a list of the capture's
+     * own, once the frame's work has been waited for. Nothing of the capture's resolves inside the
+     * application's lists: a `ResolveQueryData` there is what a suspended render pass forbids, and
+     * doing it here is what lets such a pass be timed at all (EndPassQueries).
+     */
+    void ResolveQueries(const std::vector<TimingEntry>& timings);
     uint32_t CurrentFrame();   // frame ordinal of what is being recorded now (under mutex)
     void ReleaseCaptureObjects(DeviceCapture& dc);
     /** The mapped staging chunk an entry's data is in, or null. */
@@ -940,6 +963,11 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
         {
             OrphanEntries(i.textures, list);
             OrphanEntries(i.buffers, list);
+            // The timings and draw measurements of the recording this Reset replaced: unlike
+            // contents, which another list may still be given, a measurement belongs to the
+            // commands it was recorded among, and those are gone.
+            DropUnrunMeasurements(i.timings, list);
+            DropUnrunMeasurements(i.draws, list);
         }
     }
     bool stacks;
@@ -1168,7 +1196,11 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
         std::lock_guard lock(i.mutex);
         profile = i.TakesContents() && i.options.profilePasses;
     }
-    if (!profile || rec->bundle() || pass.split || !TimestampsAllowed(rec->type()))
+    // A pass suspended across command lists is timed like any other now: its timestamps are single
+    // EndQuery calls inside the pass region, and nothing of the capture's is resolved in the
+    // application's list any more (EndPassQueries). An adopted list is still left alone -- what
+    // state it is in when the capture finds it is unknown, so it may be mid-pass.
+    if (!profile || rec->bundle() || rec->adopted() || !TimestampsAllowed(rec->type()))
         return pass.passIndex;
     DeviceCapture* dc = i.CaptureFor(rec->device());
     if (!dc || !dc->timestampHeap || !dc->queryMapped)
@@ -1207,6 +1239,23 @@ void CaptureManager::EndOpenPass(ID3D12GraphicsCommandList* list, bool synthetic
         return;
     EndPass(rec, synthetic);
     OnComputePassEnd(rec);
+}
+
+void CaptureManager::EndSplitPassTimestamp(CommandRecorder* rec)
+{
+    if (!rec)
+        return;
+    ActivePass& pass = rec->pass();
+    // Only a split pass needs its end timestamp this early. Every other pass writes it in EndPass,
+    // after EndRenderPass has been forwarded, where it has always been written.
+    if (!pass.active || !pass.split || pass.timestampEnded || pass.timestampQuery == UINT32_MAX)
+        return;
+    DeviceCapture* dc = impl().FindCapture(rec->device());
+    if (!dc || !dc->timestampHeap)
+        return;
+    ScopedInternal internal;
+    rec->list()->EndQuery(dc->timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, pass.timestampQuery + 1);
+    pass.timestampEnded = true;
 }
 
 void CaptureManager::OnDraw(CommandRecorder* rec)
@@ -1351,25 +1400,27 @@ namespace
 {
 
 /** The queries of a pass or compute pass ended and resolved into the pass's slot of the readback buffer. */
+/**
+ * Ends a pass's queries in the application's list, and resolves none of them: a `ResolveQueryData`
+ * is exactly what a list may not hold while a render pass is suspended (it closes with E_FAIL and
+ * the application reads that as a lost device), and it is the reason a suspended pass used to go
+ * unmeasured. An `EndQuery` is allowed there, so the queries are ended here and the capture
+ * resolves all of them itself, from a list of its own, once the frame's work is done
+ * (`Impl::ResolveQueries`).
+ *
+ * `timestampEnded` says the end timestamp was already written before EndRenderPass was forwarded,
+ * which is where a split pass writes it.
+ */
 void EndPassQueries(DeviceCapture& dc, ID3D12GraphicsCommandList* list, uint32_t timestampQuery, uint32_t statsQuery,
-    uint32_t occlusionQuery)
+    uint32_t occlusionQuery, bool timestampEnded = false)
 {
     ScopedInternal internal;
-    const uint32_t slot = timestampQuery / 2;
-    const uint64_t base = (uint64_t)slot * kSlotBytes;
-    ID3D12Resource* readback = dc.queryReadback.get();
     if (statsQuery != UINT32_MAX)
-    {
         list->EndQuery(dc.statsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, statsQuery);
-        list->ResolveQueryData(dc.statsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, statsQuery, 1, readback, base + kStatsOffset);
-    }
     if (occlusionQuery != UINT32_MAX)
-    {
         list->EndQuery(dc.occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, occlusionQuery);
-        list->ResolveQueryData(dc.occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, occlusionQuery, 1, readback, base + kOcclusionOffset);
-    }
-    list->EndQuery(dc.timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, timestampQuery + 1);
-    list->ResolveQueryData(dc.timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, timestampQuery, 2, readback, base);
+    if (!timestampEnded)
+        list->EndQuery(dc.timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, timestampQuery + 1);
 }
 
 /** Records the copy of one subresource into a placed footprint of the staging buffer, with the barriers its state needs. */
@@ -1403,15 +1454,33 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
     ActivePass& pass = rec->pass();
     if (!pass.active)
         return;
-    // A pass suspended across command lists takes nothing (ActivePass::split): its commands are
-    // recorded, and a query, a barrier or a copy here would close the list with E_FAIL.
+    // A pass suspended across command lists takes no copies and no read-back (ActivePass::split):
+    // a copy or a barrier here would close the list with E_FAIL. Its timestamps are already in the
+    // list, though -- written inside the pass region by BeginPass and EndSplitPassTimestamp, and
+    // resolved by the capture itself at the finish -- so it is timed like any other pass.
     if (pass.split)
     {
         if (synthetic)
             rec->Record("EndRenderTargets", std::string());
         pass.active = false;
+        TimingEntry te;
+        const bool timed = pass.timestampQuery != UINT32_MAX && pass.timestampEnded;
+        if (timed)
+        {
+            te.device = rec->device();
+            te.list = rec->list();
+            te.listId = Tracker::Get().IdOf(rec->list());
+            te.passIndex = pass.passIndex;
+            te.compute = false;
+            te.slot = pass.timestampQuery / 2;
+        }
         std::lock_guard lock(i.mutex);
         ++i.splitPasses;
+        if (timed && i.TakesContents())
+        {
+            te.warmup = i.state != Impl::State::Capturing;
+            i.timings.push_back(te);
+        }
         return;
     }
     ID3D12GraphicsCommandList* list = rec->list();
@@ -1439,10 +1508,14 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
     // device. The timing is only worth keeping while the capture is still collecting them.
     if (dc && pass.timestampQuery != UINT32_MAX)
     {
-        EndPassQueries(*dc, list, pass.timestampQuery, pass.statsQuery, pass.occlusionQuery);
+        EndPassQueries(*dc, list, pass.timestampQuery, pass.statsQuery, pass.occlusionQuery, pass.timestampEnded);
+        // A split pass whose end timestamp was never written has half a pair and no timing: its
+        // EndRenderPass was not the one this capture saw (a pass open when the capture began, or a
+        // list closed inside one).
+        const bool paired = !pass.split || pass.timestampEnded;
         // A pass timed during the warm-up frame is kept the same way, marked: the list it is in may
         // be one the captured frame runs, and then the timing is the captured frame's.
-        if (takesContents)
+        if (takesContents && paired)
         {
             TimingEntry te;
             te.device = rec->device();
@@ -1454,6 +1527,8 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
             te.slot = pass.timestampQuery / 2;
             te.hasStats = pass.statsQuery != UINT32_MAX;
             te.hasOcclusion = pass.occlusionQuery != UINT32_MAX;
+            te.statsQuery = pass.statsQuery;
+            te.occlusionQuery = pass.occlusionQuery;
             std::lock_guard lock(i.mutex);
             i.timings.push_back(te);
         }
@@ -2346,6 +2421,87 @@ std::vector<DeferredCopy>* CaptureManager::Impl::HeldCopiesOf(CommandRecorder* r
         return nullptr;
     // A bundle's copies go to the list that executes it, which decides then (OnExecuteBundle).
     return !rec->bundle() && closed ? &it->second.afterSubmit : &it->second.deferred;
+}
+
+void CaptureManager::Impl::ResolveQueries(const std::vector<TimingEntry>& timings)
+{
+    if (timings.empty())
+        return;
+    std::vector<DeviceCapture*> captures;
+    {
+        std::lock_guard lock(deviceMutex);
+        for (auto& [d, dc] : devices)
+            captures.push_back(dc.get());
+    }
+    for (DeviceCapture* dc : captures)
+    {
+        if (!dc->queryReadback || !dc->timestampHeap)
+            continue;
+        // Only the passes a list of the captured frame ran: resolving a query that was never
+        // written gives undefined data, where an unresolved slot reads as the zeros the readback
+        // buffer holds, which is how "the list never ran" is told apart (SendPassTimings).
+        std::vector<const TimingEntry*> mine;
+        for (const TimingEntry& te : timings)
+            if (te.device == dc->device && te.frame != UINT32_MAX && te.slot < kPassSlots)
+                mine.push_back(&te);
+        if (mine.empty())
+            continue;
+        // A direct queue of the device's own: the queries were made on its lists, and occlusion and
+        // pipeline statistics resolve on a direct queue. The frame's work has been waited for by
+        // now (Finish), so what the heaps hold is complete.
+        ID3D12CommandQueue* queue = nullptr;
+        {
+            std::lock_guard lock(dc->mutex);
+            for (ID3D12CommandQueue* q : dc->queues)
+            {
+                if (q && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT)
+                {
+                    queue = q;
+                    break;
+                }
+            }
+        }
+        ScopedInternal internal;
+        ComPtr<ID3D12CommandAllocator> allocator;
+        ComPtr<ID3D12GraphicsCommandList> list;
+        if (!queue || FAILED(dc->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(allocator.put()))) ||
+            FAILED(dc->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr, IID_PPV_ARGS(list.put()))))
+        {
+            LogAlways("capture: the passes' queries could not be resolved, so the frame has no timings");
+            continue;
+        }
+        ID3D12Resource* readback = dc->queryReadback.get();
+        for (const TimingEntry* te : mine)
+        {
+            const uint64_t base = (uint64_t)te->slot * kSlotBytes;
+            list->ResolveQueryData(dc->timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, te->slot * 2, 2, readback, base);
+            if (te->statsQuery != UINT32_MAX && dc->statsHeap)
+                list->ResolveQueryData(dc->statsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, te->statsQuery, 1, readback,
+                    base + kStatsOffset);
+            if (te->occlusionQuery != UINT32_MAX && dc->occlusionHeap)
+                list->ResolveQueryData(dc->occlusionHeap.get(), D3D12_QUERY_TYPE_OCCLUSION, te->occlusionQuery, 1, readback,
+                    base + kOcclusionOffset);
+        }
+        if (FAILED(list->Close()))
+        {
+            LogAlways("capture: the list resolving the passes' queries did not close");
+            continue;
+        }
+        ID3D12CommandList* submit[] = {list.get()};
+        queue->ExecuteCommandLists(1, submit);
+        // Waited for here rather than left to the caller: the results are read straight after.
+        if (dc->fence && dc->event)
+        {
+            const uint64_t value = ++dc->fenceValue;
+            if (SUCCEEDED(queue->Signal(dc->fence.get(), value)) && dc->fence->GetCompletedValue() < value &&
+                SUCCEEDED(dc->fence->SetEventOnCompletion(value, dc->event)))
+            {
+                if (WaitForSingleObject(dc->event, 10000) != WAIT_OBJECT_0)
+                    LogAlways("capture: the query resolve did not finish within 10 s; the timings may be incomplete");
+            }
+        }
+        Log("capture: resolved the queries of %zu pass(es)", mine.size());
+    }
 }
 
 void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
@@ -3494,7 +3650,7 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device)
     // A pass the application suspends across command lists is recorded whole and measured not at
     // all: between the suspension and its resume nothing may be added to the list (ActivePass::split).
     if (splitPassCount)
-        LogAlways("capture: %u render pass segment(s) were suspended across command lists, so they have no timings and their render targets were not read back",
+        LogAlways("capture: %u render pass segment(s) were suspended across command lists; they are timed, but their render targets were not read back",
             splitPassCount);
 
     // Everything recorded in the frames has been executed; wait for it on every queue that took
@@ -3540,6 +3696,11 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device)
                 c.mapped = nullptr;
         }
     }
+
+    // The passes' queries, resolved from a list of the capture's own now that every queue has
+    // finished: nothing of the capture's is resolved inside the application's lists, which is what
+    // lets a render pass suspended across command lists be timed at all (EndPassQueries).
+    ResolveQueries(data.timings);
 
     SendCommands(data);
     SendTextures(data.textures);
