@@ -47,6 +47,13 @@ public:
      */
     void Draw(ID3D12Device* device, IDXGISwapChain* swapChain, ID3D12CommandQueue* queue);
 
+    /**
+     * The capture hotkey, polled once per present from the Present hook (hud_hotkey.h). Apart from
+     * Draw, because a swap chain the HUD cannot draw into must still take the capture the user
+     * just asked for.
+     */
+    void PollHotkey();
+
     /** Before ResizeBuffers: the render target views of the old back buffers are about to dangle. */
     void OnResizeBuffers(IDXGISwapChain* swapChain);
     /** The swap chain is going away. */

@@ -7,7 +7,7 @@ End-to-end checks of the inspector against the triangle test application and sav
     python tools/ui_tests.py --keep               # keep the logs, dumps and screenshots
 
 Each case runs the Electron UI once with the testing flags (--launch or --debug-open, --debug-capture,
---debug-pause, --debug-dump, --debug-view, --debug-expand, --debug-export, --debug-settle, --screenshot,
+--debug-pause, --debug-hud, --debug-dump, --debug-view, --debug-expand, --debug-export, --debug-settle, --screenshot,
 --quit-after-screenshot), then checks the JSON
 screenshot time (sessions, captures, frame findings, validation links, symbols) and the layer's
 log. A capture directory may hold `<name>.expect.json` next to `<name>.gpucap` with the findings
@@ -100,6 +100,14 @@ def find_metal_replay():
 def electron():
     exe = os.path.join(APP, "node_modules", ".bin", "electron.cmd" if IS_WIN else "electron")
     return exe if os.path.isfile(exe) else None
+
+
+def press_key(image, key="F11", delay=5.0):
+    """A companion that presses a key in the launched application's window (tools/press_key.py)."""
+    def start():
+        return subprocess.Popen([sys.executable, os.path.join(ROOT, "tools", "press_key.py"), image, str(delay), key],
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return start
 
 
 class Case:
@@ -1477,6 +1485,17 @@ def app_capture_open(state, log):
                f"the reopened tab is named {c.get('label')!r}")
 
 
+def hotkey_capture(state, log):
+    """
+    The HUD's capture hotkey (src/vulkan/src/hud_hotkey.h): --debug-hud switches the HUD on, which
+    arms the key, and the companion presses F11 in the application's own window. The capture that
+    comes back is the one the Capture button would have taken, so the tab is an ordinary one.
+    """
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect("capture requested by the capture hotkey (F11)" in log,
+               "the library never saw the F11 press: the hotkey did not reach it, or the window was not in front")
+
+
 def triangle_cases(triangle):
     launch = [f"--launch={triangle}"]
     source_root = os.path.join(ROOT, "test")
@@ -1572,6 +1591,11 @@ def triangle_cases(triangle):
         Case("debug-decompiled", launch + ["--debug-capture", "--debug-view=debugger:compute::end:decompiled", "--debug-settle=4000"],
              triangle_debug_decompiled, delay_ms=18000),
     ]
+    # The capture hotkey needs a real key press into the application's foreground window, which
+    # only tools/press_key.py can synthesize, and only on Windows.
+    if IS_WIN:
+        cases.append(Case("hotkey-capture", launch + ["--debug-hud"], hotkey_capture, delay_ms=16000,
+                          companion=press_key(os.path.basename(triangle), "F11", 4)))
     # The render target tab measures overdraw and follows a pixel by replaying the capture, so this
     # one only runs where vkinsp_replay is built (src/replay/, docs/REPLAY.md). The click lands on the
     # image, which fits its pane; --debug-settle waits for the replay the click set going.
@@ -1957,6 +1981,10 @@ def d3d12_cases(triangle):
         Case("d3d12-memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
         Case("d3d12-memory-residency", launch + ["--args=--evict", "--debug-memory=6000"], memory_residency, delay_ms=12000),
         Case("d3d12-app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
+        # The HUD's capture hotkey on the other Windows backend: the same key press, answered by
+        # the D3D12 library's own HUD (src/d3d12/src/hud.cpp).
+        Case("d3d12-hotkey-capture", launch + ["--debug-hud"], hotkey_capture, delay_ms=16000,
+             companion=press_key(os.path.basename(triangle), "F11", 4)),
         Case("d3d12-pause-capture", launch + ["--debug-capture", "--debug-pause"], pause_capture, delay_ms=18000),
         Case("d3d12-shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),
         Case("d3d12-mesh-output", launch + ["--debug-capture", "--debug-view=mesh"],

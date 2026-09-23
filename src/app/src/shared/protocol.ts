@@ -804,10 +804,13 @@ export interface MemoryEventsMessage {
 
 /**
  * The application asked for a capture through include/gpu_inspector.h (`gpu_inspector_capture`,
- * `gpu_inspector_capture_named`). The capture library passes the request on rather than acting on
- * it: the capture bar's options are the inspector's, and a tab has to be waiting for the capture's
- * messages. `label` is the application's name for the capture (an assertion's message, a test's
- * name), which the tab and the saved file take.
+ * `gpu_inspector_capture_named`), or the user pressed the HUD's capture hotkey in the
+ * application's own window (src/vulkan/src/hud_hotkey.h). The capture library passes the request
+ * on rather than acting on it: the capture bar's options are the inspector's, and a tab has to be
+ * waiting for the capture's messages. `label` is the application's name for the capture (an
+ * assertion's message, a test's name), which the tab and the saved file take. `frameCount` 0 means
+ * the capture bar's own count, which is what the hotkey sends: the key should take the capture the
+ * Capture button would.
  */
 export interface AppCaptureRequestMessage { action: "AppCaptureRequest"; frameCount: number; label?: string }
 
@@ -1260,6 +1263,8 @@ export interface AppConfig {
      * checks that a capture asked for while paused is taken without resuming it (frame_pause.h).
      */
     pause?: boolean;
+  /** --debug-hud: switch the in-app HUD, and with it the capture hotkey, on once connected. */
+  hud?: boolean;
     /** --debug-expand=<text>: open the selected command's section whose title contains that text. */
     expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */

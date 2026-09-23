@@ -898,6 +898,15 @@ vendor's driver is listed at the end so nobody spends time on it.
       a step advances exactly one frame number, and the synchronization validation layer reports no
       hazard the application did not already have. The D3D12 half is checked the same way with the
       debug layer on; **the Metal half is written but not compiled or run** — it needs a Mac.
+      The HUD also arms a capture hotkey (`src/vulkan/src/hud_hotkey.h`): F11 in the application's
+      own window sends the same `AppCaptureRequest` `gpu_inspector_capture` does, so the capture is
+      the one the Capture button takes — which is the only way to capture a frame you have to be in
+      the application to reach, since clicking away from it changes the frame. Windows polls
+      `GetAsyncKeyState` and tests the foreground window's process, Linux polls `XQueryKeymap` and
+      asks the window manager whose window is active, macOS uses an `NSEvent` local monitor (no
+      accessibility permission, and focus for free). `--debug-hud` and `tools/press_key.py` make it
+      testable: `hotkey-capture` and `d3d12-hotkey-capture` in `tools/ui_tests.py` press the key in
+      the sample's window for real. **The Metal and Linux halves are written but not run.**
 - [ ] The paused frame scrubbed in the target's own window, which is the half of Nsight's live pause
       still missing: while paused, re-issue the frame's commands up to draw N and present that, so
       the application's window shows the frame building up. The blocker is that the layer keeps a

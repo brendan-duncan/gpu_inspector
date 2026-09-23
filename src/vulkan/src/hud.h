@@ -127,6 +127,7 @@ private:
         double shownMaxMs = 0;
     };
 
+    void PollHotkey();
     DeviceResources* Resources(DeviceData* dev, VkQueue queue);
     bool EnsureSwapchain(DeviceData* dev, DeviceResources& r, VkSwapchainKHR sc, SwapchainResources*& out);
     bool EnsureVertexBuffer(DeviceData* dev, DeviceResources& r, Frame& f, VkDeviceSize bytes);

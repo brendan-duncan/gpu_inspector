@@ -89,7 +89,7 @@ and nothing else. Desktop OpenGL is not captured at all.
 | Leaked objects at device destruction | ● [with creation stacks](INSPECT.md#leaks) | ○ | ◐ memory captures | ○ |
 | Creation call stacks | ● | ● | ● | ● |
 | Device properties, limits, heaps, extensions | ● | ● | ● | ● |
-| Frame time graph and in-application HUD | ● [HUD and live pause](INSPECT.md#the-in-app-hud): Vulkan, D3D12, Metal | ◐ overlay with frame time | ○ | ◐ HUD |
+| Frame time graph and in-application HUD | ● [HUD, capture hotkey and live pause](INSPECT.md#the-in-app-hud): Vulkan, D3D12, Metal | ◐ overlay with frame time | ○ | ◐ HUD |
 | Freeze the application on a frame and step frames | ● [live pause](INSPECT.md#live-pause): Vulkan, D3D12, Metal | ○ | ○ | ○ |
 
 This column is where GPU Inspector differs most in kind rather than in degree. The other three are
@@ -104,6 +104,7 @@ while it runs.
 |---|---|---|---|---|
 | Capture N consecutive frames | ● | ● | ● | ● |
 | Capture a numbered frame, or after a delay, unattended | ● [queued capture, CLI](CAPTURE.md#taking-a-capture) | ● | ● | ● |
+| Capture from a key pressed in the application's window | ● [F11 with the HUD](INSPECT.md#the-capture-hotkey) | ● | ● | ● |
 | Commands grouped by submit, command buffer, pass, debug label | ● | ● | ● | ● |
 | Full pipeline state at any command | ● | ● | ● | ● |
 | Descriptor sets / heaps, buffers decoded into shader types | ● [with format and radix overrides](CAPTURE.md#reading-the-frame) | ● | ● | ● |

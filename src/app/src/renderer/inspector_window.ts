@@ -586,6 +586,9 @@ export class InspectorWindow extends Window {
 
   /** The testing flows that start when a launched application connects (tools/ui_tests.py). */
   private _debugOnConnect(panel: SessionPanel): void {
+    // --debug-hud: the HUD on, which is also what arms the capture hotkey in the application's
+    // own window (src/vulkan/src/hud_hotkey.h).
+    if (this._debug?.hud) panel.debugHud();
     if (this._debug?.capture) this._debugCapture(panel);
     // --debug-save without --debug-capture: the capture to save is one the application asks for
     // itself (gpu_inspector_capture in include/gpu_inspector.h, the samples' --capture-at), so

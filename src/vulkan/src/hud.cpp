@@ -1,6 +1,8 @@
 #include "hud.h"
 
+#include "capture.h"
 #include "frame_pause.h"
+#include "hud_hotkey.h"
 #include "hud_shaders.gen.h"
 #include "layer.h"
 #include "resources.h"
@@ -20,8 +22,27 @@ Hud& Hud::Get()
 void Hud::SetEnabled(bool on)
 {
     const bool was = _enabled.exchange(on, std::memory_order_relaxed);
+    // The capture hotkey is armed with the HUD, which is the only thing on the screen that says
+    // the key is live (hud_hotkey.h).
+    gpuhud::CaptureHotkey::Get().SetEnabled(on);
     if (was != on)
-        Log("in-app HUD %s", on ? "on" : "off");
+    {
+        const char* hotkey = gpuhud::CaptureHotkey::Get().Name();
+        Log("in-app HUD %s%s%s", on ? "on" : "off", on && hotkey ? ", capture hotkey " : "",
+            on && hotkey ? hotkey : "");
+    }
+}
+
+// The hotkey, polled once per present from Draw: a press asks the inspector for the capture the
+// Capture button would take (layer.cpp, RequestInspectorCapture).
+void Hud::PollHotkey()
+{
+    if (!gpuhud::CaptureHotkey::Get().Poll())
+        return;
+    const char* name = gpuhud::CaptureHotkey::Get().Name();
+    char source[64];
+    snprintf(source, sizeof(source), "the capture hotkey (%s)", name ? name : "");
+    RequestInspectorCapture(0, nullptr, source);
 }
 
 void Hud::OnSwapchainImages(VkDevice device, VkSwapchainKHR swapchain, uint32_t count, const VkImage* images)
@@ -474,6 +495,10 @@ bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPre
     if (!Enabled() || !dev || !in || !in->swapchainCount || !in->pSwapchains)
         return false;
 
+    // Before anything that can fail: a HUD that cannot draw into this swapchain must still take
+    // the capture the user just asked for.
+    PollHotkey();
+
     std::lock_guard lock(_mutex);
     DeviceResources* res = Resources(dev, queue);
     if (!res)
@@ -524,7 +549,9 @@ bool Hud::Draw(DeviceData* dev, VkQueue queue, const VkPresentInfoKHR* in, VkPre
         // the frame the user is about to look at is the next one.
         state.frame = dev->frameIndex + 1;
         state.paused = gpuinsp::FramePause::Get().Paused();
+        state.capturing = CaptureManager::Get().IsCapturing();
         state.backend = "VULKAN";
+        state.hotkey = gpuhud::CaptureHotkey::Get().Name();
         const uint32_t first = (uint32_t)rects.size();
         gpuhud::BuildHud(rects, state, s->extent.width, s->extent.height, gpuhud::HudScale(s->extent.width));
         targets.push_back({s, imageIndex, first, (uint32_t)rects.size() - first});

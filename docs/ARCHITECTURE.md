@@ -439,10 +439,10 @@ Copy puts the displayed image on the clipboard as PNG. Display settings are reme
 An owner can also hand it an overlay to blend over the image and a callback for the pixel clicked,
 which is what the render target tab below is built from.
 
-### The in-app HUD and live pause
+### The in-app HUD, its capture hotkey and live pause
 
-Two features that the three capture libraries share almost entirely, because neither of them has
-any graphics API in the part worth sharing. Both live in headers under `src/vulkan/src`, which
+Three features that the three capture libraries share almost entirely, because none of them has
+any graphics API in the part worth sharing. All live in headers under `src/vulkan/src`, which
 `src/d3d12` and `src/metal` already add to their include path for `json_writer.h`.
 
 `hud_text.h` is the HUD itself: a 5x7 bitmap font written out as binary literals (so the glyph is
@@ -452,6 +452,26 @@ merged. Expanding text to rectangles on the CPU is what keeps the per-backend co
 only has to draw flat axis-aligned rectangles, which needs no font atlas, no sampler and no
 descriptors, only a vertex buffer and two shaders that transform and interpolate. A four-line panel
 is about 700 rectangles, drawn as 700 instances of a four-vertex triangle strip.
+
+`hud_hotkey.h` is the capture hotkey: F11 pressed in the application's own window asks the
+inspector for a capture, through the same `AppCaptureRequest` message `gpu_inspector_capture`
+sends, so the capture is taken with the capture bar's options into a tab that is waiting for it.
+Each library polls it once per present, from where it draws the HUD, and turns a press into
+`RequestInspectorCapture` -- the function its own `GpuInspectorCaptureNamed` export now calls too.
+Polling at the frame boundary rather than acting the moment the key goes down means the request
+comes from a thread the backend already owns, and that a key held down is one capture rather than
+thirty.
+
+It is armed with the HUD and never on its own, because the HUD's `F11 CAPTURE` line is the only
+thing on the screen that says the key is live. The three platforms differ only in how they answer
+"was the key pressed, *in this application's window*", and the second half is what makes each of
+them more than a line: Windows polls `GetAsyncKeyState` and tests the foreground window's process,
+since the global key state would otherwise fire while the user types in the inspector; Linux polls
+`XQueryKeymap` on a connection of its own and asks the window manager whose window is active
+(`_NET_ACTIVE_WINDOW`, `_NET_WM_PID`), with Xlib `dlopen`'d as in `refresh_rate.cpp`; macOS needs
+no polling at all, because an `NSEvent` *local* monitor sees exactly the key events this
+application is sent, and unlike a global monitor or an event tap it needs no accessibility
+permission. `VKINSP_HOTKEY` / `DXINSP_HOTKEY` / `MTLINSP_HOTKEY` rebind or disable it.
 
 `frame_pause.h` is the pause: a mutex, a condition variable and a step count. Each library calls
 `Wait()` at its frame boundary — `vkQueuePresentKHR`, `IDXGISwapChain::Present`, the commit that

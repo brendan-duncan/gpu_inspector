@@ -1,8 +1,11 @@
 #include "hud.h"
 
+#include "capture.h"
 #include "frame_pause.h"
 #include "frame_stats.h"
+#include "hud_hotkey.h"
 #include "swizzle.h"
+#include "ui_messages.h"
 
 #import <Metal/Metal.h>
 #import <QuartzCore/CAMetalLayer.h>
@@ -61,6 +64,15 @@ Hud& Hud::Get()
 {
     static Hud* instance = [] {
         Hud* hud = new Hud();
+        // The HUD's capture hotkey, armed with the HUD itself (hud_hotkey.h). A misspelled key is
+        // reported here rather than on the frame it fails to do anything. F11 is the default, as
+        // on the other two backends, but it is Show Desktop on a Mac until that shortcut is turned
+        // off in System Settings -- MTLINSP_HOTKEY=F9 is the way round that.
+        const char* hotkey = getenv("MTLINSP_HOTKEY");
+        if (!gpuhud::CaptureHotkey::Get().SetBinding(hotkey ? hotkey : ""))
+            Log("MTLINSP_HOTKEY=\"%s\" is not a key this understands (\"F11\", \"CTRL+F9\", \"off\"); "
+                "the capture hotkey is off",
+                hotkey);
         const char* value = getenv("MTLINSP_HUD");
         if (value != nullptr && value[0] != '\0' && strcmp(value, "0") != 0)
             hud->SetEnabled(true);
@@ -72,8 +84,25 @@ Hud& Hud::Get()
 void Hud::SetEnabled(bool on)
 {
     const bool was = _enabled.exchange(on, std::memory_order_relaxed);
+    // The capture hotkey is armed with the HUD, which is the only thing on the screen that says
+    // the key is live (hud_hotkey.h).
+    gpuhud::CaptureHotkey::Get().SetEnabled(on);
     if (was != on)
-        Log("in-app HUD %s", on ? "on" : "off");
+    {
+        const char* hotkey = gpuhud::CaptureHotkey::Get().Name();
+        Log("in-app HUD %s%s%s", on ? "on" : "off", on && hotkey ? ", capture hotkey " : "",
+            on && hotkey ? hotkey : "");
+    }
+}
+
+void Hud::PollHotkey()
+{
+    if (!gpuhud::CaptureHotkey::Get().Poll())
+        return;
+    const char* name = gpuhud::CaptureHotkey::Get().Name();
+    char source[64];
+    snprintf(source, sizeof(source), "the capture hotkey (%s)", name ? name : "");
+    RequestInspectorCapture(0, nullptr, source);
 }
 
 void Hud::NoteUnsupportedPresentPath()
@@ -230,6 +259,11 @@ void Hud::DrawInto(id commandBuffer, id drawable)
     if (!Enabled() || commandBuffer == nil || drawable == nil)
         return;
 
+    // Before anything that can fail: a drawable the HUD cannot draw into must still take the
+    // capture the user just asked for. Outside the Internal scope below, since what it asks for
+    // is the application's capture, not the library's own Metal.
+    PollHotkey();
+
     // Everything below is the library's own Metal, not the application's: without this the shader
     // library, the pipeline, the buffer and above all the render encoder would be announced as the
     // application's objects, and the HUD's pass would be recorded into captures as one of its
@@ -268,7 +302,9 @@ void Hud::DrawInto(id commandBuffer, id drawable)
     state.maxMs = r.shownMaxMs;
     state.frame = FrameNumber() + 1;   // this frame has not ended yet
     state.paused = gpuinsp::FramePause::Get().Paused();
+    state.capturing = CapturingFrame();
     state.backend = "METAL";
+    state.hotkey = gpuhud::CaptureHotkey::Get().Name();
     std::vector<gpuhud::Rect> rects;
     gpuhud::BuildHud(rects, state, width, height, gpuhud::HudScale(width));
     if (rects.empty())

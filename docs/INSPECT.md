@@ -334,6 +334,7 @@ video of it:
 GPU INSPECTOR - VULKAN
 6.95 MS  143.9 FPS
 MIN 6.29  MAX 7.43  VSYNC 144 HZ
+F11 CAPTURE
 ```
 
 The meter line above the HUD also shows, after the vsync rate, the dropped frames the display
@@ -359,6 +360,29 @@ where it does not appear, both logged once:
 
 `VKINSP_HUD=1` (or `DXINSP_HUD=1`, `MTLINSP_HUD=1`) turns it on from the start, before any UI is
 attached.
+
+### The capture hotkey
+
+While the HUD is on, **F11** pressed in the application's own window takes a capture -- the same
+one the Capture button takes, with the capture bar's options, into a tab of its own. That is what
+the HUD's last line is there to say.
+
+It matters for anything you have to be *in* the application to reach. Clicking back to the
+inspector to press Capture is itself a change to the frame: a mouse-look camera swings as the
+cursor leaves, a pause menu opens, an exclusive-fullscreen swap chain may be lost and rebuilt. With
+the hotkey the frame captured is the frame you were looking at.
+
+The key is only live while the application that was launched owns the foreground window, so
+pressing F11 in the inspector, or in anything else on the machine, does nothing.
+
+`VKINSP_HOTKEY` (or `DXINSP_HOTKEY`, `MTLINSP_HOTKEY`) changes it for an application that wants F11
+for itself: a function key (`F9`), a letter or a digit, with `CTRL+`, `SHIFT+` or `ALT+` in front
+of it, or `off` for no hotkey at all. Set it in the launch configuration's environment. Two
+platform notes:
+
+- on macOS F11 is Show Desktop until that shortcut is turned off in System Settings, so
+  `MTLINSP_HOTKEY=F9` is usually the way round it;
+- on Linux the key is read through X11, so a Wayland-native application has no hotkey.
 
 ## Live pause
 

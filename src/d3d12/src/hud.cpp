@@ -2,7 +2,9 @@
 
 #include "capture.h"
 #include "frame_pause.h"
+#include "hud_hotkey.h"
 #include "hud_shaders.gen.h"
+#include "ui_messages.h"
 
 #include <cstring>
 
@@ -15,6 +17,13 @@ Hud& Hud::Get()
     // long after DxinspInitialize has set the configuration.
     static Hud* instance = [] {
         Hud* hud = new Hud();
+        // The HUD's capture hotkey, armed with the HUD itself (hud_hotkey.h). A misspelled key is
+        // reported here rather than on the frame it fails to do anything.
+        const std::string hotkey = ConfigValue("DXINSP_HOTKEY");
+        if (!gpuhud::CaptureHotkey::Get().SetBinding(hotkey.c_str()))
+            Log("DXINSP_HOTKEY=\"%s\" is not a key this understands (\"F11\", \"CTRL+F9\", \"off\"); "
+                "the capture hotkey is off",
+                hotkey.c_str());
         if (ConfigFlag("DXINSP_HUD"))
             hud->SetEnabled(true);
         return hud;
@@ -25,8 +34,25 @@ Hud& Hud::Get()
 void Hud::SetEnabled(bool on)
 {
     const bool was = _enabled.exchange(on, std::memory_order_relaxed);
+    // The capture hotkey is armed with the HUD, which is the only thing on the screen that says
+    // the key is live (hud_hotkey.h).
+    gpuhud::CaptureHotkey::Get().SetEnabled(on);
     if (was != on)
-        Log("in-app HUD %s", on ? "on" : "off");
+    {
+        const char* hotkey = gpuhud::CaptureHotkey::Get().Name();
+        Log("in-app HUD %s%s%s", on ? "on" : "off", on && hotkey ? ", capture hotkey " : "",
+            on && hotkey ? hotkey : "");
+    }
+}
+
+void Hud::PollHotkey()
+{
+    if (!gpuhud::CaptureHotkey::Get().Poll())
+        return;
+    const char* name = gpuhud::CaptureHotkey::Get().Name();
+    char source[64];
+    snprintf(source, sizeof(source), "the capture hotkey (%s)", name ? name : "");
+    RequestInspectorCapture(0, nullptr, source);
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -307,7 +333,9 @@ void Hud::Draw(ID3D12Device* device, IDXGISwapChain* swapChain, ID3D12CommandQue
     state.maxMs = r.shownMaxMs;
     state.frame = CaptureManager::Get().FrameCounter() + 1;   // this frame has not ended yet
     state.paused = gpuinsp::FramePause::Get().Paused();
+    state.capturing = CaptureManager::Get().IsCapturing();
     state.backend = "D3D12";
+    state.hotkey = gpuhud::CaptureHotkey::Get().Name();
     std::vector<gpuhud::Rect> rects;
     gpuhud::BuildHud(rects, state, s->width, s->height, gpuhud::HudScale(s->width));
     if (rects.empty())

@@ -74,12 +74,14 @@ target_include_directories(${CAPTURE_LIB} PRIVATE
 target_compile_options(${CAPTURE_LIB} PRIVATE -fno-objc-arc -Wall -Wno-unused-parameter -g)
 
 # CoreGraphics for CGDirectDisplayCopyCurrentMetalDevice, one of the interposed entry points;
-# QuartzCore for CAMetalLayer.
+# QuartzCore for CAMetalLayer; AppKit for the capture hotkey's NSEvent monitor, which is how the
+# HUD sees a key pressed in the application's own window (../vulkan/src/hud_hotkey.h).
 target_link_libraries(${CAPTURE_LIB} PRIVATE
     "-framework Foundation"
     "-framework Metal"
     "-framework QuartzCore"
-    "-framework CoreGraphics")
+    "-framework CoreGraphics"
+    "-framework AppKit")
 
 set_target_properties(${CAPTURE_LIB} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")

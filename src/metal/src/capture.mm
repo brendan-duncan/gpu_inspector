@@ -1064,6 +1064,11 @@ bool Recording()
     return g_recording && !IsInternal();
 }
 
+bool CapturingFrame()
+{
+    return g_recording;
+}
+
 uint32_t CaptureFrameIndex()
 {
     std::lock_guard<std::mutex> lock(g_mutex);

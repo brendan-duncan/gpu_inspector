@@ -197,7 +197,8 @@ export class SessionPanel extends Div implements SessionContext {
       void this.send({ action: "Settings", recordAlways: this._recordAlwaysCheck.checked });
     };
     this._hudCheck = new Checkbox(row, { label: "HUD", checked: false,
-      tooltip: "Draw the frame time over the application's own window, so it can be read without looking away from it (and is in any screen capture)." });
+      tooltip: "Draw the frame time over the application's own window, so it can be read without looking away from it (and is in any screen capture). "
+        + "While it is on, F11 in that window takes a capture with the options below, without clicking back here." });
     this._hudCheck.input.onchange = () => {
       void this.send({ action: "Hud", enabled: this._hudCheck.checked });
     };
@@ -397,6 +398,15 @@ export class SessionPanel extends Div implements SessionContext {
   /** --debug-pause (tools/ui_tests.py): pauses the application the way the pause button does. */
   debugPause(): void {
     void this.send({ action: "Pause", paused: true });
+  }
+
+  /**
+   * --debug-hud (tools/ui_tests.py): switches the HUD on the way the checkbox does, which is also
+   * what arms the capture hotkey in the application's window.
+   */
+  debugHud(): void {
+    this._hudCheck.checked = true;
+    void this.send({ action: "Hud", enabled: true });
   }
 
   /** The pause state the library reports: the two buttons and the tooltip follow it. */

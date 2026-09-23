@@ -180,43 +180,75 @@ struct HudState
     bool paused = false;
     bool capturing = false;
     const char* backend = "";  // "VULKAN", "D3D12", "METAL"
+    // The key that takes a capture ("F11"), or null when there is none: the line it draws is the
+    // only thing that tells the user the hotkey is live (hud_hotkey.h).
+    const char* hotkey = nullptr;
 };
 
-// The panel, in pixels from the top-left. Two or three lines:
+// The panel, in pixels from the top-left. Three lines, plus a line for the capture hotkey when
+// one is armed and a line for what the library is doing to the application:
 //
 //   GPU INSPECTOR - VULKAN
 //   16.67 MS  60.0 FPS
 //   MIN 15.9  MAX 18.2  VSYNC 60 HZ
+//   F11 CAPTURE
+//   CAPTURING FRAME 4564
 //
-// and a fourth line while paused or capturing. `scale` is the size of one font pixel; the caller
-// picks it from the target's size so the HUD stays readable at 4K without swamping a small window.
+// `scale` is the size of one font pixel; the caller picks it from the target's size so the HUD
+// stays readable at 4K without swamping a small window.
 inline void BuildHud(std::vector<Rect>& out, const HudState& s, uint32_t targetWidth,
     uint32_t targetHeight, float scale)
 {
     (void)targetHeight;
-    char line1[64], line2[64], line3[96], line4[64];
+    // One entry per line, in the order they are drawn, each with the color that says what it is.
+    struct Line
+    {
+        const char* text;
+        float r, g, b;
+    };
+    Line lines[5];
+    int count = 0;
+    char line1[64], line2[64], line3[96], line4[64], line5[64];
+
     snprintf(line1, sizeof(line1), "GPU INSPECTOR - %s", s.backend ? s.backend : "");
+    lines[count++] = {line1, 0.36f, 0.66f, 1.00f};   // the title, in the app's blue
+
     const double fps = s.frameMs > 0 ? 1000.0 / s.frameMs : 0;
     snprintf(line2, sizeof(line2), "%.2f MS  %.1f FPS", s.frameMs, fps);
+    lines[count++] = {line2, 0.90f, 0.92f, 0.95f};
+
     if (s.refreshMs > 0)
         snprintf(line3, sizeof(line3), "MIN %.2f  MAX %.2f  VSYNC %.0f HZ", s.minMs, s.maxMs, 1000.0 / s.refreshMs);
     else
         snprintf(line3, sizeof(line3), "MIN %.2f  MAX %.2f", s.minMs, s.maxMs);
-    line4[0] = 0;
-    if (s.paused)
-        snprintf(line4, sizeof(line4), "PAUSED AT FRAME %llu", (unsigned long long)s.frame);
-    else if (s.capturing)
-        snprintf(line4, sizeof(line4), "CAPTURING FRAME %llu", (unsigned long long)s.frame);
+    lines[count++] = {line3, 0.90f, 0.92f, 0.95f};
 
-    const char* lines[4] = {line1, line2, line3, line4[0] ? line4 : nullptr};
+    // Dimmer than the figures: it is a reminder of what the keyboard does, not a measurement, and
+    // it is on the screen every frame the HUD is.
+    if (s.hotkey && s.hotkey[0])
+    {
+        snprintf(line4, sizeof(line4), "%s CAPTURE", s.hotkey);
+        lines[count++] = {line4, 0.58f, 0.62f, 0.70f};
+    }
+
+    if (s.paused)
+    {
+        snprintf(line5, sizeof(line5), "PAUSED AT FRAME %llu", (unsigned long long)s.frame);
+        lines[count++] = {line5, 1.00f, 0.78f, 0.25f};   // amber
+    }
+    else if (s.capturing)
+    {
+        snprintf(line5, sizeof(line5), "CAPTURING FRAME %llu", (unsigned long long)s.frame);
+        lines[count++] = {line5, 0.40f, 0.90f, 0.50f};   // green
+    }
+
     const float pad = 4 * scale;
     const float lineStep = (kGlyphH + 3) * scale;
 
     float widest = 0;
-    int count = 0;
-    for (int i = 0; i < 4 && lines[i]; ++i, ++count)
+    for (int i = 0; i < count; ++i)
     {
-        const float w = TextWidth(lines[i], scale);
+        const float w = TextWidth(lines[i].text, scale);
         if (w > widest)
             widest = w;
     }
@@ -233,29 +265,8 @@ inline void BuildHud(std::vector<Rect>& out, const HudState& s, uint32_t targetW
         panelH, 0.04f, 0.05f, 0.07f, 0.78f);
 
     for (int i = 0; i < count; ++i)
-    {
-        const float ty = originY + pad + i * lineStep;
-        float r = 0.90f, g = 0.92f, b = 0.95f;
-        if (i == 0)
-        {
-            r = 0.36f;
-            g = 0.66f;
-            b = 1.00f;
-        }            // the title, in the app's blue
-        else if (i == 3 && s.paused)
-        {
-            r = 1.00f;
-            g = 0.78f;
-            b = 0.25f;
-        }   // paused: amber
-        else if (i == 3)
-        {
-            r = 0.40f;
-            g = 0.90f;
-            b = 0.50f;
-        }               // capturing: green
-        AppendText(out, originX + pad, ty, scale, lines[i], r, g, b, 1.0f);
-    }
+        AppendText(out, originX + pad, originY + pad + i * lineStep, scale, lines[i].text,
+            lines[i].r, lines[i].g, lines[i].b, 1.0f);
 }
 
 // The font pixel size for a target of this width: 1 up to 720p, 2 to 1440p, 3 beyond, so the HUD

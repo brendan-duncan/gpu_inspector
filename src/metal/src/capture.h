@@ -84,6 +84,14 @@ void RequestCapture(const CaptureOptions& options);
  */
 bool Recording();
 
+/**
+ * Whether a capture is being recorded, whatever the library is doing at the moment: what the HUD's
+ * CAPTURING line reads, so a capture taken with the hotkey says so on the application's own
+ * window. Recording() cannot answer that -- it is false inside the library's own Metal calls, the
+ * HUD's among them.
+ */
+bool CapturingFrame();
+
 /** The frame of the capture being recorded, counting from 0: what a pass and its results are keyed by. */
 uint32_t CaptureFrameIndex();
 

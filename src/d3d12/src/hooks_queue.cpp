@@ -263,6 +263,9 @@ void BeforePresent(IDXGISwapChain* swapChain, UINT flags)
         return;
     if (flags & DXGI_PRESENT_TEST)
         return;   // nothing will be shown
+    // Before anything that can fail: a swap chain the HUD cannot draw into must still take the
+    // capture the user just asked for (hud_hotkey.h).
+    Hud::Get().PollHotkey();
     ID3D12CommandQueue* queue = Cap().PresentQueue(swapChain);
     if (!queue)
         return;

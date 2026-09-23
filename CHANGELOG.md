@@ -17,6 +17,7 @@
 - A capture asked for while the application is live-paused captures the frame on the screen: the pause is held open for the capture's frames and closes again on the frame it captured, instead of resuming the application.
 - **Validate**, a report that replays a Vulkan capture under the Khronos validation layer, whether or not the application was launched with it, with every message tied to the captured command it fired on; `get_validation` does the same with `replay: true`.
 - `vkinsp_replay --validate-data <file>` writes the validation layer's messages with the command and phase each fired in.
+- A capture hotkey in the application's own window: with the HUD on, F11 takes the capture the Capture button would, on Vulkan, Direct3D 12 and Metal; `VKINSP_HOTKEY` (`DXINSP_HOTKEY`, `MTLINSP_HOTKEY`) rebinds or disables it.
 
 ### Changed
 - The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.

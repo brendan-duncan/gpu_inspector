@@ -664,8 +664,9 @@ export class CapturePanel {
       return;
     }
     if (msg.action === "AppCaptureRequest") {
-      // The application called gpu_inspector_capture (include/gpu_inspector.h): the same capture
-      // the button takes, with the bar's options. One already streaming in would make the capture
+      // The application called gpu_inspector_capture (include/gpu_inspector.h), or the user
+      // pressed the HUD's capture hotkey in the application's own window: the same capture the
+      // button takes, with the bar's options. One already streaming in would make the capture
       // library ignore the request, and this would leave an empty tab behind. The label is the
       // application's name for the capture (gpu_inspector_capture_named), which the tab takes.
       const label = typeof msg.label === "string" ? msg.label.trim().slice(0, 200) : "";
@@ -673,7 +674,9 @@ export class CapturePanel {
         this._statusLabel.text = `the application asked for a capture${label ? ` (${label})` : ""} while one was being taken`;
         return;
       }
-      const view = this.capture(Math.max(1, Math.floor(msg.frameCount) || 1));
+      // 0 leaves the count to the bar, which is what the hotkey asks for.
+      const frames = Math.max(0, Math.floor(msg.frameCount) || 0);
+      const view = this.capture(frames > 0 ? frames : undefined);
       if (view && label) {
         view.data.requestLabel = label;
         view.onLabelChanged.emit();

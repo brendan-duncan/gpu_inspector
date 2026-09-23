@@ -50,6 +50,12 @@ public:
      */
     void DrawInto(id commandBuffer, id drawable);
 
+    /**
+     * The capture hotkey, polled once per present from DrawInto (hud_hotkey.h). A press asks the
+     * inspector for the capture the Capture button would take.
+     */
+    void PollHotkey();
+
     /** The application presents its drawables itself, so there is no command buffer to draw into. */
     void NoteUnsupportedPresentPath();
 

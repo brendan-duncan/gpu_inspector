@@ -503,37 +503,55 @@ void StartTracking()
 
 // The application's side of a capture (include/gpu_inspector.h), which finds these by name. The
 // request goes to the inspector rather than straight to the capture manager: the capture bar's
-// options are the inspector's to choose, and a tab has to be waiting for what comes back.
+// options are the inspector's to choose, and a tab has to be waiting for what comes back. The
+// HUD's capture hotkey asks for exactly the same thing (hud_hotkey.h).
 extern "C" __declspec(dllexport) int GpuInspectorConnected(void)
 {
     return dxinsp::Transport::Get().Connected() ? 1 : 0;
 }
 
-extern "C" __declspec(dllexport) int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label)
+namespace dxinsp
 {
-    if (!dxinsp::Transport::Get().Connected())
-        return 0;
-    // The label is the application's words for the capture (the tab's name); bounded, since a
-    // string that is not one would otherwise become a message of any length.
+
+bool RequestInspectorCapture(uint32_t frameCount, const char* label, const char* source)
+{
+    if (!Transport::Get().Connected())
+        return false;
+    // The label is the asker's words for the capture (the tab's name); bounded, since a string
+    // that is not one would otherwise become a message of any length.
     const std::string name = label ? std::string(label, strnlen(label, 200)) : std::string();
-    dxinsp::JsonWriter w;
+    JsonWriter w;
     w.BeginObject();
     w.Key("action");
     w.String("AppCaptureRequest");
+    // 0 means the capture bar's own frame count, which is what the hotkey wants: pressing a key
+    // should take the capture the Capture button would, whatever it has been set to.
     w.Key("frameCount");
-    w.Uint(frameCount ? frameCount : 1u);
+    w.Uint(frameCount);
     if (!name.empty())
     {
         w.Key("label");
         w.String(name);
     }
     w.EndObject();
-    dxinsp::Transport::Get().SendJson(std::move(w.str()));
-    if (name.empty())
-        dxinsp::Log("capture requested by the application: %u frame(s)", frameCount ? frameCount : 1u);
+    Transport::Get().SendJson(std::move(w.str()));
+    char frames[48];
+    if (frameCount)
+        snprintf(frames, sizeof(frames), "%u frame(s)", frameCount);
     else
-        dxinsp::Log("capture requested by the application: %u frame(s), \"%s\"", frameCount ? frameCount : 1u, name.c_str());
-    return 1;
+        snprintf(frames, sizeof(frames), "the capture bar's frame count");
+    if (name.empty())
+        Log("capture requested by %s: %s", source, frames);
+    else
+        Log("capture requested by %s: %s, \"%s\"", source, frames, name.c_str());
+    return true;
+}
+
+}  // namespace dxinsp
+
+extern "C" __declspec(dllexport) int GpuInspectorCaptureNamed(uint32_t frameCount, const char* label)
+{
+    return dxinsp::RequestInspectorCapture(frameCount ? frameCount : 1u, label, "the application") ? 1 : 0;
 }
 
 extern "C" __declspec(dllexport) int GpuInspectorCapture(uint32_t frameCount)
