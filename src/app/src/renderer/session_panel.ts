@@ -268,7 +268,7 @@ export class SessionPanel extends Div implements SessionContext {
         ...(db.deviceLost.action === "DeviceLost" && db.deviceLost.note ? { note: db.deviceLost.note } : {}),
       } : null,
       frameTimeMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, frameBoundary: db.frameBoundary,
-      droppedFrames: db.droppedFramesTotal, droppedMeasured: db.droppedFramesMeasured,
+      droppedFrames: db.droppedFramesTotal, droppedMeasured: db.droppedFramesMeasured, presentLatencyMs: db.presentLatencyMs,
       symbols: db.symbols.size, symbolsWithLines: [...db.symbols.values()].filter((f) => !!f.file).length,
       // Frames that stand for more than one source function: the inlined callers of each, which
       // only debug information with inline records has (stacktrace.cpp).

@@ -11,6 +11,7 @@
 #include "tracker.h"
 #include "transport.h"
 
+#include <algorithm>
 #include <chrono>
 #include <memory>
 #include <mutex>
@@ -48,7 +49,22 @@ struct DeviceRecord {
     /** Refreshes that showed the previous frame again because no new one had arrived. */
     uint64_t droppedTotal = 0;
     uint64_t droppedSinceReport = 0;
+    // Present latency: when each recent Present was called, by the count GetLastPresentCount gave
+    // it, so the statistics' PresentCount (the present shown at SyncQPCTime) can be matched to
+    // its call. A ring: the display is never more than a few presents behind.
+    struct PresentCall { UINT count = 0; LONGLONG qpc = 0; };
+    PresentCall presentCalls[32]{};
+    /** Latency samples (call to the vblank that showed it, ms) since the last report. */
+    std::vector<double> latencySamplesMs;
 };
+
+double QpcMs(LONGLONG ticks) {
+    static const double perTick = [] {
+        LARGE_INTEGER f;
+        return QueryPerformanceFrequency(&f) && f.QuadPart > 0 ? 1000.0 / (double)f.QuadPart : 0.0;
+    }();
+    return (double)ticks * perTick;
+}
 
 /**
  * Missed refreshes since the last reading, from the swap chain's own counters.
@@ -62,8 +78,14 @@ struct DeviceRecord {
  * Not every swap chain answers: a blit-model or windowed one usually fails, and after a mode change
  * the counters are disjoint. Both leave the count alone rather than reporting a made-up zero.
  */
-void UpdatePresentStatistics(DeviceRecord& d, IDXGISwapChain* swapChain) {
+void UpdatePresentStatistics(DeviceRecord& d, IDXGISwapChain* swapChain, LONGLONG calledAtQpc) {
     if (!swapChain) return;
+    // The present just made, by the count the swap chain gave it, so the statistics can name it
+    // later: SyncQPCTime is the vblank that showed present PresentCount.
+    UINT lastCount = 0;
+    if (calledAtQpc && SUCCEEDED(swapChain->GetLastPresentCount(&lastCount)) && lastCount) {
+        d.presentCalls[lastCount % 32] = { lastCount, calledAtQpc };
+    }
     DXGI_FRAME_STATISTICS stats{};
     if (FAILED(swapChain->GetFrameStatistics(&stats))) {
         // DXGI_ERROR_FRAME_STATISTICS_DISJOINT and the unsupported cases: the next reading starts
@@ -83,6 +105,15 @@ void UpdatePresentStatistics(DeviceRecord& d, IDXGISwapChain* swapChain) {
             const uint64_t missed = refreshes - presents;
             d.droppedTotal += missed;
             d.droppedSinceReport += missed;
+        }
+    }
+    // A newly shown present: its latency is the vblank that showed it against its call. An
+    // implausible figure is a ring entry from another swap chain's numbering, or a clock jump.
+    if (stats.PresentCount != d.lastPresentCount || !d.haveStats) {
+        const DeviceRecord::PresentCall& call = d.presentCalls[stats.PresentCount % 32];
+        if (call.count == stats.PresentCount && call.qpc && stats.SyncQPCTime.QuadPart > call.qpc) {
+            const double ms = QpcMs(stats.SyncQPCTime.QuadPart - call.qpc);
+            if (ms < 1000.0) d.latencySamplesMs.push_back(ms);
         }
     }
     d.haveStats = true;
@@ -663,6 +694,13 @@ bool EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
             // Read from the swap chain's refresh counters rather than worked out from the frame
             // interval, which is what the Vulkan layer has to do (src/vulkan/src/layer.cpp).
             if (d.haveStats) { w.Key("droppedMeasured"); w.Boolean(true); }
+            // From the Present call to the vblank that showed it: the median of the interval's
+            // frames, since a present that found the queue empty and one that waited behind others
+            // differ by a refresh and their average is a frame that never happened.
+            if (!d.latencySamplesMs.empty()) {
+                std::sort(d.latencySamplesMs.begin(), d.latencySamplesMs.end());
+                w.Key("presentLatencyMs"); w.Double(d.latencySamplesMs[d.latencySamplesMs.size() / 2]);
+            }
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
         }
@@ -670,6 +708,7 @@ bool EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
         // own interval rather than everything since the last one.
         d.accumMs = 0;
         d.frames = 0;
+        d.latencySamplesMs.clear();
         d.submitMs = 0;
         d.droppedSinceReport = 0;
         d.lastReport = now;
@@ -678,7 +717,7 @@ bool EmitBoundary(DeviceRecord& d, Clock::time_point now, const char* boundary, 
     return reported;
 }
 
-void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT) {
+void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT, LONGLONG calledAtQpc) {
     // A failed present is still a frame: the application paced itself to it.
     const Clock::time_point now = Clock::now();
     std::unique_lock<std::mutex> lock(g_mutex);
@@ -695,7 +734,7 @@ void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT sync
     // A present that syncs waits for the display: its period is the frame's floor. Tearing
     // presents and syncInterval 0 do not, so no refresh period applies.
     // Before the boundary below, so a report in this present carries the interval's own count.
-    UpdatePresentStatistics(d, swapChain);
+    UpdatePresentStatistics(d, swapChain, calledAtQpc);
     const bool synced = syncInterval > 0 && !(flags & DXGI_PRESENT_ALLOW_TEARING);
     std::string presentMode = "immediate";
     if (syncInterval == 1) presentMode = "vsync";

@@ -1369,7 +1369,11 @@ def dropped_frames(measured, vulkan=False):
             expect(not measured or s.get("droppedMeasured") is True,
                    "the dropped frames were estimated from the frame interval, not measured by the display") + \
             expect(not vulkan or "present timing: measuring dropped frames" in log,
-                   "the layer never set up present timing on the swapchain")
+                   "the layer never set up present timing on the swapchain") + \
+            expect(not measured or (s.get("presentLatencyMs") or 0) > 0,
+                   "no present latency: the display's stage time was never related to the present call") + \
+            expect(not measured or 0 < (s.get("presentLatencyMs") or 0) < 200,
+                   f"present latency of {s.get('presentLatencyMs')} ms is not plausible for a stalled 144 Hz swapchain")
     return check
 
 

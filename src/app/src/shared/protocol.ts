@@ -85,6 +85,12 @@ export interface FrameStatsMessage {
    * no equivalent and estimates, which is worth saying next to the number.
    */
   droppedMeasured?: boolean;
+  /**
+   * Present latency: from the present call to the display showing the frame (the vblank on
+   * D3D12, the first pixel out on Vulkan), the median over the interval's frames, in ms. Only
+   * where the display reports it (DXGI_FRAME_STATISTICS, VK_EXT_present_timing).
+   */
+  presentLatencyMs?: number;
 }
 export interface PongMessage { action: "Pong" }
 

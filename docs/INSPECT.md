@@ -336,6 +336,12 @@ GPU INSPECTOR - VULKAN
 MIN 6.29  MAX 7.43  VSYNC 144 HZ
 ```
 
+The meter line above the HUD also shows, after the vsync rate, the dropped frames the display
+counted and the **present latency**: how long after the application handed a frame over the
+display showed it, the median over the last report. Both come from the display itself on
+Direct3D 12 and on Vulkan drivers with `VK_EXT_present_timing`; elsewhere the dropped count is
+estimated from the frame interval and marked so, and there is no latency.
+
 The figures are the application's whole frame, present included, averaged over half a second, with
 the shortest and longest frame of that window beside them. The frame time here is the interval
 between presents, which is not the same number as the CPU time the **Frame Time** graph plots: an

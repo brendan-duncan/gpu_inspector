@@ -372,7 +372,13 @@ much slower than on the desktop.
    mean the display repeated the earlier one n-1 times. `FrameStats` then carries
    `droppedMeasured`, as D3D12's does. A results queue that turns out full refuses the present
    with `VK_ERROR_PRESENT_TIMING_QUEUE_FULL_EXT`, which the layer answers by presenting again
-   untagged, so the application never sees the error.
+   untagged, so the application never sees the error. The same stage time against the moment of
+   the `vkQueuePresentKHR` call is the **present latency** (`presentLatencyMs`, the median over
+   the report's frames): the two are on different clocks, so the swapchain's present-stage-local
+   domain is calibrated against the host's through `VK_KHR_calibrated_timestamps`
+   (`VkSwapchainCalibratedTimestampInfoEXT`), about once a second, and a host-readable domain
+   is read directly. D3D12 gets the same figure from `DXGI_FRAME_STATISTICS::SyncQPCTime`,
+   matched to the Present call it showed through `GetLastPresentCount`.
 10. Every capture opens in its own tab of the Capture panel (`CaptureView` in `capture_panel.ts`
    owns one capture's data and views), as WebGPU Inspector does; earlier captures stay open for
    comparison until their tab is closed. Layer messages go to the most recently requested capture.

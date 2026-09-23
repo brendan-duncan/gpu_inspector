@@ -10245,6 +10245,8 @@ var ObjectDatabase = class _ObjectDatabase {
   // since the connection
   /** The count came from the display's own refresh counters rather than from an estimate. */
   droppedFramesMeasured = false;
+  /** From the present call to the display showing the frame, median over the last interval; 0 when not measured. */
+  presentLatencyMs = 0;
   inspectedObject = null;
   /** Ids of the objects referenced by the most recent capture (for the object list filter). */
   capturedObjects = /* @__PURE__ */ new Set();
@@ -10412,6 +10414,7 @@ var ObjectDatabase = class _ObjectDatabase {
     this.droppedFrames = 0;
     this.droppedFramesTotal = 0;
     this.droppedFramesMeasured = false;
+    this.presentLatencyMs = 0;
     this.inspectedObject = null;
     this.capturedObjects = /* @__PURE__ */ new Set();
     this.memory = { device: 0, allocations: 0, buffers: 0, images: 0, reported: 0, workingSet: 0 };
@@ -10554,6 +10557,7 @@ var ObjectDatabase = class _ObjectDatabase {
         this.droppedFrames = msg.dropped ?? 0;
         this.droppedFramesTotal = msg.droppedTotal ?? this.droppedFramesTotal + (msg.dropped ?? 0);
         this.droppedFramesMeasured = msg.droppedMeasured === true;
+        this.presentLatencyMs = msg.presentLatencyMs ?? 0;
         if (msg.allocatedBytes !== void 0) this.memory.reported = msg.allocatedBytes;
         if (msg.workingSetBytes !== void 0) this.memory.workingSet = msg.workingSetBytes;
         this.onFrameStats.emit(msg);

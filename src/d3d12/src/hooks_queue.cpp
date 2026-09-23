@@ -198,7 +198,7 @@ HRESULT STDMETHODCALLTYPE Hook_Wait(ID3D12CommandQueue* This, ID3D12Fence* pFenc
 // IDXGISwapChain: the frame boundary, and the back buffers
 
 /** After a present of a D3D12 swap chain: the frame counters, the capture, validation polling, retired shader edits. */
-void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT hr) {
+void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT hr, LONGLONG calledAtQpc) {
     ID3D12CommandQueue* queue = Cap().PresentQueue(swapChain);
     ID3D12Device* device = queue ? DeviceOf(queue) : nullptr;
     // Present is where a removal is usually noticed, long after the command that caused it, so this
@@ -211,7 +211,7 @@ void AfterPresent(IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRES
     // A DXGI_PRESENT_TEST asks whether presenting would work; nothing was shown.
     if (flags & DXGI_PRESENT_TEST) return;
     if (!queue) return;
-    OnFramePresented(device, swapChain, syncInterval, flags, hr);
+    OnFramePresented(device, swapChain, syncInterval, flags, hr, calledAtQpc);
     Cap().OnPresent(device, swapChain, queue);
     ValidationLog::Get().Poll(Cap().FrameCounter());
     ShaderEditor::Get().OnPresent();
@@ -233,12 +233,16 @@ HRESULT STDMETHODCALLTYPE Hook_Present(IDXGISwapChain4* This, UINT SyncInterval,
     auto orig = Orig<PFN_IDXGISwapChain4_Present>(This, slot::IDXGISwapChain4_Present);
     if (Internal()) return orig(This, SyncInterval, Flags);
     BeforePresent(This, Flags);
+    // When the application handed the frame over, for the present latency (device_info.cpp):
+    // before the call, since with vsync on the call itself blocks until the display takes it.
+    LARGE_INTEGER calledAt;
+    QueryPerformanceCounter(&calledAt);
     // Present blocks on the display with vsync on, so it is timed apart from submission: the two
     // mean opposite things for a frame (cpu_timeline.h).
     const uint64_t cpuEvent = CpuEventBegin();
     HRESULT hr = orig(This, SyncInterval, Flags);
     CpuEventEnd(nullptr, cpuEvent, CpuCategory::Present);
-    AfterPresent(This, SyncInterval, Flags, hr);
+    AfterPresent(This, SyncInterval, Flags, hr, calledAt.QuadPart);
     // Live pause, after the frame is on the screen (frame_pause.h).
     gpuinsp::FramePause::Get().Wait();
     return hr;
@@ -248,10 +252,12 @@ HRESULT STDMETHODCALLTYPE Hook_Present1(IDXGISwapChain4* This, UINT SyncInterval
     auto orig = Orig<PFN_IDXGISwapChain4_Present1>(This, slot::IDXGISwapChain4_Present1);
     if (Internal()) return orig(This, SyncInterval, PresentFlags, pPresentParameters);
     BeforePresent(This, PresentFlags);
+    LARGE_INTEGER calledAt;
+    QueryPerformanceCounter(&calledAt);
     const uint64_t cpuEvent = CpuEventBegin();
     HRESULT hr = orig(This, SyncInterval, PresentFlags, pPresentParameters);
     CpuEventEnd(nullptr, cpuEvent, CpuCategory::Present);
-    AfterPresent(This, SyncInterval, PresentFlags, hr);
+    AfterPresent(This, SyncInterval, PresentFlags, hr, calledAt.QuadPart);
     gpuinsp::FramePause::Get().Wait();
     return hr;
 }

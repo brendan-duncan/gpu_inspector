@@ -147,6 +147,8 @@ struct DeviceData {
     bool droppedMeasured = false;
     uint32_t droppedMeasuredSince = 0;
     uint64_t droppedMeasuredTotal = 0;
+    // Present latency samples (call to first pixel out, ms) since the last report, same source.
+    std::vector<double> presentLatencySamplesMs;
 
     // Returns the recorder for a command buffer that is being captured, else nullptr.
     // Cheap when no capture is active: a single relaxed atomic load.

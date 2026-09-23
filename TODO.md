@@ -1035,8 +1035,13 @@ history, the dependency view, DRED, and PIX's event markers (decoded in
     `tools/ui_tests.py`. Checked against a 144 Hz display: a 41 ms frame counts five drops a frame.
     Not checked under validation: the SDK's validation layer here (1.4.304) predates the extension,
     so the layer keeps present timing off whenever it is enabled (the existing guard).
-  - Present latency: `DXGI_FRAME_STATISTICS::SyncQPCTime` against the present call, and the same
-    from present timing on Vulkan.
+  - [x] Present latency (`presentLatencyMs` in FrameStats, the median over the report's frames, on
+    the meter after the dropped count). D3D12: `SyncQPCTime` against the QPC taken before the
+    `Present` call, matched by `GetLastPresentCount` (`device_info.cpp`). Vulkan: the first-pixel-out
+    stage against the call, with the present-stage-local domain calibrated against QPC through
+    `VkSwapchainCalibratedTimestampInfoEXT` every 120 presents (`present_timing.cpp`); NVIDIA here
+    offers only that domain, and the calibration works. A composed window reads several
+    refreshes (34 ms at 144 Hz for the sample), a stalled one two.
   - Metal's `presentedTime` / the drawable's presented handler.
   - **Presentation mode (composed or independent flip) is not reachable from DXGI at all.** PIX and
     PresentMon read it from ETW, which needs a trace session and administrator rights. Worth
@@ -1762,7 +1767,8 @@ experiment `src/metal/README.md` records for macOS signing; put the resulting ta
 
 ## Distribution
 - [ ] Code-sign the Windows installer and the layer DLL (SmartScreen warns on unsigned installers).
-- [ ] AppImage / rpm targets next to the .deb (electron-updater supports both).
+- [ ] An rpm target next to the .deb and the AppImage (electron-updater supports it). The AppImage
+      has shipped since the Linux packaging work (`src/app/electron-builder.yml`, docs/RELEASING.md).
 - [x] macOS build of the UI, signed with the project's Developer ID and notarized.
 
 ## Tooling

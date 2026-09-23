@@ -817,7 +817,8 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             uint32_t dropped = 0;
             uint64_t droppedTotal = 0;
             uint32_t measuredSince = 0;
-            const bool measured = PresentTiming::Get().Measured(data, measuredSince, droppedTotal);
+            double presentLatencyMs = 0;
+            const bool measured = PresentTiming::Get().Measured(data, measuredSince, droppedTotal, presentLatencyMs);
             if (measured) {
                 // The display's own count (present_timing.h) rather than the estimate below.
                 dropped = measuredSince;
@@ -837,6 +838,8 @@ static void EndFrame(DeviceData* data, VkQueue queue, const VkPresentInfoKHR* pP
             w.Key("dropped"); w.Uint(dropped);
             w.Key("droppedTotal"); w.Uint(droppedTotal);
             if (measured) { w.Key("droppedMeasured"); w.Boolean(true); }
+            // From the present call to the first pixel out, the median of the interval's frames.
+            if (presentLatencyMs > 0) { w.Key("presentLatencyMs"); w.Double(presentLatencyMs); }
             w.EndObject();
             Transport::Get().SendJson(std::move(w.str()));
             data->frameTimeAccumMs = 0;
