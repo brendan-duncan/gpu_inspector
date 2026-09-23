@@ -310,6 +310,14 @@ the boundaries the UI's pass model needs, and says so in the stream:
   captured frame would otherwise bind buffers the capture never read. Entries that frame queued
   and no captured list ran are dropped, an entry several lists asked for gets its frame from any
   of them (`sharedBy`), and a list recorded again lets go of what its last recording queued.
+* **So are the queries** (`BeginPass`, `BeginDrawQueries`): a pass's timestamps and statistics go
+  into the list as it is recorded, so timing only what is recorded once the capture has started
+  measures nothing of a frame whose lists were built the frame before. The entries they make carry
+  `warmup` and become the capture's only if their list runs in it, exactly as the read-backs do; one
+  that does not keeps `frame == UINT32_MAX` and is not sent. The query counters therefore start over
+  when the capture is *armed* (`RequestCapture`) rather than when it starts, since the warm-up frame
+  is what hands out the first slots -- starting over after it would give the captured frame's passes
+  the same slots and overwrite what they measured.
 * **What a copy reads is captured whole**: the source range of `CopyBufferRegion`, of a
   `CopyTextureRegion` from a buffer, and of a buffer `CopyResource`. An engine fills its per-frame
   constant buffers that way, and a replay copying from a source it has nothing for overwrites

@@ -1566,10 +1566,39 @@ library does not read back yet.
       rendered, the overdraw, the pixel history and the timings all come from replaying the capture.
       The Vulkan side already replays for them (`vkinsp_replay`); D3D12 has no replay yet, and that
       is what this needs.
-- [ ] Unity records its command lists more than a frame ahead, so recording from the capture request
-      and letting one frame pass still leaves 78 of its lists unrecorded: only "Record all command
-      buffers" captures a Unity frame whole. Recording from two frames ahead, or keeping the last
-      frame's recordings and using them when a list is submitted unchanged, would cover it.
+      Since measured again on the same player (below): the commands are no longer the problem -- the
+      warm-up frame of recording reaches every list the captured frame submits -- and the queries now
+      go in during that frame too. What is left of this entry is the suspended passes and a lead of
+      more than one frame, each its own item below.
+- [x] What an engine that records ahead leaves unmeasured. Measured on the URP player
+      (`D:\Unity\urp_sample`, 800x600, `-force-d3d12`), where a captured frame submits 64 command
+      lists and resets only 3 of them: 61 were recorded in the frame before, which the capture's
+      one warm-up frame of recording already covers -- no list came out unrecorded in any run. What
+      it did not cover was everything that goes into a list *as it records*: a pass's timestamps and
+      statistics were only taken once the capture had started, so a frame whose lists were built in
+      the warm-up frame reported **no pass timings at all**. The queries now go in during the warm-up
+      frame too, their entries marked `warmup` and kept only if their list runs in the capture, the
+      way the read-backs already were (`BeginPass`, `BeginDrawQueries`, `TimingEntry::warmup`); the
+      query counters start over when the capture is armed rather than when it starts, or the
+      captured frame's passes would be handed the slots the warm-up frame already used. A/B on the
+      player: without it, a capture landing on such a frame read 0 timings of its 29 timeable
+      passes; with it, every timeable pass is timed, 10 of the 11 in one run coming from lists
+      recorded before the frame (the log says how many).
+- [ ] The rest of what a Unity frame does not measure: **46 to 74 of its ~58 render pass segments are
+      suspended across command lists**, and a suspended pass takes no queries and no target read-back
+      by construction -- nothing may be added between a suspension and its resume, and a
+      `ResolveQueryData` there closes the list with E_FAIL (which is how the player was lost before).
+      That is now the dominant reason a Unity frame is measured thinly, not recording ahead. What
+      would fix it: stop resolving queries inside the application's lists. A timestamp is a single
+      `EndQuery` and is legal anywhere, so every segment could take one at each end; only the
+      resolve is forbidden mid-pass, and it does not have to be in the application's list at all --
+      the capture could resolve the whole used range once, from a list of its own, after the frame's
+      work is waited for at the finish. That also removes the E_FAIL hazard the split-pass rule
+      exists to avoid.
+- [ ] Lists recorded more than one frame ahead, which the warm-up frame does not reach: recording
+      from two frames ahead, or keeping the last frame's recordings and using them when a list is
+      submitted unchanged, would cover them. Not seen on the URP player, whose captured frames were
+      all recorded in the frame before, but an engine with a deeper lead would need it.
 - [ ] 32-bit targets: only x64 processes are injected.
 - [x] Catching an application started elsewhere: `dxinsp_launch.exe --watch <image>` polls for the
       process and injects it while it is held suspended, which is what D3D12 has in place of an

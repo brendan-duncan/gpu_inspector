@@ -327,6 +327,13 @@ struct TimingEntry
     ID3D12Device* device = nullptr;
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;
+    /**
+     * Queried in the frame of recording before the capture (the queries go into the list as it is
+     * recorded, and an engine that records ahead built the captured frame's lists then). Not part
+     * of the capture unless that list runs in it, which is what gives the entry its frame; one
+     * that never does keeps UINT32_MAX and is not sent (SendPassTimings skips it).
+     */
+    bool warmup = false;
     uint64_t listId = 0;
     uint32_t passIndex = 0;
     bool compute = false;
@@ -345,6 +352,8 @@ struct DrawEntry
     ID3D12Device* device = nullptr;
     uint32_t frame = UINT32_MAX;
     ID3D12GraphicsCommandList* list = nullptr;
+    /** Measured in the warm-up frame, and the capture's only if that list runs in it (TimingEntry::warmup). */
+    bool warmup = false;
     uint64_t listId = 0;
     uint32_t command = 0;
     uint32_t passIndex = UINT32_MAX;   // a dispatch outside a render pass has none
@@ -823,9 +832,26 @@ void CaptureManager::RequestCapture(const CaptureOptions& options)
     i.warmingUp = false;
     i.textures.clear();
     i.buffers.clear();
+    i.timings.clear();
+    i.draws.clear();
+    i.pendingDrawSlots.clear();
     i.bufferIds.clear();
     i.textureIds.clear();
     i.bufferBytes = i.imageBytes = 0;
+    // The query counters start over here rather than when the capture starts: the warm-up frame
+    // records passes of the frame to be captured and reserves their slots (BeginPass), and starting
+    // over after that would hand the same slots out twice and overwrite what it measured.
+    {
+        std::lock_guard devices(i.deviceMutex);
+        for (auto& [d, dc] : i.devices)
+        {
+            dc->timestampsUsed.store(0, std::memory_order_relaxed);
+            dc->statsUsed.store(0, std::memory_order_relaxed);
+            dc->occlusionUsed.store(0, std::memory_order_relaxed);
+            dc->slotsUsed.store(0, std::memory_order_relaxed);
+            dc->drawSlotsUsed.store(0, std::memory_order_relaxed);
+        }
+    }
     if (options.atFrame == UINT64_MAX)
     {
         _recordActive.store(true, std::memory_order_relaxed);
@@ -1131,10 +1157,16 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     // A run of dispatches ends where a render pass begins.
     OnComputePassEnd(rec);
 
+    // TakesContents, not Capturing: a pass's queries go into the list as it is recorded, and an
+    // engine that records its lists a frame or more ahead (Unity does) records the captured frame's
+    // lists during the warm-up frame. Timing only what is recorded once the capture has started
+    // measures nothing at all of such a frame -- 58 passes and no timings on a Unity player. The
+    // entries queries made now carry `warmup` and only become part of the capture if their list
+    // runs in it (OnExecuteCommandLists assigns the frame), as read-back entries already do.
     bool profile;
     {
         std::lock_guard lock(i.mutex);
-        profile = i.state == Impl::State::Capturing && i.options.profilePasses;
+        profile = i.TakesContents() && i.options.profilePasses;
     }
     if (!profile || rec->bundle() || pass.split || !TimestampsAllowed(rec->type()))
         return pass.passIndex;
@@ -1190,7 +1222,9 @@ uint32_t CaptureManager::BeginDrawQueries(CommandRecorder* rec)
     Impl& i = impl();
     {
         std::lock_guard lock(i.mutex);
-        if (i.state != Impl::State::Capturing || !i.options.drawTimings)
+        // The warm-up frame as well, for the reason BeginPass takes its queries then: the draws of
+        // the captured frame belong to lists an engine that records ahead recorded before it.
+        if (!i.TakesContents() || !i.options.drawTimings)
             return UINT32_MAX;
     }
     // A pass suspended across command lists takes nothing, here as in BeginPass: a query begun in
@@ -1252,6 +1286,7 @@ void CaptureManager::EndDrawQueries(CommandRecorder* rec, uint32_t packed, bool 
     de.dispatch = dispatch;
     de.slot = slot;
     std::lock_guard lock(i.mutex);
+    de.warmup = i.state != Impl::State::Capturing;
     i.draws.push_back(de);
     i.pendingDrawSlots[list].push_back(packed);
 }
@@ -1380,11 +1415,12 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
         return;
     }
     ID3D12GraphicsCommandList* list = rec->list();
-    bool capturing, captureTextures;
+    bool capturing, takesContents, captureTextures;
     uint64_t maxTextureSize, maxTargetTotal;
     {
         std::lock_guard lock(i.mutex);
         capturing = i.state == Impl::State::Capturing;
+        takesContents = i.TakesContents();
         captureTextures = i.options.captureTextures;
         maxTextureSize = i.options.maxTextureSize;
         maxTargetTotal = i.options.maxTargetTotal;
@@ -1404,12 +1440,15 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
     if (dc && pass.timestampQuery != UINT32_MAX)
     {
         EndPassQueries(*dc, list, pass.timestampQuery, pass.statsQuery, pass.occlusionQuery);
-        if (capturing)
+        // A pass timed during the warm-up frame is kept the same way, marked: the list it is in may
+        // be one the captured frame runs, and then the timing is the captured frame's.
+        if (takesContents)
         {
             TimingEntry te;
             te.device = rec->device();
             te.list = list;
             te.listId = listId;
+            te.warmup = !capturing;
             te.passIndex = pass.passIndex;
             te.compute = false;
             te.slot = pass.timestampQuery / 2;
@@ -1611,7 +1650,7 @@ void CaptureManager::OnBeforeDispatch(CommandRecorder* rec)
     bool profile;
     {
         std::lock_guard lock(i.mutex);
-        profile = i.state == Impl::State::Capturing && i.options.profilePasses;
+        profile = i.TakesContents() && i.options.profilePasses;   // the warm-up frame too (BeginPass)
     }
     if (!profile || rec->bundle() || rec->adopted() || !TimestampsAllowed(rec->type()))
         return;
@@ -1649,6 +1688,7 @@ void CaptureManager::OnComputePassEnd(CommandRecorder* rec)
     te.compute = true;
     te.slot = compute.timestampQuery / 2;
     std::lock_guard lock(i.mutex);
+    te.warmup = i.state != Impl::State::Capturing;
     i.timings.push_back(te);
 }
 
@@ -2645,9 +2685,11 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 // what it held a frame ago is not what this frame's draws see. The budgets start
                 // over with it, so the frame before does not spend the captured frame's.
                 i.warmingUp = false;
-                i.timings.clear();
-                i.draws.clear();
-                i.pendingDrawSlots.clear();
+                // The passes the warm-up frame timed stay for the same reason its read-backs do:
+                // an engine that records ahead recorded the captured frame's lists then, and their
+                // queries are in those lists. An entry no list of this frame runs keeps its
+                // UINT32_MAX frame and is not sent (SendPassTimings). Cleared when the capture is
+                // armed instead (RequestCapture).
                 i.bufferIds.clear();
                 i.textureIds.clear();
                 i.bufferBytes = i.imageBytes = i.targetBytes = i.commandTotal = 0;
@@ -2696,15 +2738,11 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
     {
         // What the capture measures while it records (overdraw.h), with nothing left from the last one.
         StartMeasurements(overdraw, pixelHistory, drawOverlay, meshOutput, maxTextureSize);
-        // The pass counters start over; the heaps themselves stay.
+        // The counters started over when the capture was armed (RequestCapture), since the warm-up
+        // frame reserves the slots of the passes it records; the heaps themselves stay.
         std::lock_guard lock(i.deviceMutex);
         for (auto& [d, dc] : i.devices)
         {
-            dc->timestampsUsed.store(0, std::memory_order_relaxed);
-            dc->statsUsed.store(0, std::memory_order_relaxed);
-            dc->occlusionUsed.store(0, std::memory_order_relaxed);
-            dc->slotsUsed.store(0, std::memory_order_relaxed);
-            dc->drawSlotsUsed.store(0, std::memory_order_relaxed);
             // The last capture's staging, which its lists have long since stopped naming.
             std::lock_guard dlock(dc->mutex);
             ScopedInternal internal;
@@ -3434,6 +3472,25 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device)
     }
     Log("capture finishing: %zu submissions, %llu commands, %zu textures, %zu buffers, %zu passes", data.submissions.size(),
         (unsigned long long)data.commandTotal, data.textures.size(), data.buffers.size(), data.timings.size());
+    // How much of the frame was measured through lists recorded before it: an engine that records
+    // ahead (Unity) builds the captured frame's lists during the warm-up frame, and their queries
+    // went in as they were recorded (BeginPass). Worth saying, because it is the difference between
+    // a measured frame and an unmeasured one, and it is invisible from the capture itself.
+    {
+        uint32_t fromBefore = 0, unused = 0;
+        for (const TimingEntry& te : data.timings)
+        {
+            if (!te.warmup)
+                continue;
+            if (te.frame != UINT32_MAX)
+                ++fromBefore;
+            else
+                ++unused;
+        }
+        if (fromBefore || unused)
+            Log("capture: %u pass(es) were timed in lists the application recorded before the captured frame; "
+                "%u more were timed in lists it did not run", fromBefore, unused);
+    }
     // A pass the application suspends across command lists is recorded whole and measured not at
     // all: between the suspension and its resume nothing may be added to the list (ActivePass::split).
     if (splitPassCount)
