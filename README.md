@@ -32,7 +32,7 @@ The user documentation is in [docs](docs/README.md):
 | [Install](docs/INSTALL.md) · [Getting started](docs/GETTING_STARTED.md) | the first session, start to a saved capture |
 | [The launch window](docs/LAUNCH.md) | launch apps for inspection and capture |
 | [Vulkan](docs/VULKAN.md) · [Direct3D 12](docs/D3D12.md) · [Direct3D 11](docs/D3D11.md) · [Metal](docs/METAL.md) · [OpenGL ES](docs/GLES.md) · [Android and Quest](docs/ANDROID.md) · [Web pages and WebGPU](docs/BROWSER.md) | the workflow for each platform |
-| [Minecraft Bedrock](docs/HOWTO_MINECRAFT.md) | how-to guides for particular applications |
+| [A Unity player](docs/HOWTO_UNITY.md) · [A Quest application](docs/HOWTO_QUEST.md) · [A WebGPU page](docs/HOWTO_BROWSER.md) · [Minecraft Bedrock](docs/HOWTO_MINECRAFT.md) | how-to guides for particular applications |
 | [Inspect](docs/INSPECT.md) · [Capture](docs/CAPTURE.md) · [Reports](docs/REPORTS.md) | using the inspector |
 | [Finding GPU bottlenecks](docs/PROFILING.md) | working out what limits a frame |
 | [Claude Code plugin](docs/MCP.md) | asking Claude about a capture |

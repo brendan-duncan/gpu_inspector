@@ -153,7 +153,8 @@ only describe a hitch already caught in the act.
 
 **Timing Capture** in the capture bar records every frame's time and where its CPU went, for as long
 as you leave it running. Stop it and the report gives the frame-time graph, the distribution, and
-every hitch with what caused it.
+every hitch with what caused it. It opens in a **Timing Capture** tab beside the frame captures,
+and fills in as the run goes; closing the tab stops the recording.
 
 - **The graph** is the point. A list of percentiles says the run was uneven; only the shape says
   whether it was one stall at load, a spike every few seconds, or a slow drift, and those are
@@ -219,8 +220,9 @@ The Inspect tab's memory view says what is held now and, over time, which way it
 that climbs cannot say *what* is climbing: one allocation a frame that is never freed and a thousand
 that mostly are look the same in a sum, and nothing about the fix for one applies to the other.
 **Memory Capture** in the capture bar records every allocation and free for as long as it runs
-(`VkDeviceMemory` on Vulkan; heaps and committed resources on Direct3D 12), and the report answers
-the three things a total cannot:
+(`VkDeviceMemory` on Vulkan; heaps and committed resources on Direct3D 12), and the report — a
+**Memory Capture** tab beside the frame captures, which closing stops the recording — answers the
+three things a total cannot:
 
 - **Made here and still held**: the allocations made while it recorded that were never freed,
   largest first, each named and a click from its object in Inspect (with its creation stack, if the
