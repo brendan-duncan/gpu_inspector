@@ -60,8 +60,9 @@ means the application already had its device (start the wait earlier) or does no
 to run elevated too.
 
 **Shaders show no text, and constant buffers are bytes.** The shaders are DXIL and
-`dxcompiler.dll` was not found. The library looks beside itself, in `%VULKAN_SDK%\Bin`, in the
-Windows SDK's `bin\<version>\x64` and on `PATH`; install the Vulkan SDK or copy the DLL next to
+`dxcompiler.dll` was not found. The library looks beside itself (the installer puts one there,
+in `resources\layer`), in `%VULKAN_SDK%\Bin`, in the Windows SDK's `bin\<version>\x64` and on
+`PATH`; a build from source needs the Vulkan SDK, or the DLL copied next to
 `dxinsp_capture.dll`. Text with no **Source** view means the HLSL was not found: `dxc -Zi` embeds
 it in the container, and `dxc -Zs -Fd <dir>\` writes it to a PDB beside the build, which GPU
 Inspector reads when **Symbol directories** (or the MCP server's `set_search_paths` `symbolDirs`)

@@ -13,8 +13,30 @@ const adhocSign = require("./adhoc_sign.cjs").default;
 // WebGPU in it: the one thing its renderer draws with the GPU is the mesh preview
 // (src/renderer/mesh_preview.ts), and that is WebGL2, which goes through ANGLE's D3D11 backend
 // and the separate, older d3dcompiler_47.dll -- which is why that one is not in this list.
-// 26MB of the installed tree and 7MB of the download.
-const WINDOWS_UNUSED = ["dxcompiler.dll", "dxil.dll"];
+//
+// dxcompiler.dll itself is kept, but moved: the Direct3D 12 capture library and dxinsp_shader.exe
+// need a dxcompiler.dll for DXIL reflection, disassembly and the shader editor's assembler and
+// validator, and look beside themselves first (src/d3d12/src/shader_reflect.cpp), so Electron's
+// copy goes into resources/layer rather than a user without the Vulkan or Windows SDK going
+// without shader text. It is a full DXC build (the shader-edit test passes against it, validator
+// included), so dxil.dll, Microsoft's separate validator, is not needed and is removed: 1.5MB.
+const WINDOWS_UNUSED = ["dxil.dll"];
+const WINDOWS_MOVED = [{ name: "dxcompiler.dll", to: path.join("resources", "layer") }];
+
+function relocate(appOutDir, moves) {
+  for (const { name, to } of moves) {
+    const file = path.join(appOutDir, name);
+    if (!fs.existsSync(file)) {
+      // A later Electron may stop shipping it; the library then looks in the SDKs as before.
+      console.log(`  • not present, nothing to move  file=${name}`);
+      continue;
+    }
+    const dir = path.join(appOutDir, to);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.renameSync(file, path.join(dir, name));
+    console.log(`  • moved Electron file beside the capture library  file=${name} to=${to}`);
+  }
+}
 
 function prune(appOutDir, names) {
   for (const name of names) {
@@ -34,6 +56,9 @@ function prune(appOutDir, names) {
 }
 
 exports.default = async function afterPack(context) {
-  if (context.electronPlatformName === "win32") prune(context.appOutDir, WINDOWS_UNUSED);
+  if (context.electronPlatformName === "win32") {
+    relocate(context.appOutDir, WINDOWS_MOVED);
+    prune(context.appOutDir, WINDOWS_UNUSED);
+  }
   await adhocSign(context);
 };

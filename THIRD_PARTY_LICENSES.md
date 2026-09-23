@@ -32,6 +32,11 @@ Files that contain adapted code carry a header comment naming their origin.
 - License: the header-only utility library (`NvPerfUtility/include`) is Apache-2.0, Copyright 2021-2025 NVIDIA Corporation (`third_party/nvperf/NvPerfUtility/LICENSE`); the API headers (`third_party/nvperf/include`) are under the NVIDIA Nsight Perf SDK License (`third_party/nvperf/NVIDIA Nsight Perf SDK License (28Sept2022).pdf`), which permits redistributing this portion of the SDK.
 - Used for: reading the GPU's hardware counters per pass and per draw when replaying a Vulkan capture (`src/replay/src/nvperf.cpp`, `docs/REPLAY.md`). The SDK's host library (`nvperf_grfx_host`) is not shipped: it is loaded at run time from an Nsight install or from beside the tool, so end users obtain the binary from NVIDIA. Building without it (`-DVKINSP_NVPERF=OFF`) leaves only the portable `VK_KHR_performance_query` path.
 
+## DirectX Shader Compiler (dxcompiler.dll)
+- Source: https://github.com/microsoft/DirectXShaderCompiler. The Windows package does not build it: it ships the `dxcompiler.dll` that Electron already bundles (for Dawn's WebGPU, which the app has no use for), moved from the app's root to `resources/layer` by `src/app/tools/after_pack.cjs`.
+- License: University of Illinois Open Source License (the LLVM Release License), Copyright (c) Microsoft Corporation and the LLVM contributors (`LICENSE.TXT` in the source repository; Electron's `LICENSES.chromium.html` carries the same notice).
+- Used for: reflecting, disassembling, assembling and validating DXIL shaders in the Direct3D 12 capture library and `dxinsp_shader.exe` (`src/d3d12/src/shader_reflect.cpp`), which look for the DLL beside themselves before the Vulkan and Windows SDKs.
+
 ## MinHook
 - Source: https://github.com/TsudaKageyu/minhook (the `third_party/minhook` submodule, built into `dxinsp_capture.dll`)
 - License: BSD-2-Clause, Copyright (C) 2009-2017 Tsuda Kageyu. Its Hacker Disassembler Engine (`src/hde`) is Copyright (c) 2008-2009 Vyacheslav Patkov, under the same terms.

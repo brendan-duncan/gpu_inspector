@@ -8,6 +8,7 @@
 - `--hitch-every N` on the Vulkan, Direct3D 12 and Metal samples stalls one frame in N, for a timing capture to catch.
 - Dropped frames on Vulkan are measured by the display through `VK_EXT_present_timing` where the driver offers it, instead of estimated from the frame interval.
 - `test/triangle --stall <ms>` sleeps every frame so vsynced presents miss refreshes, as the Direct3D 12 sample's does.
+- The Windows installer ships `dxcompiler.dll` beside the Direct3D 12 capture library, so DXIL shaders have text, reflection and edits without a Vulkan or Windows SDK on the machine.
 
 ## v0.22.1
 

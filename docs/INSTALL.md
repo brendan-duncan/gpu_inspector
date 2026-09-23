@@ -28,7 +28,7 @@ None of these are required; they only affect what the inspector can show you.
 |---|---|
 | `spirv-dis`, `spirv-cross` | GLSL, HLSL, MSL and disassembly views of Vulkan shaders. From the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home), or `brew install spirv-tools spirv-cross`, or your distribution's packages |
 | Vulkan SDK (`glslangValidator`, `dxc`, `glslc`) | [Shader editing](INSPECT.md#editing-a-shader) — compiling a replacement shader (`dxc` for a Direct3D 12 application) |
-| `dxcompiler.dll` | Disassembly, embedded source and reflection of DXIL shaders in [Direct3D 12](D3D12.md) applications. From the Vulkan SDK or a recent Windows SDK |
+| `dxcompiler.dll` | Disassembly, embedded source and reflection of DXIL shaders in [Direct3D 12](D3D12.md) applications. The Windows installer includes one; a build from source finds the Vulkan SDK's or a recent Windows SDK's |
 | Android SDK and NDK | [Inspecting Android devices](ANDROID.md) |
 
 A Vulkan application also needs a Vulkan driver for your GPU, which normally comes with the

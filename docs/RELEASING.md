@@ -115,11 +115,16 @@ It also takes two things out of what Electron ships, which is where 15MB of the 
   translations of Chromium's own strings, and the app's UI is English. It must be spelled
   `en-US`: app-builder-lib matches the value against the locale file's own name and its prefix
   fallback is the wrong way round, so `en` matches nothing and deletes `en-US.pak` too.
-- `src/app/tools/after_pack.cjs` removes `dxcompiler.dll` and `dxil.dll` on Windows —
-  DirectXShaderCompiler, which Dawn uses for WebGPU. There is no WebGPU in the app; the one
-  thing its renderer draws with the GPU is the mesh preview, and that is WebGL2 through ANGLE's
-  D3D11 backend and the separate, older `d3dcompiler_47.dll`, which stays. The hook runs before
-  signing, so on macOS the signature seals the pruned tree; it then calls `adhoc_sign.cjs`.
+- `src/app/tools/after_pack.cjs` moves `dxcompiler.dll` into `resources/layer` and removes
+  `dxil.dll` on Windows. Both are DirectXShaderCompiler, which Dawn uses for WebGPU; there is no
+  WebGPU in the app (the one thing its renderer draws with the GPU is the mesh preview, and that
+  is WebGL2 through ANGLE's D3D11 backend and the separate, older `d3dcompiler_47.dll`, which
+  stays). But the D3D12 capture library and `dxinsp_shader.exe` need a `dxcompiler.dll` for
+  DXIL, and look beside themselves first, so Electron's copy is what a user without the Vulkan
+  or Windows SDK gets rather than no shader text. It is a full build — the shader-edit test's
+  assembler and validator run against it — so Microsoft's separate validator `dxil.dll` is not
+  needed. The hook runs before signing, so on macOS the signature seals the pruned tree; it then
+  calls `adhoc_sign.cjs`.
 
 Neither is a size trick to redo by hand after a build: both happen in the packaging step, and
 `npm run pack` produces the same tree the installer carries.

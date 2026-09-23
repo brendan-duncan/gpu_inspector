@@ -1545,8 +1545,13 @@ library does not read back yet.
       implicit layer (the "wait for an application" launch target, and `wait_for_app`).
 - [ ] Attaching to a process that already has a device: injection still has to happen at process
       start, because the hooks go on the entry points and D3D12 cannot enumerate an existing device.
-- [ ] DXIL reflection and disassembly without `dxcompiler.dll` on the machine: ship it beside the
-      library, or parse the DXIL container's reflection part in the library.
+- [x] DXIL reflection and disassembly without `dxcompiler.dll` on the machine: the Windows package
+      ships one beside the library. Not downloaded or built: Electron already bundles a full DXC
+      (1.9.2607 with Electron 44, for Dawn), which `after_pack.cjs` used to delete and now moves
+      into `resources/layer`, where the library and `dxinsp_shader.exe` look first. Checked that
+      Electron's build reflects, disassembles, assembles and validates (the `d3d12-plain` and
+      `d3d12-shader-edit` cases pass against it), so `dxil.dll` stays out. RenderDoc ships its
+      copy the same way (`plugins/d3d12/dxcompiler.dll`, from its prebuilt plugins bundle).
 - [x] Automated test: `tools/ui_tests.py` runs five D3D12 cases over `dxinsp_triangle` (a plain
       capture, a render pass, a bundle, an offscreen frame with no swap chain, and opening a saved
       capture), the way the Vulkan cases run.

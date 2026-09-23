@@ -431,8 +431,9 @@ after that execution.
 Reflection turns a captured buffer's bytes into named fields. The Vulkan side parses SPIR-V in the
 UI; for DXBC and DXIL the library does it in the process, at pipeline creation (`shader_reflect.cpp`):
 `D3DReflect` from `d3dcompiler_47.dll` (always in System32) for DXBC, and `IDxcUtils::CreateReflection`
-from `dxcompiler.dll` for DXIL, which the library looks for beside itself, in the Vulkan SDK
-(`%VULKAN_SDK%\Bin`), in the Windows SDK's `bin\<version>\x64` and on `PATH`. Both give the same
+from `dxcompiler.dll` for DXIL, which the library looks for beside itself (where the installer
+puts Electron's copy, `src/app/tools/after_pack.cjs`), in the Vulkan SDK (`%VULKAN_SDK%\Bin`),
+in the Windows SDK's `bin\<version>\x64` and on `PATH`. Both give the same
 things — every constant buffer's members with offsets, every bound resource with its register and
 space, the stage's inputs and outputs, a compute shader's thread group size — written in the shape
 the UI's own reflection has (`ReflType`) and keyed by `space` and `register`, which is what the
