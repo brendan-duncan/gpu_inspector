@@ -13,6 +13,7 @@
 
 #include "d3d12_enums.gen.h"
 #include "formats.h"
+#include "frame_pause.h"
 #include "hooks.h"
 #include "json.h"
 #include "overdraw.h"
@@ -3403,6 +3404,11 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device)
     // hang, and it says whether the wait is here or in the client reading it (docs/ARCHITECTURE.md).
     const auto finishBegan = std::chrono::steady_clock::now();
     cm._capturing.store(false, std::memory_order_release);
+    // A capture asked for while the application was paused was let through the frames it needed
+    // rather than resuming it (frame_pause.h). This is the frame boundary it ends on -- the
+    // present that ended the last captured frame waits straight after this -- so releasing the
+    // hold here leaves the application frozen on the frame the capture holds.
+    gpuinsp::FramePause::Get().ReleaseCaptureHold();
     cm._recordActive.store(cm.RecordAlways(), std::memory_order_relaxed);
     CaptureData data;
     uint32_t splitPassCount = 0;

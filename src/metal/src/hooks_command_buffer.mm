@@ -593,8 +593,9 @@ void CB_commit(id self, SEL _cmd)
         // presentDrawable: does not present until this command buffer completes, so freezing
         // straight after the commit would leave the previous frame on the screen. Waiting costs
         // the application a stall, which is why it only happens when the pause is about to take
-        // effect anyway.
-        if (gpuinsp::FramePause::Get().Paused())
+        // effect anyway -- WillBlock() rather than Paused(), so the frames a step or a capture
+        // hold is letting through are not stalled one by one.
+        if (gpuinsp::FramePause::Get().WillBlock())
             [(id<MTLCommandBuffer>)self waitUntilCompleted];
         gpuinsp::FramePause::Get().Wait();
     }

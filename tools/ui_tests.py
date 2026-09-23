@@ -7,7 +7,8 @@ End-to-end checks of the inspector against the triangle test application and sav
     python tools/ui_tests.py --keep               # keep the logs, dumps and screenshots
 
 Each case runs the Electron UI once with the testing flags (--launch or --debug-open, --debug-capture,
---debug-dump, --debug-view, --debug-expand, --debug-export, --debug-settle, --screenshot, --quit-after-screenshot), then checks the JSON
+--debug-pause, --debug-dump, --debug-view, --debug-expand, --debug-export, --debug-settle, --screenshot,
+--quit-after-screenshot), then checks the JSON
 screenshot time (sessions, captures, frame findings, validation links, symbols) and the layer's
 log. A capture directory may hold `<name>.expect.json` next to `<name>.gpucap` with the findings
 expected of it ({"findings": {"rule": count, ...}}); without one the file only has to open with
@@ -1419,6 +1420,19 @@ def capture_on_hitch(state, log):
                f"the tab is not named after the hitch: {c.get('requestLabel')!r}")
 
 
+def pause_capture(state, log):
+    # --debug-pause: the capture is asked for while the application is paused (frame_pause.h).
+    # The library holds the pause open for the capture rather than resuming -- the frames it
+    # needs are let through and the application blocks again on the frame it captured -- so the
+    # capture has to arrive whole and the session has to still be paused afterwards.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(session(state).get("paused") is True,
+               "the application resumed: a capture asked for while paused leaves it paused, on the frame it captured") + \
+        expect("capture requested while paused: letting" in log,
+               "the library did not hold the pause open for the capture") + \
+        expect("capture started" in log, "the capture never started while the pause was held open")
+
+
 def app_capture(state, log):
     # The application asked for the capture itself (include/gpu_inspector.h, the sample's
     # --capture-at): nothing on the command line takes one, so a capture tab can only be the
@@ -1548,6 +1562,7 @@ def triangle_cases(triangle):
         # The GPU Bottlenecks report rendering at all: a throw while building it would leave the
         # details pane empty and the renderer's console with the error.
         Case("bottlenecks", launch + ["--debug-capture", "--debug-view=bottlenecks"], triangle_bottlenecks, delay_ms=16000),
+        Case("pause-capture", launch + ["--debug-capture", "--debug-pause"], pause_capture, delay_ms=18000),
         Case("mesh-in", launch + ["--debug-capture", "--debug-view=mesh:in"], triangle_mesh_input, delay_ms=16000),
         # Reports in tabs and the HTML export, on the flame graph (the report that fetches shaders first).
         Case("report-export", launch + ["--debug-capture", "--debug-view=flame", f"--debug-export={exported}"],
@@ -1942,6 +1957,7 @@ def d3d12_cases(triangle):
         Case("d3d12-memory-capture", launch + ["--args=--churn", "--debug-memory=3000"], memory_capture, delay_ms=9000),
         Case("d3d12-memory-residency", launch + ["--args=--evict", "--debug-memory=6000"], memory_residency, delay_ms=12000),
         Case("d3d12-app-capture", launch + ["--args=--capture-at 200"], app_capture, delay_ms=14000),
+        Case("d3d12-pause-capture", launch + ["--debug-capture", "--debug-pause"], pause_capture, delay_ms=18000),
         Case("d3d12-shader-edit", launch + ["--debug-capture", "--debug-view=shader-edit", "--debug-settle=12000"], shader_edit, delay_ms=26000),
         Case("d3d12-mesh-output", launch + ["--debug-capture", "--debug-view=mesh"],
              d3d12_mesh_output, delay_ms=26000),

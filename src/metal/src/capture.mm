@@ -3,6 +3,7 @@
 #include "cpu_timeline.h"
 
 #include "formats.h"
+#include "frame_pause.h"
 #include "frame_stats.h"
 #include "gpu_trace.h"
 #include "overdraw.h"
@@ -935,6 +936,12 @@ void AdvanceFrame()
                 return;
             // The frames are encoded; the capture goes out once their GPU work has completed.
             g_finishPending = true;
+            // A capture asked for while the application was paused was let through the frames it
+            // needed rather than resuming it (frame_pause.h). Released here rather than in Finish,
+            // which a completion handler may reach a frame or two later: this is the boundary the
+            // last captured frame ends on, and the commit that ends it waits straight after, so
+            // the frame left on the screen is the one the capture holds.
+            gpuinsp::FramePause::Get().ReleaseCaptureHold();
             finishNow = g_outstanding == 0;
         }
         else if (g_pending)

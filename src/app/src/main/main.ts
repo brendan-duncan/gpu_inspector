@@ -72,6 +72,7 @@ let mainWin: BrowserWindow | null = null;
 //               [--debug-drag=x,y;x,y[;x,y...]] [--debug-settle=<ms>]
 //               [--debug-save=<file> [--debug-save-delay=<ms>]] [--debug-open=<file>]
 //               [--debug-timing=<ms> [--debug-timing-no-stacks] [--debug-capture-on-hitch]] [--debug-memory=<ms>]
+//               [--debug-pause]
 function cliOption(name: string): string | null {
   const prefix = `--${name}=`;
   const a = process.argv.find((x) => x.startsWith(prefix));
@@ -1259,6 +1260,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       timingMs: cliOption("debug-timing") ? Number(cliOption("debug-timing")) : null,
       timingStacks: cliFlag("debug-timing-no-stacks") ? false : null,
       captureOnHitch: cliFlag("debug-capture-on-hitch"),
+      pause: cliFlag("debug-pause"),
       memoryMs: cliOption("debug-memory") ? Number(cliOption("debug-memory")) : null,
       expandSection: cliOption("debug-expand"),
       waitForApp: cliFlag("wait-for-app"),

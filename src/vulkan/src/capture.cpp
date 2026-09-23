@@ -5,6 +5,7 @@
 
 #include "depth_resolve.h"
 
+#include "frame_pause.h"
 #include "image_readback.h"
 #include "layer.h"
 #include "resources.h"
@@ -398,6 +399,11 @@ void CaptureManager::OnDestroyDevice(DeviceData* dev)
 void CaptureManager::Finish(DeviceData* dev)
 {
     _capturing.store(false, std::memory_order_release);
+    // A capture asked for while the application was paused was let through the frames it needed
+    // rather than resuming it (frame_pause.h). This is the frame boundary it ends on -- the
+    // present that ends the last captured frame waits straight after calling this -- so releasing
+    // the hold here leaves the application frozen on the frame the capture holds.
+    gpuinsp::FramePause::Get().ReleaseCaptureHold();
     if (!RecordAlways())
         g_captureActive.store(false, std::memory_order_release);
     Log("capture finishing: %zu submissions, %llu commands, %zu textures, %zu buffers (%llu KB)",

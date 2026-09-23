@@ -20,6 +20,7 @@
 #include "transport.h"
 #include "validation.h"
 
+#include <algorithm>
 #include <cstring>
 #include <string>
 
@@ -162,13 +163,30 @@ void HandleMessage(const std::string& text)
         else if (action == "Capture")
         {
             // A capture is recorded from frames the application renders, and a paused application
-            // renders none: waiting here would simply hang. Resuming is the honest answer, and the
-            // UI is told so its pause button follows.
+            // renders none. Rather than resuming, the pause is held open for the capture
+            // (frame_pause.h): the frames it needs are let through -- one to arm it, one per
+            // captured frame -- and the application blocks again as the capture finishes, on the
+            // frame it captured. So a capture asked for while paused is a capture of the frame on
+            // the screen.
+            //
+            // A queued capture is the exception: it asks for a frame further on by definition, so
+            // it resumes as before and the UI is told, so its pause button follows.
             if (gpuinsp::FramePause::Get().Paused())
             {
-                Log("capture requested while paused: resuming");
-                gpuinsp::FramePause::Get().SetPaused(false);
-                SendPauseState();
+                const vkinsp::JsonValue* at = message.Get("atFrame");
+                const bool queued = at != nullptr && at->kind == vkinsp::JsonValue::Number && at->num >= 0;
+                if (!queued)
+                {
+                    const uint32_t frames = (uint32_t)std::max(1.0, message.GetNumber("frameCount", 1));
+                    Log("capture requested while paused: letting %u frame(s) through for it and staying paused", frames);
+                    gpuinsp::FramePause::Get().HoldForCapture(frames);
+                }
+                else
+                {
+                    Log("capture requested while paused for frame %llu: resuming", (unsigned long long)at->num);
+                    gpuinsp::FramePause::Get().SetPaused(false);
+                    SendPauseState();
+                }
             }
             // The same fields the Vulkan layer reads (layer.cpp); what the Metal side cannot
             // honor (sampled images, stack traces) is left at its default.

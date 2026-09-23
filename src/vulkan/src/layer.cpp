@@ -384,13 +384,30 @@ static void HandleUiMessage(const std::string& text)
         o.profilePasses = msg.GetBool("profilePasses", true);
         o.stacktraces = msg.GetBool("stacktraces", false);
         // A capture is recorded from frames the application renders, and a paused application
-        // renders none: waiting here would simply hang. Resuming is the honest answer, and the UI
-        // is told so its pause button follows.
+        // renders none. Rather than resuming, the pause is held open for the capture
+        // (frame_pause.h): the frames it needs are let through -- one to arm it, one per captured
+        // frame -- and the application blocks again as the capture finishes, on the frame it
+        // captured. So a capture asked for while paused is a capture of the frame on the screen,
+        // and the frame is still on the screen afterwards.
+        //
+        // A queued capture is the exception: it asks for a frame further on by definition, so
+        // waiting for it with the pause held open would keep the application running for as long as
+        // it takes to get there. That one resumes as before, and the UI is told so its pause button
+        // follows.
         if (gpuinsp::FramePause::Get().Paused())
         {
-            Log("capture requested while paused: resuming");
-            gpuinsp::FramePause::Get().SetPaused(false);
-            SendPauseState();
+            if (o.atFrame == UINT64_MAX)
+            {
+                Log("capture requested while paused: letting %u frame(s) through for it and staying paused",
+                    std::max(1u, o.frameCount));
+                gpuinsp::FramePause::Get().HoldForCapture(std::max(1u, o.frameCount));
+            }
+            else
+            {
+                Log("capture requested while paused for frame %llu: resuming", (unsigned long long)o.atFrame);
+                gpuinsp::FramePause::Get().SetPaused(false);
+                SendPauseState();
+            }
         }
         CaptureManager::Get().Request(o);
     }

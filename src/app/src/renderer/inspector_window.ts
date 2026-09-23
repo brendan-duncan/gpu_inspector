@@ -609,31 +609,45 @@ export class InspectorWindow extends Window {
     // a case that wants a frame of the application itself rather than of its splash says when.
     setTimeout(() => {
       if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
-      panel.showCaptureTab();
-      // --debug-capture-without=<list>: take the capture with those read-backs off, which is how
-      // the cost of each is measured on a frame that is slow to capture.
-      const without = (this._debug?.captureWithout ?? "").split(",").map((p) => p.trim()).filter(Boolean);
-      if (without.length) panel.capturePanel.setCaptureOptions(without);
-      // --debug-capture-with=<list>: and the options that are off by default.
-      const with_ = (this._debug?.captureWith ?? "").split(",").map((p) => p.trim()).filter(Boolean);
-      if (with_.length) panel.capturePanel.setExtraCaptureOptions(with_);
-      panel.capturePanel.capture(this._debug?.captureFrames, undefined, this._debug?.captureStacks || undefined);
-      // --debug-command=<index>: select a command once the capture has arrived.
-      const selectCommand = this._debug?.selectCommand;
-      if (selectCommand !== null && selectCommand !== undefined) setTimeout(() => panel.capturePanel.activeView?.selectCommand(selectCommand), 3000);
-      // --debug-view=<name>: open one of the capture's reports, so a screenshot shows it.
-      const view = this._debug?.showView;
-      if (view) setTimeout(() => panel.capturePanel.activeView?.showView(view), 3500);
-      // A Metal or D3D12 pixel history needs a second capture, which the tab offers as a button
-      // rather than taking by itself: a capture of the application's next frame costs it a frame.
-      if (view === "pixel-history") setTimeout(() => panel.capturePanel.debugCaptureHistory(), 5000);
-      this._debugExport(panel, 5000);
-      // --debug-save=<file>: save the capture once its data has had time to arrive.
-      // --debug-save-delay=<ms> waits longer, for a flow that takes a *second* capture and makes
-      // that one active: an overlay, a pixel history or a mesh output. Four seconds is enough for
-      // one capture's data and too early for the second.
-      this._debugSave(panel, this._debug?.saveCaptureDelayMs ?? 4000);
+      // --debug-pause: pause first, so what follows is a capture asked for while paused. The
+      // library takes it without resuming and holds the application again on the frame it captured
+      // (frame_pause.h), which the dump's `paused` shows once the capture has arrived. A second is
+      // long enough for the pause to reach the application and take at its next frame boundary.
+      if (this._debug?.pause) {
+        panel.debugPause();
+        setTimeout(() => this._debugCaptureNow(panel), 1000);
+        return;
+      }
+      this._debugCaptureNow(panel);
     }, this._debug?.captureDelayMs ?? 1500);
+  }
+
+  private _debugCaptureNow(panel: SessionPanel): void {
+    if (!this._sessions.has(panel.sessionId) || !panel.connected) return;
+    panel.showCaptureTab();
+    // --debug-capture-without=<list>: take the capture with those read-backs off, which is how
+    // the cost of each is measured on a frame that is slow to capture.
+    const without = (this._debug?.captureWithout ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+    if (without.length) panel.capturePanel.setCaptureOptions(without);
+    // --debug-capture-with=<list>: and the options that are off by default.
+    const with_ = (this._debug?.captureWith ?? "").split(",").map((p) => p.trim()).filter(Boolean);
+    if (with_.length) panel.capturePanel.setExtraCaptureOptions(with_);
+    panel.capturePanel.capture(this._debug?.captureFrames, undefined, this._debug?.captureStacks || undefined);
+    // --debug-command=<index>: select a command once the capture has arrived.
+    const selectCommand = this._debug?.selectCommand;
+    if (selectCommand !== null && selectCommand !== undefined) setTimeout(() => panel.capturePanel.activeView?.selectCommand(selectCommand), 3000);
+    // --debug-view=<name>: open one of the capture's reports, so a screenshot shows it.
+    const view = this._debug?.showView;
+    if (view) setTimeout(() => panel.capturePanel.activeView?.showView(view), 3500);
+    // A Metal or D3D12 pixel history needs a second capture, which the tab offers as a button
+    // rather than taking by itself: a capture of the application's next frame costs it a frame.
+    if (view === "pixel-history") setTimeout(() => panel.capturePanel.debugCaptureHistory(), 5000);
+    this._debugExport(panel, 5000);
+    // --debug-save=<file>: save the capture once its data has had time to arrive.
+    // --debug-save-delay=<ms> waits longer, for a flow that takes a *second* capture and makes
+    // that one active: an overlay, a pixel history or a mesh output. Four seconds is enough for
+    // one capture's data and too early for the second.
+    this._debugSave(panel, this._debug?.saveCaptureDelayMs ?? 4000);
   }
 }
 

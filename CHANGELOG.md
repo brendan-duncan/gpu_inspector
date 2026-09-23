@@ -13,6 +13,7 @@
 - An MCP session takes the captures an application asks for through `include/gpu_inspector.h`, saves them under the application's label and lists them (`get_session_status` `appCaptures`, `list_captures`).
 - Direct3D 12 residency on the memory series and in memory captures: evictions, page-ins and changes of the driver's budget are marked and counted, with the bytes each named.
 - `test/d3d12_triangle --evict` evicts a buffer and pages it back in on a cycle, for the residency marks.
+- A capture asked for while the application is live-paused captures the frame on the screen: the pause is held open for the capture's frames and closes again on the frame it captured, instead of resuming the application.
 - **Validate**, a report that replays a Vulkan capture under the Khronos validation layer, whether or not the application was launched with it, with every message tied to the captured command it fired on; `get_validation` does the same with `replay: true`.
 - `vkinsp_replay --validate-data <file>` writes the validation layer's messages with the command and phase each fired in.
 

@@ -6,6 +6,10 @@
 // own frame boundary: vkQueuePresentKHR on Vulkan, IDXGISwapChain::Present on D3D12, the drawable's
 // present on Metal.
 //
+// A capture asked for while paused does not resume the application: it is let through for the
+// frames the capture needs and blocks again as the capture finishes, on the frame it captured
+// (HoldForCapture / ReleaseCaptureHold). What the user was looking at is what the capture holds.
+//
 // Where the wait goes matters. It is *after* the frame has been presented, not before, so the
 // frame the user is looking at is the one the application last drew, complete, with the HUD's
 // PAUSED line on it (the HUD draws earlier in the same present, and reads Paused() to know). A
@@ -54,6 +58,12 @@ public:
             std::lock_guard<std::mutex> lock(_mutex);
             _paused.store(paused, std::memory_order_relaxed);
             _steps = paused ? 1 : 0;
+            // Resuming ends a capture hold with everything else; pausing does not. A pause asked
+            // for while a capture's frames are being let through takes effect when the capture
+            // releases the hold, rather than freezing the application in the middle of one and
+            // leaving it waiting for frames that never come.
+            if (!paused)
+                _captureFrames = 0;
         }
         _cv.notify_all();
     }
@@ -81,19 +91,64 @@ public:
     }
 
     /**
+     * Lets a capture's frames through without leaving the pause, so that a capture asked for while
+     * paused is a capture of the frame the user is looking at rather than a reason to resume. The
+     * capture library releases the hold at the frame boundary its last captured frame ends on,
+     * which is before the Wait() of that same frame -- so the application blocks again on the frame
+     * the capture holds, and the window still shows it.
+     *
+     * `frames` is the capture's frame count; the budget adds the frame the capture is armed in and
+     * a few spare. It is a bound, not a plan: a capture that never runs (its device went away, or
+     * another capture was already in progress and this request was dropped) must not leave a paused
+     * application running for good, so the hold expires by itself if nothing releases it.
+     */
+    void HoldForCapture(uint32_t frames)
+    {
+        {
+            std::lock_guard<std::mutex> lock(_mutex);
+            _captureFrames = (frames > 4096 ? 4096u : frames) + 8;
+        }
+        _cv.notify_all();
+    }
+
+    /** The capture is over: the application blocks at its next frame boundary, which is this one. */
+    void ReleaseCaptureHold()
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        _captureFrames = 0;
+    }
+
+    /**
+     * Whether the next Wait() would actually hold the application. A backend that has to do
+     * something expensive to make the frozen frame the right one -- Metal waits for the presenting
+     * command buffer to complete -- asks first, so it does not pay for it on the frames a step or a
+     * capture hold is letting through anyway.
+     */
+    bool WillBlock() const
+    {
+        std::lock_guard<std::mutex> lock(_mutex);
+        return _paused.load(std::memory_order_relaxed) && _steps == 0 && _captureFrames == 0;
+    }
+
+    /**
      * Called at the frame boundary, after the frame has been presented: blocks while paused, unless
-     * a step is owed, in which case it takes one and lets this frame through.
+     * a step is owed or a capture is being let through, in which case it takes one and lets this
+     * frame through.
      */
     void Wait()
     {
         std::unique_lock<std::mutex> lock(_mutex);
         bool blocked = false;
-        while (_paused.load(std::memory_order_relaxed) && _steps == 0)
+        while (_paused.load(std::memory_order_relaxed) && _steps == 0 && _captureFrames == 0)
         {
             blocked = true;
             _cv.wait(lock);
         }
-        if (_steps > 0)
+        // A capture's frames are spent first: a step the user asked for is theirs to keep, and is
+        // owed once the capture has released its hold.
+        if (_captureFrames > 0)
+            --_captureFrames;
+        else if (_steps > 0)
             --_steps;
         if (blocked)
             _generation.fetch_add(1, std::memory_order_relaxed);
@@ -105,6 +160,7 @@ private:
     std::atomic<bool> _paused{false};
     std::atomic<uint64_t> _generation{0};
     uint32_t _steps = 0;
+    uint32_t _captureFrames = 0;
 };
 
 } // namespace gpuinsp

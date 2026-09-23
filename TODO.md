@@ -910,10 +910,19 @@ vendor's driver is listed at the end so nobody spends time on it.
       live handles — which need no re-creation, since the application's objects are all still there.
       Re-submitting the application's own command buffers is not an alternative: truncating at a
       draw needs re-recording, and many engines record with `ONE_TIME_SUBMIT`.
-- [ ] Capture the frame you are looking at, rather than resuming: a capture requested while paused
-      resumes the application today, because a paused one renders no frames to capture and waiting
-      would hang. Stepping exactly as many frames as the capture needs, and re-pausing when it
-      finishes, would keep the paused frame on screen.
+- [x] Capture the frame you are looking at, rather than resuming. A paused application renders no
+      frames to capture, so the pause is held open for the capture instead of lifted
+      (`HoldForCapture` / `ReleaseCaptureHold` in `src/vulkan/src/frame_pause.h`): the frames the
+      capture needs are let through -- one to arm it, one per captured frame -- and it is released
+      at the frame boundary the last captured frame ends on, which each library reaches before
+      that frame's own `Wait()`. So the application blocks again on the frame the capture holds
+      and the window still shows it. Released in `CaptureManager::Finish` on Vulkan and D3D12,
+      where the finish runs inside the present; on Metal where the last frame is counted, since
+      its finish may be a completion handler a frame or two later. The hold carries a frame budget
+      as well, so a capture that never runs cannot leave a paused application running for good,
+      and a capture queued for a later frame still resumes rather than holding the application
+      open until it gets there. `--debug-pause` and the `pause-capture` / `d3d12-pause-capture` UI
+      cases cover it; the Metal third is written but needs a Mac to run.
 
 Out of reach without the vendor's driver, so ablation stays the honest substitute and the docs
 should say so:

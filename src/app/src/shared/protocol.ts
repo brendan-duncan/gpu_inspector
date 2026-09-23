@@ -1255,6 +1255,11 @@ export interface AppConfig {
     timingStacks?: boolean | null;
     /** --debug-capture-on-hitch: arm Capture on hitch before the timing capture starts. */
     captureOnHitch?: boolean;
+    /**
+     * --debug-pause: pause the application before the debug capture is taken, which is how a case
+     * checks that a capture asked for while paused is taken without resuming it (frame_pause.h).
+     */
+    pause?: boolean;
     /** --debug-expand=<text>: open the selected command's section whose title contains that text. */
     expandSection: string | null;
     /** --debug-open=<file>: open a capture file at startup. --debug-save=<file>: save the debug capture there. */

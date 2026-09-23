@@ -204,8 +204,10 @@ export class SessionPanel extends Div implements SessionContext {
     this._pauseButton = new Button(row, { html: ICON_PAUSE, class: "btn btn-icon",
       tooltip: "Pause: hold the application at its next frame boundary, on the frame it has just drawn",
       callback: () => {
-        // The button follows PauseState, not the click: it is the library that decides, and it
-        // resumes on its own if a capture is asked for while paused.
+        // The button follows PauseState, not the click: it is the library that decides. A capture
+        // asked for while paused is taken without resuming -- the library lets its frames through
+        // and holds the application again on the frame it captured (frame_pause.h) -- so the only
+        // thing that still resumes on its own is a capture queued for a later frame.
         void this.send({ action: "Pause", paused: !this._paused });
       }});
     this._stepButton = new Button(row, { html: ICON_STEP, class: "btn btn-icon",
@@ -267,6 +269,9 @@ export class SessionPanel extends Div implements SessionContext {
           ? { hungCommand: db.deviceLost.hungCommand } : {}),
         ...(db.deviceLost.action === "DeviceLost" && db.deviceLost.note ? { note: db.deviceLost.note } : {}),
       } : null,
+      // Live pause: a capture taken while paused leaves this true, since the library holds the
+      // application again on the frame it captured rather than resuming it (frame_pause.h).
+      paused: this._paused,
       frameTimeMs: db.frameTimeMs, refreshMs: db.refreshMs, refreshSource: db.refreshSource, frameBoundary: db.frameBoundary,
       droppedFrames: db.droppedFramesTotal, droppedMeasured: db.droppedFramesMeasured, presentLatencyMs: db.presentLatencyMs,
       symbols: db.symbols.size, symbolsWithLines: [...db.symbols.values()].filter((f) => !!f.file).length,
@@ -387,6 +392,11 @@ export class SessionPanel extends Div implements SessionContext {
       if (msg.action === "PauseState") this._setPaused(msg.paused);
       this.database.handleMessage(msg);
     }
+  }
+
+  /** --debug-pause (tools/ui_tests.py): pauses the application the way the pause button does. */
+  debugPause(): void {
+    void this.send({ action: "Pause", paused: true });
   }
 
   /** The pause state the library reports: the two buttons and the tooltip follow it. */

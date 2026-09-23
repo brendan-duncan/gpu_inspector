@@ -464,6 +464,18 @@ frame is drawn knowing it is paused. `Generation()` counts the times the applica
 been held, which is how each HUD knows to throw away the frame interval that spans a pause instead
 of reporting a five-second frame.
 
+A capture asked for while paused is a capture of the frame on the screen, so the pause is held
+open for it rather than lifted: `HoldForCapture` lets the capture's frames through while the
+application stays paused, and the capture library calls `ReleaseCaptureHold` at the frame boundary
+its last captured frame ends on -- `CaptureManager::Finish` on Vulkan and D3D12, where the finish
+runs inside the present, and where the last frame is counted on Metal, whose finish may be a
+completion handler a frame or two later. Each is before that frame's own `Wait()`, so the
+application blocks again on the frame the capture holds. The hold carries a frame budget as well,
+since a capture that never runs -- its device went away, or another was already in progress --
+must not leave a paused application running for good. A capture queued for a later frame still
+resumes: waiting for it with the hold open would run the application for as long as it takes to
+reach that frame.
+
 Per backend, all that is left is putting the rectangles on the screen:
 
 - **Vulkan** (`src/vulkan/src/hud.*`) draws from `vkQueuePresentKHR`, in a render pass that loads

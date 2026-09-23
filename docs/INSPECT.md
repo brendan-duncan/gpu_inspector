@@ -377,9 +377,13 @@ list or a descriptor set cannot change under you as you read it.
 
 Two things to know:
 
-- **A capture resumes the application.** A capture is recorded from frames the application renders,
-  and a paused one renders none, so asking for a capture while paused resumes rather than hanging.
-  The pause button follows on its own when that happens.
+- **A capture while paused captures the frame you are looking at.** A capture is recorded from
+  frames the application renders, and a paused one renders none -- so the pause is held open for
+  the capture rather than lifted: the frames it needs are let through, one to start it and one
+  per captured frame, and the application is held again as the capture finishes, on the frame it
+  captured. The window still shows that frame, and the pause button does not move.
+  A capture *queued* for a later frame is the exception: it asks for a different frame by
+  definition, so it resumes the application, and the pause button follows.
 - **The window will say it is not responding.** Pausing stops the application's render thread
   inside its present call, so it stops pumping window messages too, and after a few seconds the
   system marks the window that way and draws its ghost copy. The frame is still what is on screen.
