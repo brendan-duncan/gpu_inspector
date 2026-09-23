@@ -162,7 +162,7 @@ on the main bar instead of this window: it lists what is running and attaches to
 
 Every field here has a command-line form, for scripting and for the test runs. A source build
 takes them after `npm start --`; an installed build takes them directly
-(`"GPU Inspector.exe" --launch=...`).
+(`GPUInspector.exe --launch=...`).
 
 | Option | Field |
 |---|---|

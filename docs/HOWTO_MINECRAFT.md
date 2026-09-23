@@ -27,7 +27,7 @@ capture at all; nothing here applies to it.
 From a shell, steps 2 to 5 are:
 
 ```
-"GPU Inspector.exe" --wait-for-d3d12=Minecraft.Windows.exe
+GPUInspector.exe --wait-for-d3d12=Minecraft.Windows.exe
 ```
 
 (from a source build, `npm start -- --wait-for-d3d12=Minecraft.Windows.exe`)

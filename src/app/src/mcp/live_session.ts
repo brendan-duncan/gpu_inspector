@@ -119,16 +119,23 @@ export function installedLayerDirs(): string[] {
   const home = os.homedir();
   if (process.platform === "win32") {
     const local = process.env.LOCALAPPDATA ?? path.join(home, "AppData", "Local");
-    const apps = [path.join(local, "Programs", "gpu-inspector"), path.join(local, "Programs", "GPU Inspector")];
+    // GPUInspector is the product name; "GPU Inspector" is what earlier releases installed as, and an
+    // updated install keeps the directory it was first installed into.
+    const names = ["GPUInspector", "GPU Inspector", "gpu-inspector"];
+    const apps = names.map((name) => path.join(local, "Programs", name));
     for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(path.join(programFiles, "GPU Inspector"));
+      if (programFiles) apps.push(...names.map((name) => path.join(programFiles, name)));
     }
     return apps.map((dir) => path.join(dir, "resources", "layer"));
   }
   if (process.platform === "darwin") {
-    return ["/Applications", path.join(home, "Applications")].map((dir) => path.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+    const dirs: string[] = [];
+    for (const dir of ["/Applications", path.join(home, "Applications")]) {
+      for (const bundle of ["GPUInspector.app", "GPU Inspector.app"]) dirs.push(path.join(dir, bundle, "Contents", "Resources", "layer"));
+    }
+    return dirs;
   }
-  return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
+  return ["/opt/GPUInspector/resources/layer", "/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
 }
 
 /** The Android layer (tools/build_android.py): INSPECTOR_ANDROID_LAYER_DIR, a checkout's build tree, or an installed GPU Inspector. */

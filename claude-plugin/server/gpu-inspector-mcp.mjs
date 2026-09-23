@@ -29707,16 +29707,21 @@ function installedLayerDirs() {
   const home = os8.homedir();
   if (process.platform === "win32") {
     const local = process.env.LOCALAPPDATA ?? path12.join(home, "AppData", "Local");
-    const apps = [path12.join(local, "Programs", "gpu-inspector"), path12.join(local, "Programs", "GPU Inspector")];
+    const names = ["GPUInspector", "GPU Inspector", "gpu-inspector"];
+    const apps = names.map((name) => path12.join(local, "Programs", name));
     for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(path12.join(programFiles, "GPU Inspector"));
+      if (programFiles) apps.push(...names.map((name) => path12.join(programFiles, name)));
     }
     return apps.map((dir) => path12.join(dir, "resources", "layer"));
   }
   if (process.platform === "darwin") {
-    return ["/Applications", path12.join(home, "Applications")].map((dir) => path12.join(dir, "GPU Inspector.app", "Contents", "Resources", "layer"));
+    const dirs = [];
+    for (const dir of ["/Applications", path12.join(home, "Applications")]) {
+      for (const bundle of ["GPUInspector.app", "GPU Inspector.app"]) dirs.push(path12.join(dir, bundle, "Contents", "Resources", "layer"));
+    }
+    return dirs;
   }
-  return ["/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
+  return ["/opt/GPUInspector/resources/layer", "/opt/GPU Inspector/resources/layer", "/opt/gpu-inspector/resources/layer"];
 }
 function androidLayer() {
   const candidates = [

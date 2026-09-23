@@ -2,7 +2,7 @@
 # Run `npm run dist` after building the layer; `npm run pack` produces an unpacked directory
 # in release/ for a quick check of the packaged layout.
 appId: com.brendanduncan.gpu-inspector
-productName: GPU Inspector
+productName: GPUInspector
 copyright: Copyright © 2025 Brendan Duncan
 
 directories:

@@ -15,7 +15,7 @@
 # Keep step 1 in step with the template when electron-builder is upgraded.
 set -e
 
-PRODUCT_DIR="/opt/GPU Inspector"
+PRODUCT_DIR="/opt/GPUInspector"
 EXECUTABLE="gpu-inspector"
 
 # --- electron-builder's after-install.tpl -------------------------------------------------------

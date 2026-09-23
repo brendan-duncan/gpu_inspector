@@ -11,6 +11,9 @@
 - The Windows installer ships `dxcompiler.dll` beside the Direct3D 12 capture library, so DXIL shaders have text, reflection and edits without a Vulkan or Windows SDK on the machine.
 - **Present latency** on the frame meter: how long after the present call the display showed the frame, from `DXGI_FRAME_STATISTICS` on Direct3D 12 and `VK_EXT_present_timing` on Vulkan.
 
+### Changed
+- The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
+
 ## v0.22.1
 
 ### Fixed

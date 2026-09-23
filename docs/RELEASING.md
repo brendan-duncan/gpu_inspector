@@ -90,7 +90,7 @@ electron-builder logs `skipped macOS code signing`, with no Apple credentials it
 macOS notarization`, and `src/app/tools/adhoc_sign.cjs` leaves the bundle ad-hoc signed so a
 contributor without an Apple Developer account can still build and run it.
 
-To check a finished build, `spctl -a -vv -t exec "GPU Inspector.app"` should say `accepted`
+To check a finished build, `spctl -a -vv -t exec GPUInspector.app` should say `accepted`
 with `source=Notarized Developer ID`. `source=Unnotarized Developer ID` means signing worked but
 notarization did not run.
 
@@ -129,7 +129,7 @@ It also takes two things out of what Electron ships, which is where 15MB of the 
 Neither is a size trick to redo by hand after a build: both happen in the packaging step, and
 `npm run pack` produces the same tree the installer carries.
 
-The `.deb` installs to `/opt/GPU Inspector` with a `gpu-inspector` launcher in `/usr/bin` and a
+The `.deb` installs to `/opt/GPUInspector` with a `gpu-inspector` launcher in `/usr/bin` and a
 `gpu-inspector.desktop` entry whose `StartupWMClass` matches the `desktopName` in
 `src/app/package.json`, so GNOME associates the running window with its icon. It depends on
 `libvulkan1` in addition to Electron's usual libraries. Its `postinst` registers the capture

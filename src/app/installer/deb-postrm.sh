@@ -7,7 +7,7 @@
 # something the postinst puts back — which is the order dpkg guarantees.
 set -e
 
-PRODUCT_DIR="/opt/GPU Inspector"
+PRODUCT_DIR="/opt/GPUInspector"
 EXECUTABLE="gpu-inspector"
 
 # --- electron-builder's after-remove.tpl --------------------------------------------------------

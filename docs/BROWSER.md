@@ -57,7 +57,7 @@ local build — works through **Other...**: what decides how it is launched is t
 npm start -- --launch-browser=https://example.com/webgpu-page --browser="Chrome Canary"
 ```
 
-(the installed application takes the same options: `"GPU Inspector.exe" --launch-browser=<url>`).
+(the installed application takes the same options: `GPUInspector.exe --launch-browser=<url>`).
 `--browser` takes a name (matched as a substring, so `Canary` or `Firefox` is enough) or a full
 path to an executable; without it the first installed browser is used. The other launch options
 apply as they do to a native launch — `--capture-frame=N` and `--capture-after=SECONDS` queue a
