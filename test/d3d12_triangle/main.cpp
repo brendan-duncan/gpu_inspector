@@ -6,7 +6,8 @@
 // barriers and presents.
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
-//                        [--render-pass] [--suspend] [--pool] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
+//                        [--render-pass] [--suspend] [--pool] [--compute] [--async-compute] [--offscreen] [--leak]
+//                        [--debug-layer] [--stencil]
 //                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas]]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
@@ -218,6 +219,13 @@ struct App
     bool pool = false;
     // --compute: every frame dispatches wave.hlsl into a UAV before the draw. Nothing reads it.
     bool compute = false;
+    // --async-compute: the wave dispatch goes to a compute queue of its own, in a list of its own,
+    // rather than into the frame's list, so it runs beside the render pass instead of before it --
+    // what an engine's async compute does, and what gives a capture passes on two queues (the
+    // Timeline's lane per queue). Implies --compute. Nothing reads the wave, so neither queue waits
+    // on the other within the frame; the direct queue waits for the compute queue's fence only at
+    // the frame's end, so the frame fence still says both are done.
+    bool asyncCompute = false;
     // --offscreen: no swap chain, no present; renders into its own targets, as Chrome's Dawn
     // WebGPU device does. The inspector's frame boundary falls back to the per-frame submit.
     bool offscreen = false;
@@ -276,6 +284,12 @@ struct App
     ComPtr<ID3D12CommandAllocator> resumeAllocators[kFrameCount];
     ComPtr<ID3D12GraphicsCommandList> resumeList;
     ComPtr<ID3D12GraphicsCommandList4> resumeList4;
+    // --async-compute: the compute queue, its list with an allocator per frame slot, and its fence.
+    ComPtr<ID3D12CommandQueue> computeQueue;
+    ComPtr<ID3D12CommandAllocator> computeAllocators[kFrameCount];
+    ComPtr<ID3D12GraphicsCommandList> computeList;
+    ComPtr<ID3D12Fence> computeFence;
+    uint64_t computeFenceValue = 0;
     // --pool: the lists and an allocator each; `list` points at the one the frame records into.
     static constexpr uint32_t kPoolSize = 4;
     ComPtr<ID3D12CommandAllocator> poolAllocators[kPoolSize];
@@ -555,6 +569,20 @@ struct App
             CHECK(resumeList->Close());
             resumeList->SetName(L"Resume command list");
             CHECK(resumeList.As(&resumeList4));
+        }
+        if (asyncCompute)
+        {
+            D3D12_COMMAND_QUEUE_DESC cqd{};
+            cqd.Type = D3D12_COMMAND_LIST_TYPE_COMPUTE;
+            CHECK(device->CreateCommandQueue(&cqd, IID_PPV_ARGS(&computeQueue)));
+            computeQueue->SetName(L"Async compute queue");
+            for (uint32_t i = 0; i < kFrameCount; i++)
+                CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COMPUTE, IID_PPV_ARGS(&computeAllocators[i])));
+            CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COMPUTE, computeAllocators[0].Get(), nullptr,
+                IID_PPV_ARGS(&computeList)));
+            CHECK(computeList->Close());
+            computeList->SetName(L"Async compute list");
+            CHECK(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&computeFence)));
         }
         if (pool)
         {
@@ -1431,8 +1459,27 @@ struct App
         // The frame's ray tracing, before the render targets are touched (--ray-tracing).
         RecordRayTracing(t);
 
+        // The wave dispatch on the compute queue (--async-compute), submitted ahead of the frame's
+        // list so the two run side by side. The buffer is COMMON, which a buffer is promoted out of
+        // and decays back to on its own, so no barrier is needed on either queue.
+        if (asyncCompute)
+        {
+            CHECK(computeAllocators[frameIndex]->Reset());
+            CHECK(computeList->Reset(computeAllocators[frameIndex].Get(), computePipeline.Get()));
+            ID3D12DescriptorHeap* computeHeaps[] = {srvHeap.Get()};
+            computeList->SetDescriptorHeaps(1, computeHeaps);
+            computeList->SetComputeRootSignature(computeRootSignature.Get());
+            computeList->SetComputeRootDescriptorTable(0, SrvGpuHandle(kHeapUav));
+            RootConstants params{t, kWaveCount};
+            computeList->SetComputeRoot32BitConstants(1, sizeof(params) / 4, &params, 0);
+            computeList->Dispatch(kWaveCount / 64, 1, 1);
+            CHECK(computeList->Close());
+            ID3D12CommandList* computeLists[] = {computeList.Get()};
+            computeQueue->ExecuteCommandLists(1, computeLists);
+            CHECK(computeQueue->Signal(computeFence.Get(), ++computeFenceValue));
+        }
         // The wave dispatch, before the render targets are touched: a compute pass of its own.
-        if (compute)
+        else if (compute)
         {
             list->SetComputeRootSignature(computeRootSignature.Get());
             list->SetPipelineState(computePipeline.Get());
@@ -1587,6 +1634,10 @@ struct App
         queue->ExecuteCommandLists(suspend ? 2 : 1, lists);
         if (!offscreen)
             CHECK(swapChain->Present(1, 0));
+        // The frame fence covers the compute queue's work too, so its allocator is free when the slot
+        // comes round again (--async-compute).
+        if (asyncCompute)
+            CHECK(queue->Wait(computeFence.Get(), computeFenceValue));
         CHECK(queue->Signal(fence.Get(), nextFenceValue));
         fenceValues[frameIndex] = nextFenceValue++;
         if (pool)
@@ -1722,6 +1773,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
             app.pool = true;
         else if (!strcmp(argv[i], "--compute"))
             app.compute = true;
+        else if (!strcmp(argv[i], "--async-compute"))
+        {
+            app.asyncCompute = true;
+            app.compute = true;   // the same dispatch, on a queue of its own
+        }
         else if (!strcmp(argv[i], "--offscreen"))
             app.offscreen = true;
         else if (!strcmp(argv[i], "--leak"))

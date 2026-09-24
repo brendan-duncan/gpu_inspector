@@ -194,6 +194,8 @@ differently or misbehave on purpose.
 | `--compute`, `--bundle`, `--indirect` | A dispatch, a bundle, and an indirect draw |
 | `--render-pass` | Uses `ID3D12GraphicsCommandList4` render passes |
 | `--suspend` | A render pass suspended across two command lists, submitted together (implies `--render-pass`) |
+| `--pool` | Records each frame into one of a pool of lists reset as soon as they run, so the captured frame's list is adopted |
+| `--async-compute` | The compute dispatch on a compute queue of its own, beside the render pass, for the Timeline's lane per queue (implies `--compute`) |
 | `--debug-layer` | Turns the D3D12 debug layer on from the application |
 | `--msaa`, `--stencil`, `--leak`, `--offscreen`, `--heavy`, `--churn`, `--capture-at <frame>` | As above |
 | `--evict` | A 32 MB buffer evicted every 120th frame and made resident 60 frames later, for the residency marks |

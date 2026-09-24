@@ -19,6 +19,7 @@ import { clipStats, meshSummary, outputValues, parseMeshFile } from "../renderer
 import { LIMITER_LABEL, counterValue, formatCounter, hwCountersByPass, parseHwCounters } from "../renderer/hw_counters.js";
 import { exportFolderName, exportsToCpp, parseExportSummary } from "../renderer/export_cpp.js";
 import { buildTimelineTracks, defaultPassLabel, gpuGaps, submitToFirstPassMs, tracksVerdict, type LabeledPass } from "../renderer/timeline_tracks.js";
+import { passQueueResolver } from "../renderer/pass_queues.js";
 import { cpuVerdict, summarizeCpuTimeline } from "../renderer/cpu_timeline.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
@@ -86,8 +87,9 @@ function timelineTiming(c: Capture): Record<string, unknown> {
     const timing = c.data.passTiming(p.frame, p.commandBuffer, p.passIndex, p.compute);
     if (timing) names.set(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`, c.passName(i));
   });
+  const queueOf = passQueueResolver(c.data.commands, c.db);
   const passes: LabeledPass[] = [...c.data.passTimings.values()].map((timing) => ({
-    timing,
+    timing, queue: queueOf(timing),
     label: names.get(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`)
       ?? defaultPassLabel(timing),
   }));
@@ -116,6 +118,10 @@ function timelineTiming(c: Capture): Record<string, unknown> {
       verdict: tracksVerdict(t),
       spanMs: round(t.spanMs),
       threads: t.tracks.filter((x) => x.kind === "cpu").map((x) => ({ track: x.label, busyMs: round(x.busyMs) })),
+      // A lane per queue where the passes ran on more than one; left out for the usual single queue.
+      queues: t.tracks.filter((x) => x.kind === "gpu").length > 1
+        ? t.tracks.filter((x) => x.kind === "gpu").map((x) => ({ track: x.label, passes: x.spans.length, busyMs: round(x.busyMs) }))
+        : undefined,
       gpuIdleMs: t.hasGpu ? round(gaps.reduce((sum, g) => sum + g.durationMs, 0)) : undefined,
       longestGpuGapMs: gaps.length ? round(gaps[0].durationMs) : undefined,
       submitToFirstPassMs: wait !== null ? round(wait) : undefined,

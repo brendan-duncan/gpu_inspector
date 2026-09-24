@@ -16,7 +16,7 @@ const load = async (entry, name) => {
   return import(pathToFileURL(out).href);
 };
 const { buildTimelineTracks, gpuGaps, gpuSpan, attributeGaps, submitToFirstPassMs, tracksVerdict,
-  fullView, clampView, zoomView, panView, visibleBoxes, axisTicks, MIN_VIEW_MS } =
+  fullView, clampView, zoomView, panView, visibleBoxes, axisTicks, MIN_VIEW_MS, commandBufferQueues } =
   await load("renderer/timeline_tracks.ts", "timeline_tracks");
 
 /** The layer's timeline message: events as [thread, category, startMs, durationMs]. */
@@ -401,4 +401,106 @@ test("the axis is marked in round numbers across the view, not at its ends", () 
   assert.equal(ticks[0].label, "2.20");
   assert.ok(ticks.every((x) => x.ms >= 2.13 && x.ms <= 3.13));
   assert.equal(axisTicks({ startMs: 0, spanMs: 0 }).length, 0);
+});
+
+
+// ---------------------------------------------------------------------------------------------
+// A lane per queue
+
+/** A pass on a queue: `queue` is [id, label]. */
+function queued(label, startMs, durationMs, [id, qlabel]) {
+  return { ...pass(label, startMs, durationMs), queue: { id, label: qlabel } };
+}
+const DIRECT = [4, "Direct queue (direct)"];
+const COMPUTE = [9, "Async compute (compute)"];
+
+test("passes on one queue stay one lane named GPU", () => {
+  const t = buildTimelineTracks({
+    timeline: timeline([[0, "submit", 10, 0.1]], { calibration: CALIBRATION }),
+    passes: [queued("A", 0, 1, DIRECT), queued("B", 2, 1, DIRECT)], originTicks: 0,
+  });
+  const gpu = t.tracks.filter((x) => x.kind === "gpu");
+  assert.deepEqual(gpu.map((x) => x.label), ["GPU"]);
+  assert.equal(gpu[0].spans.length, 2);
+});
+
+test("passes on several queues get a lane each, named for the queue, in the order the queues appear", () => {
+  const t = buildTimelineTracks({
+    timeline: timeline([[0, "submit", 10, 0.1]], { calibration: CALIBRATION }),
+    passes: [queued("Shadows", 0, 1, DIRECT), queued("Particles", 0.5, 2, COMPUTE), queued("Main", 2, 1, DIRECT)],
+    originTicks: 0,
+  });
+  const gpu = t.tracks.filter((x) => x.kind === "gpu");
+  assert.deepEqual(gpu.map((x) => x.label), ["GPU: Direct queue (direct)", "GPU: Async compute (compute)"]);
+  assert.deepEqual(gpu[0].spans.map((s) => s.label), ["Shadows", "Main"]);
+  assert.deepEqual(gpu[1].spans.map((s) => s.label), ["Particles"]);
+});
+
+test("a pass no queue could be found for gets a lane of its own when others have queues", () => {
+  const t = buildTimelineTracks({
+    timeline: timeline([[0, "submit", 10, 0.1]], { calibration: CALIBRATION }),
+    passes: [queued("A", 0, 1, DIRECT), pass("B", 2, 1)], originTicks: 0,
+  });
+  assert.deepEqual(t.tracks.filter((x) => x.kind === "gpu").map((x) => x.label),
+    ["GPU: Direct queue (direct)", "GPU: unknown queue"]);
+});
+
+test("idle is time with no queue running: one queue's gap covered by another's work is not idle", () => {
+  // Direct runs 0-1 and 5-6, compute 1-4: the only idle stretch is 4-5, which is under the 0.5 ms
+  // default, so with a lower threshold it is exactly 1 ms.
+  const t = buildTimelineTracks({
+    timeline: timeline([[0, "submit", 10, 0.1]], { calibration: CALIBRATION }),
+    passes: [queued("A", 0, 1, DIRECT), queued("B", 5, 1, DIRECT), queued("C", 1, 3, COMPUTE)], originTicks: 0,
+  });
+  const gaps = gpuGaps(t, 0.1);
+  assert.equal(gaps.length, 1);
+  assert.equal(gaps[0].durationMs, 1);
+  const span = gpuSpan(t);
+  assert.equal(span.endMs - span.startMs, 6, "the GPU's stretch reaches across every queue");
+});
+
+test("the verdict counts overlapping queues' time once and says how much they overlapped", () => {
+  // Direct 0-4, compute 1-3 inside it: busy for 4 of 4 ms, not 6, and the compute work entirely
+  // overlapped the direct queue's.
+  const t = buildTimelineTracks({
+    timeline: timeline([[0, "submit", 10, 0.1]], { calibration: CALIBRATION }),
+    passes: [queued("A", 0, 4, DIRECT), queued("B", 1, 2, COMPUTE)], originTicks: 0,
+  });
+  const v = tracksVerdict(t);
+  assert.match(v, /ran 2 passes on 2 queues over 4\.00 ms, busy for 100% of that/);
+  assert.match(v, /running at once for 2\.00 ms \(100% of the lightest queue's work\)/);
+});
+
+test("queues that take turns are said to", () => {
+  const t = buildTimelineTracks({
+    timeline: timeline([[0, "submit", 10, 0.1]], { calibration: CALIBRATION }),
+    passes: [queued("A", 0, 1, DIRECT), queued("B", 1, 1, COMPUTE), queued("C", 2, 1, DIRECT)], originTicks: 0,
+  });
+  assert.match(tracksVerdict(t), /taking turns rather than running at once/);
+});
+
+test("the queue of each command buffer is read from the submissions in the command stream", () => {
+  const ref = (id, cls) => ({ __id: id, __class: cls });
+  const cmd = (frame, method, object) => ({ index: 0, frame, method, object, args: null });
+  const commands = [
+    cmd(0, "ExecuteCommandLists", ref(4, "ID3D12CommandQueue")),
+    cmd(0, "Reset", ref(20, "ID3D12GraphicsCommandList")),
+    cmd(0, "DrawInstanced", ref(20, "ID3D12GraphicsCommandList")),
+    cmd(0, "ExecuteCommandLists", ref(9, "ID3D12CommandQueue")),
+    cmd(0, "Dispatch", ref(21, "ID3D12GraphicsCommandList")),
+    cmd(0, "Present", ref(3, "IDXGISwapChain")),
+    // The next frame submits list 20 to the compute queue: a queue is per frame, not per list.
+    cmd(1, "vkQueueSubmit", ref(9, "VkQueue")),
+    cmd(1, "vkCmdDraw", ref(20, "VkCommandBuffer")),
+  ];
+  const q = commandBufferQueues(commands);
+  assert.equal(q.get("0:20"), 4);
+  assert.equal(q.get("0:21"), 9);
+  assert.equal(q.get("1:20"), 9);
+});
+
+test("with no queue in the stream (Metal) the caller's lookup answers", () => {
+  const commands = [{ index: 0, frame: 0, method: "commit", object: { __id: 30, __class: "MTLCommandBuffer" }, args: null }];
+  assert.equal(commandBufferQueues(commands, (cb) => (cb === 30 ? 7 : null)).get("0:30"), 7);
+  assert.equal(commandBufferQueues(commands).size, 0);
 });

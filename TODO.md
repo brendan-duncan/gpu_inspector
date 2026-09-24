@@ -777,9 +777,34 @@ vendor's driver is listed at the end so nobody spends time on it.
       the axis shows and moves the window, and the keys (arrows, `+`, `-`, `0`) do the same; a
       pass's span selects it in the command list, and a merged box zooms in on what it holds.
       Checked on a Unity frame and a live triangle capture.
-- [ ] The timeline as a drawing, the rest: the CPU timeline live in the session bar rather than only
-      in a capture; and per-queue GPU lanes rather than one, which needs the layer to report the
-      queue each pass ran on.
+- [x] Per-queue GPU lanes on the Timeline (`renderer/pass_queues.ts`, `commandBufferQueues` in
+      `renderer/timeline_tracks.ts`): a lane per queue the passes ran on, named for the queue
+      ("GPU: Async compute queue", "GPU: Queue 6 (family 0 index 1)"), and one lane named "GPU" as
+      before when there is only one. No layer change was needed after all: the capture's command
+      stream records each submission with its queue as the object, followed by the commands of the
+      buffers it submitted, so the queue of every command buffer is read from there -- captures
+      taken before this work split too. Metal, whose stream records `commit` on the command buffer,
+      reads it from the object database, where the command buffer's parent is its queue (not
+      checked: nothing here runs Metal). The GPU's idle gaps are now time with *no* queue running,
+      its busy share the union of the lanes rather than their sum, and the verdict says whether the
+      queues ran at once or took turns; `get_capture_summary` lists the queues. Checked on
+      `dxinsp_triangle --async-compute` (new: the wave dispatch on a compute queue of its own) and
+      `vkinsp_triangle --second-queue`, and the `d3d12-async-compute` UI case; the URP player's
+      frames submit to two queues but time passes on one (the other gets a single copy list), and
+      stay one lane.
+      Found on the way: the D3D12 library's read-back copies from a direct and a compute queue went
+      into the same staging buffer, which the debug layer reports as written on two queues in flight
+      (`OBJECT_ACCESSED_WHILE_STILL_IN_USE`, disjoint ranges or not). Staging chunks are now kept per
+      kind of list (`StagingChunk::type`); two queues of one kind can still share a chunk.
+- [ ] Frame Bound with more than one queue: "GPU (pass span)" is first pass start to last pass end,
+      which on `dxinsp_triangle --async-compute` takes in a 7 ms stretch when neither queue ran (the
+      compute pass early, the render pass waiting for the swapchain image) and reads 106% of the
+      budget, "GPU bound". The union of the queues' busy time, or the span of the busiest queue,
+      would be the fairer figure.
+- [ ] The CPU timeline live in the session bar rather than only in a capture. Outside a capture the
+      libraries keep no individual CPU events: a Timing Capture streams per-frame totals by category
+      (`TimingFrames`), and `CpuEventBegin` returns without recording unless a frame capture is
+      running, so this needs a new streaming mode in every backend.
 
 - [x] Compiler statistics per pipeline (Nsight: register count, occupancy, spills per shader):
       `src/vulkan/src/shader_statistics.h`, through `VK_KHR_pipeline_executable_properties`. The

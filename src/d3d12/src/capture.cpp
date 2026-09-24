@@ -226,6 +226,14 @@ struct StagingChunk
     uint64_t size = 0;
     uint64_t used = 0;
     void* mapped = nullptr;
+    /**
+     * The kind of list whose copies write it. A chunk is only ever written by one kind of queue: the
+     * debug layer tracks writes per resource, not per range, and a staging buffer written from a
+     * direct and a compute queue at once -- an application with async compute -- is reported as
+     * written on two queues in flight, disjoint ranges or not. Two queues of one kind can still
+     * share a chunk.
+     */
+    D3D12_COMMAND_LIST_TYPE type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 };
 
 /** A staged copy of one subresource: where its rows are in the chunk and how to pack them tightly. */
@@ -610,7 +618,9 @@ struct CaptureManager::Impl
     // --- helpers implemented below ---
     DeviceCapture* CaptureFor(ID3D12Device* device);
     DeviceCapture* FindCapture(ID3D12Device* device);
-    bool AllocateStaging(DeviceCapture& dc, uint64_t size, uint32_t& chunk, uint64_t& offset, ID3D12Resource** buffer);
+    /** Room in a staging chunk for a copy recorded into a list of `type` (StagingChunk::type). */
+    bool AllocateStaging(DeviceCapture& dc, D3D12_COMMAND_LIST_TYPE type, uint64_t size, uint32_t& chunk, uint64_t& offset,
+        ID3D12Resource** buffer);
     ID3D12Resource* ResolveTextureFor(DeviceCapture& dc, const ResolveKey& key);
     std::vector<DeferredCopy>* DeferredOf(CommandRecorder* rec);
     /** Where a copy queued now goes when the list cannot take it here: the pass's end, or after the submission (null: into the list). */
@@ -721,20 +731,41 @@ DeviceCapture* CaptureManager::Impl::CaptureFor(ID3D12Device* device)
     return raw;
 }
 
-bool CaptureManager::Impl::AllocateStaging(DeviceCapture& dc, uint64_t size, uint32_t& chunk, uint64_t& offset, ID3D12Resource** buffer)
+bool CaptureManager::Impl::AllocateStaging(DeviceCapture& dc, D3D12_COMMAND_LIST_TYPE type, uint64_t size, uint32_t& chunk,
+    uint64_t& offset, ID3D12Resource** buffer)
 {
+    // A bundle's copies are recorded into the list that executes it, which is a direct one.
+    if (type == D3D12_COMMAND_LIST_TYPE_BUNDLE)
+        type = D3D12_COMMAND_LIST_TYPE_DIRECT;
     std::lock_guard lock(dc.mutex);
     size = Align(std::max<uint64_t>(size, 1), kStagingAlignment);
-    if (dc.staging.empty() || dc.staging.back().used + size > dc.staging.back().size)
+    // The newest chunk of this kind, which is the only one of its kind with room left.
+    uint32_t index = UINT32_MAX;
+    for (size_t k = dc.staging.size(); k-- > 0;)
+    {
+        if (dc.staging[k].type == type)
+        {
+            index = (uint32_t)k;
+            break;
+        }
+    }
+    if (index == UINT32_MAX || dc.staging[index].used + size > dc.staging[index].size)
     {
         StagingChunk c;
         c.size = std::max(size, kStagingChunkBytes);
+        c.type = type;
         if (!CreateReadbackBuffer(dc.device, c.size, c.buffer.put()))
             return false;
+        {
+            // Named so that what the debug layer says about it is told apart from the application's.
+            ScopedInternal internal;
+            c.buffer->SetName(L"GPU Inspector: read-back staging");
+        }
         dc.staging.push_back(std::move(c));
+        index = (uint32_t)dc.staging.size() - 1;
     }
-    StagingChunk& c = dc.staging.back();
-    chunk = (uint32_t)dc.staging.size() - 1;
+    StagingChunk& c = dc.staging[index];
+    chunk = index;
     offset = c.used;
     c.used += size;
     if (buffer)
@@ -1648,7 +1679,7 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
             }
             uint64_t spanOffset = 0;
             ID3D12Resource* staging = nullptr;
-            if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging))
+            if (!i.AllocateStaging(*dc, rec->type(), total, e.chunk, spanOffset, &staging))
                 return fail("staging allocation failed");
 
             const uint32_t copies = volume ? 1 : slices;
@@ -1904,7 +1935,7 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
                 e.failed = true;
                 e.note = "buffer capture budget exceeded";
             }
-            else if (!i.AllocateStaging(*dc, e.size, e.chunk, e.stagingOffset, &staging))
+            else if (!i.AllocateStaging(*dc, rec->type(), e.size, e.chunk, e.stagingOffset, &staging))
             {
                 e.failed = true;
                 e.note = "staging allocation failed";
@@ -2114,7 +2145,7 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     }
     uint64_t spanOffset = 0;
     ID3D12Resource* staging = nullptr;
-    if (!i.AllocateStaging(*dc, total, e.chunk, spanOffset, &staging))
+    if (!i.AllocateStaging(*dc, rec->type(), total, e.chunk, spanOffset, &staging))
         return finish("staging allocation failed");
     for (Copy& c : copies)
     {

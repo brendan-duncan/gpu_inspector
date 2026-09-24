@@ -38,6 +38,7 @@ import { CommandInfoView, type CaptureHost } from "./capture_command_info.js";
 import { CaptureStatistics } from "./capture_statistics.js";
 import { renderFrameStats, type FrameTimingInfo, type GpuTrackInput } from "./frame_stats_view.js";
 import { buildTimelineTracks, defaultPassLabel, gpuSpan, submitToFirstPassMs, type LabeledPass } from "./timeline_tracks.js";
+import { passQueueResolver } from "./pass_queues.js";
 import { accelerationScene, structureDrawing, type StructureDrawing } from "./acceleration_scene.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
@@ -1593,10 +1594,12 @@ export class CaptureView implements CaptureHost {
     // Every timed pass, named from its command-list block where there is one. Driven by the timings
     // rather than the blocks so that a pass with no block — a command buffer submitted again in a
     // multi-frame capture — is still drawn (see defaultPassLabel).
+    // Each on the queue it ran on, so that work on several queues gets a lane per queue.
+    const queueOf = passQueueResolver(this.data.commands, this.window.database);
     const passes: LabeledPass[] = [...this.data.passTimings.entries()].map(([key, timing]) => {
       const block = this._passBlocks.get(key);
       return {
-        timing, label: block?.label ?? defaultPassLabel(timing),
+        timing, label: block?.label ?? defaultPassLabel(timing), queue: queueOf(timing),
         // Clicking the pass's span goes to it in the command list, the way Pass Timings does. A
         // pass with no block has nowhere to go, so its span is left unclickable rather than inert.
         select: block ? () => {
@@ -2110,7 +2113,7 @@ export class CaptureView implements CaptureHost {
         const span = gpuSpan(t);
         return {
           spanMs: t.spanMs, hasGpu: t.hasGpu, gpuNote: t.gpuNote,
-          tracks: t.tracks.map((k) => ({ kind: k.kind, spans: k.spans.length, busyMs: k.busyMs })),
+          tracks: t.tracks.map((k) => ({ kind: k.kind, label: k.label, spans: k.spans.length, busyMs: k.busyMs })),
           gpuStartMs: span?.startMs ?? null, gpuEndMs: span?.endMs ?? null,
           submitToFirstPassMs: submitToFirstPassMs(t),
         };

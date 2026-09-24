@@ -33492,6 +33492,23 @@ function exportFolderName(label) {
 }
 
 // src/renderer/timeline_tracks.ts
+function commandBufferQueues(commands, queueOfBuffer) {
+  const out = /* @__PURE__ */ new Map();
+  let current = null;
+  for (const cmd of commands) {
+    const obj = cmd.object;
+    if (!obj) continue;
+    if (obj.__class.endsWith("Queue")) {
+      current = obj.__id;
+      continue;
+    }
+    const key = `${cmd.frame}:${obj.__id}`;
+    if (out.has(key)) continue;
+    const queue = current ?? queueOfBuffer?.(obj.__id) ?? null;
+    if (queue !== null) out.set(key, queue);
+  }
+  return out;
+}
 function defaultPassLabel(t) {
   return `${t.kind === "compute" ? "Compute" : "Render"} pass ${t.passIndex} (frame ${t.frame})`;
 }
@@ -33520,13 +33537,16 @@ function buildTimelineTracks(input) {
       kind: cpuKindOf(e.category)
     });
   }
-  const gpuSpans = [];
+  const gpuLanes = /* @__PURE__ */ new Map();
   if (hasGpu) {
     for (const p of passes) {
       const startMs = gpuOriginMs + p.timing.startMs;
       min = Math.min(min, startMs);
       max = Math.max(max, startMs + p.timing.durationMs);
-      gpuSpans.push({ startMs, durationMs: p.timing.durationMs, label: p.label, kind: "gpu", select: p.select });
+      const id = p.queue?.id ?? -1;
+      let lane = gpuLanes.get(id);
+      if (!lane) gpuLanes.set(id, lane = { label: p.queue?.label ?? "unknown queue", spans: [] });
+      lane.spans.push({ startMs, durationMs: p.timing.durationMs, label: p.label, kind: "gpu", select: p.select });
     }
   }
   if (!(max > min)) return null;
@@ -33550,27 +33570,45 @@ function buildTimelineTracks(input) {
     if (index < threads.length) continue;
     tracks.push({ label: `Thread #${index}`, kind: "cpu", ...finish2(spans) });
   }
-  if (hasGpu) tracks.push({ label: "GPU", kind: "gpu", ...finish2(gpuSpans) });
+  for (const lane of gpuLanes.values()) {
+    tracks.push({ label: gpuLanes.size > 1 ? `GPU: ${lane.label}` : "GPU", kind: "gpu", ...finish2(lane.spans) });
+  }
   if (!tracks.length) return null;
   return { tracks, spanMs: max - min, hasGpu, gpuNote };
 }
+function allGpuSpans(t) {
+  const lanes = t.tracks.filter((x) => x.kind === "gpu");
+  if (lanes.length === 1) return lanes[0].spans;
+  return lanes.flatMap((x) => x.spans).sort((a, b) => a.startMs - b.startMs);
+}
+function gpuBusyMs(spans) {
+  let busy = 0;
+  let frontier = -Infinity;
+  for (const s of spans) {
+    const end = s.startMs + s.durationMs;
+    if (end <= frontier) continue;
+    busy += end - Math.max(frontier, s.startMs);
+    frontier = end;
+  }
+  return busy;
+}
 function gpuSpan(t) {
-  const gpu = t.tracks.find((x) => x.kind === "gpu");
-  if (!gpu?.spans.length) return null;
+  const spans = allGpuSpans(t);
+  if (!spans.length) return null;
   let startMs = Infinity;
   let endMs = -Infinity;
-  for (const s of gpu.spans) {
+  for (const s of spans) {
     startMs = Math.min(startMs, s.startMs);
     endMs = Math.max(endMs, s.startMs + s.durationMs);
   }
   return { startMs, endMs };
 }
 function gpuGaps(t, minMs = 0.5) {
-  const gpu = t.tracks.find((x) => x.kind === "gpu");
-  if (!gpu?.spans.length) return [];
+  const spans = allGpuSpans(t);
+  if (!spans.length) return [];
   const gaps = [];
-  let frontier = gpu.spans[0].startMs;
-  for (const s of gpu.spans) {
+  let frontier = spans[0].startMs;
+  for (const s of spans) {
     if (s.startMs - frontier >= minMs) gaps.push({ startMs: frontier, durationMs: s.startMs - frontier });
     frontier = Math.max(frontier, s.startMs + s.durationMs);
   }
@@ -33610,18 +33648,31 @@ function attributeGaps(t, gaps) {
   out.untimedMs = Math.max(0, total - out.displayWaitMs - out.gpuWaitMs - out.workMs);
   return out;
 }
+function queueOverlap(lanes, unionMs) {
+  const sumMs = lanes.reduce((sum, x) => sum + x.busyMs, 0);
+  const overlapMs = Math.max(0, sumMs - unionMs);
+  const smallest = Math.min(...lanes.map((x) => x.busyMs));
+  if (overlapMs < 0.05 || smallest <= 0) {
+    return ", with the queues taking turns rather than running at once. ";
+  }
+  const share = Math.min(1, overlapMs / smallest);
+  return `, with the queues running at once for ${overlapMs.toFixed(2)} ms (${(100 * share).toFixed(0)}% of the lightest queue's work). `;
+}
 function tracksVerdict(t) {
   if (!t.hasGpu) {
     const busiest = [...t.tracks].sort((a2, b) => b.busyMs - a2.busyMs)[0];
     const share = t.spanMs > 0 ? busiest.busyMs / t.spanMs : 0;
     return `${t.tracks.length} thread${t.tracks.length === 1 ? "" : "s"} over ${t.spanMs.toFixed(2)} ms. ${busiest.label} spent ${(100 * share).toFixed(0)}% of it inside calls the layer times.`;
   }
-  const gpu = t.tracks.find((x) => x.kind === "gpu");
+  const lanes = t.tracks.filter((x) => x.kind === "gpu");
+  const spans = allGpuSpans(t);
   const span = gpuSpan(t);
   const gpuSpanMs = span.endMs - span.startMs;
   const gaps = gpuGaps(t);
   const idle = gaps.reduce((sum, g) => sum + g.durationMs, 0);
-  const head = `The GPU ran ${gpu.spans.length} pass${gpu.spans.length === 1 ? "" : "es"} over ${gpuSpanMs.toFixed(2)} ms, busy for ${(100 * (gpuSpanMs > 0 ? gpu.busyMs / gpuSpanMs : 0)).toFixed(0)}% of that. `;
+  const busy = gpuBusyMs(spans);
+  const queues = lanes.length > 1 ? ` on ${lanes.length} queues` : "";
+  const head = `The GPU ran ${spans.length} pass${spans.length === 1 ? "" : "es"}${queues} over ${gpuSpanMs.toFixed(2)} ms, busy for ${(100 * (gpuSpanMs > 0 ? busy / gpuSpanMs : 0)).toFixed(0)}% of that` + (lanes.length > 1 ? queueOverlap(lanes, busy) : ". ");
   const wait = submitToFirstPassMs(t);
   const latency = wait !== null && wait >= 0.5 ? ` Its first pass began ${wait.toFixed(2)} ms after the submission before it, so the work waited that long between being handed over and starting \u2014 a swapchain image the display has not released yet is the usual reason, and it costs latency rather than frame time.` : "";
   if (!gaps.length) {
@@ -33630,6 +33681,29 @@ function tracksVerdict(t) {
   const a = attributeGaps(t, gaps);
   const why = a.displayWaitMs >= idle * 0.4 ? "The CPU was in present or acquire for most of that, so the frame is paced by the display and the idle GPU is headroom rather than a stall." : a.workMs >= idle * 0.4 ? "The CPU was inside submission for much of that, so the GPU is waiting on work the CPU had not finished handing it: fewer, larger submissions would close the gap." : a.gpuWaitMs >= idle * 0.4 ? "The CPU was waiting on a fence for most of that, which with an idle GPU means it is waiting on work already finished: the fence is being waited on later than it is signaled." : "The CPU was outside the calls the layer times for most of that \u2014 its own work between them: building command buffers, culling, simulation \u2014 so that is where the GPU's idle time is going.";
   return head + `It went idle between passes for ${idle.toFixed(2)} ms across ${gaps.length} gap${gaps.length === 1 ? "" : "s"}, the longest ${gaps[0].durationMs.toFixed(2)} ms. ` + why + latency;
+}
+
+// src/renderer/pass_queues.ts
+function passQueueResolver(commands, db) {
+  const byBuffer = commandBufferQueues(commands, (commandBuffer) => {
+    const parent = db.getObject(db.getObject(commandBuffer)?.parentId);
+    return parent && parent.type.endsWith("Queue") ? parent.id : null;
+  });
+  const labels = /* @__PURE__ */ new Map();
+  return (t) => {
+    const id = byBuffer.get(`${t.frame}:${t.commandBuffer}`);
+    if (id === void 0) return void 0;
+    let queue = labels.get(id);
+    if (!queue) {
+      const o = db.getObject(id);
+      const kind = o?.summary(db) ?? "";
+      const name = o?.name ?? `Queue ${id}`;
+      const says = !kind || name.toLowerCase().includes(kind.toLowerCase());
+      queue = { id, label: says ? name : `${name} (${kind})` };
+      labels.set(id, queue);
+    }
+    return queue;
+  };
 }
 
 // src/mcp/tools.ts
@@ -33672,8 +33746,10 @@ function timelineTiming(c2) {
     const timing = c2.data.passTiming(p.frame, p.commandBuffer, p.passIndex, p.compute);
     if (timing) names.set(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`, c2.passName(i));
   });
+  const queueOf = passQueueResolver(c2.data.commands, c2.db);
   const passes = [...c2.data.passTimings.values()].map((timing) => ({
     timing,
+    queue: queueOf(timing),
     label: names.get(`${timing.frame}:${timing.commandBuffer}:${timing.passIndex}:${timing.kind ?? "render"}`) ?? defaultPassLabel(timing)
   }));
   const cpu = summarizeCpuTimeline(c2.data.cpuTimeline);
@@ -33697,6 +33773,8 @@ function timelineTiming(c2) {
       verdict: tracksVerdict(t),
       spanMs: round(t.spanMs),
       threads: t.tracks.filter((x) => x.kind === "cpu").map((x) => ({ track: x.label, busyMs: round(x.busyMs) })),
+      // A lane per queue where the passes ran on more than one; left out for the usual single queue.
+      queues: t.tracks.filter((x) => x.kind === "gpu").length > 1 ? t.tracks.filter((x) => x.kind === "gpu").map((x) => ({ track: x.label, passes: x.spans.length, busyMs: round(x.busyMs) })) : void 0,
       gpuIdleMs: t.hasGpu ? round(gaps.reduce((sum, g) => sum + g.durationMs, 0)) : void 0,
       longestGpuGapMs: gaps.length ? round(gaps[0].durationMs) : void 0,
       submitToFirstPassMs: wait !== null ? round(wait) : void 0,

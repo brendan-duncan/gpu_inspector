@@ -14,7 +14,7 @@
 // guessed at, because a GPU lane placed on the wrong origin would invent exactly the idle gaps this
 // view exists to find.
 import { CPU_CATEGORY_LABEL, cpuKindOf, gpuTicksToCpuMs, type CpuKind } from "./cpu_timeline.js";
-import type { CpuTimelineMessage, PassTiming } from "../shared/protocol.js";
+import type { CaptureCommand, CpuTimelineMessage, PassTiming } from "../shared/protocol.js";
 
 /** What a span is, which decides how it reads and how it is colored. */
 export type SpanKind = CpuKind | "gpu";
@@ -31,7 +31,7 @@ export interface TrackSpan {
 }
 
 export interface Track {
-  /** "Thread 4812 (main)", "GPU". */
+  /** "Thread 4812 (main)", "GPU", or "GPU: Async compute (compute)" when the passes ran on several queues. */
   label: string;
   kind: "cpu" | "gpu";
   /** Every span, in start order. A view draws the ones its range reaches (see `visibleBoxes`). */
@@ -58,12 +58,50 @@ export interface TimelineTracks {
   gpuNote: string | null;
 }
 
+/** The queue a pass ran on, as the timeline names its lane. */
+export interface PassQueue {
+  id: number;
+  /** "Direct queue (direct)", "Queue 7 (family 0 index 0)". */
+  label: string;
+}
+
 /** A pass with the label the UI shows for it, since PassTiming itself carries only ids. */
 export interface LabeledPass {
   timing: PassTiming;
   label: string;
   /** Selects the pass where the UI shows it, for a view that lets its span be clicked. */
   select?: () => void;
+  /** The queue its command buffer was submitted to, where the capture says (commandBufferQueues). */
+  queue?: PassQueue;
+}
+
+/**
+ * The queue each command buffer ran on, as `"frame:commandBuffer"` -> queue id, read from the
+ * capture's own command stream rather than asked of the layer: a submission is recorded with its
+ * queue as the object (vkQueueSubmit on a VkQueue, ExecuteCommandLists on an ID3D12CommandQueue) and
+ * the commands of the buffers it submitted follow it, so every capture ever taken can be split by
+ * queue, not only the ones taken after a layer learned to say so.
+ *
+ * Metal records `commit` on the command buffer itself, so its stream never names a queue; there
+ * `queueOfBuffer` answers from the object database, where a command buffer's parent is its queue.
+ */
+export function commandBufferQueues(commands: readonly CaptureCommand[],
+                                    queueOfBuffer?: (commandBuffer: number) => number | null): Map<string, number> {
+  const out = new Map<string, number>();
+  let current: number | null = null;
+  for (const cmd of commands) {
+    const obj = cmd.object;
+    if (!obj) continue;
+    if (obj.__class.endsWith("Queue")) {
+      current = obj.__id;
+      continue;
+    }
+    const key = `${cmd.frame}:${obj.__id}`;
+    if (out.has(key)) continue;
+    const queue = current ?? queueOfBuffer?.(obj.__id) ?? null;
+    if (queue !== null) out.set(key, queue);
+  }
+  return out;
 }
 
 /**
@@ -126,13 +164,20 @@ export function buildTimelineTracks(input: TimelineInput): TimelineTracks | null
     });
   }
 
-  const gpuSpans: TrackSpan[] = [];
+  // A lane per queue the passes ran on, in the order the queues first appear. One queue — or passes
+  // the capture cannot place on any — is one lane, labeled as it always was: a lane per queue says
+  // something only when there is more than one, and then it says what a single lane hides, which
+  // is whether the queues' work overlapped or took turns.
+  const gpuLanes = new Map<number, { label: string; spans: TrackSpan[] }>();
   if (hasGpu) {
     for (const p of passes) {
       const startMs = gpuOriginMs + p.timing.startMs;
       min = Math.min(min, startMs);
       max = Math.max(max, startMs + p.timing.durationMs);
-      gpuSpans.push({ startMs, durationMs: p.timing.durationMs, label: p.label, kind: "gpu", select: p.select });
+      const id = p.queue?.id ?? -1;
+      let lane = gpuLanes.get(id);
+      if (!lane) gpuLanes.set(id, (lane = { label: p.queue?.label ?? "unknown queue", spans: [] }));
+      lane.spans.push({ startMs, durationMs: p.timing.durationMs, label: p.label, kind: "gpu", select: p.select });
     }
   }
   if (!(max > min)) return null;
@@ -164,7 +209,9 @@ export function buildTimelineTracks(input: TimelineInput): TimelineTracks | null
     if (index < threads.length) continue;
     tracks.push({ label: `Thread #${index}`, kind: "cpu", ...finish(spans) });
   }
-  if (hasGpu) tracks.push({ label: "GPU", kind: "gpu", ...finish(gpuSpans) });
+  for (const lane of gpuLanes.values()) {
+    tracks.push({ label: gpuLanes.size > 1 ? `GPU: ${lane.label}` : "GPU", kind: "gpu", ...finish(lane.spans) });
+  }
   if (!tracks.length) return null;
 
   return { tracks, spanMs: max - min, hasGpu, gpuNote };
@@ -324,16 +371,40 @@ export interface GpuGap {
   durationMs: number;
 }
 
+/** Every GPU lane's spans as one list in start order: the GPU as a whole, whichever queue ran what. */
+function allGpuSpans(t: TimelineTracks): TrackSpan[] {
+  const lanes = t.tracks.filter((x) => x.kind === "gpu");
+  if (lanes.length === 1) return lanes[0].spans;
+  return lanes.flatMap((x) => x.spans).sort((a, b) => a.startMs - b.startMs);
+}
+
 /**
- * The GPU's own stretch of the axis: its first pass start to its last pass end. Null without a GPU
- * lane. The drawn range is wider than this, because it also covers the CPU calls.
+ * Time the GPU had at least one pass running: the union of every lane's spans, which is less than
+ * their sum wherever queues overlapped. The sum would read a GPU running two queues at once for a
+ * whole frame as busy for 200% of it.
+ */
+function gpuBusyMs(spans: TrackSpan[]): number {
+  let busy = 0;
+  let frontier = -Infinity;
+  for (const s of spans) {
+    const end = s.startMs + s.durationMs;
+    if (end <= frontier) continue;
+    busy += end - Math.max(frontier, s.startMs);
+    frontier = end;
+  }
+  return busy;
+}
+
+/**
+ * The GPU's own stretch of the axis: its first pass start to its last pass end, across every queue.
+ * Null without a GPU lane. The drawn range is wider than this, because it also covers the CPU calls.
  */
 export function gpuSpan(t: TimelineTracks): { startMs: number; endMs: number } | null {
-  const gpu = t.tracks.find((x) => x.kind === "gpu");
-  if (!gpu?.spans.length) return null;
+  const spans = allGpuSpans(t);
+  if (!spans.length) return null;
   let startMs = Infinity;
   let endMs = -Infinity;
-  for (const s of gpu.spans) {
+  for (const s of spans) {
     startMs = Math.min(startMs, s.startMs);
     endMs = Math.max(endMs, s.startMs + s.durationMs);
   }
@@ -354,12 +425,13 @@ export function gpuSpan(t: TimelineTracks): { startMs: number; endMs: number } |
  * ordinary pipeline overhead rather than a stall.
  */
 export function gpuGaps(t: TimelineTracks, minMs = 0.5): GpuGap[] {
-  const gpu = t.tracks.find((x) => x.kind === "gpu");
-  if (!gpu?.spans.length) return [];
+  // Across every queue: a stretch is idle only when no queue had anything running.
+  const spans = allGpuSpans(t);
+  if (!spans.length) return [];
   const gaps: GpuGap[] = [];
   // Passes can overlap (several queues), so the frontier is the furthest end seen, not the last.
-  let frontier = gpu.spans[0].startMs;
-  for (const s of gpu.spans) {
+  let frontier = spans[0].startMs;
+  for (const s of spans) {
     if (s.startMs - frontier >= minMs) gaps.push({ startMs: frontier, durationMs: s.startMs - frontier });
     frontier = Math.max(frontier, s.startMs + s.durationMs);
   }
@@ -422,6 +494,24 @@ export function attributeGaps(t: TimelineTracks, gaps: GpuGap[]): GapAttribution
 }
 
 /**
+ * What several queues did with each other, for the verdict: whether their work overlapped — the
+ * point of submitting to more than one — or took turns, which costs a queue's worth of parallelism
+ * and usually means a wait on one queue for the other's work.
+ */
+function queueOverlap(lanes: Track[], unionMs: number): string {
+  const sumMs = lanes.reduce((sum, x) => sum + x.busyMs, 0);
+  const overlapMs = Math.max(0, sumMs - unionMs);
+  const smallest = Math.min(...lanes.map((x) => x.busyMs));
+  if (overlapMs < 0.05 || smallest <= 0) {
+    return ", with the queues taking turns rather than running at once. ";
+  }
+  // Measured against the smallest queue's work, which is the most that could have overlapped.
+  const share = Math.min(1, overlapMs / smallest);
+  return `, with the queues running at once for ${overlapMs.toFixed(2)} ms `
+    + `(${(100 * share).toFixed(0)}% of the lightest queue's work). `;
+}
+
+/**
  * What the drawing shows, in words. The tracks make a stall visible; this names it, so the answer
  * does not depend on the reader spotting it — and, where the GPU idled, says what the CPU was doing
  * meanwhile, since that is what separates a stall from a frame simply paced by the display.
@@ -433,13 +523,17 @@ export function tracksVerdict(t: TimelineTracks): string {
     return `${t.tracks.length} thread${t.tracks.length === 1 ? "" : "s"} over ${t.spanMs.toFixed(2)} ms. `
       + `${busiest.label} spent ${(100 * share).toFixed(0)}% of it inside calls the layer times.`;
   }
-  const gpu = t.tracks.find((x) => x.kind === "gpu")!;
+  const lanes = t.tracks.filter((x) => x.kind === "gpu");
+  const spans = allGpuSpans(t);
   const span = gpuSpan(t)!;
   const gpuSpanMs = span.endMs - span.startMs;
   const gaps = gpuGaps(t);
   const idle = gaps.reduce((sum, g) => sum + g.durationMs, 0);
-  const head = `The GPU ran ${gpu.spans.length} pass${gpu.spans.length === 1 ? "" : "es"} over ${gpuSpanMs.toFixed(2)} ms, `
-    + `busy for ${(100 * (gpuSpanMs > 0 ? gpu.busyMs / gpuSpanMs : 0)).toFixed(0)}% of that. `;
+  const busy = gpuBusyMs(spans);
+  const queues = lanes.length > 1 ? ` on ${lanes.length} queues` : "";
+  const head = `The GPU ran ${spans.length} pass${spans.length === 1 ? "" : "es"}${queues} over ${gpuSpanMs.toFixed(2)} ms, `
+    + `busy for ${(100 * (gpuSpanMs > 0 ? busy / gpuSpanMs : 0)).toFixed(0)}% of that`
+    + (lanes.length > 1 ? queueOverlap(lanes, busy) : ". ");
 
   // Latency the totals cannot hold: work handed over early can still start late.
   const wait = submitToFirstPassMs(t);

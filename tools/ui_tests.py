@@ -2090,6 +2090,18 @@ def d3d12_cases(triangle):
             expect((session(state).get("validationErrors") or 0) == 0,
                    "the debug layer reported an error: the capture's timestamps or read-backs are not allowed in an adopted list")
 
+    def d3d12_async_compute(state, log):
+        # --async-compute: the wave dispatch on a compute queue of its own, beside the render pass on
+        # the direct queue. The Timeline card gives each queue a lane, named from the capture's own
+        # submissions (renderer/pass_queues.ts), and the library's read-back copies from the two
+        # queues go to staging chunks of their own, which the debug layer checks: one buffer written
+        # from both queues in flight is an error there, disjoint ranges or not.
+        t = capture(state).get("timelineTracks") or {}
+        gpu = [x.get("label", "") for x in t.get("tracks") or [] if x.get("kind") == "gpu"]
+        return check_connected(state, log) +             expect(len(gpu) == 2, f"GPU lanes {gpu}: one per queue expected") +             expect(any("compute" in g.lower() for g in gpu) and any("direct" in g.lower() for g in gpu),
+                   f"the lanes are not named for the compute and direct queues: {gpu}") +             expect((session(state).get("validationErrors") or 0) == 0,
+                   "the debug layer reported an error: the capture's copies from two queues touched one buffer")
+
     def d3d12_open(state, log):
         c = capture(state)
         return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") +             expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands in the reopened file") +             expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws in the reopened file") +             expect((c.get("texturesLoaded") or 0) >= 2, "the reopened file lost its render targets")
@@ -2121,6 +2133,8 @@ def d3d12_cases(triangle):
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
         Case("d3d12-suspend", launch + ["--args=--suspend", "--validation", "--debug-capture"], d3d12_suspend, delay_ms=16000),
         Case("d3d12-pool", launch + ["--args=--pool --compute", "--validation", "--debug-capture"], d3d12_pool, delay_ms=16000),
+        Case("d3d12-async-compute", launch + ["--args=--async-compute", "--validation", "--debug-capture", "--debug-view=stats"],
+             d3d12_async_compute, delay_ms=16000),
         Case("d3d12-timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
         Case("d3d12-capture-on-hitch", launch + ["--args=--hitch-every 90", "--debug-timing=5000", "--debug-capture-on-hitch"],
              capture_on_hitch, delay_ms=15000),
