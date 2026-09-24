@@ -108,6 +108,15 @@ const char* const kSupportFunctions[] = {
     "vkWaitForFences",
     "vkResetFences",
     "vkResetCommandPool",
+    // ray tracing: the program's own device addresses, scratch sized by its driver, and binding tables
+    // rebuilt with its own group handles. Loaded whatever the frame is, and null where the device
+    // lacks them; the support checks before it calls.
+    "vkGetBufferDeviceAddress",
+    "vkGetAccelerationStructureDeviceAddressKHR",
+    "vkGetAccelerationStructureBuildSizesKHR",
+    "vkGetRayTracingShaderGroupHandlesKHR",
+    "vkCmdTraceRaysKHR",
+    "vkGetPhysicalDeviceProperties2",
 };
 
 /** How an object of each type is destroyed; types missing here go with their pool or are not the frame's to destroy. */
@@ -199,6 +208,7 @@ void Exporter::Configure(SourceWriter& w)
 {
     w.handle = [this](const char* type, uint64_t handle) { return HandleName(type, handle); };
     w.data = [this](const void* data, size_t size) { return DataExpr(data, size); };
+    w.address = [this](uint64_t address) { return AddressExpr(address); };
     w.indent = 1;
 }
 
@@ -279,6 +289,22 @@ std::string Exporter::DataExpr(const void* data, size_t size)
     known.push_back({padded, size});
     _dataSize = padded + size;
     return "Data(" + Hex(padded) + ", " + std::to_string(size) + ")";
+}
+
+std::string Exporter::AddressExpr(uint64_t address) const
+{
+    // The buffer whose range holds it: the last one starting at or below it.
+    auto it = _addressRanges.upper_bound(address);
+    if (it == _addressRanges.begin())
+        return std::string();
+    --it;
+    if (address >= it->first + it->second.first)
+        return std::string();
+    const std::string name = HandleName("VkBuffer", (uint64_t)it->second.second);
+    if (name.empty())
+        return std::string();
+    const uint64_t offset = address - it->first;
+    return "BufferAddress(" + name + ")" + (offset ? " + " + std::to_string(offset) : std::string());
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -840,6 +866,121 @@ void Exporter::NotExported(uint32_t index, const std::string& method, const std:
 {
     LeftOut(index, method, why);
     ++_notExported;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Ray tracing
+
+void Exporter::BufferAddress(VkBuffer buffer, VkDeviceAddress address, VkDeviceSize size)
+{
+    if (address && size)
+        _addressRanges[address] = {size, buffer};
+}
+
+void Exporter::StructureAddress(VkAccelerationStructureKHR structure, VkDeviceAddress address)
+{
+    if (address)
+        _structures[address] = structure;
+}
+
+void Exporter::BuildStructures(const std::string& label, const std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& infos,
+    const std::vector<std::vector<VkAccelerationStructureBuildRangeInfoKHR>>& ranges, const std::vector<InstanceUpload>& instances,
+    bool oneTime)
+{
+    FrameStatement(label, [&](SourceWriter& w) {
+        // A build from before the capture has a command buffer of its own; one of the frame's goes
+        // into the command buffer being recorded.
+        const std::string cb = oneTime ? std::string("cb") : w.cb;
+        if (oneTime)
+            w.Line("VkCommandBuffer cb = BeginOneTime();");
+        // Instances name their bottom levels by address: the captured bytes go up with this
+        // program's addresses in their place.
+        constexpr size_t kInstanceStride = 64;
+        constexpr size_t kReferenceAt = 56;
+        for (const InstanceUpload& u : instances)
+        {
+            std::string bottoms;
+            for (uint32_t i = 0; i < u.count && (i + 1) * kInstanceStride <= u.size; ++i)
+            {
+                uint64_t reference = 0;
+                std::memcpy(&reference, u.patched + i * kInstanceStride + kReferenceAt, sizeof(reference));
+                auto it = _structures.find(reference);
+                bottoms += (i ? ", " : "") + (it != _structures.end() ? w.Handle("VkAccelerationStructureKHR", (uint64_t)(uintptr_t)it->second)
+                                                                      : std::string("VK_NULL_HANDLE"));
+            }
+            const std::string list = EmitArrayLocal(w, "VkAccelerationStructureKHR", "bottomLevels", bottoms);
+            w.Line("UploadInstances(" + w.Handle("VkBuffer", (uint64_t)u.buffer) + ", " + std::to_string(u.offset) + ", " + DataExpr(u.captured, u.size) +
+                ", " + std::to_string(u.size) + ", " + list + ", " + std::to_string(u.count) + ");   // buffer " + std::to_string(u.bufferId) +
+                ": each instance naming its bottom level by this program's address");
+        }
+        // Per build: its geometries (every address in them spelled from this program's buffers) and
+        // its ranges. The arrays are not const: the infos point into them, and get their scratch here.
+        std::vector<std::string> geometryNames, rangeNames, countNames;
+        for (size_t i = 0; i < infos.size(); ++i)
+        {
+            const VkAccelerationStructureBuildGeometryInfoKHR& info = infos[i];
+            std::string items;
+            for (uint32_t g = 0; g < info.geometryCount; ++g)
+                items += "\n" + std::string((size_t)(w.indent + 1) * 4, ' ') + Emit(w, info.pGeometries[g], w.indent + 1) + ",";
+            const std::string geometries = w.Local("geometries");
+            w.Line("VkAccelerationStructureGeometryKHR " + geometries + "[] = {" + items + "\n" + std::string((size_t)w.indent * 4, ' ') + "};");
+            geometryNames.push_back(geometries);
+            const std::vector<VkAccelerationStructureBuildRangeInfoKHR>& r = ranges[i];
+            rangeNames.push_back(EmitStructArray(w, "ranges", "VkAccelerationStructureBuildRangeInfoKHR", r.data(), r.size(),
+                [&](const VkAccelerationStructureBuildRangeInfoKHR& e) { return Emit(w, e, w.indent + 1); }));
+            std::string counts;
+            for (size_t g = 0; g < r.size(); ++g)
+                counts += (g ? ", " : "") + std::to_string(r[g].primitiveCount);
+            countNames.push_back(EmitArrayLocal(w, "uint32_t", "primitiveCounts", counts));
+        }
+        std::string items;
+        for (const VkAccelerationStructureBuildGeometryInfoKHR& original : infos)
+        {
+            VkAccelerationStructureBuildGeometryInfoKHR info = original;
+            info.pGeometries = nullptr;   // pointed at the array above, below
+            info.ppGeometries = nullptr;
+            info.scratchData.deviceAddress = 0;
+            items += "\n" + std::string((size_t)(w.indent + 1) * 4, ' ') + Emit(w, info, w.indent + 1) + ",";
+        }
+        const std::string infoArray = w.Local("buildInfos");
+        w.Line("VkAccelerationStructureBuildGeometryInfoKHR " + infoArray + "[] = {" + items + "\n" + std::string((size_t)w.indent * 4, ' ') + "};");
+        std::string pointers;
+        for (size_t i = 0; i < infos.size(); ++i)
+        {
+            const std::string at = infoArray + "[" + std::to_string(i) + "]";
+            w.Line(at + ".pGeometries = " + geometryNames[i] + ";");
+            w.Line(at + ".scratchData.deviceAddress = BuildScratch(" + at + ", " + countNames[i] + ");   // sized by this driver");
+            pointers += (i ? ", " : "") + rangeNames[i];
+        }
+        const std::string rangeArray = w.Local("buildRanges");
+        w.Line("const VkAccelerationStructureBuildRangeInfoKHR* const " + rangeArray + "[] = {" + pointers + "};");
+        w.Use("vkCmdBuildAccelerationStructuresKHR");
+        w.Line("vkCmdBuildAccelerationStructuresKHR(" + cb + ", " + std::to_string(infos.size()) + ", " + infoArray + ", " + rangeArray + ");");
+        if (oneTime)
+            w.Line("EndOneTime(cb);");
+    });
+    ++_commands;
+}
+
+void Exporter::TraceRays(uint32_t index, VkPipeline pipeline, const uint8_t* capturedHandles, size_t handleSize, uint32_t groups,
+    const TraceRegion* regions, uint32_t width, uint32_t height, uint32_t depth)
+{
+    FrameStatement("[" + std::to_string(index) + "] the binding table rebuilt with this driver's group handles", [&](SourceWriter& w) {
+        std::string items;
+        for (int r = 0; r < 4; ++r)
+        {
+            const TraceRegion& t = regions[r];
+            items += (r ? ", " : "");
+            items += t.data && t.size ? "{" + DataExpr(t.data, t.size) + ", " + std::to_string(t.size) + ", " + std::to_string(t.region.stride) + ", " +
+                    std::to_string(t.region.size) + "}"
+                                      : std::string("{}");
+        }
+        const std::string table = EmitArrayLocal(w, "BindingTableRegion", "tableRegions", items);
+        w.Line("TraceRays(" + w.cb + ", " + w.Handle("VkPipeline", (uint64_t)pipeline) + ", " + DataExpr(capturedHandles, handleSize * groups) + ", " +
+            std::to_string(handleSize) + ", " + std::to_string(groups) + ", " + table + ", " + std::to_string(width) + ", " + std::to_string(height) +
+            ", " + std::to_string(depth) + ");");
+    });
+    ++_commands;
 }
 
 void Exporter::Readback(VkImage image, const std::string& name, VkImageAspectFlags aspect, uint32_t mip, uint32_t baseLayer, uint32_t layers,

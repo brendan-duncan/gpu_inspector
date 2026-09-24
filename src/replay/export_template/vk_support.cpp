@@ -129,6 +129,28 @@ struct UploadChunk
 std::vector<UploadChunk> uploadChunks;
 VkCommandBuffer uploadCb = VK_NULL_HANDLE;
 
+// Ray tracing's own memory: scratch for the builds and the shader binding tables of the traces. Each
+// is handed out from one buffer, which grows by starting a new one; a buffer a recorded command still
+// names is retired rather than freed, and everything is taken back once the submission has run.
+struct ArenaBuffer
+{
+    VkBuffer buffer = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+    void* mapped = nullptr;
+    VkDeviceAddress address = 0;
+    VkDeviceSize size = 0;
+};
+struct Arena
+{
+    VkBufferUsageFlags usage = 0;
+    bool hostVisible = false;
+    ArenaBuffer current;
+    VkDeviceSize used = 0;
+    std::vector<ArenaBuffer> retired;
+};
+Arena scratchArena{VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, false};
+Arena tableArena{VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR | VK_BUFFER_USAGE_SHADER_DEVICE_ADDRESS_BIT, true};
+
 // The window
 bool windowWanted = false;
 FrameWindow* window = nullptr;
@@ -258,6 +280,68 @@ void DestroyStaging(Staging& staging)
     if (staging.buffer)
         vkDestroyBuffer(device, staging.buffer, nullptr);
     staging = Staging{};
+}
+
+void DestroyArenaBuffer(ArenaBuffer& b)
+{
+    if (b.memory)
+        vkFreeMemory(device, b.memory, nullptr);
+    if (b.buffer)
+        vkDestroyBuffer(device, b.buffer, nullptr);
+    b = ArenaBuffer{};
+}
+
+/** `size` bytes aligned to `align` out of `arena`: their device address, and where they are mapped for a host-visible arena. */
+VkDeviceAddress ArenaAllocate(Arena& arena, VkDeviceSize size, VkDeviceSize align, void** mapped)
+{
+    if (!vkGetBufferDeviceAddress)
+        Fail("ray tracing needs vkGetBufferDeviceAddress, which this Vulkan does not have");
+    VkDeviceSize at = (arena.used + align - 1) & ~(align - 1);
+    if (!arena.current.buffer || at + size > arena.current.size)
+    {
+        if (arena.current.buffer)
+            arena.retired.push_back(arena.current);
+        arena.current = ArenaBuffer{};
+        ArenaBuffer& b = arena.current;
+        b.size = std::max<VkDeviceSize>((size + align) * 2, (VkDeviceSize)4 << 20);
+        VkBufferCreateInfo info{VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO};
+        info.size = b.size;
+        info.usage = arena.usage;
+        VK_CHECK(vkCreateBuffer(device, &info, nullptr, &b.buffer));
+        VkMemoryRequirements req{};
+        vkGetBufferMemoryRequirements(device, b.buffer, &req);
+        const VkMemoryPropertyFlags want = arena.hostVisible ? VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT
+                                                             : VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT;
+        if (!AllocateBound(req, want, b.memory, true, false))
+            Fail("no memory for ray tracing's scratch or binding table");
+        VK_CHECK(vkBindBufferMemory(device, b.buffer, b.memory, 0));
+        if (arena.hostVisible)
+            VK_CHECK(vkMapMemory(device, b.memory, 0, VK_WHOLE_SIZE, 0, &b.mapped));
+        VkBufferDeviceAddressInfo address{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+        address.buffer = b.buffer;
+        b.address = vkGetBufferDeviceAddress(device, &address);
+        arena.used = 0;
+        at = 0;
+    }
+    arena.used = at + size;
+    if (mapped)
+        *mapped = arena.current.mapped ? static_cast<uint8_t*>(arena.current.mapped) + at : nullptr;
+    return arena.current.address + at;
+}
+
+/** Once what was recorded against the arena has run: its space is free again. */
+void ResetArena(Arena& arena)
+{
+    for (ArenaBuffer& b : arena.retired)
+        DestroyArenaBuffer(b);
+    arena.retired.clear();
+    arena.used = 0;
+}
+
+void DestroyArena(Arena& arena)
+{
+    ResetArena(arena);
+    DestroyArenaBuffer(arena.current);
 }
 
 void Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresourceRange& range, VkImageLayout from, VkImageLayout to)
@@ -822,6 +906,8 @@ void EndOneTime(VkCommandBuffer cb)
     VK_CHECK(vkQueueSubmit(queue, 1, &submit, VK_NULL_HANDLE));
     VK_CHECK(vkQueueWaitIdle(queue));
     vkFreeCommandBuffers(device, utilityPool, 1, &cb);
+    ResetArena(scratchArena);
+    ResetArena(tableArena);
 }
 
 void TransitionSubresources(VkCommandBuffer cb, VkImage image, const VkImageLayout* targets, size_t count)
@@ -1013,6 +1099,96 @@ void SubmitAndWait(VkQueue q, const VkCommandBuffer* commandBuffers, uint32_t co
     info.pCommandBuffers = commandBuffers;
     VK_CHECK(vkQueueSubmit(q, 1, &info, VK_NULL_HANDLE));
     VK_CHECK(vkQueueWaitIdle(q));
+    ResetArena(scratchArena);
+    ResetArena(tableArena);
+}
+
+VkDeviceAddress BufferAddress(VkBuffer buffer)
+{
+    if (!vkGetBufferDeviceAddress)
+        Fail("the frame reads memory by device address, and this Vulkan has no vkGetBufferDeviceAddress");
+    VkBufferDeviceAddressInfo info{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+    info.buffer = buffer;
+    return vkGetBufferDeviceAddress(device, &info);
+}
+
+VkDeviceAddress StructureAddress(VkAccelerationStructureKHR structure)
+{
+    if (!vkGetAccelerationStructureDeviceAddressKHR)
+        Fail("the frame builds acceleration structures, and this device has no VK_KHR_acceleration_structure");
+    VkAccelerationStructureDeviceAddressInfoKHR info{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+    info.accelerationStructure = structure;
+    return vkGetAccelerationStructureDeviceAddressKHR(device, &info);
+}
+
+VkDeviceAddress BuildScratch(const VkAccelerationStructureBuildGeometryInfoKHR& info, const uint32_t* primitiveCounts)
+{
+    if (!vkGetAccelerationStructureBuildSizesKHR)
+        Fail("the frame builds acceleration structures, and this device has no VK_KHR_acceleration_structure");
+    VkAccelerationStructureBuildSizesInfoKHR sizes{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
+    vkGetAccelerationStructureBuildSizesKHR(device, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info, primitiveCounts, &sizes);
+    // Comfortably above every minAccelerationStructureScratchOffsetAlignment in the wild.
+    return ArenaAllocate(scratchArena, std::max<VkDeviceSize>(sizes.buildScratchSize, 1), 256, nullptr);
+}
+
+void UploadInstances(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t size, const VkAccelerationStructureKHR* bottoms,
+    uint32_t count)
+{
+    // VkAccelerationStructureInstanceKHR: 64 bytes, the reference to the bottom level its last 8.
+    constexpr size_t kStride = 64;
+    constexpr size_t kReferenceAt = 56;
+    std::vector<uint8_t> bytes(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+    for (uint32_t i = 0; i < count && (i + 1) * kStride <= bytes.size(); ++i)
+    {
+        if (!bottoms[i])
+            continue;
+        const uint64_t reference = StructureAddress(bottoms[i]);
+        std::memcpy(&bytes[i * kStride + kReferenceAt], &reference, sizeof(reference));
+    }
+    UploadBuffer(buffer, offset, bytes.data(), bytes.size());
+}
+
+void TraceRays(VkCommandBuffer cb, VkPipeline pipeline, const void* capturedHandles, size_t handleSize, uint32_t groupCount,
+    const BindingTableRegion* regions, uint32_t width, uint32_t height, uint32_t depth)
+{
+    if (!vkCmdTraceRaysKHR || !vkGetRayTracingShaderGroupHandlesKHR)
+        Fail("the frame traces rays, and this device has no VK_KHR_ray_tracing_pipeline");
+    std::vector<uint8_t> handles(handleSize * groupCount);
+    VK_CHECK(vkGetRayTracingShaderGroupHandlesKHR(device, pipeline, 0, groupCount, handles.size(), handles.data()));
+    VkPhysicalDeviceRayTracingPipelinePropertiesKHR rt{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_TRACING_PIPELINE_PROPERTIES_KHR};
+    VkPhysicalDeviceProperties2 properties{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
+    properties.pNext = &rt;
+    if (vkGetPhysicalDeviceProperties2)
+        vkGetPhysicalDeviceProperties2(physicalDevice, &properties);
+    const VkDeviceSize align = rt.shaderGroupBaseAlignment ? rt.shaderGroupBaseAlignment : 64;
+
+    VkStridedDeviceAddressRegionKHR out[4] = {};
+    for (int r = 0; r < 4; ++r)
+    {
+        const BindingTableRegion& region = regions[r];
+        if (!region.data || !region.size || !region.stride)
+            continue;
+        void* mapped = nullptr;
+        out[r].deviceAddress = ArenaAllocate(tableArena, region.size, align, &mapped);
+        out[r].stride = region.stride;
+        out[r].size = region.regionSize;
+        auto* bytes = static_cast<uint8_t*>(mapped);
+        std::memcpy(bytes, region.data, region.size);
+        // Each record's handle becomes this driver's for the group the captured handle named; the
+        // bytes after it are the application's own record data and stay as they were.
+        for (size_t at = 0; at + handleSize <= region.size; at += (size_t)region.stride)
+        {
+            for (uint32_t g = 0; g < groupCount; ++g)
+            {
+                if (std::memcmp(bytes + at, static_cast<const uint8_t*>(capturedHandles) + (size_t)g * handleSize, handleSize) == 0)
+                {
+                    std::memcpy(bytes + at, &handles[(size_t)g * handleSize], handleSize);
+                    break;
+                }
+            }
+        }
+    }
+    vkCmdTraceRaysKHR(cb, &out[0], &out[1], &out[2], &out[3], width, height, depth);
 }
 
 void CompleteReadbacks()
@@ -1412,6 +1588,8 @@ void DestroySupport()
             DestroyStaging(r.staging);
         pending.clear();
         ReleaseTransients();
+        DestroyArena(scratchArena);
+        DestroyArena(tableArena);
         for (auto& [key, pass] : depthResolvePasses)
             if (pass)
                 vkDestroyRenderPass(device, pass, nullptr);

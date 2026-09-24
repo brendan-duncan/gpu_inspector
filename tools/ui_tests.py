@@ -1646,6 +1646,32 @@ def triangle_cases(triangle):
             expect("ReadbackImage(" in commands, "frame_commands.cpp reads no render target back to compare") + \
             expect(os.path.isfile(data) and os.path.getsize(data) > 100000, "frame_data.bin is missing or too small to hold the captured targets")
 
+    def triangle_export_cpp_ray_tracing(state, log):
+        # --ray-tracing --static-blas: a top level rebuilt every frame over a bottom level built once
+        # before any capture, and a trace. The export spells what they read by device address from the
+        # program's own buffers (BufferAddress), sizes scratch with its own driver (BuildScratch),
+        # rewrites the instances' references (UploadInstances), rebuilds the binding table with its own
+        # group handles (TraceRays), and builds the earlier bottom level in a command buffer of its own
+        # -- where it used to leave the builds and the trace out and skip the traced image.
+        projects = [os.path.join(exported_cpp, d) for d in os.listdir(exported_cpp)] if os.path.isdir(exported_cpp) else []
+        project = projects[0] if projects else ""
+        commands = ""
+        if project and os.path.isfile(os.path.join(project, "frame_commands.cpp")):
+            with open(os.path.join(project, "frame_commands.cpp"), encoding="utf-8") as f:
+                commands = f.read()
+        return check_connected(state, log) + \
+            expect(len(projects) == 1, f"one project folder in {exported_cpp}: {projects}") + \
+            expect(commands.count("vkCmdBuildAccelerationStructuresKHR(") >= 2,
+                   "frame_commands.cpp does not build both levels (the earlier bottom level and the frame's top level)") + \
+            expect("built before the capture" in commands and "BeginOneTime()" in commands,
+                   "the bottom level built before the capture is not built ahead of the frame") + \
+            expect("BufferAddress(" in commands and "BuildScratch(" in commands, "the builds' addresses are not spelled from the program's own buffers") + \
+            expect("UploadInstances(" in commands, "the top level's instances are not rewritten with the program's bottom level") + \
+            expect("TraceRays(" in commands, "the trace is not in the source") + \
+            expect("vkCmdTraceRaysKHR: left out" not in commands and "vkCmdBuildAccelerationStructuresKHR: left out" not in commands,
+                   "a build or the trace is still left out of the source") + \
+            expect("is not compared" not in commands, "a traced image is still skipped by the exported comparison")
+
     def triangle_report_export(state, log):
         # Reports open in tabs beside the capture's, and each exports to a standalone HTML file
         # (renderer/report_export.ts). The flame graph is the report that fetches its shaders
@@ -1713,6 +1739,9 @@ def triangle_cases(triangle):
     if find_replay():
         cases.append(Case("export-cpp", launch + ["--debug-capture", f"--debug-export-cpp={exported_cpp}"],
                           triangle_export_cpp, delay_ms=20000, before=remove_exported_cpp))
+        cases.append(Case("export-cpp-ray-tracing", launch + ["--args=--ray-tracing --static-blas", "--debug-capture",
+                                                              f"--debug-export-cpp={exported_cpp}"],
+                          triangle_export_cpp_ray_tracing, delay_ms=20000, before=remove_exported_cpp))
         cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
                                                 "--debug-mouse=340,560", "--debug-settle=8000"],
                           triangle_overdraw, delay_ms=20000))

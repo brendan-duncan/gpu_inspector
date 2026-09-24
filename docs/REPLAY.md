@@ -660,7 +660,7 @@ these, and only the Win32 window has been run: the Xlib and Cocoa ones are writt
 | test/triangle `--pipeline-library`, `--push-template`, `--stencil`, `--occluded` | identical, no validation messages |
 | test/triangle `--second-queue`, `--second-device` | all 3 targets identical, no validation messages |
 | test/triangle `--persistent` (frame-start contents, a mip in another layout) | all 5 targets identical, no validation messages |
-| test/triangle `--ray-tracing` | the raster targets identical; the builds and the trace are left out, and the traced image is not compared (see the limits) |
+| test/triangle `--ray-tracing`, `--ray-tracing --static-blas` | all 3 targets identical, the traced image included, with the validation layer and over 300 frames in the window; the bottom level built before the capture is built ahead of the frame |
 | test/triangle `--descriptor-buffer` | differs in exactly the 53,759 texels the replay differs in, which does not replay descriptor buffers |
 | Unity player frame (secondary command buffers, two subpasses, MRT, BC1) | all 8 replayed targets identical, no validation messages; the 8 commands the replay left out are left out |
 | XR frames captured on an Adreno 740 (multiview, two layers) | differ from the capture in exactly the texels the replay differs in |
@@ -674,11 +674,25 @@ than MSVC about narrowing and designator order.
 Limits:
 - The export needs the replay to run to the end, so a frame that crashes the driver is not
   written; `--trace` names the call it dies in.
-- Ray tracing is not exported, on either API: a build and a trace name what they read by device
-  address and by shader group handle or identifier, which the replay finds at run time, and the
-  source has no spelling for that yet. Those commands are left out with a comment, and an image only
-  a shader writes is then not compared: it would still hold the contents uploaded for it, and match
-  the capture for no reason.
+- Direct3D 12 ray tracing is not exported: its builds and `DispatchRays` are left out with a
+  comment, and an image only a shader writes is then not compared -- it would still hold the
+  contents uploaded for it, and match the capture for no reason.
+
+Vulkan ray tracing is exported. A build and a trace name what they read by device address and by
+shader group handle, which mean nothing in another process, so the source spells each as what the
+program finds at run time rather than as a number:
+
+- An address inside a buffer is `BufferAddress(buffer_N) + offset`: every device address the source
+  spells goes through the exporter, which knows where the replay's driver put each buffer and so
+  which buffer and offset the replay's own address was.
+- Scratch is `BuildScratch(info, primitiveCounts)`, sized by the program's driver, which may want
+  more than the replay's did.
+- A top level's instances go up as captured with each instance's bottom-level reference rewritten
+  to the program's own structure (`UploadInstances`).
+- A trace passes the captured binding table records and the captured group handles to
+  `TraceRays`, which builds the table the way the replay does, with the program's driver's handles.
+- A bottom level built before the capture is built in a command buffer of its own at the start of
+  the frame, from what the layer read back of its inputs.
 
 ## A shader edited in the capture
 

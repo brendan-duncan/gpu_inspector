@@ -1081,8 +1081,13 @@ private:
      * reservation takes a fresh stretch, reset only when the next submission starts recording.
      */
     bool ReserveScratch(VkDeviceSize size, VkDeviceAddress& address);
-    /** Replays one vkCmdBuildAccelerationStructuresKHR with its addresses remapped. */
-    void BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb);
+    /**
+     * Replays one vkCmdBuildAccelerationStructuresKHR with its addresses remapped; false when it left
+     * it out. With an `exportLabel` the exporter is shown what was issued (Exporter::BuildStructures),
+     * `exportOneTime` for a build from before the capture that runs in a command buffer of its own.
+     */
+    bool BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb, const std::string& exportLabel = std::string(),
+        bool exportOneTime = false);
     /**
      * Builds, once at setup, the structures the frame traces against but never builds: an engine
      * builds its bottom levels at load, before any capture. The layer read back what each one's last
@@ -1092,8 +1097,11 @@ private:
     void BuildEarlierStructures();
     /** Uploads one of the capture's buffer read-backs to the buffer it came from; false when it holds none. */
     bool UploadCapturedBuffer(uint64_t dataId);
-    /** Replays one vkCmdTraceRaysKHR, rebuilding its binding table with this driver's handles. */
-    void TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb);
+    /**
+     * Replays one vkCmdTraceRaysKHR, rebuilding its binding table with this driver's handles; false
+     * when it left it out. With an `exportIndex` other than UINT32_MAX the exporter is shown it.
+     */
+    bool TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb, uint32_t exportIndex = UINT32_MAX);
     bool EnsureBindingTable(VkDeviceSize size);
     /**
      * Rewrites the bottom-level references in a top level's instance buffer to this process's.
@@ -1101,7 +1109,8 @@ private:
      * here, so a top level built from the buffer as captured references structures that do not
      * exist. Returns false when the instances could not be patched, which leaves the build out.
      */
-    bool PatchInstanceReferences(uint64_t bufferId, uint64_t offset, uint32_t captureId, uint32_t instances);
+    bool PatchInstanceReferences(uint64_t bufferId, uint64_t offset, uint32_t captureId, uint32_t instances,
+        std::vector<uint8_t>* patchedOut = nullptr, const uint8_t** capturedOut = nullptr, size_t* sizeOut = nullptr);
     /** This process's address for the structure the captured address named, or 0. */
     VkDeviceAddress RemapStructureAddress(uint64_t capturedAddress);
     void Track(const std::string& type, uint64_t handle);

@@ -881,7 +881,17 @@ uint64_t Replayer::CreateBuffer(uint64_t id, const VkBufferCreateInfo& captured)
     }
     _buffers[id] = {buffer, info.size};
     if (_exporter)
+    {
         _exporter->CreateBuffer(id, buffer, info);
+        // A build names what it reads by device address; the source spells one inside this buffer
+        // from where the program's driver puts it (Exporter::BufferAddress).
+        if (deviceAddress && _fns.GetBufferDeviceAddress)
+        {
+            VkBufferDeviceAddressInfo address{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
+            address.buffer = buffer;
+            _exporter->BufferAddress(buffer, _fns.GetBufferDeviceAddress(_device, &address), info.size);
+        }
+    }
     return (uint64_t)buffer;
 }
 
@@ -1149,7 +1159,16 @@ void Replayer::CreateObject(const JValue& o)
         // Tracked by the common path below, with every other created object.
         handle = (uint64_t)(uintptr_t)structure;
         if (_exporter)
+        {
             _exporter->Create(type, id, handle, "vkCreateAccelerationStructureKHR", info, "placed by the driver, not at the captured address");
+            // What an instance names it by, which the exported program rewrites with its own.
+            if (_fns.GetAccelerationStructureDeviceAddressKHR)
+            {
+                VkAccelerationStructureDeviceAddressInfoKHR address{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+                address.accelerationStructure = structure;
+                _exporter->StructureAddress(structure, _fns.GetAccelerationStructureDeviceAddressKHR(_device, &address));
+            }
+        }
     }
     else if (type == "VkImage" && cmd == "vkGetSwapchainImagesKHR")
     {
@@ -2150,7 +2169,8 @@ VkDeviceAddress Replayer::RemapStructureAddress(uint64_t capturedAddress)
     return _fns.GetAccelerationStructureDeviceAddressKHR(_device, &info);
 }
 
-bool Replayer::PatchInstanceReferences(uint64_t bufferId, uint64_t offset, uint32_t captureId, uint32_t instances)
+bool Replayer::PatchInstanceReferences(uint64_t bufferId, uint64_t offset, uint32_t captureId, uint32_t instances,
+    std::vector<uint8_t>* patchedOut, const uint8_t** capturedOut, size_t* sizeOut)
 {
     // VkAccelerationStructureInstanceKHR: 64 bytes, the reference the last 8 of them.
     constexpr size_t kStride = 64;
@@ -2183,23 +2203,34 @@ bool Replayer::PatchInstanceReferences(uint64_t bufferId, uint64_t offset, uint3
     }
     // After ApplyBufferData, which uploaded the buffer as captured at the start of this group.
     UploadToBuffer(buffer->second.buffer, offset, patched.data(), patched.size());
+    if (capturedOut)
+        *capturedOut = data;
+    if (sizeOut)
+        *sizeOut = size;
+    if (patchedOut)
+        *patchedOut = std::move(patched);
     return true;
 }
 
-void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb)
+bool Replayer::BuildAccelerationStructures(const JValue& command, const JValue& args, VkCommandBuffer cb, const std::string& exportLabel,
+    bool exportOneTime)
 {
     if (!_fns.CmdBuildAccelerationStructuresKHR || !_fns.GetAccelerationStructureBuildSizesKHR)
     {
         Problem("left out: this device has no acceleration structure builds");
-        return;
+        return false;
     }
+    // What the exporter is shown of the instance buffers: the patched bytes are kept here until then.
+    const bool exporting = _exporter && !exportLabel.empty();
+    std::vector<Exporter::InstanceUpload> instanceUploads;
+    std::vector<std::vector<uint8_t>> patchedInstances;
     Args_vkCmdBuildAccelerationStructuresKHR a{};
     const size_t unresolvedBefore = _ctx.unresolved;
     DecodeArgs(_ctx, args, a);
     if (!a.pInfos || !a.infoCount || _ctx.unresolved != unresolvedBefore)
     {
         Problem("left out: the build names objects the replay does not have");
-        return;
+        return false;
     }
     // Every geometry's range, where the capture library listed them (`buildRanges`); the arguments
     // hold only each info's first.
@@ -2301,13 +2332,29 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
                 if (!captureValue)
                 {
                     Problem("left out: the build's instances are not in this capture, so the bottom levels they name cannot be found");
-                    return;
+                    return false;
                 }
-                if (!PatchInstanceReferences(bufferValue ? bufferValue->Uint() : 0,
-                        offsetValue ? offsetValue->Uint() : 0,
-                        (uint32_t)captureValue->Uint(), counts[g]))
+                std::vector<uint8_t> patched;
+                const uint8_t* captured = nullptr;
+                size_t capturedSize = 0;
+                const uint64_t instanceBuffer = bufferValue ? bufferValue->Uint() : 0;
+                const uint64_t instanceOffset = offsetValue ? offsetValue->Uint() : 0;
+                if (!PatchInstanceReferences(instanceBuffer, instanceOffset, (uint32_t)captureValue->Uint(), counts[g],
+                        exporting ? &patched : nullptr, &captured, &capturedSize))
                 {
-                    return;
+                    return false;
+                }
+                if (exporting)
+                {
+                    patchedInstances.push_back(std::move(patched));
+                    Exporter::InstanceUpload u;
+                    u.bufferId = instanceBuffer;
+                    u.buffer = _buffers.count(instanceBuffer) ? _buffers[instanceBuffer].buffer : VK_NULL_HANDLE;
+                    u.offset = instanceOffset;
+                    u.captured = captured;
+                    u.size = capturedSize;
+                    u.count = counts[g];
+                    instanceUploads.push_back(u);
                 }
             }
             // An address the capture never resolved leaves the build reading nothing, which the
@@ -2317,7 +2364,7 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
             if (missing)
             {
                 Problem("left out: the build reads memory this capture did not resolve to a buffer");
-                return;
+                return false;
             }
             geometries[i][g] = geometry;
         }
@@ -2339,7 +2386,7 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
     if (scratchNeeded && !ReserveScratch(scratchNeeded, scratchBase))
     {
         Problem("left out: the build's scratch memory could not be allocated");
-        return;
+        return false;
     }
     for (uint32_t i = 0; i < a.infoCount; ++i)
         built[i].scratchData.deviceAddress = scratchBase + scratchAt[i];
@@ -2348,6 +2395,14 @@ void Replayer::BuildAccelerationStructures(const JValue& command, const JValue& 
     for (uint32_t i = 0; i < a.infoCount; ++i)
         rangePointers[i] = rangesOut[i].data();
     _fns.CmdBuildAccelerationStructuresKHR(cb, a.infoCount, built.data(), rangePointers.data());
+    if (exporting)
+    {
+        // The patched bytes moved into patchedInstances, whose storage does not move once filled.
+        for (size_t k = 0; k < instanceUploads.size(); ++k)
+            instanceUploads[k].patched = patchedInstances[k].data();
+        _exporter->BuildStructures(exportLabel, built, rangesOut, instanceUploads, exportOneTime);
+    }
+    return true;
 }
 
 namespace
@@ -2528,7 +2583,10 @@ void Replayer::BuildEarlierStructures()
             const JValue* args = doc.Root().Get("args");
             const size_t problemsBefore = _report->problems.size();
             _scratchUsed = 0;
-            RunOneTime([&](VkCommandBuffer cb) { BuildAccelerationStructures(doc.Root(), *args, cb); });
+            RunOneTime([&](VkCommandBuffer cb) {
+                BuildAccelerationStructures(doc.Root(), *args, cb,
+                    "acceleration structure " + std::to_string(e.id) + ", built before the capture from what its last build read", true);
+            });
             if (_report->problems.size() == problemsBefore)
             {
                 _report->earlierStructuresBuilt++;
@@ -2550,25 +2608,25 @@ void Replayer::BuildEarlierStructures()
  * record's handle with this pipeline's handle for the same group. Matching one to the other is what
  * the captured pipeline's own handle blob is for.
  */
-void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb)
+bool Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb, uint32_t exportIndex)
 {
     if (!_fns.CmdTraceRaysKHR || !_fns.GetRayTracingShaderGroupHandlesKHR)
     {
         Problem("left out: this device has no ray tracing pipelines");
-        return;
+        return false;
     }
     const JValue* regions = command.Get("bindingTableData");
     if (!regions || !regions->IsArray() || !regions->count)
     {
         Problem("left out: the shader binding table's contents are not in this capture");
-        return;
+        return false;
     }
     const JValue* pipelineObject = _capture->Object(_boundRayTracingPipeline);
     const uint64_t pipelineHandle = Handle(_boundRayTracingPipeline);
     if (!pipelineObject || !pipelineHandle)
     {
         Problem("left out: the ray tracing pipeline bound at the trace was not replayed");
-        return;
+        return false;
     }
 
     // The handles the captured driver gave, kept on the pipeline by the layer, and the ones this
@@ -2579,7 +2637,7 @@ void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     if (!_capture->Blob(*pipelineObject, "group handles", capturedHandles, capturedSize) || !capturedSize)
     {
         Problem("left out: the pipeline's shader group handles are not in this capture");
-        return;
+        return false;
     }
     const JValue* updates = pipelineObject->Get("updates");
     const JValue* declared = updates ? updates->Get("shaderGroupHandles") : nullptr;
@@ -2588,7 +2646,7 @@ void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     if (!handleSize || capturedSize % handleSize)
     {
         Problem("left out: the pipeline's shader group handle size was not recorded");
-        return;
+        return false;
     }
     const uint32_t groups = (uint32_t)(capturedSize / handleSize);
 
@@ -2597,7 +2655,7 @@ void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
             replayHandles.size(), replayHandles.data()) != VK_SUCCESS)
     {
         Problem("left out: this driver would not give the pipeline's shader group handles");
-        return;
+        return false;
     }
 
     // One buffer for every region, each starting at the alignment the device asks for.
@@ -2670,7 +2728,7 @@ void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     if (!rewritten)
     {
         Problem("left out: no record of the shader binding table named a group of this pipeline");
-        return;
+        return false;
     }
     if (unmatched)
     {
@@ -2679,7 +2737,7 @@ void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     if (!EnsureBindingTable(total))
     {
         Problem("left out: the shader binding table could not be allocated");
-        return;
+        return false;
     }
     for (const Placed& p : placed)
         memcpy(_bindingTableMapped + p.at, p.bytes.data(), p.bytes.size());
@@ -2694,7 +2752,7 @@ void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     if (_ctx.unresolved != unresolvedBefore)
     {
         Problem("left out: the trace names objects the replay does not have");
-        return;
+        return false;
     }
     VkStridedDeviceAddressRegionKHR raygen{}, miss{}, hit{}, callable{};
     auto fill = [&](const VkStridedDeviceAddressRegionKHR* source, const char* name, VkStridedDeviceAddressRegionKHR& out) {
@@ -2714,9 +2772,43 @@ void Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     if (!raygen.deviceAddress)
     {
         Problem("left out: the trace's raygen table is not in this capture");
-        return;
+        return false;
     }
     _fns.CmdTraceRaysKHR(cb, &raygen, &miss, &hit, &callable, a.width, a.height, a.depth);
+    if (_exporter && exportIndex != UINT32_MAX)
+    {
+        // The captured records, not the rewritten ones: the program rewrites them with its own driver's
+        // handles, which are not this one's either.
+        Exporter::TraceRegion out[4];
+        const char* const names[4] = {"raygen", "miss", "hit", "callable"};
+        const VkStridedDeviceAddressRegionKHR* const layouts[4] = {a.pRaygenShaderBindingTable, a.pMissShaderBindingTable,
+            a.pHitShaderBindingTable, a.pCallableShaderBindingTable};
+        for (uint32_t i = 0; i < regions->count; ++i)
+        {
+            const JValue& e = regions->items[i];
+            const JValue* nameValue = e.Get("region");
+            const JValue* captureValue = e.Get("capture");
+            auto it = captureValue ? _bufferData.find(captureValue->Uint()) : _bufferData.end();
+            if (!nameValue || it == _bufferData.end())
+                continue;
+            for (int r = 0; r < 4; ++r)
+            {
+                if (nameValue->Str() != names[r] || !layouts[r])
+                    continue;
+                const uint8_t* data = nullptr;
+                size_t size = 0;
+                if (_capture->Payload(it->second->Get("payload"), data, size) && size)
+                {
+                    out[r].data = data;
+                    out[r].size = size;
+                    out[r].region = *layouts[r];
+                }
+            }
+        }
+        _exporter->TraceRays(exportIndex, (VkPipeline)(uintptr_t)pipelineHandle, capturedHandles, handleSize, groups, out, a.width, a.height,
+            a.depth);
+    }
+    return true;
 }
 
 /** The replay's own shader binding table memory, host visible so the records can be written into it. */
@@ -2785,18 +2877,16 @@ void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& ar
     }
     if (m == "vkCmdBuildAccelerationStructuresKHR")
     {
-        BuildAccelerationStructures(command, args, cb);
-        // A build names what it reads by device address, which the replay finds again at run time
-        // (its own buffers' addresses, scratch of its own): nothing the source can spell as constants.
-        if (exporter)
-            exporter->NotExported(index, m, "acceleration structure builds are not exported yet (their device addresses are found at run time)");
+        // Exported as the replay issued it, its addresses spelled from the program's own buffers
+        // (Exporter::BuildStructures). A build the replay leaves out, the source leaves out too.
+        if (!BuildAccelerationStructures(command, args, cb, exporter ? "[" + std::to_string(index) + "] " + m : std::string()) && exporter)
+            exporter->LeftOut(index, m, "the replay left it out (its problems say why)");
         return;
     }
     if (m == "vkCmdTraceRaysKHR")
     {
-        TraceRays(command, args, cb);
-        if (exporter)
-            exporter->NotExported(index, m, "ray traces are not exported yet (the shader binding table is rebuilt at run time)");
+        if (!TraceRays(command, args, cb, exporter ? index : UINT32_MAX) && exporter)
+            exporter->LeftOut(index, m, "the replay left it out (its problems say why)");
         return;
     }
     if (kRayTracing.count(m))

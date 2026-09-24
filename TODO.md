@@ -889,12 +889,25 @@ vendor's driver is listed at the end so nobody spends time on it.
       cases had a stack frame of hundreds of kilobytes, and it recurses along the chain, so the first
       engine capture (a dozen structs on its device create info) overflowed the stack with no output
       at all; each case is now a small function of its own.
-- [ ] Export to C++, the rest: ray tracing (builds and traces name what they read by device address
-      and shader group handle, which the replay finds at run time; the source needs a spelling for
-      `address of buffer N + offset` and a binding table built at start-up); a frame that crashes
-      the driver, which is the bug report that most wants a repro and the one case the export cannot
-      write, since it needs the replay to finish (a checkpoint before each pipeline creation and
-      each submit would do).
+- [x] Export to C++ of Vulkan ray tracing (`Exporter::BuildStructures`, `Exporter::TraceRays`, the
+      ray tracing helpers in `export_template/vk_support.*`): builds and traces used to be left out
+      with a comment and the traced image skipped by the exported comparison. Every device address
+      the source spells now goes through `SourceWriter::address`, which was there and unset: the
+      replay tells the exporter where its driver put each device-address buffer and acceleration
+      structure, so the replay's own address becomes `BufferAddress(buffer_N) + offset` in the
+      source. Scratch is sized by the program's driver (`BuildScratch`), instances go up with their
+      bottom-level references rewritten (`UploadInstances`), a trace rebuilds its binding table with
+      the program's own group handles (`TraceRays`, the replay's matching moved into the program),
+      and a bottom level built before the capture is built ahead of the frame in a command buffer
+      of its own. Scratch and tables come from arenas taken back after each submission, so a frame
+      shown in a loop does not grow. Checked on an RTX 4080 by building and running what it wrote
+      for `vkinsp_triangle --ray-tracing` and `--ray-tracing --static-blas`: all 3 targets
+      identical, the traced image included, validation clean, 300 frames in the window; UI case
+      `export-cpp-ray-tracing`. D3D12 ray tracing export is still open (its item under Direct3D 12).
+- [ ] Export to C++, the rest: a frame that crashes the driver, which is the bug report that most
+      wants a repro and the one case the export cannot write, since it needs the replay to finish (a
+      checkpoint before each pipeline creation and each submit would do). And the ray tracing the
+      replay itself does not do yet (`vkCmdTraceRaysIndirect*`, structure copies, NV ray tracing).
 - [x] D3D12 replay and Export to C++ (`src/d3d12/replay/`, `dxinsp_replay`, docs/REPLAY.md
       "Direct3D 12"): a capture re-executed and compared, and written as a CMake project. One
       `Reflect` per struct (`dx_reflect.h`) serves the decoder and the source emitter, since the

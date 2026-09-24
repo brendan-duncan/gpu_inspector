@@ -72,6 +72,43 @@ void TransitionAll(VkCommandBuffer cb, VkImage image, VkImageLayout layout);
 void UploadImage(VkImage image, const VkBufferImageCopy* regions, uint32_t regionCount, const void* data, size_t size);
 void UploadBuffer(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t size);
 
+// Ray tracing. A build or a trace names what it reads by device address, and the capture's addresses
+// are the captured process's: the source spells each as the place this program's own object is,
+// found at run time, and the memory only the driver sizes (scratch, the binding table) is made here.
+/** Where the driver put a buffer: a captured address into it is this plus the same offset. */
+VkDeviceAddress BufferAddress(VkBuffer buffer);
+/** Where the driver put an acceleration structure, which is what an instance names its bottom level by. */
+VkDeviceAddress StructureAddress(VkAccelerationStructureKHR structure);
+/**
+ * Scratch memory for one build, of the size this driver asks for `info` with these primitive counts
+ * (one per geometry). It lives until the submission that uses it has run.
+ */
+VkDeviceAddress BuildScratch(const VkAccelerationStructureBuildGeometryInfoKHR& info, const uint32_t* primitiveCounts);
+/**
+ * Uploads instances (VkAccelerationStructureInstanceKHR, 64 bytes each) as captured but for the
+ * reference to the bottom level, which becomes `bottoms[i]`'s address here; VK_NULL_HANDLE keeps
+ * the captured bytes.
+ */
+void UploadInstances(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t size, const VkAccelerationStructureKHR* bottoms,
+    uint32_t count);
+/** One region of a trace's shader binding table as captured: its records' bytes and its layout. */
+struct BindingTableRegion
+{
+    const void* data = nullptr;   // null: the region is empty
+    size_t size = 0;
+    VkDeviceSize stride = 0;
+    VkDeviceSize regionSize = 0;
+};
+/**
+ * vkCmdTraceRaysKHR with a binding table built here: each region's records copied, and every record's
+ * group handle -- the captured driver's, meaningless to this one -- replaced with the handle this
+ * driver gives `pipeline` for the same group, found by matching it in `capturedHandles` (the
+ * pipeline's handles as the capture recorded them, `groupCount` of `handleSize` bytes). `regions` is
+ * raygen, miss, hit, callable.
+ */
+void TraceRays(VkCommandBuffer cb, VkPipeline pipeline, const void* capturedHandles, size_t handleSize, uint32_t groupCount,
+    const BindingTableRegion* regions, uint32_t width, uint32_t height, uint32_t depth);
+
 // The frame
 /**
  * Copies a render target at this point of the command buffer, to compare with `captured` once the

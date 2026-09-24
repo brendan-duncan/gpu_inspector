@@ -144,11 +144,55 @@ public:
         const std::vector<VkWriteDescriptorSet>& writes, bool khr);
     void LeftOut(uint32_t index, const std::string& method, const std::string& why);
     /**
-     * A command the replay issued but the source cannot spell yet (a ray tracing build or trace). What
-     * it wrote is then missing from the exported frame, so an image only a shader writes is not
-     * compared after it: it would still hold what was uploaded, and match the capture for no reason.
+     * A command the replay issued but the source cannot spell. What it wrote is then missing from the
+     * exported frame, so an image only a shader writes is not compared after it: it would still hold
+     * what was uploaded, and match the capture for no reason.
      */
     void NotExported(uint32_t index, const std::string& method, const std::string& why);
+
+    // ---- ray tracing: what a build or a trace reads by device address
+    /**
+     * A buffer the replay made with a device address, where the driver put it. Every device address
+     * the source spells inside it becomes `BufferAddress(buffer_N) + offset`, since the program's
+     * driver puts it somewhere else (SourceWriter::address).
+     */
+    void BufferAddress(VkBuffer buffer, VkDeviceAddress address, VkDeviceSize size);
+    /** An acceleration structure the replay made, where the driver put it: what an instance names it by. */
+    void StructureAddress(VkAccelerationStructureKHR structure, VkDeviceAddress address);
+    /** A top level's instances as the replay uploaded them: the captured bytes and the same with its own references. */
+    struct InstanceUpload
+    {
+        uint64_t bufferId = 0;
+        VkBuffer buffer = VK_NULL_HANDLE;
+        VkDeviceSize offset = 0;
+        const uint8_t* captured = nullptr;
+        const uint8_t* patched = nullptr;   // the references rewritten to the replay's structures
+        size_t size = 0;
+        uint32_t count = 0;
+    };
+    /**
+     * vkCmdBuildAccelerationStructuresKHR as the replay issued it: `infos` with the replay's own
+     * addresses (spelled through BufferAddress), a geometry array each and no scratch -- the program
+     * sizes that itself (BuildScratch), since its driver may want more. `oneTime`: a build the frame
+     * needs from before the capture, in a command buffer of its own ahead of the frame's.
+     */
+    void BuildStructures(const std::string& label, const std::vector<VkAccelerationStructureBuildGeometryInfoKHR>& infos,
+        const std::vector<std::vector<VkAccelerationStructureBuildRangeInfoKHR>>& ranges, const std::vector<InstanceUpload>& instances,
+        bool oneTime);
+    /** One region of a trace's binding table: its records as captured and the region the trace named. */
+    struct TraceRegion
+    {
+        const uint8_t* data = nullptr;
+        size_t size = 0;
+        VkStridedDeviceAddressRegionKHR region{};
+    };
+    /**
+     * vkCmdTraceRaysKHR: the program rebuilds the binding table from the captured records, with its
+     * own driver's handles for the groups the captured handles named (vk_support's TraceRays).
+     * `regions` is raygen, miss, hit, callable.
+     */
+    void TraceRays(uint32_t index, VkPipeline pipeline, const uint8_t* capturedHandles, size_t handleSize, uint32_t groups,
+        const TraceRegion* regions, uint32_t width, uint32_t height, uint32_t depth);
     void EndCommandBuffer(VkCommandBuffer cb);
     /**
      * A render target read back at the end of its pass (or a storage image at the end of its command
@@ -182,6 +226,8 @@ private:
     void MaybeSplit(Section& s);
     void SplitNow(Section& s);
     std::string DataExpr(const void* data, size_t size);
+    /** A device address of the replay's as the program spells it, or empty for a number (SourceWriter::address). */
+    std::string AddressExpr(uint64_t address) const;
     std::string HandleName(const char* type, uint64_t handle) const;
     static std::string VariableName(const std::string& type, uint64_t id);
     /** Names an object's variable, declares it in frame_handles.h and lists it for destruction. */
@@ -206,6 +252,10 @@ private:
     uint64_t _dataSize = 0;
     std::unordered_map<uint64_t, std::vector<Blob>> _blobs;   // by content hash, so identical contents are stored once
     std::map<std::pair<std::string, uint64_t>, std::string> _names;
+    /** The replay's device-address buffers by base address: size and handle (BufferAddress). */
+    std::map<uint64_t, std::pair<uint64_t, VkBuffer>> _addressRanges;
+    /** The replay's acceleration structures by the address the driver gave them (StructureAddress). */
+    std::unordered_map<uint64_t, VkAccelerationStructureKHR> _structures;
     std::vector<std::pair<std::string, std::string>> _created;  // (type, variable) in creation order
     std::vector<std::pair<std::string, std::string>> _handles;  // (type, variable) to declare
     std::vector<std::string> _notes;
