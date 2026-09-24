@@ -18,6 +18,8 @@
 - `test/triangle --half-scissor` keeps the left half of the target, for that overlay.
 - A Vulkan dynamic-rendering pass suspended and resumed across command buffers is timed across its parts, instead of being left out of the frame's GPU time.
 - A Direct3D 12 render pass suspended across command lists is timed: every pass's queries are resolved from a list of the capture's own at the finish, instead of beside the query in the application's list where a suspended pass forbids it. A Unity frame goes from a fifth of its passes measured to all of them.
+- A Direct3D 12 command list reset before the capture was asked for, as an engine that pools its lists leaves them, has its passes timed.
+- `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
 - Direct3D 12 passes are timed in the frame of recording before the capture as well, so an engine that builds a frame's command lists during the frame before it (Unity does) has that frame measured rather than reported without timings.
 - A capture asked for while the application is live-paused captures the frame on the screen: the pause is held open for the capture's frames and closes again on the frame it captured, instead of resuming the application.
@@ -31,6 +33,7 @@
 
 ### Changed
 - A timing or memory capture's report opens in a tab of its own beside the frame captures, instead of a band above them that pushed the capture tabs off the window.
+- Direct3D 12 read-backs queued by lists the captured frame never ran are dropped, instead of reported as failed.
 - The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ## v0.22.1

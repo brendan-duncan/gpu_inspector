@@ -1657,7 +1657,7 @@ library does not read back yet.
       as a lost device ("Unrecoverable GPU device error"). Only `-force-d3d12-debug` named it:
       `ResolveQueryData ... called while a Render Pass is suspended`. A capture now completes and
       the player runs on.
-- [ ] A Unity frame is measured almost not at all: a capture holds over a million commands but
+- [x] A Unity frame is measured almost not at all: a capture holds over a million commands but
       only ~18 pass timings, ~30 textures and 21 buffers (and the buffers all fail with "command
       list was not executed during the capture"). The queries and the read-back go in while a
       list is *recorded*, and Unity records its lists several frames ahead, so the lists submitted
@@ -1677,6 +1677,29 @@ library does not read back yet.
       warm-up frame of recording reaches every list the captured frame submits -- and the queries now
       go in during that frame too. What is left of this entry is the suspended passes and a lead of
       more than one frame, each its own item below.
+      Measured a third time, after the suspended passes were timed (URP player, 800x600, 19
+      captures): 58 of 58 passes timed in most, but 32, 29, 28, 27 or 11 in about one capture of
+      three, and a third of the buffers reported as failed read-backs in every one. Two causes, both
+      fixed. (1) Unity pools its lists and resets each as soon as it has run, frames before it
+      records into it again, so whichever were reset before the capture was armed come back
+      **adopted** (`CaptureManager::Adopt`) -- 40 to 60 of the captured frame's lists in the bad
+      captures -- and an adopted list took no queries at all. It now takes the passes' timestamps,
+      which Direct3D allows in whatever state the list is in (statistics and occlusion stay off: the
+      application may have a query of its own open); the end timestamp of an `OMSetRenderTargets`
+      pass in such a list goes where the pass ends (`EndPass`). Every capture since times 58 of 58,
+      those with 60 adopted lists too. `test/d3d12_triangle --pool` reproduces it (a pool of four
+      lists, each reset right after it runs) and the `d3d12-pool` UI case covers it under the debug
+      layer: 0 timings with the library before, 2 of 2 after. (2) The "failed" buffers were
+      read-backs queued by lists no captured list ran -- the lists Unity records in the captured
+      frame for the next one, and pooled lists recorded again after running -- which were dropped
+      only when the frame before had queued them. Every entry no captured list ran is now dropped
+      (`SendTextures`, `SendBuffers`): 0 failed read-backs in 8 captures of 8, where each had had
+      260 to 1086.
+- [ ] An adopted command list (above) has no render targets read back, as a suspended pass has
+      none: a capture whose frame ran adopted lists had 107 textures where one without had ~166.
+      Unlike a suspended pass, a pass begun by `BeginRenderPass` or `OMSetRenderTargets` in an
+      adopted list is not inside a region the capture missed, so its end could take the read-back
+      as any pass does, after the submission (`RecorderSlot::afterSubmit`) if not in place.
 - [x] What an engine that records ahead leaves unmeasured. Measured on the URP player
       (`D:\Unity\urp_sample`, 800x600, `-force-d3d12`), where a captured frame submits 64 command
       lists and resets only 3 of them: 61 were recorded in the frame before, which the capture's

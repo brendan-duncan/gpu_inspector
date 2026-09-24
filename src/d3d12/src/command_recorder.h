@@ -220,7 +220,8 @@ public:
     /**
      * The recorder was made at the list's first call seen, not at its Reset (CaptureManager::Adopt):
      * what state the list is in is not known -- it may be inside a render pass begun before -- so the
-     * capture records its calls and adds no work of its own to it, as for a suspended pass.
+     * capture records its calls and adds no work of its own to it, as for a suspended pass, but the
+     * timestamps that time its passes, which are allowed in any state (CaptureManager::BeginPass).
      */
     bool adopted() const { return _adopted; }
     void MarkAdopted() { _adopted = true; }

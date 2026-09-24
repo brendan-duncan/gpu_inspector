@@ -312,13 +312,19 @@ the boundaries the UI's pass model needs, and says so in the stream:
   that pools its lists resets one as soon as it has run, frames before it records into it again,
   so that `Reset` is long past when a capture is armed. The recorder is made at the first call seen,
   with a `Reset` that names no allocator and carries `adopted: true`. What state such a list is in
-  is unknown (it may be inside a pass), so it takes even less than a suspended pass does: recorded,
-  with its copies after the submission, and no queries at all -- a timestamp inside a pass region is
-  fine, but this list may be anywhere, and the pass it is in may have begun before the capture.
+  is unknown (it may be inside a pass), so it is treated as a suspended pass is: recorded, with its
+  copies after the submission, and of the queries only the passes' timestamps, which Direct3D
+  allows in any state. No pipeline statistics or occlusion, since the application may have a query
+  of its own open from before. Which lists come back adopted is up to the pool: on the URP player
+  40 to 60 of a frame's lists did in about one capture of three, and before they took timestamps
+  such a capture timed 11 to 32 of its 58 passes. `test/d3d12_triangle --pool` adopts every time
+  (the `d3d12-pool` UI case).
 * **Contents are taken in the frame of recording before the capture as well** (`TakesContents`). An
   engine records a frame's lists during the frame before, and a list recorded then and run in the
-  captured frame would otherwise bind buffers the capture never read. Entries that frame queued
-  and no captured list ran are dropped, an entry several lists asked for gets its frame from any
+  captured frame would otherwise bind buffers the capture never read. Entries no captured list ran
+  are dropped -- the ones that frame queued, and the ones the captured frame queued in lists it
+  recorded ahead for the next, which used to be reported as a third of a Unity capture's buffers
+  failing to read back -- an entry several lists asked for gets its frame from any
   of them (`sharedBy`), and a list recorded again lets go of what its last recording queued.
 * **So are the queries** (`BeginPass`, `BeginDrawQueries`): a pass's timestamps and statistics go
   into the list as it is recorded, so timing only what is recorded once the capture has started

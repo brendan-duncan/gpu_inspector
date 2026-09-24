@@ -2075,6 +2075,18 @@ def d3d12_cases(triangle):
             expect((session(state).get("validationErrors") or 0) == 0,
                    "the debug layer reported an error: the capture's queries are not allowed where they were put")
 
+    def d3d12_pool(state, log):
+        # --pool: the frame is recorded into one of a pool of lists, each reset as soon as it has run
+        # and recorded into again frames later (Unity does), so the list the captured frame runs was
+        # reset before the capture was asked for and the library adopts it at its first command. An
+        # adopted list takes the passes' timestamps, which Direct3D allows in whatever state the list
+        # is in, and nothing else of the capture's: no pipeline statistics (the application may have
+        # a query of its own open) and no render target read-back, so neither is asked for here.
+        c = capture(state)
+        return check_connected(state, log) + check_capture_basic(state, log, textures=0, timings=False) +             expect((c.get("passTimings") or 0) >= 2,
+                   f"{c.get('passTimings')} pass timings: the adopted list's compute and render passes are timed") +             expect((session(state).get("validationErrors") or 0) == 0,
+                   "the debug layer reported an error: the capture's timestamps are not allowed in an adopted list")
+
     def d3d12_open(state, log):
         c = capture(state)
         return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") +             expect((c.get("commands") or 0) > 5, f"{c.get('commands')} commands in the reopened file") +             expect((c.get("draws") or 0) >= 1, f"{c.get('draws')} draws in the reopened file") +             expect((c.get("texturesLoaded") or 0) >= 2, "the reopened file lost its render targets")
@@ -2105,6 +2117,7 @@ def d3d12_cases(triangle):
                                       f"--debug-save={saved}"], d3d12_plain, delay_ms=16000),
         Case("d3d12-render-pass", launch + ["--args=--render-pass --msaa --indirect", "--debug-capture"], d3d12_render_pass),
         Case("d3d12-suspend", launch + ["--args=--suspend", "--validation", "--debug-capture"], d3d12_suspend, delay_ms=16000),
+        Case("d3d12-pool", launch + ["--args=--pool --compute", "--validation", "--debug-capture"], d3d12_pool, delay_ms=16000),
         Case("d3d12-timing-capture", launch + ["--debug-timing=3000"], timing_capture, delay_ms=9000),
         Case("d3d12-capture-on-hitch", launch + ["--args=--hitch-every 90", "--debug-timing=5000", "--debug-capture-on-hitch"],
              capture_on_hitch, delay_ms=15000),

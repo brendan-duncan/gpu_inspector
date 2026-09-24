@@ -1167,7 +1167,7 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     pass = ActivePass{};
     pass.active = true;
     pass.renderPassApi = renderPassApi;
-    // An adopted list takes nothing either (CommandRecorder::adopted).
+    // An adopted list takes nothing either (CommandRecorder::adopted), but its timestamps.
     pass.split = split || rec->adopted();
     pass.targets = std::move(targets);
     pass.passIndex = rec->NextPassIndex();
@@ -1198,9 +1198,12 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     }
     // A pass suspended across command lists is timed like any other now: its timestamps are single
     // EndQuery calls inside the pass region, and nothing of the capture's is resolved in the
-    // application's list any more (EndPassQueries). An adopted list is still left alone -- what
-    // state it is in when the capture finds it is unknown, so it may be mid-pass.
-    if (!profile || rec->bundle() || rec->adopted() || !TimestampsAllowed(rec->type()))
+    // application's list any more (EndPassQueries). An adopted list is timed the same way: what
+    // state it was in when the capture found it is unknown, but a timestamp is allowed in any. It
+    // matters, because an engine that pools its lists resets them frames before recording into
+    // them (CaptureManager::Adopt), and whichever were reset before the capture was asked for come
+    // back adopted: 40 to 60 of a Unity frame's lists in some captures, whose passes went untimed.
+    if (!profile || rec->bundle() || !TimestampsAllowed(rec->type()))
         return pass.passIndex;
     DeviceCapture* dc = i.CaptureFor(rec->device());
     if (!dc || !dc->timestampHeap || !dc->queryMapped)
@@ -1214,8 +1217,9 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     list->EndQuery(dc->timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, pass.timestampQuery);
     // Statistics and occlusion need graphics; neither is begun inside a BeginRenderPass region
     // (the resolve at pass end would have to wait for EndRenderPass, and BeginQuery there is not
-    // something every driver accepts), nor while the application has a query of its own open.
-    if (rec->type() != D3D12_COMMAND_LIST_TYPE_DIRECT || renderPassApi)
+    // something every driver accepts), nor while the application has a query of its own open,
+    // which an adopted list may have from before the capture found it.
+    if (rec->type() != D3D12_COMMAND_LIST_TYPE_DIRECT || renderPassApi || pass.split)
         return pass.passIndex;
     if (dc->statsHeap)
     {
@@ -1293,7 +1297,8 @@ uint32_t CaptureManager::BeginDrawQueries(CommandRecorder* rec)
     // query of its own open, nor inside a BeginRenderPass region: their resolve would have to wait
     // for EndRenderPass, which is where a pass's own queries stop for the same reason (BeginPass).
     uint32_t packed = slot;
-    const bool graphics = rec->type() == D3D12_COMMAND_LIST_TYPE_DIRECT && !(rec->pass().active && rec->pass().renderPassApi);
+    // Nor in an adopted list, whose own queries may have been begun before the capture found it.
+    const bool graphics = rec->type() == D3D12_COMMAND_LIST_TYPE_DIRECT && !rec->adopted() && !(rec->pass().active && rec->pass().renderPassApi);
     if (graphics && dc->drawStatsHeap)
     {
         list->BeginQuery(dc->drawStatsHeap.get(), D3D12_QUERY_TYPE_PIPELINE_STATISTICS, slot);
@@ -1462,6 +1467,17 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
     {
         if (synthetic)
             rec->Record("EndRenderTargets", std::string());
+        // A pass of the render-pass API wrote its end timestamp before EndRenderPass was forwarded
+        // (EndSplitPassTimestamp). One set by OMSetRenderTargets in an adopted list has no such
+        // moment and is not suspended, so its end goes here, where the pass ends.
+        if (!pass.renderPassApi && pass.timestampQuery != UINT32_MAX && !pass.timestampEnded)
+        {
+            if (DeviceCapture* dc = i.FindCapture(rec->device()); dc && dc->timestampHeap)
+            {
+                EndPassQueries(*dc, rec->list(), pass.timestampQuery, UINT32_MAX, UINT32_MAX);
+                pass.timestampEnded = true;
+            }
+        }
         pass.active = false;
         TimingEntry te;
         const bool timed = pass.timestampQuery != UINT32_MAX && pass.timestampEnded;
@@ -1727,7 +1743,8 @@ void CaptureManager::OnBeforeDispatch(CommandRecorder* rec)
         std::lock_guard lock(i.mutex);
         profile = i.TakesContents() && i.options.profilePasses;   // the warm-up frame too (BeginPass)
     }
-    if (!profile || rec->bundle() || rec->adopted() || !TimestampsAllowed(rec->type()))
+    // An adopted list too: a timestamp is allowed whatever state it is in (BeginPass).
+    if (!profile || rec->bundle() || !TimestampsAllowed(rec->type()))
         return;
     DeviceCapture* dc = i.CaptureFor(rec->device());
     if (!dc || !dc->timestampHeap || !dc->queryMapped)
@@ -3083,19 +3100,14 @@ const uint8_t* CaptureManager::Impl::MappedChunk(ID3D12Device* device, uint32_t 
 void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures)
 {
     Transport& t = Transport::Get();
-    // What the frame before the capture queued and no list of the capture ran is not the capture's.
-    textures.erase(std::remove_if(textures.begin(), textures.end(), [](const TextureEntry& e) { return e.warmup && e.frame == UINT32_MAX; }), textures.end());
+    // What no list of the capture ran is not the capture's, and nothing in it refers to it: what the
+    // frame before queued in lists it ran itself, what the captured frame queued in the lists an
+    // engine records ahead for the next one, and what a pooled list queued when it was recorded
+    // again after running. On a Unity player that was a third of the buffers, each reported as a
+    // failed read-back, "command list was not executed during the capture".
+    textures.erase(std::remove_if(textures.begin(), textures.end(), [](const TextureEntry& e) { return e.frame == UINT32_MAX; }), textures.end());
     for (TextureEntry& e : textures)
     {
-        if (e.frame == UINT32_MAX)
-        {
-            e.frame = 0;
-            if (!e.failed)
-            {
-                e.failed = true;
-                e.note = "command list was not executed during the capture";
-            }
-        }
         if (!e.failed && !MappedChunk(e.device, e.chunk))
         {
             e.failed = true;
@@ -3228,19 +3240,14 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures)
 void CaptureManager::Impl::SendBuffers(std::vector<BufferEntry>& buffers)
 {
     Transport& t = Transport::Get();
-    // What the frame before the capture queued and no list of the capture ran is not the capture's.
-    buffers.erase(std::remove_if(buffers.begin(), buffers.end(), [](const BufferEntry& e) { return e.warmup && e.frame == UINT32_MAX; }), buffers.end());
+    // What no list of the capture ran is not the capture's, and nothing in it refers to it: what the
+    // frame before queued in lists it ran itself, what the captured frame queued in the lists an
+    // engine records ahead for the next one, and what a pooled list queued when it was recorded
+    // again after running. On a Unity player that was a third of the buffers, each reported as a
+    // failed read-back, "command list was not executed during the capture".
+    buffers.erase(std::remove_if(buffers.begin(), buffers.end(), [](const BufferEntry& e) { return e.frame == UINT32_MAX; }), buffers.end());
     for (BufferEntry& e : buffers)
     {
-        if (e.frame == UINT32_MAX)
-        {
-            e.frame = 0;
-            if (!e.failed)
-            {
-                e.failed = true;
-                e.note = "command list was not executed during the capture";
-            }
-        }
         if (!e.failed && !MappedChunk(e.device, e.chunk))
         {
             e.failed = true;

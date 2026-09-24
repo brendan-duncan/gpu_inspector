@@ -6,7 +6,7 @@
 // barriers and presents.
 //
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
-//                        [--render-pass] [--suspend] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
+//                        [--render-pass] [--suspend] [--pool] [--compute] [--offscreen] [--leak] [--debug-layer] [--stencil]
 //                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas]]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
@@ -210,6 +210,12 @@ struct App
     // (Unity does). Implies --render-pass; the two lists go in one ExecuteCommandLists, since a
     // suspended pass has to be resumed by the next list the queue runs.
     bool suspend = false;
+    // --pool: the frame is recorded into one of kPoolSize lists in turn, each reset as soon as it
+    // has run and recorded into again kPoolSize frames later, the way an engine that keeps its
+    // lists in a pool does (Unity does). A capture's warm-up frame is shorter than the pool, so the
+    // list the captured frame runs was reset before the capture was asked for, and the capture
+    // library adopts it at its first command (CaptureManager::Adopt).
+    bool pool = false;
     // --compute: every frame dispatches wave.hlsl into a UAV before the draw. Nothing reads it.
     bool compute = false;
     // --offscreen: no swap chain, no present; renders into its own targets, as Chrome's Dawn
@@ -270,6 +276,10 @@ struct App
     ComPtr<ID3D12CommandAllocator> resumeAllocators[kFrameCount];
     ComPtr<ID3D12GraphicsCommandList> resumeList;
     ComPtr<ID3D12GraphicsCommandList4> resumeList4;
+    // --pool: the lists and an allocator each; `list` points at the one the frame records into.
+    static constexpr uint32_t kPoolSize = 4;
+    ComPtr<ID3D12CommandAllocator> poolAllocators[kPoolSize];
+    ComPtr<ID3D12GraphicsCommandList> poolLists[kPoolSize];
     ComPtr<ID3D12Fence> fence;
     HANDLE fenceEvent = nullptr;
     uint64_t fenceValues[kFrameCount]{};
@@ -545,6 +555,21 @@ struct App
             CHECK(resumeList->Close());
             resumeList->SetName(L"Resume command list");
             CHECK(resumeList.As(&resumeList4));
+        }
+        if (pool)
+        {
+            // Closed until its first turn (the pipeline does not exist yet); from then on each is
+            // reset already when its turn comes.
+            for (uint32_t i = 0; i < kPoolSize; i++)
+            {
+                CHECK(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&poolAllocators[i])));
+                CHECK(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, poolAllocators[i].Get(), nullptr,
+                    IID_PPV_ARGS(&poolLists[i])));
+                CHECK(poolLists[i]->Close());
+                wchar_t name[32];
+                swprintf(name, 32, L"Pooled command list %u", i);
+                poolLists[i]->SetName(name);
+            }
         }
 
         CHECK(device->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&fence)));
@@ -1385,8 +1410,21 @@ struct App
         CubeConstants constants{Mul(proj, view), Mul(RotateY(t), RotateX(t * 0.7f))};
         memcpy(constantMapped + frameIndex * kConstantSlot, &constants, sizeof(constants));
 
-        CHECK(allocators[frameIndex]->Reset());
-        CHECK(list->Reset(allocators[frameIndex].Get(), pipeline.Get()));
+        const uint32_t poolSlot = (uint32_t)(frameCount % kPoolSize);
+        if (pool)
+        {
+            // Reset when it last ran (below), so recording starts with its first command.
+            list = poolLists[poolSlot];
+            if (frameCount < kPoolSize)
+                CHECK(list->Reset(poolAllocators[poolSlot].Get(), pipeline.Get()));
+            if (renderPass)
+                CHECK(list.As(&list4));
+        }
+        else
+        {
+            CHECK(allocators[frameIndex]->Reset());
+            CHECK(list->Reset(allocators[frameIndex].Get(), pipeline.Get()));
+        }
         ID3D12DescriptorHeap* heaps[] = {srvHeap.Get()};
         list->SetDescriptorHeaps(1, heaps);
 
@@ -1551,6 +1589,14 @@ struct App
             CHECK(swapChain->Present(1, 0));
         CHECK(queue->Signal(fence.Get(), nextFenceValue));
         fenceValues[frameIndex] = nextFenceValue++;
+        if (pool)
+        {
+            // Back to the pool, reset at once: the allocator has to wait for the GPU, which a test
+            // application can afford.
+            WaitForGpu();
+            CHECK(poolAllocators[poolSlot]->Reset());
+            CHECK(poolLists[poolSlot]->Reset(poolAllocators[poolSlot].Get(), pipeline.Get()));
+        }
         frameIndex = offscreen ? (frameIndex + 1) % kFrameCount : swapChain->GetCurrentBackBufferIndex();
         ++frameCount;
         return true;
@@ -1672,6 +1718,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
             app.suspend = true;
             app.renderPass = true;   // a suspended pass is a render-pass-API pass
         }
+        else if (!strcmp(argv[i], "--pool"))
+            app.pool = true;
         else if (!strcmp(argv[i], "--compute"))
             app.compute = true;
         else if (!strcmp(argv[i], "--offscreen"))
