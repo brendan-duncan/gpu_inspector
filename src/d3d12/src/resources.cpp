@@ -242,9 +242,12 @@ D3D12_RESOURCE_STATES ResourceTracker::GlobalState(ID3D12Resource* resource, uin
     return states[subresource];
 }
 
-D3D12_RESOURCE_STATES ResourceTracker::StateIn(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, bool* known)
+D3D12_RESOURCE_STATES ResourceTracker::StateIn(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, bool* known,
+    bool* inList)
 {
     Impl& i = impl();
+    if (inList)
+        *inList = false;
     std::shared_lock lock(i.mutex);
     auto log = i.logs.find(list);
     if (log != i.logs.end())
@@ -259,6 +262,8 @@ D3D12_RESOURCE_STATES ResourceTracker::StateIn(ID3D12CommandList* list, ID3D12Re
             {
                 if (known)
                     *known = true;
+                if (inList)
+                    *inList = true;
                 return it->after;
             }
         }

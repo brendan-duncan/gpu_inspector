@@ -2078,14 +2078,17 @@ def d3d12_cases(triangle):
     def d3d12_pool(state, log):
         # --pool: the frame is recorded into one of a pool of lists, each reset as soon as it has run
         # and recorded into again frames later (Unity does), so the list the captured frame runs was
-        # reset before the capture was asked for and the library adopts it at its first command. An
-        # adopted list takes the passes' timestamps, which Direct3D allows in whatever state the list
-        # is in, and nothing else of the capture's: no pipeline statistics (the application may have
-        # a query of its own open) and no render target read-back, so neither is asked for here.
+        # reset before the capture was asked for and the library adopts it at its first command. A
+        # pass the library sees begin in such a list is timed and has its targets read back like any
+        # other (the colour and the depth here, from the state the pass needs them in); what it does
+        # not take is pipeline statistics, since the application may have a query of its own open,
+        # so those are not asked for.
         c = capture(state)
-        return check_connected(state, log) + check_capture_basic(state, log, textures=0, timings=False) +             expect((c.get("passTimings") or 0) >= 2,
-                   f"{c.get('passTimings')} pass timings: the adopted list's compute and render passes are timed") +             expect((session(state).get("validationErrors") or 0) == 0,
-                   "the debug layer reported an error: the capture's timestamps are not allowed in an adopted list")
+        return check_connected(state, log) + check_capture_basic(state, log, textures=2, timings=False) + \
+            expect((c.get("passTimings") or 0) >= 2,
+                   f"{c.get('passTimings')} pass timings: the adopted list's compute and render passes are timed") + \
+            expect((session(state).get("validationErrors") or 0) == 0,
+                   "the debug layer reported an error: the capture's timestamps or read-backs are not allowed in an adopted list")
 
     def d3d12_open(state, log):
         c = capture(state)

@@ -1167,8 +1167,9 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     pass = ActivePass{};
     pass.active = true;
     pass.renderPassApi = renderPassApi;
-    // An adopted list takes nothing either (CommandRecorder::adopted), but its timestamps.
-    pass.split = split || rec->adopted();
+    // Not an adopted list's pass (CommandRecorder::adopted): the capture saw it begin, so it is not
+    // inside a region the capture missed, and it ends where the capture sees it end.
+    pass.split = split;
     pass.targets = std::move(targets);
     pass.passIndex = rec->NextPassIndex();
     pass.beginCommand = rec->commandCount() ? (uint32_t)rec->commandCount() - 1 : 0;
@@ -1219,7 +1220,7 @@ uint32_t CaptureManager::BeginPass(CommandRecorder* rec, std::vector<BoundTarget
     // (the resolve at pass end would have to wait for EndRenderPass, and BeginQuery there is not
     // something every driver accepts), nor while the application has a query of its own open,
     // which an adopted list may have from before the capture found it.
-    if (rec->type() != D3D12_COMMAND_LIST_TYPE_DIRECT || renderPassApi || pass.split)
+    if (rec->type() != D3D12_COMMAND_LIST_TYPE_DIRECT || renderPassApi || pass.split || rec->adopted())
         return pass.passIndex;
     if (dc->statsHeap)
     {
@@ -1467,17 +1468,6 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
     {
         if (synthetic)
             rec->Record("EndRenderTargets", std::string());
-        // A pass of the render-pass API wrote its end timestamp before EndRenderPass was forwarded
-        // (EndSplitPassTimestamp). One set by OMSetRenderTargets in an adopted list has no such
-        // moment and is not suspended, so its end goes here, where the pass ends.
-        if (!pass.renderPassApi && pass.timestampQuery != UINT32_MAX && !pass.timestampEnded)
-        {
-            if (DeviceCapture* dc = i.FindCapture(rec->device()); dc && dc->timestampHeap)
-            {
-                EndPassQueries(*dc, rec->list(), pass.timestampQuery, UINT32_MAX, UINT32_MAX);
-                pass.timestampEnded = true;
-            }
-        }
         pass.active = false;
         TimingEntry te;
         const bool timed = pass.timestampQuery != UINT32_MAX && pass.timestampEnded;
@@ -1666,9 +1656,16 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
             {
                 const uint32_t slice = volume ? 0 : t.firstSlice + s;
                 const uint32_t origSub = (volume ? t.mip : t.mip + slice * desc.MipLevels) + planeOffset;
-                bool known = false;
-                D3D12_RESOURCE_STATES state = ResourceTracker::Get().StateIn(list, t.resource, origSub, &known);
-                if (!known)
+                // The list's own last transition of the target, else the state the pass needs it in:
+                // a target being written is in RENDER_TARGET or DEPTH_WRITE for as long as the pass
+                // lasts, whatever the tracker's global state says. That is only as recent as the
+                // last submission, and a list a job records -- every list of a Unity frame, and
+                // every adopted one -- does not see what the lists before it in its submission did
+                // to the target. Read-only depth may be in a combined read state, which the global
+                // state is the better guess at.
+                bool known = false, inList = false;
+                D3D12_RESOURCE_STATES state = ResourceTracker::Get().StateIn(list, t.resource, origSub, &known, &inList);
+                if (!inList && !(t.depth && t.readOnlyDepth && known))
                 {
                     state = t.depth ? (t.readOnlyDepth ? D3D12_RESOURCE_STATE_DEPTH_READ : D3D12_RESOURCE_STATE_DEPTH_WRITE)
                                     : D3D12_RESOURCE_STATE_RENDER_TARGET;

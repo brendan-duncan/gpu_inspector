@@ -219,9 +219,10 @@ public:
     void MarkClosed() { _closed = true; }
     /**
      * The recorder was made at the list's first call seen, not at its Reset (CaptureManager::Adopt):
-     * what state the list is in is not known -- it may be inside a render pass begun before -- so the
-     * capture records its calls and adds no work of its own to it, as for a suspended pass, but the
-     * timestamps that time its passes, which are allowed in any state (CaptureManager::BeginPass).
+     * what state the list was in is not known -- it may be inside a render pass begun before -- so
+     * what its draws read is copied after the submission, as for a suspended pass (HeldCopiesOf). A pass the capture sees begin is known, and takes its
+     * timestamps and its read-back like any other; no statistics or occlusion (the application may
+     * have a query of its own open) and none of the measurements (overdraw.h).
      */
     bool adopted() const { return _adopted; }
     void MarkAdopted() { _adopted = true; }

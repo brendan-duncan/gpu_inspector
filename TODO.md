@@ -1695,11 +1695,29 @@ library does not read back yet.
       only when the frame before had queued them. Every entry no captured list ran is now dropped
       (`SendTextures`, `SendBuffers`): 0 failed read-backs in 8 captures of 8, where each had had
       260 to 1086.
-- [ ] An adopted command list (above) has no render targets read back, as a suspended pass has
-      none: a capture whose frame ran adopted lists had 107 textures where one without had ~166.
-      Unlike a suspended pass, a pass begun by `BeginRenderPass` or `OMSetRenderTargets` in an
-      adopted list is not inside a region the capture missed, so its end could take the read-back
-      as any pass does, after the submission (`RecorderSlot::afterSubmit`) if not in place.
+- [x] An adopted command list (above) had no render targets read back, as a suspended pass has
+      none. Unlike a suspended pass, a pass the capture sees begin in an adopted list is not inside
+      a region the capture missed, so "adopted" no longer makes a pass split: it is read back in
+      place like any other. What made that safe is that the per-list barrier log is kept whether or
+      not anything records (`ResourceTracker::OnListReset` / `OnBarriers` run for every list), so
+      the adopted list's own transitions are known. The target is copied from the list's own last
+      transition of it, else from the state the pass needs it in (`RENDER_TARGET`, `DEPTH_WRITE`),
+      no longer from the tracker's global state, which is only as recent as the last submission
+      (`StateIn(..., inList)`); read-only depth still takes the global state. Still no statistics,
+      occlusion or measurements (overdraw, pixel history, overlays) in an adopted list.
+      Checked: `d3d12_triangle --pool` with and without `--render-pass`, `--msaa` and `--stencil`
+      under the debug layer, every target read back and the colour target the frame on the screen;
+      on the URP player, captures with 60 adopted lists read back 14 targets where they had 0, and
+      the final image is right. The entry's "107 textures against ~166" was the *sampled* count, and
+      a capture without adopted lists has had 107 as well, so that is not adoption's doing.
+- [ ] Every capture of the URP player under the debug layer adds 6,500 to 8,000 errors from the
+      capture's own barriers, with the library before the work above as with it:
+      `Before state (0xE0: DEPTH_READ|NON_PIXEL_SHADER_RESOURCE|PIXEL_SHADER_RESOURCE) of resource
+      'Depth-BackBuffer-800-600' ... does not match ... DEPTH_WRITE`, and a few on the bloom mips
+      (`PIXEL_SHADER_RESOURCE` against `RENDER_TARGET`). None arrive between captures. They look
+      like the copies of what draws read taken after a submission (`RecorderSlot::afterSubmit`),
+      which transition from the tracker's global state, and that state is wrong for the depth
+      buffer at that point.
 - [x] What an engine that records ahead leaves unmeasured. Measured on the URP player
       (`D:\Unity\urp_sample`, 800x600, `-force-d3d12`), where a captured frame submits 64 command
       lists and resets only 3 of them: 61 were recorded in the frame before, which the capture's

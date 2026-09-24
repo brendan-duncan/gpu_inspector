@@ -53,9 +53,12 @@ public:
     D3D12_RESOURCE_STATES GlobalState(ID3D12Resource* resource, uint32_t subresource);
     /**
      * The state a subresource is in at this point of a list's recording: the last transition the
-     * list recorded for it, else the global state. `known` says whether either exists.
+     * list recorded for it, else the global state. `known` says whether either exists, `inList`
+     * whether it was the list's own: the global state is only as recent as the last submission, and
+     * a list recorded beside others does not see what the lists before it in its submission do.
      */
-    D3D12_RESOURCE_STATES StateIn(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, bool* known = nullptr);
+    D3D12_RESOURCE_STATES StateIn(ID3D12CommandList* list, ID3D12Resource* resource, uint32_t subresource, bool* known = nullptr,
+        bool* inList = nullptr);
 
     /** The list's transitions: ResourceBarrier (transition barriers) and Barrier (texture barriers, by layout). */
     void OnBarriers(ID3D12CommandList* list, UINT count, const D3D12_RESOURCE_BARRIER* barriers);

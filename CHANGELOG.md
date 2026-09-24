@@ -18,7 +18,7 @@
 - `test/triangle --half-scissor` keeps the left half of the target, for that overlay.
 - A Vulkan dynamic-rendering pass suspended and resumed across command buffers is timed across its parts, instead of being left out of the frame's GPU time.
 - A Direct3D 12 render pass suspended across command lists is timed: every pass's queries are resolved from a list of the capture's own at the finish, instead of beside the query in the application's list where a suspended pass forbids it. A Unity frame goes from a fifth of its passes measured to all of them.
-- A Direct3D 12 command list reset before the capture was asked for, as an engine that pools its lists leaves them, has its passes timed.
+- A Direct3D 12 command list reset before the capture was asked for, as an engine that pools its lists leaves them, has its passes timed and their render targets read back.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
 - Direct3D 12 passes are timed in the frame of recording before the capture as well, so an engine that builds a frame's command lists during the frame before it (Unity does) has that frame measured rather than reported without timings.

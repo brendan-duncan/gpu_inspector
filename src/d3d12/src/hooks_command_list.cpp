@@ -1839,7 +1839,7 @@ void STDMETHODCALLTYPE Hook_OMSetRenderTargets(List* This, UINT NumRenderTargetD
     }
     // The copies a measurement starts from, taken before the application's first draw of the pass
     // and while the list is outside a render-pass region (overdraw.h).
-    // Not in an adopted list, which takes no work of the capture's (CommandRecorder::adopted).
+    // Not in an adopted list, whose passes take no measurements (CommandRecorder::adopted).
     if (!rec->adopted())
         PrepareMeasuredPass(rec, targets);
     rec->Record("OMSetRenderTargets", args.str());
@@ -1865,7 +1865,10 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     // capture's: not the copies a measurement starts from, not its queries, not its read-back.
     // Between a suspension and its resume the runtime rejects every GPU-work-generating call and
     // closes the list with E_FAIL, which the application takes for a lost device (ActivePass::split).
-    const bool split = (Flags & (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS | D3D12_RENDER_PASS_FLAG_RESUMING_PASS)) != 0 || (rec && rec->adopted());
+    const bool split = (Flags & (D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS | D3D12_RENDER_PASS_FLAG_RESUMING_PASS)) != 0;
+    // An adopted list's pass takes its timestamps and its read-back like any other, but not the
+    // measurements (CommandRecorder::adopted).
+    const bool measured = !split && rec && !rec->adopted();
     // The arguments and the pass's targets are resolved before the forward, because the copies a
     // measurement starts from have to be taken while the list is still outside the render-pass
     // region: a copy may not interrupt one. The command itself is recorded after the forward, so
@@ -1874,7 +1877,7 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     if (rec)
     {
         argsJson = BeginRenderPassArgs(rec, NumRenderTargets, pRenderTargets, pDepthStencil, Flags, targets);
-        if (!split)
+        if (measured)
             PrepareMeasuredPass(rec, targets);
     }
     CommandScope scope(rec);
@@ -1889,7 +1892,7 @@ void STDMETHODCALLTYPE Hook_BeginRenderPass(List* This, UINT NumRenderTargets, c
     rec->Record("BeginRenderPass", argsJson);
     Cap().BeginPass(rec, std::move(targets), true, split);
     rec->pass().suspending = (Flags & D3D12_RENDER_PASS_FLAG_SUSPENDING_PASS) != 0;
-    if (!split)
+    if (measured)
         BeginMeasuredPass(rec);
 }
 

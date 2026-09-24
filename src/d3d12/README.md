@@ -311,14 +311,21 @@ the boundaries the UI's pass model needs, and says so in the stream:
 * A list with **no recorder when a call arrives is adopted** (`CaptureManager::Adopt`): an engine
   that pools its lists resets one as soon as it has run, frames before it records into it again,
   so that `Reset` is long past when a capture is armed. The recorder is made at the first call seen,
-  with a `Reset` that names no allocator and carries `adopted: true`. What state such a list is in
-  is unknown (it may be inside a pass), so it is treated as a suspended pass is: recorded, with its
-  copies after the submission, and of the queries only the passes' timestamps, which Direct3D
-  allows in any state. No pipeline statistics or occlusion, since the application may have a query
-  of its own open from before. Which lists come back adopted is up to the pool: on the URP player
-  40 to 60 of a frame's lists did in about one capture of three, and before they took timestamps
-  such a capture timed 11 to 32 of its 58 passes. `test/d3d12_triangle --pool` adopts every time
-  (the `d3d12-pool` UI case).
+  with a `Reset` that names no allocator and carries `adopted: true`. What region such a list was
+  in is unknown (it may be inside a pass begun before), so what its draws read is copied after the
+  submission, as for a suspended pass. A pass the capture sees *begin* is known, though: it is
+  timed and has its targets read back like any other. The per-list barrier log is kept whether or
+  not anything records (`ResourceTracker`), so an adopted list's states are as known as any list's.
+  No pipeline statistics or occlusion (the application may have a query of its own open from
+  before) and none of the measurements. Which lists come back adopted is up to the pool: on the URP
+  player 40 to 60 of a frame's lists did in about one capture of three, and such a capture timed 11
+  to 32 of its 58 passes and read back no render targets, where it now times all 58 and reads 14.
+  `test/d3d12_triangle --pool` adopts every time (the `d3d12-pool` UI case).
+* **A render target is copied from the state the pass needs it in** unless the list itself
+  transitioned it: `RENDER_TARGET` or `DEPTH_WRITE` hold for as long as the pass lasts, while the
+  tracker's global state is only as recent as the last submission, and a list a job records does
+  not see what the lists before it in its submission did. Read-only depth, which may be in a
+  combined read state, still takes the global state.
 * **Contents are taken in the frame of recording before the capture as well** (`TakesContents`). An
   engine records a frame's lists during the frame before, and a list recorded then and run in the
   captured frame would otherwise bind buffers the capture never read. Entries no captured list ran
