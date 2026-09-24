@@ -512,7 +512,7 @@ application with injected state. Route (a) is the general one and is the prerequ
     shader, which does not discard, so alpha-tested geometry covers its whole quad. Two routes, both
     in `OverdrawPipeline` (`src/replay/src/overdraw.cpp`): keep the application's own fragment shader
     and count with a **stencil increment** instead of a color write (no shader edit, but the overlay
-    render pass then needs a colour attachment per output the shader declares, and the stencil read
+    render pass then needs a color attachment per output the shader declares, and the stencil read
     back), or edit the SPIR-V to keep the discard and replace the outputs with one constant (the
     edit "overdraw of fragments a shader discards" needs as well). A shader with side effects
     (storage writes) is re-run either way, which is what to decide first. `test/triangle` has no
@@ -569,7 +569,7 @@ application with injected state. Route (a) is the general one and is the prerequ
       postinst rewrites `library_path` to the installed absolute path. Checked by extracting the
       built .deb, running the scripts against that root, and pointing `XDG_DATA_DIRS` at it:
       `vkinsp_triangle` loads the layer with `VKINSP_ENABLE=1` and not without it, which is the
-      Windows behaviour. The Windows installer script has now been run on a machine too.
+      Windows behavior. The Windows installer script has now been run on a machine too.
 - [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
       reached through `adb forward` today, see ARCHITECTURE.md).
 - [ ] Android: verify `test/android_triangle` (the phone NativeActivity, built by
