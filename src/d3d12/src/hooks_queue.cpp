@@ -184,6 +184,17 @@ void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT N
         QueryPerformanceFrequency(&f);
         g_qpcToMs = 1000.0 / (double)f.QuadPart;
     }
+    // The lists' transitions go into the global state before the lists are handed over, not after:
+    // the moment ExecuteCommandLists returns, an engine that pools its lists may reset one from
+    // another thread (Unity does), and a Reset that got in first would clear the list's log before
+    // it was applied: the global state would miss those transitions, and the copies the capture
+    // makes after the submission (RunAfterSubmitCopies) would transition from a state the resource
+    // is not in. Not seen on the Unity player -- a check at execution found no transition lost --
+    // but nothing ordered the two. Before the call nothing can have reset them: they are closed,
+    // and waiting to be submitted.
+    for (UINT i = 0; ppCommandLists && i < NumCommandLists; ++i)
+        if (ppCommandLists[i])
+            ResourceTracker::Get().OnListExecuted(ppCommandLists[i]);
     LARGE_INTEGER t0, t1;
     QueryPerformanceCounter(&t0);
     const uint64_t cpuEvent = CpuEventBegin();
@@ -192,9 +203,6 @@ void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT N
     QueryPerformanceCounter(&t1);
     double ms = (double)(t1.QuadPart - t0.QuadPart) * g_qpcToMs;
     Log("queue %p ExecuteCommandLists(%u) %.3f ms", (void*)This, NumCommandLists, ms);
-    for (UINT i = 0; ppCommandLists && i < NumCommandLists; ++i)
-        if (ppCommandLists[i])
-            ResourceTracker::Get().OnListExecuted(ppCommandLists[i]);
     ID3D12Device* device = DeviceOf(This);
     AddSubmitTime(device, ms);
     // For a device that never presents, this submission may be its frame boundary; then the

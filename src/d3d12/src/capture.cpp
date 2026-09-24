@@ -2484,6 +2484,8 @@ void CaptureManager::Impl::ResolveQueries(const std::vector<TimingEntry>& timing
             LogAlways("capture: the passes' queries could not be resolved, so the frame has no timings");
             continue;
         }
+        // Named so that what the debug layer says about it is told apart from the application's.
+        list->SetName(L"GPU Inspector: pass query resolve");
         ID3D12Resource* readback = dc->queryReadback.get();
         for (const TimingEntry* te : mine)
         {
@@ -2555,6 +2557,7 @@ void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12Comm
         }
         return;
     }
+    list->SetName(L"GPU Inspector: copies after a submission");
     // The list is not one of the application's, so a resource's state in it is the state the
     // submission left it in (ResourceTracker::StateIn falls back to the global state).
     for (DeferredCopy& copy : copies)

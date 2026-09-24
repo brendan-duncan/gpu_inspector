@@ -1710,14 +1710,34 @@ library does not read back yet.
       on the URP player, captures with 60 adopted lists read back 14 targets where they had 0, and
       the final image is right. The entry's "107 textures against ~166" was the *sampled* count, and
       a capture without adopted lists has had 107 as well, so that is not adoption's doing.
-- [ ] Every capture of the URP player under the debug layer adds 6,500 to 8,000 errors from the
-      capture's own barriers, with the library before the work above as with it:
-      `Before state (0xE0: DEPTH_READ|NON_PIXEL_SHADER_RESOURCE|PIXEL_SHADER_RESOURCE) of resource
-      'Depth-BackBuffer-800-600' ... does not match ... DEPTH_WRITE`, and a few on the bloom mips
-      (`PIXEL_SHADER_RESOURCE` against `RENDER_TARGET`). None arrive between captures. They look
-      like the copies of what draws read taken after a submission (`RecorderSlot::afterSubmit`),
-      which transition from the tracker's global state, and that state is wrong for the depth
-      buffer at that point.
+- [ ] The capture's own barriers on the URP player under the debug layer. What this entry first
+      said -- 6,500 to 8,000 errors a capture, on `Depth-BackBuffer-800-600` -- was a misreading:
+      that error is Unity's own, about 350 a second on a player nothing has captured (its depth
+      barriers contradict each other, `0x10 -> 0xE0` and `0xE0 -> 0x10` each naming a state the
+      other did not leave), and a repeated message only sends its count (`ValidationCount`) until a
+      capture moves its command reference and it goes out in full again with the running total.
+      What is the capture's, now that the library's lists are named ("GPU Inspector: copies after a
+      submission", "GPU Inspector: pass query resolve"): in about one capture in three, 5 to 10
+      errors in the after-submission list, the copies of the G-buffers a draw read, transitioned from
+      `PIXEL|NON_PIXEL_SHADER_RESOURCE` (0xC0) where the debug layer has `PIXEL_SHADER_RESOURCE`
+      (0x80). Gone with `captureImages` off. Not there with the library before the adopted lists'
+      targets were read back, which probably moved them rather than made them: until then a
+      render target was copied in place from the tracker's global state, a guess, and a wrong guess
+      leaves the debug layer's view of the resource wrong from there on -- it may well have agreed
+      with the tracker's by accident. What is known: the tracker has 0xC0 for them after the
+      submission, and at execution every barrier of Unity's on them agrees with the tracker (a
+      check of each barrier's `StateBefore` against the global state as the lists were applied
+      found no disagreement but the depth buffer's). So what sets 0x80 is outside the tracker's
+      model: an in-place copy of the capture's with a guessed state, or implicit promotion.
+      Tried, neither changing the rate: copying a texture a draw reads after the submission whenever
+      the list's own barriers do not say its state (and read-only depth targets likewise); applying
+      a list's transitions before `ExecuteCommandLists` is forwarded rather than after (kept: an
+      engine resetting a pooled list from another thread could otherwise clear its log first).
+      Measuring more than that needs a cleaner signal than "messages that grow only during a
+      capture", which is mostly noise here: keys name pooled lists, and 190 of them grew during
+      captures with every read-back switched off. A synthetic case would do it: a
+      `d3d12_triangle` mode sampling a texture in a list that did not transition it, from a state
+      the tracker's global state does not know.
 - [x] What an engine that records ahead leaves unmeasured. Measured on the URP player
       (`D:\Unity\urp_sample`, 800x600, `-force-d3d12`), where a captured frame submits 64 command
       lists and resets only 3 of them: 61 were recorded in the frame before, which the capture's
