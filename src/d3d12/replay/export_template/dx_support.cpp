@@ -51,6 +51,8 @@ std::string adapterText;
 std::vector<uint8_t> dataBytes;
 std::vector<ID3D12Object*> owned;          // closed lists' allocators and the lists the support made
 std::vector<ID3D12Resource*> transients;   // staging and resolve resources of the submission being built
+std::vector<ID3D12Resource*> raytracing;   // ray tracing's own instances, tables and scratch, until the submission has run
+ID3D12Device5* device5 = nullptr;
 std::vector<Readback> pending;
 std::vector<Readback> results;
 size_t debugErrors = 0;
@@ -452,12 +454,21 @@ ID3D12GraphicsCommandList* BeginOneTime()
     return supportList;
 }
 
+/** Ray tracing's buffers, once what was recorded against them has run. */
+static void ReleaseRaytracing()
+{
+    for (ID3D12Resource* r : raytracing)
+        r->Release();
+    raytracing.clear();
+}
+
 void EndOneTime(ID3D12GraphicsCommandList* list)
 {
     DX_CHECK(list->Close());
     ID3D12CommandList* lists[] = {list};
     supportQueue->ExecuteCommandLists(1, lists);
     Wait(supportQueue);
+    ReleaseRaytracing();
 }
 
 void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, UINT subresource, D3D12_RESOURCE_STATES before, D3D12_RESOURCE_STATES after)
@@ -618,10 +629,85 @@ void ExecuteAndWait(ID3D12CommandQueue* queue, ID3D12CommandList* const* lists, 
     FlushUploads();
     queue->ExecuteCommandLists(count, lists);
     Wait(queue);
+    ReleaseRaytracing();
     PrintDebugMessages();
     const HRESULT removed = device->GetDeviceRemovedReason();
     if (FAILED(removed))
         Fail("the device was removed while the frame ran", removed);
+}
+
+ID3D12Device5* Device5()
+{
+    if (!device5 && FAILED(device->QueryInterface(IID_PPV_ARGS(&device5))))
+        Fail("the frame uses ray tracing, and this runtime has no ID3D12Device5");
+    return device5;
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS UploadRaytracingData(const void* data, UINT64 size)
+{
+    // A committed buffer starts on 64 KB, past every alignment a build input or a binding table asks for.
+    ID3D12Resource* buffer = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, std::max<UINT64>(size, D3D12_RAYTRACING_SHADER_TABLE_BYTE_ALIGNMENT),
+        D3D12_RESOURCE_STATE_GENERIC_READ);
+    void* mapped = nullptr;
+    const D3D12_RANGE none{0, 0};
+    DX_CHECK(buffer->Map(0, &none, &mapped));
+    std::memcpy(mapped, data, (size_t)size);
+    buffer->Unmap(0, nullptr);
+    raytracing.push_back(buffer);
+    return buffer->GetGPUVirtualAddress();
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS UploadInstances(const void* data, UINT64 size, const D3D12_GPU_VIRTUAL_ADDRESS* bottoms, UINT count)
+{
+    constexpr size_t kStride = sizeof(D3D12_RAYTRACING_INSTANCE_DESC);
+    constexpr size_t kReferenceAt = offsetof(D3D12_RAYTRACING_INSTANCE_DESC, AccelerationStructure);
+    std::vector<uint8_t> bytes(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+    for (UINT i = 0; i < count && (i + 1) * kStride <= bytes.size(); ++i)
+        std::memcpy(&bytes[i * kStride + kReferenceAt], &bottoms[i], sizeof(bottoms[i]));
+    return UploadRaytracingData(bytes.data(), bytes.size());
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS BuildScratch(const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& inputs)
+{
+    D3D12_RAYTRACING_ACCELERATION_STRUCTURE_PREBUILD_INFO info{};
+    Device5()->GetRaytracingAccelerationStructurePrebuildInfo(&inputs, &info);
+    D3D12_HEAP_PROPERTIES heap{};
+    heap.Type = D3D12_HEAP_TYPE_DEFAULT;
+    D3D12_RESOURCE_DESC desc{};
+    desc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
+    desc.Width = std::max<UINT64>(info.ScratchDataSizeInBytes, 256);
+    desc.Height = desc.DepthOrArraySize = desc.MipLevels = 1;
+    desc.SampleDesc.Count = 1;
+    desc.Layout = D3D12_TEXTURE_LAYOUT_ROW_MAJOR;
+    desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    ID3D12Resource* buffer = nullptr;
+    // A buffer starts in COMMON whatever it is asked for, and the build promotes it.
+    DX_CHECK(device->CreateCommittedResource(&heap, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_COMMON, nullptr, IID_PPV_ARGS(&buffer)));
+    raytracing.push_back(buffer);
+    return buffer->GetGPUVirtualAddress();
+}
+
+D3D12_GPU_VIRTUAL_ADDRESS BindingTable(ID3D12StateObject* stateObject, const ShaderExport* exports, UINT exportCount, const void* data,
+    UINT64 size, UINT64 stride)
+{
+    ID3D12StateObjectProperties* properties = nullptr;
+    DX_CHECK(stateObject->QueryInterface(IID_PPV_ARGS(&properties)));
+    std::vector<uint8_t> table(static_cast<const uint8_t*>(data), static_cast<const uint8_t*>(data) + size);
+    const UINT64 walk = stride ? stride : size;
+    for (size_t at = 0; at + D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES <= table.size(); at += (size_t)walk)
+    {
+        for (UINT e = 0; e < exportCount; ++e)
+        {
+            if (std::memcmp(&table[at], exports[e].capturedIdentifier, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES) != 0)
+                continue;
+            const void* here = properties->GetShaderIdentifier(exports[e].name);
+            if (here)
+                std::memcpy(&table[at], here, D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES);
+            break;
+        }
+    }
+    properties->Release();
+    return UploadRaytracingData(table.data(), table.size());
 }
 
 void CompleteReadbacks()
@@ -863,6 +949,10 @@ void DestroySupport()
     FlushUploads();
     if (supportQueue)
         Wait(supportQueue);
+    ReleaseRaytracing();
+    if (device5)
+        device5->Release();
+    device5 = nullptr;
     for (UploadChunk& c : uploadChunks)
         c.buffer->Release();
     uploadChunks.clear();

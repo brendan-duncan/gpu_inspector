@@ -78,6 +78,35 @@ void ReadbackTexture(ID3D12GraphicsCommandList* list, ID3D12Resource* texture, c
     D3D12_RESOURCE_STATES state, DXGI_FORMAT resolveFormat, DXGI_FORMAT format, int aspect, UINT width, UINT height,
     UINT64 rowBytes, UINT rows, const void* captured, UINT64 capturedSize);
 void ExecuteAndWait(ID3D12CommandQueue* queue, ID3D12CommandList* const* lists, UINT count);
+
+// Ray tracing. A build and a trace read memory by GPU address, and some of what they read holds the
+// captured process's addresses and identifiers inside it: an instance names its bottom level by
+// address, a binding table record starts with the captured runtime's identifier for a shader. Those
+// are rewritten here, into buffers of the support's own, released once the submission has run.
+/** The device's ray tracing interface; the program stops where this runtime has none. */
+ID3D12Device5* Device5();
+/** A copy of these bytes in an upload buffer of the support's own: its GPU address. */
+D3D12_GPU_VIRTUAL_ADDRESS UploadRaytracingData(const void* data, UINT64 size);
+/**
+ * Instances (D3D12_RAYTRACING_INSTANCE_DESC, 64 bytes each) as captured but for the bottom level
+ * each one names, which becomes `bottoms[i]` (0 leaves an instance pointing nowhere): its address.
+ */
+D3D12_GPU_VIRTUAL_ADDRESS UploadInstances(const void* data, UINT64 size, const D3D12_GPU_VIRTUAL_ADDRESS* bottoms, UINT count);
+/** Scratch for a build of these inputs, of the size this device asks for: its address. */
+D3D12_GPU_VIRTUAL_ADDRESS BuildScratch(const D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& inputs);
+/** A shader identifier the captured runtime gave, and the export it named. */
+struct ShaderExport
+{
+    const void* capturedIdentifier;   // D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES
+    const wchar_t* name;
+};
+/**
+ * One region of a binding table as captured, with every record's identifier replaced by this
+ * runtime's identifier for the export the captured one named: its address. What follows the
+ * identifier in a record (the local root arguments) is copied as it was.
+ */
+D3D12_GPU_VIRTUAL_ADDRESS BindingTable(ID3D12StateObject* stateObject, const ShaderExport* exports, UINT exportCount, const void* data,
+    UINT64 size, UINT64 stride);
 /** Compares the submission's read-backs with the capture's copies. */
 void CompleteReadbacks();
 /** Prints every comparison and writes the images to `directory`; the process exit code: 0 all identical, 1 otherwise. */

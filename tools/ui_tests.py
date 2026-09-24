@@ -2152,8 +2152,36 @@ def d3d12_cases(triangle):
         data = os.path.join(project, "frame_data.bin")
         return check_connected(state, log) + check_capture_basic(state, log) +             expect(len(projects) == 1 and project.endswith("_cpp"), f"one project folder named after the capture in {exported_cpp}: {projects}") +             expect(os.path.isfile(os.path.join(project, "CMakeLists.txt")), "the project has no CMakeLists.txt") +             expect(os.path.isfile(os.path.join(project, "dx_support.cpp")), "the project has no dx_support.cpp") +             expect(all(os.path.isfile(os.path.join(project, f)) for f in ("frame_window.h", "frame_window_win32.cpp", "frame_restore.cpp")), "the project lacks its window source or frame_restore.cpp") +             expect("->ExecuteBundle(" in commands, "frame_commands.cpp does not execute the bundle") +             expect("->DrawIndexedInstanced(" in commands, "frame_commands.cpp does not hold the bundle's draw") +             expect("ReadbackTexture(" in commands, "frame_commands.cpp reads no render target back to compare") +             expect(os.path.isfile(data) and os.path.getsize(data) > 100000, "frame_data.bin is missing or too small to hold the captured targets")
 
+    def d3d12_export_cpp_ray_tracing(state, log):
+        # --ray-tracing: a state object, a bottom level built once before any capture, a top level
+        # rebuilt every frame and a DispatchRays whose image the cubes sample. The export writes the
+        # state object's subobjects, the earlier build ahead of the frame (UploadContents), the top
+        # level's instances with the program's own bottom level (UploadInstances), and each binding
+        # table region rebuilt with the program's own shader identifiers (BindingTable).
+        projects = [os.path.join(exported_cpp, d) for d in os.listdir(exported_cpp)] if os.path.isdir(exported_cpp) else []
+        project = projects[0] if projects else ""
+        def read(name):
+            path = os.path.join(project, name)
+            if not project or not os.path.isfile(path):
+                return ""
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+        create, contents, commands = read("frame_create.cpp"), read("frame_contents.cpp"), read("frame_commands.cpp")
+        return check_connected(state, log) + \
+            expect(len(projects) == 1, f"one project folder in {exported_cpp}: {projects}") + \
+            expect("CreateStateObject(" in create and "D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP" in create,
+                   "frame_create.cpp does not make the state object") + \
+            expect("built before the capture" in contents and "BuildScratch(" in contents,
+                   "the bottom level built before the capture is not built ahead of the frame") + \
+            expect("UploadInstances(" in commands, "the top level's instances are not rewritten with the program's bottom level") + \
+            expect("BindingTable(" in commands and "->DispatchRays(" in commands, "the trace is not in the source with its binding table rebuilt") + \
+            expect("DispatchRays: left out" not in commands and "BuildRaytracingAccelerationStructure: left out" not in commands,
+                   "a build or the trace is still left out of the source")
+
     export_cases = [Case("d3d12-export-cpp", launch + ["--args=--bundle", "--record-always", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
-                         d3d12_export_cpp, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
+                         d3d12_export_cpp, delay_ms=20000, before=remove_exported_cpp),
+                    Case("d3d12-export-cpp-ray-tracing", launch + ["--args=--ray-tracing", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
+                         d3d12_export_cpp_ray_tracing, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
     if not export_cases:
         print("  (no dxinsp_replay build: skipping the D3D12 Export to C++ case)")
     return export_cases + [

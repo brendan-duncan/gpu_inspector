@@ -22,6 +22,7 @@
 - The Timeline draws a GPU lane per queue when a capture's passes ran on more than one, and says whether the queues ran at once or took turns.
 - `test/d3d12_triangle --async-compute` runs its compute dispatch on a compute queue of its own.
 - Export to C++ writes a Vulkan frame's acceleration structure builds and ray traces, so the exported program reproduces a ray traced image too.
+- Export to C++ writes a Direct3D 12 frame's state objects, acceleration structure builds and `DispatchRays` too.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
 - Direct3D 12 passes are timed in the frame of recording before the capture as well, so an engine that builds a frame's command lists during the frame before it (Unity does) has that frame measured rather than reported without timings.

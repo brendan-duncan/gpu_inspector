@@ -2471,7 +2471,7 @@ bool DxReplayer::IssueCommand(uint32_t index, const std::string& m, const JValue
         // dx_raytracing.cpp: the addresses decode like any other, but the bytes inside an instance
         // buffer and inside a binding table are the captured process's and have to be rewritten.
         std::string why;
-        if (!IssueRaytracingCommand(m, command, &args, list, why))
+        if (!IssueRaytracingCommand(m, command, &args, list, why, index))
             return leftOut(why);
     }
     else

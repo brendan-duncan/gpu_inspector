@@ -252,6 +252,18 @@ struct DxReplayReport
 /** A command that draws, dispatches or runs a bundle: what --draws puts queries around. */
 bool IsActionMethod(const std::string& method);
 
+/**
+ * What an exported program needs to make a top level's instances again: the captured bytes, and the
+ * address here of the bottom level each one names (0 where none), which the program spells from its
+ * own buffers (UploadInstances in dx_support).
+ */
+struct InstanceSource
+{
+    const uint8_t* data = nullptr;
+    size_t size = 0;
+    std::vector<D3D12_GPU_VIRTUAL_ADDRESS> bottoms;
+};
+
 class DxReplayer
 {
 public:
@@ -307,9 +319,14 @@ private:
     /** This runtime's identifier per captured one, which is what makes a captured binding table replayable. */
     void NoteStateObjectIdentifiers(uint64_t id, const vkreplay::JValue& object, ID3D12StateObject* stateObject);
     /** A top level build's instances with their bottom level addresses remapped, in a buffer of the replay's own. */
-    D3D12_GPU_VIRTUAL_ADDRESS RemapInstances(const vkreplay::JValue& command, UINT count);
+    D3D12_GPU_VIRTUAL_ADDRESS RemapInstances(const vkreplay::JValue& command, UINT count, InstanceSource* source = nullptr);
     /** The same, from a list of read-backs ({field, capture}): a command's buildData or a structure's captureInputs. */
-    D3D12_GPU_VIRTUAL_ADDRESS RemapInstancesFrom(const vkreplay::JValue* list, UINT count);
+    D3D12_GPU_VIRTUAL_ADDRESS RemapInstancesFrom(const vkreplay::JValue* list, UINT count, InstanceSource* source = nullptr);
+    /** Export to C++: a state object's description as the replay made it, into CreateObjects. */
+    void ExportStateObject(uint64_t id, const std::string& name, const D3D12_STATE_OBJECT_DESC& desc);
+    /** Export to C++: DispatchRays with its binding table rebuilt by the program (BindingTable in dx_support). */
+    void ExportDispatchRays(uint32_t index, const vkreplay::JValue& command, const D3D12_DISPATCH_RAYS_DESC& issued, uint64_t stateObjectId,
+        const std::string& listName);
     /** Builds, before the frame, the structures built before the capture began, from what was read back of them. */
     void BuildEarlierStructures();
     /** One binding table region rebuilt with this runtime's identifiers, in a buffer of the replay's own. */
@@ -322,7 +339,7 @@ private:
     ID3D12GraphicsCommandList4* RaytracingList(ID3D12GraphicsCommandList* list);
     /** One of the five ray tracing commands; false with a reason when it was left out. */
     bool IssueRaytracingCommand(const std::string& method, const vkreplay::JValue& command, const vkreplay::JValue* args,
-        ID3D12GraphicsCommandList* list, std::string& leftOut);
+        ID3D12GraphicsCommandList* list, std::string& leftOut, uint32_t index = UINT32_MAX);
     ID3D12Device5* _device5 = nullptr;
     bool _noRaytracing = false;
     std::unordered_map<uint64_t, StructurePlace> _structureAddresses;   // captured address -> where it lives

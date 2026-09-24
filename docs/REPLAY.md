@@ -674,13 +674,11 @@ than MSVC about narrowing and designator order.
 Limits:
 - The export needs the replay to run to the end, so a frame that crashes the driver is not
   written; `--trace` names the call it dies in.
-- Direct3D 12 ray tracing is not exported: its builds and `DispatchRays` are left out with a
-  comment, and an image only a shader writes is then not compared -- it would still hold the
-  contents uploaded for it, and match the capture for no reason.
 
-Vulkan ray tracing is exported. A build and a trace name what they read by device address and by
-shader group handle, which mean nothing in another process, so the source spells each as what the
-program finds at run time rather than as a number:
+Ray tracing is exported on both APIs. A build and a trace name what they read by device address and
+by shader group handle (Vulkan) or shader identifier (Direct3D 12), which mean nothing in another
+process, so the source spells each as what the program finds at run time rather than as a number.
+On Vulkan:
 
 - An address inside a buffer is `BufferAddress(buffer_N) + offset`: every device address the source
   spells goes through the exporter, which knows where the replay's driver put each buffer and so
@@ -693,6 +691,27 @@ program finds at run time rather than as a number:
   `TraceRays`, which builds the table the way the replay does, with the program's driver's handles.
 - A bottom level built before the capture is built in a command buffer of its own at the start of
   the frame, from what the layer read back of its inputs.
+
+On Direct3D 12 the same, in its terms. A GPU address was already spelled as its buffer's
+`GetGPUVirtualAddress()` plus an offset; what is new is:
+
+- A state object is written as the subobject array the replay made it from: each description a
+  local, a library's DXIL a range of the data file, an association's subobject the element it
+  names, and `Device5()->CreateStateObject`.
+- A top level's instances go up through `UploadInstances`, with each bottom level spelled as the
+  program's own buffer. Scratch for a structure built before the capture is `BuildScratch(inputs)`,
+  sized by the program's device; the frame's own builds use the application's scratch, as the replay does.
+- `DispatchRays` builds each region of its binding table with `BindingTable(stateObject, exports,
+  ...)`: the captured records, with each record's identifier replaced by this runtime's
+  `GetShaderIdentifier` for the export the captured identifier named. The captured identifiers
+  and their export names are in the source beside the call.
+- Structures built before the capture are built in `UploadContents`, in a list of their own, from
+  what the library read back of their inputs.
+
+Checked by building and running what it wrote on an RTX 4080: `d3d12_triangle --ray-tracing` and
+`--ray-tracing --rebuild-blas` identical with the debug layer, in `--batch` and over 300 frames in
+the window. The cubes sample the traced image, so the color target is what shows the trace: the
+same program with its `DispatchRays` removed differs in 1,015 texels.
 
 ## A shader edited in the capture
 
@@ -908,9 +927,8 @@ level out of uninitialized memory, which looks exactly like a correct replay of 
 nothing in it.
 
 Not replayed: an opacity micromap array build, and `DispatchRays` whose binding table the capture
-did not read back. State objects and traces are not exported to C++ either — an exported program
-would have to look its own shader identifiers up at run time, which the source has no spelling for
-yet — so those commands carry a comment where they would be.
+did not read back. What does replay is exported to C++ as well ([Export to C++](#export-to-c)): the
+exported program looks its own shader identifiers up at run time by export name.
 
 A frame the driver cannot run ends the replay without taking the export's reason with it: a removed
 device is reported once, with its reason and the submission it followed, and nothing after it is

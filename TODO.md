@@ -903,7 +903,7 @@ vendor's driver is listed at the end so nobody spends time on it.
       shown in a loop does not grow. Checked on an RTX 4080 by building and running what it wrote
       for `vkinsp_triangle --ray-tracing` and `--ray-tracing --static-blas`: all 3 targets
       identical, the traced image included, validation clean, 300 frames in the window; UI case
-      `export-cpp-ray-tracing`. D3D12 ray tracing export is still open (its item under Direct3D 12).
+      `export-cpp-ray-tracing`. The D3D12 counterpart is under Direct3D 12.
 - [ ] Export to C++, the rest: a frame that crashes the driver, which is the bug report that most
       wants a repro and the one case the export cannot write, since it needs the replay to finish (a
       checkpoint before each pipeline creation and each submit would do). And the ray tracing the
@@ -1681,7 +1681,16 @@ library does not read back yet.
   - A binding table record's local root arguments are copied as they were, so a descriptor handle or
     a GPU address among them points at the captured process's memory. Nothing in the capture says
     which of a record's bytes are which.
-  - An opacity micromap array build, `ExecuteIndirect` over a trace, and exporting any of it to C++.
+  - An opacity micromap array build and `ExecuteIndirect` over a trace.
+  - [x] Exporting it to C++ (`DxReplayer::ExportStateObject`, `ExportDispatchRays`, the ray tracing
+    helpers in `export_template/dx_support.*`): state objects as their subobject arrays, builds as
+    issued with a top level's instances rewritten (`UploadInstances`), each binding table region
+    rebuilt with the program's own identifiers by export name (`BindingTable`), structures built
+    before the capture built in `UploadContents`, and the other three commands. Checked on an RTX
+    4080 by building and running what it wrote for `d3d12_triangle --ray-tracing` and
+    `--rebuild-blas`: identical, debug layer clean, 300 frames in the window; with its
+    `DispatchRays` removed the same program differs in 1,015 texels, so the comparison sees the
+    trace. UI case `d3d12-export-cpp-ray-tracing`.
 - [ ] The contents of sampler feedback, video and work graph objects; enhanced
       barriers (`Barrier`) beyond the layouts that map to legacy states.
 - [ ] A descriptor table set in a bundle before the bundle set its own root signature is recorded

@@ -75,6 +75,97 @@ LPCWSTR Wide(vkreplay::Arena& arena, const std::string& text)
 }
 
 /** Lowercase hex of some bytes, the spelling the capture writes an identifier in. */
+/** A wide string as a C++ literal, L"..." (anything outside printable ASCII as a universal character name). */
+std::string WideLiteral(LPCWSTR text)
+{
+    if (!text)
+        return "nullptr";
+    std::string out = "L\"";
+    for (; *text; ++text)
+    {
+        const wchar_t c = *text;
+        if (c == L'\\' || c == L'"')
+        {
+            out += '\\';
+            out += (char)c;
+        }
+        else if (c >= 32 && c < 127)
+        {
+            out += (char)c;
+        }
+        else
+        {
+            char buf[16];
+            std::snprintf(buf, sizeof(buf), "\\u%04x", (unsigned)c);
+            out += buf;
+        }
+    }
+    return out + "\"";
+}
+
+/** The C++ name of a subobject type. */
+const char* SubobjectTypeName(D3D12_STATE_SUBOBJECT_TYPE type)
+{
+    switch (type)
+    {
+        case D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG: return "D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG";
+        case D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE: return "D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE";
+        case D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE: return "D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE";
+        case D3D12_STATE_SUBOBJECT_TYPE_NODE_MASK: return "D3D12_STATE_SUBOBJECT_TYPE_NODE_MASK";
+        case D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY: return "D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY";
+        case D3D12_STATE_SUBOBJECT_TYPE_EXISTING_COLLECTION: return "D3D12_STATE_SUBOBJECT_TYPE_EXISTING_COLLECTION";
+        case D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION: return "D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION";
+        case D3D12_STATE_SUBOBJECT_TYPE_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION: return "D3D12_STATE_SUBOBJECT_TYPE_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION";
+        case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG: return "D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG";
+        case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG: return "D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG";
+        case D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP: return "D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP";
+        case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1: return "D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1";
+        default: return nullptr;
+    }
+}
+
+/** A list of names as a local array of LPCWSTR, or nullptr. */
+std::string NameArray(Source& s, const LPCWSTR* names, UINT count)
+{
+    if (!names || !count)
+        return "nullptr";
+    std::string items;
+    for (UINT k = 0; k < count; ++k)
+        items += (k ? ", " : "") + WideLiteral(names[k]);
+    const std::string var = s.Local("exportNames");
+    s.Line("LPCWSTR " + var + "[] = {" + items + "};");
+    return var;
+}
+
+/**
+ * The expression that uploads a top level's instances in the exported program: the captured bytes,
+ * with each instance's bottom level spelled as where the program's own buffer is (UploadInstances).
+ */
+std::string InstancesExpr(Source& s, const InstanceSource& source)
+{
+    std::string items;
+    for (size_t i = 0; i < source.bottoms.size(); ++i)
+        items += (i ? ", " : "") + (source.bottoms[i] ? s.Address(source.bottoms[i]) : std::string("0"));
+    const std::string bottoms = s.Local("bottomLevels");
+    s.Line("const D3D12_GPU_VIRTUAL_ADDRESS " + bottoms + "[] = {" + items + "};");
+    return "UploadInstances(" + s.Data(source.data, source.size) + ", " + std::to_string(source.size) + ", " + bottoms + ", " +
+        std::to_string(source.bottoms.size()) + ")";
+}
+
+/** The field of a geometry an input read-back fills, as the member path the exported program assigns. */
+const char* GeometryField(const std::string& field)
+{
+    if (field == "VertexBuffer")
+        return "Triangles.VertexBuffer.StartAddress";
+    if (field == "IndexBuffer")
+        return "Triangles.IndexBuffer";
+    if (field == "Transform3x4")
+        return "Triangles.Transform3x4";
+    if (field == "AABBs")
+        return "AABBs.AABBs.StartAddress";
+    return nullptr;
+}
+
 std::string HexBytes(const uint8_t* bytes, size_t size)
 {
     static const char* digits = "0123456789abcdef";
@@ -378,12 +469,167 @@ ID3D12StateObject* DxReplayer::CreateStateObject(uint64_t id, const JValue& obje
     }
     NoteStateObjectIdentifiers(id, object, stateObject);
     if (_x)
-    {
-        _x->Declare("ID3D12StateObject", "stateObject", id, stateObject);
-        _x->Comment(DxExporter::Create, "ID3D12StateObject " + std::to_string(id) + ": exported programs do not rebuild state objects yet (its shader identifiers would have to be looked up again)");
-        _x->CountObject();
-    }
+        ExportStateObject(id, _x->Declare("ID3D12StateObject", "stateObject", id, stateObject), built_desc);
     return stateObject;
+}
+
+/**
+ * The state object as the replay made it, written as the subobject array it was made from: each
+ * description a local of its own, a library's code a range of the data file, an association's
+ * subobject the element of the array it names.
+ */
+void DxReplayer::ExportStateObject(uint64_t id, const std::string& name, const D3D12_STATE_OBJECT_DESC& desc)
+{
+    _x->Block(DxExporter::Create, "ID3D12StateObject " + std::to_string(id) + " (CreateStateObject)", [&](Source& s) {
+        const UINT n = desc.NumSubobjects;
+        const std::string subobjects = s.Local("subobjects");
+        s.Line("D3D12_STATE_SUBOBJECT " + subobjects + "[" + std::to_string(n) + "] = {};");
+        for (UINT i = 0; i < n; ++i)
+        {
+            const D3D12_STATE_SUBOBJECT& o = desc.pSubobjects[i];
+            const char* typeName = SubobjectTypeName(o.Type);
+            if (!typeName || !o.pDesc)
+            {
+                s.Comment("subobject " + std::to_string(i) + ": of a type the export does not write");
+                continue;
+            }
+            std::string local;
+            switch (o.Type)
+            {
+                case D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY:
+                {
+                    const auto& lib = *static_cast<const D3D12_DXIL_LIBRARY_DESC*>(o.pDesc);
+                    std::string exports = "nullptr";
+                    if (lib.NumExports && lib.pExports)
+                    {
+                        exports = s.Local("libraryExports");
+                        s.Line("D3D12_EXPORT_DESC " + exports + "[" + std::to_string(lib.NumExports) + "] = {};");
+                        for (UINT k = 0; k < lib.NumExports; ++k)
+                        {
+                            const std::string at = exports + "[" + std::to_string(k) + "]";
+                            s.Line(at + ".Name = " + WideLiteral(lib.pExports[k].Name) + ";");
+                            if (lib.pExports[k].ExportToRename)
+                                s.Line(at + ".ExportToRename = " + WideLiteral(lib.pExports[k].ExportToRename) + ";");
+                        }
+                    }
+                    local = s.Local("library");
+                    s.Line("D3D12_DXIL_LIBRARY_DESC " + local + " = {};");
+                    s.Line(local + ".DXILLibrary = {" + s.Data(lib.DXILLibrary.pShaderBytecode, lib.DXILLibrary.BytecodeLength) + ", " +
+                        std::to_string(lib.DXILLibrary.BytecodeLength) + "};");
+                    s.Line(local + ".NumExports = " + std::to_string(lib.NumExports) + ";");
+                    s.Line(local + ".pExports = " + exports + ";");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP:
+                {
+                    const auto& group = *static_cast<const D3D12_HIT_GROUP_DESC*>(o.pDesc);
+                    local = s.Local("hitGroup");
+                    s.Line("D3D12_HIT_GROUP_DESC " + local + " = {};");
+                    s.Line(local + ".HitGroupExport = " + WideLiteral(group.HitGroupExport) + ";");
+                    s.Line(local + ".Type = " + std::string(group.Type == D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE ? "D3D12_HIT_GROUP_TYPE_PROCEDURAL_PRIMITIVE"
+                                                                                                                    : "D3D12_HIT_GROUP_TYPE_TRIANGLES") + ";");
+                    if (group.AnyHitShaderImport)
+                        s.Line(local + ".AnyHitShaderImport = " + WideLiteral(group.AnyHitShaderImport) + ";");
+                    if (group.ClosestHitShaderImport)
+                        s.Line(local + ".ClosestHitShaderImport = " + WideLiteral(group.ClosestHitShaderImport) + ";");
+                    if (group.IntersectionShaderImport)
+                        s.Line(local + ".IntersectionShaderImport = " + WideLiteral(group.IntersectionShaderImport) + ";");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_SHADER_CONFIG:
+                {
+                    const auto& config = *static_cast<const D3D12_RAYTRACING_SHADER_CONFIG*>(o.pDesc);
+                    local = s.Local("shaderConfig");
+                    s.Line("D3D12_RAYTRACING_SHADER_CONFIG " + local + " = {" + std::to_string(config.MaxPayloadSizeInBytes) + ", " +
+                        std::to_string(config.MaxAttributeSizeInBytes) + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG:
+                {
+                    const auto& config = *static_cast<const D3D12_RAYTRACING_PIPELINE_CONFIG*>(o.pDesc);
+                    local = s.Local("pipelineConfig");
+                    s.Line("D3D12_RAYTRACING_PIPELINE_CONFIG " + local + " = {" + std::to_string(config.MaxTraceRecursionDepth) + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG1:
+                {
+                    const auto& config = *static_cast<const D3D12_RAYTRACING_PIPELINE_CONFIG1*>(o.pDesc);
+                    local = s.Local("pipelineConfig");
+                    s.Line("D3D12_RAYTRACING_PIPELINE_CONFIG1 " + local + " = {" + std::to_string(config.MaxTraceRecursionDepth) + ", " +
+                        Source::Flags(dxinsp::kEnum_D3D12_RAYTRACING_PIPELINE_FLAGS, std::size(dxinsp::kEnum_D3D12_RAYTRACING_PIPELINE_FLAGS),
+                            (uint64_t)config.Flags, "D3D12_RAYTRACING_PIPELINE_FLAGS") + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE:
+                {
+                    const auto& root = *static_cast<const D3D12_GLOBAL_ROOT_SIGNATURE*>(o.pDesc);
+                    local = s.Local("globalRoot");
+                    s.Line("D3D12_GLOBAL_ROOT_SIGNATURE " + local + " = {" + s.Object(root.pGlobalRootSignature) + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE:
+                {
+                    const auto& root = *static_cast<const D3D12_LOCAL_ROOT_SIGNATURE*>(o.pDesc);
+                    local = s.Local("localRoot");
+                    s.Line("D3D12_LOCAL_ROOT_SIGNATURE " + local + " = {" + s.Object(root.pLocalRootSignature) + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_STATE_OBJECT_CONFIG:
+                {
+                    const auto& config = *static_cast<const D3D12_STATE_OBJECT_CONFIG*>(o.pDesc);
+                    local = s.Local("objectConfig");
+                    s.Line("D3D12_STATE_OBJECT_CONFIG " + local + " = {" +
+                        Source::Flags(dxinsp::kEnum_D3D12_STATE_OBJECT_FLAGS, std::size(dxinsp::kEnum_D3D12_STATE_OBJECT_FLAGS), (uint64_t)config.Flags,
+                            "D3D12_STATE_OBJECT_FLAGS") + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION:
+                {
+                    const auto& assoc = *static_cast<const D3D12_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION*>(o.pDesc);
+                    const std::string names = NameArray(s, assoc.pExports, assoc.NumExports);
+                    local = s.Local("association");
+                    s.Line("D3D12_DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION " + local + " = {" + WideLiteral(assoc.SubobjectToAssociate) + ", " +
+                        std::to_string(assoc.NumExports) + ", " + names + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION:
+                {
+                    const auto& assoc = *static_cast<const D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION*>(o.pDesc);
+                    const std::string names = NameArray(s, assoc.pExports, assoc.NumExports);
+                    // The subobject it associates is an element of this same array: spelled by its index.
+                    const ptrdiff_t which = assoc.pSubobjectToAssociate - desc.pSubobjects;
+                    local = s.Local("association");
+                    s.Line("D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION " + local + " = {&" + subobjects + "[" + std::to_string(which) + "], " +
+                        std::to_string(assoc.NumExports) + ", " + names + "};");
+                    break;
+                }
+                case D3D12_STATE_SUBOBJECT_TYPE_NODE_MASK:
+                {
+                    local = s.Local("nodeMask");
+                    s.Line("D3D12_NODE_MASK " + local + " = {0};");
+                    break;
+                }
+                default:
+                    break;
+            }
+            if (local.empty())
+            {
+                s.Comment("subobject " + std::to_string(i) + ": of a type the export does not write");
+                continue;
+            }
+            const std::string at = subobjects + "[" + std::to_string(i) + "]";
+            s.Line(at + ".Type = " + std::string(typeName) + ";");
+            s.Line(at + ".pDesc = &" + local + ";");
+        }
+        const std::string info = s.Local("stateObjectDesc");
+        s.Line("D3D12_STATE_OBJECT_DESC " + info + " = {};");
+        s.Line(info + ".Type = " + std::string(desc.Type == D3D12_STATE_OBJECT_TYPE_COLLECTION ? "D3D12_STATE_OBJECT_TYPE_COLLECTION"
+                                                                                                : "D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE") + ";");
+        s.Line(info + ".NumSubobjects = " + std::to_string(n) + ";");
+        s.Line(info + ".pSubobjects = " + subobjects + ";");
+        s.Line("DX_CHECK(Device5()->CreateStateObject(&" + info + ", IID_PPV_ARGS(&" + name + ")));");
+    });
+    _x->CountObject();
 }
 
 /**
@@ -436,12 +682,12 @@ void DxReplayer::NoteStateObjectIdentifiers(uint64_t id, const JValue& object, I
  * process's addresses in their last eight bytes. Those cannot be rewritten in place — the buffer
  * may be the application's upload heap, rewritten every frame — so the build is pointed at a copy.
  */
-D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstances(const JValue& command, UINT count)
+D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstances(const JValue& command, UINT count, InstanceSource* source)
 {
-    return RemapInstancesFrom(command.Get("buildData"), count);
+    return RemapInstancesFrom(command.Get("buildData"), count, source);
 }
 
-D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstancesFrom(const JValue* list, UINT count)
+D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstancesFrom(const JValue* list, UINT count, InstanceSource* source)
 {
     if (!count)
         return 0;
@@ -495,6 +741,13 @@ D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstancesFrom(const JValue* list, UIN
                 "capture began), so the replay's copy of it is empty and rays through that instance miss");
         }
         std::memcpy(instances.data() + i * kInstanceStride + kInstanceStructureOffset, &here, sizeof(here));
+        if (source)
+            source->bottoms.push_back(here);
+    }
+    if (source)
+    {
+        source->data = data;
+        source->size = have * kInstanceStride;
     }
     return UploadTransient(instances.data(), instances.size(), "instances");
 }
@@ -641,7 +894,7 @@ ID3D12GraphicsCommandList4* DxReplayer::RaytracingList(ID3D12GraphicsCommandList
 }
 
 bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue& command, const JValue* args,
-    ID3D12GraphicsCommandList* list, std::string& leftOut)
+    ID3D12GraphicsCommandList* list, std::string& leftOut, uint32_t index)
 {
     if (!RaytracingDevice())
     {
@@ -657,6 +910,11 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
     static const JValue kNoArgs;
     const JValue& a = args && !args->IsNull() ? *args : kNoArgs;
     Decoder d(&a, _env);
+    // Export to C++: only the frame's own commands, which come with their index.
+    const bool exporting = _x && index != UINT32_MAX;
+    const std::string listName = exporting ? ListName(list) : std::string();
+    const std::string label = "[" + std::to_string(index) + "]";
+    const std::string rt = "As<ID3D12GraphicsCommandList4>(" + listName + ")";
 
     if (method == "SetPipelineState1")
     {
@@ -668,6 +926,11 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
         }
         rtList->SetPipelineState1(stateObject);
         _boundStateObject = IdOf(a.Get("pStateObject"));
+        if (exporting)
+        {
+            _x->Block(DxExporter::Frame, label, [&](Source& s) { s.Line(rt + "->SetPipelineState1(" + s.Object(stateObject) + ");"); });
+            _x->CountCommand();
+        }
         return true;
     }
 
@@ -681,10 +944,12 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
             leftOut = "it reads memory the replay has no buffer for";
             return false;
         }
-        if (desc.Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL)
+        InstanceSource instances;
+        const bool topLevel = desc.Inputs.Type == D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL;
+        if (topLevel)
         {
             // The instances' own bytes name bottom levels by the captured process's addresses.
-            desc.Inputs.InstanceDescs = RemapInstances(command, desc.Inputs.NumDescs);
+            desc.Inputs.InstanceDescs = RemapInstances(command, desc.Inputs.NumDescs, exporting ? &instances : nullptr);
             desc.Inputs.DescsLayout = D3D12_ELEMENTS_LAYOUT_ARRAY;
             if (!desc.Inputs.InstanceDescs)
             {
@@ -703,8 +968,21 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
             return false;
         }
         rtList->BuildRaytracingAccelerationStructure(&desc, 0, nullptr);
-        if (_x)
-            _x->Comment(DxExporter::Frame, "BuildRaytracingAccelerationStructure: exported programs do not rebuild acceleration structures yet");
+        if (exporting)
+        {
+            // As issued: the destination, the scratch and the geometry are the application's buffers
+            // and spell themselves; a top level's instances are the program's to rebuild.
+            _x->Block(DxExporter::Frame, label, [&](Source& s) {
+                D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC spelled = desc;
+                if (topLevel)
+                    spelled.Inputs.InstanceDescs = 0;
+                const std::string build = EmitStruct(s, "build", spelled);
+                if (topLevel)
+                    s.Line(build + ".Inputs.InstanceDescs = " + InstancesExpr(s, instances) + ";");
+                s.Line(rt + "->BuildRaytracingAccelerationStructure(&" + build + ", 0, nullptr);");
+            });
+            _x->CountCommand();
+        }
         return true;
     }
 
@@ -745,8 +1023,8 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
         if (!desc.CallableShaderTable.StartAddress)
             desc.CallableShaderTable = {};
         rtList->DispatchRays(&desc);
-        if (_x)
-            _x->Comment(DxExporter::Frame, "DispatchRays: exported programs do not rebuild shader binding tables yet");
+        if (exporting)
+            ExportDispatchRays(index, command, desc, stateObjectId, listName);
         return true;
     }
 
@@ -764,6 +1042,16 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
             ParseEnum(a.Get("Mode"), dxinsp::kEnum_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE,
                 std::size(dxinsp::kEnum_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE));
         rtList->CopyRaytracingAccelerationStructure(dest, source, mode);
+        if (exporting)
+        {
+            _x->Block(DxExporter::Frame, label, [&](Source& s) {
+                s.Line(rt + "->CopyRaytracingAccelerationStructure(" + s.Address(dest) + ", " + s.Address(source) + ", " +
+                    Source::Enum(dxinsp::kEnum_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE,
+                        std::size(dxinsp::kEnum_D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE), (int64_t)mode,
+                        "D3D12_RAYTRACING_ACCELERATION_STRUCTURE_COPY_MODE") + ");");
+            });
+            _x->CountCommand();
+        }
         return true;
     }
 
@@ -785,11 +1073,110 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
             return false;
         }
         rtList->EmitRaytracingAccelerationStructurePostbuildInfo(&desc, (UINT)addresses.size(), addresses.data());
+        if (exporting)
+        {
+            _x->Block(DxExporter::Frame, label, [&](Source& s) {
+                const std::string info = EmitStruct(s, "postbuild", desc);
+                std::string items;
+                for (size_t k = 0; k < addresses.size(); ++k)
+                    items += (k ? ", " : "") + s.Address(addresses[k]);
+                const std::string list = s.Local("structures");
+                s.Line("const D3D12_GPU_VIRTUAL_ADDRESS " + list + "[] = {" + items + "};");
+                s.Line(rt + "->EmitRaytracingAccelerationStructurePostbuildInfo(&" + info + ", " + std::to_string(addresses.size()) + ", " + list + ");");
+            });
+            _x->CountCommand();
+        }
         return true;
     }
 
     leftOut = "the replay does not issue it yet";
     return false;
+}
+
+/**
+ * DispatchRays in the exported program: the description as issued, with each region of its binding
+ * table built by the program from the captured records (BindingTable in dx_support), which puts its
+ * own runtime's identifier where the captured one was -- matched by the export each captured
+ * identifier named, as the replay matched it.
+ */
+void DxReplayer::ExportDispatchRays(uint32_t index, const JValue& command, const D3D12_DISPATCH_RAYS_DESC& issued, uint64_t stateObjectId,
+    const std::string& listName)
+{
+    // The captured identifier of every export, and its name: what the program looks up again.
+    std::vector<std::pair<std::vector<uint8_t>, std::string>> exports;
+    const JValue* object = _capture->Object(stateObjectId);
+    const JValue* updates = object ? object->Get("updates") : nullptr;
+    const JValue* identifiers = updates ? updates->Get("shaderIdentifiers") : nullptr;
+    const JValue* list = identifiers ? identifiers->Get("exports") : nullptr;
+    for (uint32_t i = 0; list && list->IsArray() && i < list->count; ++i)
+    {
+        const std::string name = Str(list->items[i].Get("name"));
+        const std::string hex = Str(list->items[i].Get("identifier"));
+        if (name.empty() || hex.size() != kIdentifierSize * 2)
+            continue;
+        std::vector<uint8_t> bytes(kIdentifierSize);
+        for (size_t k = 0; k < kIdentifierSize; ++k)
+            bytes[k] = (uint8_t)std::strtoul(hex.substr(k * 2, 2).c_str(), nullptr, 16);
+        exports.emplace_back(std::move(bytes), name);
+    }
+    // A region's records as captured, cut to the size the trace names, as RemapBindingTable reads them.
+    auto records = [&](const char* region, UINT64 size, const uint8_t*& data, size_t& bytes, UINT64& stride) {
+        data = nullptr;
+        bytes = 0;
+        const JValue* regions = command.Get("bindingTableData");
+        for (uint32_t i = 0; regions && regions->IsArray() && i < regions->count; ++i)
+        {
+            const JValue& e = regions->items[i];
+            if (Str(e.Get("region")) != region || !e.Get("capture"))
+                continue;
+            if (e.Get("stride"))
+                stride = e.Get("stride")->Uint();
+            auto it = _bufferData.find(e.Get("capture")->Uint());
+            size_t have = 0;
+            if (it != _bufferData.end() && _capture->Payload(it->second->Get("payload"), data, have))
+                bytes = std::min<size_t>(have, (size_t)size);
+        }
+    };
+    ID3D12StateObject* stateObject = static_cast<ID3D12StateObject*>(Object(stateObjectId));
+    _x->Block(DxExporter::Frame, "[" + std::to_string(index) + "] the binding table rebuilt with this runtime's shader identifiers", [&](Source& s) {
+        std::string table = "nullptr";
+        if (!exports.empty())
+        {
+            std::string items;
+            for (size_t i = 0; i < exports.size(); ++i)
+            {
+                const std::wstring wide(exports[i].second.begin(), exports[i].second.end());
+                items += std::string(i ? ", " : "") + "{" + s.Data(exports[i].first.data(), exports[i].first.size()) + ", " + WideLiteral(wide.c_str()) + "}";
+            }
+            table = s.Local("shaderExports");
+            s.Line("const ShaderExport " + table + "[] = {" + items + "};");
+        }
+        D3D12_DISPATCH_RAYS_DESC spelled = issued;
+        spelled.RayGenerationShaderRecord.StartAddress = 0;
+        spelled.MissShaderTable.StartAddress = 0;
+        spelled.HitGroupTable.StartAddress = 0;
+        spelled.CallableShaderTable.StartAddress = 0;
+        const std::string rays = EmitStruct(s, "rays", spelled);
+        auto region = [&](const char* name, const char* member, D3D12_GPU_VIRTUAL_ADDRESS issuedAddress, UINT64 size, UINT64 stride) {
+            if (!issuedAddress)
+                return;   // the replay left the region out, and so does the program
+            const uint8_t* data = nullptr;
+            size_t bytes = 0;
+            records(name, size, data, bytes, stride);
+            if (!data || !bytes)
+                return;
+            s.Line(rays + "." + member + ".StartAddress = BindingTable(" + s.Object(stateObject) + ", " + table + ", " + std::to_string(exports.size()) +
+                ", " + s.Data(data, bytes) + ", " + std::to_string(bytes) + ", " + std::to_string(stride) + ");");
+        };
+        region("RayGeneration", "RayGenerationShaderRecord", issued.RayGenerationShaderRecord.StartAddress, issued.RayGenerationShaderRecord.SizeInBytes,
+            issued.RayGenerationShaderRecord.SizeInBytes);
+        region("Miss", "MissShaderTable", issued.MissShaderTable.StartAddress, issued.MissShaderTable.SizeInBytes, issued.MissShaderTable.StrideInBytes);
+        region("HitGroup", "HitGroupTable", issued.HitGroupTable.StartAddress, issued.HitGroupTable.SizeInBytes, issued.HitGroupTable.StrideInBytes);
+        region("Callable", "CallableShaderTable", issued.CallableShaderTable.StartAddress, issued.CallableShaderTable.SizeInBytes,
+            issued.CallableShaderTable.StrideInBytes);
+        s.Line("As<ID3D12GraphicsCommandList4>(" + listName + ")->DispatchRays(&" + rays + ");");
+    });
+    _x->CountCommand();
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -878,6 +1265,17 @@ void DxReplayer::BuildEarlierStructures()
         std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> geometries;
         bool topLevel = false;
         uint64_t captured = 0;
+        uint64_t id = 0;
+        // For Export to C++: what each geometry field was read back as, and a top level's instances.
+        struct Input
+        {
+            uint32_t geometry;
+            const char* member;
+            const uint8_t* bytes;
+            size_t size;
+        };
+        std::vector<Input> inputs;
+        InstanceSource instances;
     };
     std::vector<Planned> planned;
     planned.reserve(earlier.size());
@@ -886,6 +1284,7 @@ void DxReplayer::BuildEarlierStructures()
         Planned p;
         p.topLevel = e.topLevel;
         p.captured = e.captured;
+        p.id = e.id;
         D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_INPUTS& in = p.desc.Inputs;
         in.Type = e.topLevel ? D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_TOP_LEVEL : D3D12_RAYTRACING_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL;
         in.Flags = (D3D12_RAYTRACING_ACCELERATION_STRUCTURE_BUILD_FLAGS)ParseFlags(e.build->Get("Flags"),
@@ -897,7 +1296,7 @@ void DxReplayer::BuildEarlierStructures()
         bool complete = true;
         if (e.topLevel)
         {
-            in.InstanceDescs = RemapInstancesFrom(e.inputs, in.NumDescs);
+            in.InstanceDescs = RemapInstancesFrom(e.inputs, in.NumDescs, _x ? &p.instances : nullptr);
             complete = in.InstanceDescs != 0;
         }
         else
@@ -940,6 +1339,8 @@ void DxReplayer::BuildEarlierStructures()
                     continue;
                 const std::string field = Str(input.Get("field"));
                 const D3D12_GPU_VIRTUAL_ADDRESS here = UploadTransient(bytes, size, "earlier build input");
+                if (const char* member = GeometryField(field))
+                    p.inputs.push_back({g, member, bytes, size});
                 D3D12_RAYTRACING_GEOMETRY_DESC& geometry = p.geometries[g];
                 if (field == "VertexBuffer")
                     geometry.Triangles.VertexBuffer.StartAddress = here;
@@ -1048,6 +1449,65 @@ void DxReplayer::BuildEarlierStructures()
         return;
     }
     _report->earlierStructuresBuilt = built;
+    // Export to C++: the same builds from the same read-backs, in a list of the program's own ahead of
+    // the frame. Each input goes up to a buffer of the program's, and the scratch is sized by its device.
+    if (!_x || !built)
+        return;
+    _x->Block(DxExporter::Contents, "acceleration structures built before the capture, from what their last builds read", [&](Source& s) {
+        s.Line("ID3D12GraphicsCommandList* list = BeginOneTime();");
+        const std::string rt = "As<ID3D12GraphicsCommandList4>(list)";
+        const std::string uav = "{ D3D12_RESOURCE_BARRIER uav = {}; uav.Type = D3D12_RESOURCE_BARRIER_TYPE_UAV; list->ResourceBarrier(1, &uav); }";
+        bool lastTopLevel = false;
+        for (const Planned& p : planned)
+        {
+            if (!p.desc.DestAccelerationStructureData || !p.desc.ScratchAccelerationStructureData)
+                continue;
+            // Every bottom level finished before the first top level reads one, as in the replay.
+            if (p.topLevel && !lastTopLevel)
+                s.Line(uav);
+            lastTopLevel = p.topLevel;
+            s.Comment("acceleration structure " + std::to_string(p.id));
+            D3D12_BUILD_RAYTRACING_ACCELERATION_STRUCTURE_DESC spelled = p.desc;
+            spelled.ScratchAccelerationStructureData = 0;
+            std::string geometries;
+            if (p.topLevel)
+            {
+                spelled.Inputs.InstanceDescs = 0;
+            }
+            else
+            {
+                // The replay's inputs were its own uploads; the program makes its own of the same bytes.
+                std::vector<D3D12_RAYTRACING_GEOMETRY_DESC> cleared = p.geometries;
+                for (D3D12_RAYTRACING_GEOMETRY_DESC& g : cleared)
+                {
+                    if (g.Type == D3D12_RAYTRACING_GEOMETRY_TYPE_TRIANGLES)
+                    {
+                        g.Triangles.VertexBuffer.StartAddress = 0;
+                        g.Triangles.IndexBuffer = 0;
+                        g.Triangles.Transform3x4 = 0;
+                    }
+                    else
+                    {
+                        g.AABBs.AABBs.StartAddress = 0;
+                    }
+                }
+                geometries = EmitStructs(s, "geometries", cleared.data(), cleared.size());
+                for (const Planned::Input& in : p.inputs)
+                    s.Line(geometries + "[" + std::to_string(in.geometry) + "]." + in.member + " = UploadRaytracingData(" + s.Data(in.bytes, in.size) +
+                        ", " + std::to_string(in.size) + ");");
+                spelled.Inputs.pGeometryDescs = nullptr;
+            }
+            const std::string build = EmitStruct(s, "build", spelled);
+            if (p.topLevel)
+                s.Line(build + ".Inputs.InstanceDescs = " + InstancesExpr(s, p.instances) + ";");
+            else
+                s.Line(build + ".Inputs.pGeometryDescs = " + geometries + ";");
+            s.Line(build + ".ScratchAccelerationStructureData = BuildScratch(" + build + ".Inputs);");
+            s.Line(rt + "->BuildRaytracingAccelerationStructure(&" + build + ", 0, nullptr);");
+        }
+        s.Line(uav);
+        s.Line("EndOneTime(list);");
+    });
 }
 
 }  // namespace dxreplay
