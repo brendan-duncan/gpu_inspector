@@ -27,7 +27,10 @@
 //   Subpasses            Vulkan: render passes recorded with more than one subpass, and how many
 //                        attachments they pass on as input attachments.
 import { usageClass } from "./render_graph.js";
+import { FrameAnalysis, type FrameAnalysisDatabase } from "./vulkan/frame_analysis.js";
+import { isObject, num, refId } from "./vulkan/vulkan_object.js";
 import type { GraphNode, GraphUse, RenderGraph } from "./render_graph.js";
+import type { CaptureData } from "./capture_data.js";
 
 /** What a render pass's API records about subpasses, where it has them (Vulkan). */
 export interface SubpassInfo {
@@ -242,4 +245,35 @@ export function analyzeTiling(graph: RenderGraph, options: TileOptions = {}): Ti
     subpassPasses: passes.filter((p) => (p.subpasses?.subpasses ?? 1) > 1),
     renderPasses,
   };
+}
+
+/** Vulkan: the subpasses and input attachments each render pass was recorded with. */
+function vulkanSubpasses(data: CaptureData, db: FrameAnalysisDatabase): (node: GraphNode) => SubpassInfo | null {
+  return (node) => {
+    const cmd = data.commands[node.commandIndex];
+    if (!cmd) return null;
+    if (cmd.method.startsWith("vkCmdBeginRendering")) return { subpasses: 1, inputAttachments: 0 };
+    const begin = isObject(cmd.args?.pRenderPassBegin) ? cmd.args!.pRenderPassBegin : null;
+    const rp = begin ? db.getObject(refId(begin.renderPass))?.descriptor ?? null : null;
+    if (!rp) return null;
+    const subpasses = Array.isArray(rp.pSubpasses) ? rp.pSubpasses.filter(isObject) : [];
+    return {
+      subpasses: Math.max(1, subpasses.length),
+      inputAttachments: subpasses.reduce((sum, s) => sum + num(s.inputAttachmentCount), 0),
+    };
+  };
+}
+
+/** The tile analysis of a capture, with what each API can tell it beyond the graph. */
+export function tileReport(data: CaptureData, db: FrameAnalysisDatabase, graph: RenderGraph): TileReport {
+  const options: TileOptions = {};
+  if (data.api === "vulkan") {
+    // The Vulkan analysis reads fragment shaders' SPIR-V for how they read an image, which is what
+    // tells a same-pixel post-processing step from a filter.
+    const vulkan = new FrameAnalysis(db);
+    vulkan.analyze(data);
+    options.filtersInput = (node, imageId) => vulkan.filtersInput(node.commandIndex, imageId);
+    options.subpasses = vulkanSubpasses(data, db);
+  }
+  return analyzeTiling(graph, options);
 }

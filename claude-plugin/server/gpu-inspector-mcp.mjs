@@ -34205,8 +34205,6 @@ function analyzeTiling(graph, options = {}) {
     renderPasses
   };
 }
-
-// src/renderer/tile_report.ts
 function vulkanSubpasses(data, db) {
   return (node2) => {
     const cmd = data.commands[node2.commandIndex];

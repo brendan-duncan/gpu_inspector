@@ -1,24 +1,7 @@
-## v0.23.0
+## v0.24.0
 
 ### Added
 - A **Tile-Based GPUs** report, and `analyze_tiling` over MCP: what a frame would cost a mobile GPU in attachment traffic, what is avoidable, and what leaves the tile.
-- An application asks for a capture with a name for it: `gpu_inspector_capture_named(frames, label)` in `include/gpu_inspector.h`, and the label names the tab, the saved file and its manifest.
-- The Metal library and the OpenGL ES plugin answer `include/gpu_inspector.h` too, so every API can capture from an assertion or a failed test; the header finds the library on macOS, Linux and Android as well as Windows.
-- `--capture-at N` on the Metal and OpenGL ES samples, and UI test cases for the application's capture on every Windows backend.
-- **Capture on hitch**: with a timing capture running, the first frame over its hitch threshold takes a frame capture of the next frame, in a tab named after the hitch.
-- `--hitch-every N` on the Vulkan, Direct3D 12 and Metal samples stalls one frame in N, for a timing capture to catch.
-- Dropped frames on Vulkan are measured by the display through `VK_EXT_present_timing` where the driver offers it, instead of estimated from the frame interval.
-- `test/triangle --stall <ms>` sleeps every frame so vsynced presents miss refreshes, as the Direct3D 12 sample's does.
-- The Windows installer ships `dxcompiler.dll` beside the Direct3D 12 capture library, so DXIL shaders have text, reflection and edits without a Vulkan or Windows SDK on the machine.
-- **Present latency** on the frame meter: how long after the present call the display showed the frame, from `DXGI_FRAME_STATISTICS` on Direct3D 12 and `VK_EXT_present_timing` on Vulkan.
-- An MCP session takes the captures an application asks for through `include/gpu_inspector.h`, saves them under the application's label and lists them (`get_session_status` `appCaptures`, `list_captures`).
-- Direct3D 12 residency on the memory series and in memory captures: evictions, page-ins and changes of the driver's budget are marked and counted, with the bytes each named.
-- `test/d3d12_triangle --evict` evicts a buffer and pages it back in on a cycle, for the residency marks.
-- How-to guides for [a Unity player](docs/HOWTO_UNITY.md), [a Quest application](docs/HOWTO_QUEST.md) and [a WebGPU page](docs/HOWTO_BROWSER.md), beside the Minecraft one.
-- **Viewport / Scissor**, a draw overlay that needs no replay: the rectangles in the draw's own state drawn over its render target, with what the scissor cuts away darkened. It works on a capture of any API, and on a saved one.
-- `test/triangle --half-scissor` keeps the left half of the target, for that overlay.
-- A Vulkan dynamic-rendering pass suspended and resumed across command buffers is timed across its parts, instead of being left out of the frame's GPU time.
-- A Direct3D 12 render pass suspended across command lists is timed: every pass's queries are resolved from a list of the capture's own at the finish, instead of beside the query in the application's list where a suspended pass forbids it. A Unity frame goes from a fifth of its passes measured to all of them.
 - A Direct3D 12 command list reset before the capture was asked for, as an engine that pools its lists leaves them, has its passes timed and their render targets read back.
 - The Timeline draws a GPU lane per queue when a capture's passes ran on more than one, and says whether the queues ran at once or took turns.
 - `test/d3d12_triangle --async-compute` runs its compute dispatch on a compute queue of its own.
@@ -36,21 +19,13 @@
 - The Direct3D 12 replay names its objects as the application did, so debug-layer messages name them too.
 - `test/d3d12_triangle --local-root` and `test/triangle --shader-record` put arguments in a hit group's record.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
-- `test/d3d12_triangle --suspend` splits its render pass across two command lists.
-- Direct3D 12 passes are timed in the frame of recording before the capture as well, so an engine that builds a frame's command lists during the frame before it (Unity does) has that frame measured rather than reported without timings.
-- A capture asked for while the application is live-paused captures the frame on the screen: the pause is held open for the capture's frames and closes again on the frame it captured, instead of resuming the application.
-- **Validate**, a report that replays a Vulkan capture under the Khronos validation layer, whether or not the application was launched with it, with every message tied to the captured command it fired on; `get_validation` does the same with `replay: true`.
-- `vkinsp_replay --validate-data <file>` writes the validation layer's messages with the command and phase each fired in.
-- A capture hotkey in the application's own window: with the HUD on, F11 takes the capture the Capture button would, on Vulkan, Direct3D 12 and Metal; `VKINSP_HOTKEY` (`DXINSP_HOTKEY`, `MTLINSP_HOTKEY`) rebinds or disables it.
 - A Metal pixel history follows **layered** passes (the copies it draws into are arrays of the pass's `renderTargetArrayLength`, so a draw picking a layer lands in the same one) and an **indirect command buffer**'s draws (its commands run one at a time under a visibility result, which says whether each wrote the pixel).
 - A Metal pixel history reports the writes to the texture that are not draws: a pass's multisample **resolve** into it, each **blit** that writes it, and a **compute** encoder that had it bound.
 - `mtlinsp_triangle --layered`, `--indirect` and `--texture-writes` exercise those.
 - `MTLINSP_LOG_FILE=<path>` appends the Metal library's log to a file, for an application whose stderr goes where nobody can read it (a Unity player); `--debug-log` sets it, as it already did for the Vulkan layer and the Direct3D 12 library.
 
 ### Changed
-- A timing or memory capture's report opens in a tab of its own beside the frame captures, instead of a band above them that pushed the capture tabs off the window.
 - Direct3D 12 read-backs queued by lists the captured frame never ran are dropped, instead of reported as failed.
-- The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ### Fixed
 - The render graph of a Direct3D 12 capture has its BeginRenderPass attachments, its split passes, and the textures and buffers its passes read.
@@ -62,6 +37,37 @@
 - Present latency on the frame meter no longer drops to nothing whenever the display's statistics skip a report.
 - A Direct3D 12 capture of an application with async compute no longer trips the debug layer by writing one staging buffer from two queues.
 - A Direct3D 12 state object with a subobject-to-exports association replays; the replay read the association's target under the wrong name.
+
+## v0.23.0
+
+### Added
+- An application asks for a capture with a name for it: `gpu_inspector_capture_named(frames, label)` in `include/gpu_inspector.h`, and the label names the tab, the saved file and its manifest.
+- The Metal library and the OpenGL ES plugin answer `include/gpu_inspector.h` too, so every API can capture from an assertion or a failed test; the header finds the library on macOS, Linux and Android as well as Windows.
+- `--capture-at N` on the Metal and OpenGL ES samples, and UI test cases for the application's capture on every Windows backend.
+- **Capture on hitch**: with a timing capture running, the first frame over its hitch threshold takes a frame capture of the next frame, in a tab named after the hitch.
+- `--hitch-every N` on the Vulkan, Direct3D 12 and Metal samples stalls one frame in N, for a timing capture to catch.
+- Dropped frames on Vulkan are measured by the display through `VK_EXT_present_timing` where the driver offers it, instead of estimated from the frame interval.
+- `test/triangle --stall <ms>` sleeps every frame so vsynced presents miss refreshes, as the Direct3D 12 sample's does.
+- The Windows installer ships `dxcompiler.dll` beside the Direct3D 12 capture library, so DXIL shaders have text, reflection and edits without a Vulkan or Windows SDK on the machine.
+- **Present latency** on the frame meter: how long after the present call the display showed the frame, from `DXGI_FRAME_STATISTICS` on Direct3D 12 and `VK_EXT_present_timing` on Vulkan.
+- An MCP session takes the captures an application asks for through `include/gpu_inspector.h`, saves them under the application's label and lists them (`get_session_status` `appCaptures`, `list_captures`).
+- Direct3D 12 residency on the memory series and in memory captures: evictions, page-ins and changes of the driver's budget are marked and counted, with the bytes each named.
+- `test/d3d12_triangle --evict` evicts a buffer and pages it back in on a cycle, for the residency marks.
+- How-to guides for [a Unity player](docs/HOWTO_UNITY.md), [a Quest application](docs/HOWTO_QUEST.md) and [a WebGPU page](docs/HOWTO_BROWSER.md), beside the Minecraft one.
+- **Viewport / Scissor**, a draw overlay that needs no replay: the rectangles in the draw's own state drawn over its render target, with what the scissor cuts away darkened. It works on a capture of any API, and on a saved one.
+- `test/triangle --half-scissor` keeps the left half of the target, for that overlay.
+- A Vulkan dynamic-rendering pass suspended and resumed across command buffers is timed across its parts, instead of being left out of the frame's GPU time.
+- A Direct3D 12 render pass suspended across command lists is timed: every pass's queries are resolved from a list of the capture's own at the finish, instead of beside the query in the application's list where a suspended pass forbids it. A Unity frame goes from a fifth of its passes measured to all of them.
+- `test/d3d12_triangle --suspend` splits its render pass across two command lists.
+- Direct3D 12 passes are timed in the frame of recording before the capture as well, so an engine that builds a frame's command lists during the frame before it (Unity does) has that frame measured rather than reported without timings.
+- A capture asked for while the application is live-paused captures the frame on the screen: the pause is held open for the capture's frames and closes again on the frame it captured, instead of resuming the application.
+- **Validate**, a report that replays a Vulkan capture under the Khronos validation layer, whether or not the application was launched with it, with every message tied to the captured command it fired on; `get_validation` does the same with `replay: true`.
+- `vkinsp_replay --validate-data <file>` writes the validation layer's messages with the command and phase each fired in.
+- A capture hotkey in the application's own window: with the HUD on, F11 takes the capture the Capture button would, on Vulkan, Direct3D 12 and Metal; `VKINSP_HOTKEY` (`DXINSP_HOTKEY`, `MTLINSP_HOTKEY`) rebinds or disables it.
+
+### Changed
+- A timing or memory capture's report opens in a tab of its own beside the frame captures, instead of a band above them that pushed the capture tabs off the window.
+- The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ## v0.22.1
 

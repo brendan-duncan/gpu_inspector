@@ -24,7 +24,7 @@ import { cpuVerdict, summarizeCpuTimeline } from "../renderer/cpu_timeline.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
-import { tileReport } from "../renderer/tile_report.js";
+import { tileReport } from "../renderer/tile_analysis.js";
 import { pipelineUses } from "../renderer/shader_cache.js";
 import { SEVERITY_RANK, type Severity } from "../renderer/vulkan/spirv_analysis.js";
 import { recentCaptureFiles, settingsFile, type Capture, type CaptureStore } from "./capture_store.js";

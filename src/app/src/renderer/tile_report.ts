@@ -1,14 +1,13 @@
 // "Tile-Based GPUs": the Reports menu's view of tile_analysis.ts, what a captured frame would cost
 // a mobile GPU in memory traffic, and what the frame does that a tiled GPU cannot keep on chip.
-import { FrameAnalysis, type FrameAnalysisDatabase, type FrameFinding } from "./vulkan/frame_analysis.js";
-import { analyzeTiling, type SubpassInfo, type TileOptions, type TileReport } from "./tile_analysis.js";
-import { isObject, num, refId } from "./vulkan/vulkan_object.js";
+import { tileReport, type TileReport } from "./tile_analysis.js";
+import type { FrameAnalysisDatabase, FrameFinding } from "./vulkan/frame_analysis.js";
 import { formatBytes } from "./utils/format.js";
 import { Div } from "./widget/div.js";
 import { Span } from "./widget/span.js";
 import type { Widget } from "./widget/widget.js";
 import type { CaptureData } from "./capture_data.js";
-import type { GraphNode, RenderGraph } from "./render_graph.js";
+import type { RenderGraph } from "./render_graph.js";
 
 /** The rules of the other analyses that are about tile memory, which the report lists beside its own. */
 export const TILE_RULES = new Set([
@@ -40,37 +39,6 @@ const API_NOTES: Record<string, string[]> = {
     "Multisampled attachments resolve in the pass with MTLStoreActionMultisampleResolve.",
   ],
 };
-
-/** Vulkan: the subpasses and input attachments each render pass was recorded with. */
-function vulkanSubpasses(data: CaptureData, db: FrameAnalysisDatabase): (node: GraphNode) => SubpassInfo | null {
-  return (node) => {
-    const cmd = data.commands[node.commandIndex];
-    if (!cmd) return null;
-    if (cmd.method.startsWith("vkCmdBeginRendering")) return { subpasses: 1, inputAttachments: 0 };
-    const begin = isObject(cmd.args?.pRenderPassBegin) ? cmd.args!.pRenderPassBegin : null;
-    const rp = begin ? db.getObject(refId(begin.renderPass))?.descriptor ?? null : null;
-    if (!rp) return null;
-    const subpasses = Array.isArray(rp.pSubpasses) ? rp.pSubpasses.filter(isObject) : [];
-    return {
-      subpasses: Math.max(1, subpasses.length),
-      inputAttachments: subpasses.reduce((sum, s) => sum + num(s.inputAttachmentCount), 0),
-    };
-  };
-}
-
-/** The tile analysis of a capture, with what each API can tell it beyond the graph. */
-export function tileReport(data: CaptureData, db: FrameAnalysisDatabase, graph: RenderGraph): TileReport {
-  const options: TileOptions = {};
-  if (data.api === "vulkan") {
-    // The Vulkan analysis reads fragment shaders' SPIR-V for how they read an image, which is what
-    // tells a same-pixel post-processing step from a filter.
-    const vulkan = new FrameAnalysis(db);
-    vulkan.analyze(data);
-    options.filtersInput = (node, imageId) => vulkan.filtersInput(node.commandIndex, imageId);
-    options.subpasses = vulkanSubpasses(data, db);
-  }
-  return analyzeTiling(graph, options);
-}
 
 const mb = (bytes: number): string => formatBytes(bytes);
 const rate = (bytes: number): string => `${((bytes * TARGET_FPS) / 1e9).toFixed(2)} GB/s`;
