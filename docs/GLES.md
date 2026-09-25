@@ -87,7 +87,10 @@ debuggable OpenGL ES 3.2 test application, `build/android/android_gles_triangle.
 ## What a capture shows
 
 OpenGL ES has no command buffers and no render passes, so a capture is the calls the application
-made between two `eglSwapBuffers`, per context. The capture library marks a pass wherever the draw
+made between two `eglSwapBuffers`, per context. An application that never swaps — a browser, whose
+WebGL draws into surfaces its compositor presents — has frames end at `glFlush` and `glFinish`
+instead, once 60 of them pass without a swap, and only at a flush with something drawn since the
+last; the capture bar says so. `GLESINSP_FRAME_BOUNDARY=flush` starts that way, `=swap` never does. The capture library marks a pass wherever the draw
 framebuffer changes (`BeginRenderPass` and `EndRenderPass`, which are not GL calls), and each pass's
 color targets are read back as it ends. Debug groups (`glPushDebugGroup`) nest the command tree as
 they do for the other APIs.

@@ -96,9 +96,8 @@ A bottom level built before the capture began — which is how an engine builds 
 still drawn: the capture library remembers what each structure's last build read, and reads those
 ranges back as the capture starts. What comes back is what those buffers hold at that moment, which
 is what the build read for geometry that does not change, and not for a buffer the application has
-rewritten since; the view says so on every structure drawn that way. The Vulkan and Direct3D 12
-replays build these structures before the frame ([Capture replay](REPLAY.md)); the Metal replay does
-not replay ray tracing yet.
+rewritten since; the view says so on every structure drawn that way. The replays build these
+structures before the frame ([Capture replay](REPLAY.md)).
 
 ### In a tab of its own
 

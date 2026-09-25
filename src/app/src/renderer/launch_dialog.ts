@@ -21,11 +21,13 @@ export function emptyLaunchConfig(): LaunchConfig {
   };
 }
 
+// What a browser launch captures: the page's WebGPU device, or its WebGL (main/browsers.ts, main.ts launchPlugins).
+const PAGE_APIS: [string, string][] = [["WebGPU", "webgpu"], ["WebGL", "webgl"]];
 const CAPTURE_MODES: [string, QueuedCapture["mode"]][] = [["No queued capture", "none"], ["Capture frame", "frame"], ["Capture after seconds", "time"]];
 type Target = [string, LaunchConfig["target"]];
 const TARGETS: Target[] = [
   ["This computer", "native"],
-  ["A web page in a browser (WebGPU)", "browser"],
+  ["A web page in a browser (WebGPU, WebGL)", "browser"],
   ["Android device (adb)", "android"],
   ["An application started elsewhere (implicit layer)", "implicit"],
   ["An application started elsewhere (Direct3D 12)", "waitD3D12"],
@@ -124,6 +126,7 @@ export class LaunchDialog extends Dialog {
   private _browserPath: TextInput;
   private _browserPathRow: HTMLElement;
   private _url: TextInput;
+  private _pageApi: Select;
   private _browsers: BrowserInstall[] = [];
   private _loadingBrowsers = false;
   private _recordAlways: Checkbox;
@@ -272,12 +275,21 @@ export class LaunchDialog extends Dialog {
     this._browserPathRow = this._browserPath.element.parentElement as HTMLElement;
     this._url = this._inputRow(this._browserRows, "Page URL", "https://example.com/webgpu-page, or a file:/// path");
     this._url.tooltip = "The page to open. The browser is started with a profile of its own, so the browser you already have open keeps its windows and its session; for Firefox that profile also carries the preferences a capture needs, since it has no command line switch for its GPU sandbox.";
+    {
+      const row = new Div(this._browserRows, { class: "launch-dialog-row" });
+      new Span(row, { text: "Page API", class: "launch-dialog-label" });
+      this._pageApi = new Select(row, {
+        options: PAGE_APIS.map((a) => a[0]), class: "launch-dialog-select",
+        tooltip: "What the page renders with. WebGL runs on ANGLE: Chrome and Edge are started with ANGLE on Vulkan, which the Vulkan layer captures; Firefox's ANGLE is captured by the OpenGL ES plugin, as OpenGL ES.",
+      });
+    }
     new Div(this._browserRows, {
       text: "The browser is launched with its GPU sandbox off and the capture library is put into its GPU process as that "
         + "process starts, which is where a page's WebGPU work is done. Captures are therefore the Direct3D 12 underneath "
         + "WebGPU: the pipelines, passes and draws that Chrome's Dawn (or Firefox's wgpu) made of the page's WebGPU calls, "
         + "with frames ending at each submission rather than at a present, since the browser's compositor presents rather "
-        + "than the renderer. For a browser with extra switches, use This computer and put --type=gpu-process (or \" gpu\" "
+        + "than the renderer. A WebGL page is captured as what ANGLE made of it: Vulkan in Chrome and Edge, OpenGL ES in "
+        + "Firefox. For a browser with extra switches, use This computer and put --type=gpu-process (or \" gpu\" "
         + "for Firefox) in Follow child processes.",
       class: "launch-dialog-hint",
     });
@@ -579,7 +591,8 @@ export class LaunchDialog extends Dialog {
       env: android ? "" : this._env.value,
       device: android ? (this._devices[this._device.index]?.serial ?? this._pendingDevice) : "",
       activity: android ? this._activity.value.trim() : "",
-      api: android ? (this._androidApis[this._androidApi.index]?.id ?? this._pendingApi) : undefined,
+      api: android ? (this._androidApis[this._androidApi.index]?.id ?? this._pendingApi)
+        : target === "browser" && PAGE_APIS[this._pageApi.index]?.[1] === "webgl" ? "webgl" : undefined,
       port: Number(this._port.value) || DEFAULT_PORT,
       log: this._log.checked,
       recordAlways: this._recordAlways.checked,
@@ -618,6 +631,7 @@ export class LaunchDialog extends Dialog {
     } else if (this.target === "browser") {
       this._browserPath.value = c.exe ?? "";
       this._url.value = c.args ?? "";
+      this._pageApi.index = Math.max(0, PAGE_APIS.findIndex((a) => a[1] === (c.api ?? "webgpu")));
       void this._loadBrowsers(false);
     } else {
       this._exe.value = c.exe ?? "";

@@ -13,6 +13,8 @@ import { fmt, isObject, num, str } from "../vulkan/vulkan_object.js";
 const DRAW = new Set(["DrawInstanced", "DrawIndexedInstanced", "DispatchMesh", "ExecuteIndirect"]);
 const DISPATCH = new Set(["Dispatch", "DispatchGraph"]);
 const TRACE = new Set(["DispatchRays"]);
+/** What the library times as a compute pass outside a render pass (OnBeforeDispatch, OnBeforeComputeWork). */
+const COMPUTE_WORK = new Set(["Dispatch", "DispatchGraph", "DispatchRays", "ExecuteIndirect", "BuildRaytracingAccelerationStructure"]);
 const PASS_BEGIN = new Set(["OMSetRenderTargets", "BeginRenderPass"]);
 const PASS_END = new Set(["EndRenderTargets", "EndRenderPass"]);
 // The library restarts a list's pass numbering at Reset, as the Vulkan layer does at
@@ -200,6 +202,7 @@ export const D3D12_SETS: CommandSets = {
   DRAW,
   DISPATCH,
   TRACE,
+  COMPUTE_WORK,
   PASS_BEGIN,
   PASS_END,
   RECORD_BEGIN,

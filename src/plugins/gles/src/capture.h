@@ -53,6 +53,13 @@ bool Recording();
 void BeforeSwap(Context* c, EGLDisplay display, EGLSurface surface, const char* method);
 /** After it: frame statistics, and the capture starting or finishing on the frame boundary. */
 void AfterSwap(Context* c);
+/**
+ * After glFlush or glFinish. An application that never swaps -- a browser, whose WebGL draws into
+ * surfaces its compositor presents -- has no other frame boundary: once 60 flushes pass without a
+ * swap, each flush ends a frame. GLESINSP_FRAME_BOUNDARY=flush makes them do so from the start,
+ * =swap never.
+ */
+void AfterFlush(Context* c);
 
 /** What a draw call draws, for the snapshot's read-backs (how many vertices and indices it reads). */
 struct DrawParams

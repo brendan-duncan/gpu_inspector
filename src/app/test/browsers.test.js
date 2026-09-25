@@ -88,6 +88,15 @@ test("a Chromium browser's command line turns the GPU sandbox off and keeps its 
   assert.ok(!args.some((a) => a.startsWith("--use-webgpu-adapter")));
 });
 
+test("a WebGL page in a Chromium browser runs ANGLE on Vulkan, for the Vulkan layer", () => {
+  // Left alone, ANGLE runs on Direct3D 11 on Windows, which nothing captures as the page's work.
+  assert.ok(browserArgs(CHROME, "https://example.com/page", "C:\profiles\Chrome", "win32", "webgl").includes("--use-angle=vulkan"));
+  assert.ok(!browserArgs(CHROME, "https://example.com/page", "C:\profiles\Chrome", "win32").includes("--use-angle=vulkan"));
+  // Firefox's ANGLE is a DLL of its own, which the OpenGL ES plugin hooks: its command line is unchanged.
+  assert.deepEqual(browserArgs(FIREFOX, "https://example.com/page", "C:\profiles\Firefox", "win32", "webgl"),
+    browserArgs(FIREFOX, "https://example.com/page", "C:\profiles\Firefox", "win32"));
+});
+
 test("on Linux a Chromium browser is pointed at the real GPU, not SwiftShader", () => {
   // Left alone, Chrome on Linux answers requestAdapter with SwiftShader, which renders WebGPU on
   // the CPU and makes no Vulkan device through the loader — so there is nothing for the layer to

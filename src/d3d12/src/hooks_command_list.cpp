@@ -2236,6 +2236,9 @@ void STDMETHODCALLTYPE Hook_BuildRaytracingAccelerationStructure(List* This, con
     if (Internal())
         return orig(This, pDesc, NumPostbuildInfoDescs, pPostbuildInfoDescs);
     CommandRecorder* rec = Rec(This);
+    // A build is compute work, timed in a compute pass with the dispatches and ray traces around it.
+    if (rec && !rec->pass().active)
+        Cap().OnBeforeComputeWork(rec);
     CommandScope scope(rec);
     orig(This, pDesc, NumPostbuildInfoDescs, pPostbuildInfoDescs);
     // The structure this wrote and what it was built from (raytracing.h), whether or not a capture

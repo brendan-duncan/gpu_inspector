@@ -34,7 +34,7 @@ targets that make sense on this machine are listed.
 | Target | What it does | Available on | Button |
 |---|---|---|---|
 | **This computer** | Starts an application here with the capture library enabled for that process alone. Vulkan or Direct3D 12 on Windows, Vulkan on Linux, Metal on macOS | all | **Launch** |
-| **A web page in a browser (WebGPU)** | Starts a browser on a page, capturing what its GPU process does underneath WebGPU: Direct3D 12 on Windows, Vulkan on Linux | Windows, Linux | **Launch** |
+| **A web page in a browser (WebGPU, WebGL)** | Starts a browser on a page, capturing what its GPU process does underneath WebGPU: Direct3D 12 on Windows, Vulkan on Linux | Windows, Linux | **Launch** |
 | **Android device (adb)** | Starts a package on a connected device or headset | all | **Launch** |
 | **An application started elsewhere (implicit layer)** | Starts nothing: registers the Vulkan layer for your account and waits for an application you start yourself | Windows, Linux | **Wait** |
 | **An application started elsewhere (Direct3D 12)** | Starts nothing: watches for a process by name and injects the Direct3D 12 library as it starts | Windows | **Wait** |
@@ -59,12 +59,13 @@ On macOS the library is injected with `DYLD_INSERT_LIBRARIES`, which a target si
 hardened runtime ignores — the launch says so rather than waiting forever; see
 [Metal](METAL.md#code-signing-decides-whether-this-works).
 
-### A web page in a browser (WebGPU)
+### A web page in a browser (WebGPU, WebGL)
 
 | Field | What it takes |
 |---|---|
 | **Browser** | The browsers found on this machine, with their versions. **Refresh** looks again. **Other...** adds a **Browser Path** field for a browser that was not found, or a build of your own |
 | **Page URL** | The page to open: an `http(s)://` address or a `file:///` path. Empty opens the browser's start page, and you navigate yourself |
+| **Page API** | **WebGPU**, or **WebGL**: Chrome and Edge are then started with ANGLE on Vulkan, and Firefox with the OpenGL ES plugin in place of the Direct3D 12 library. See [WebGL pages](HOWTO_WEBGL.md) |
 
 The browser is started on a profile the inspector keeps for it, so the browser you already have
 open keeps its windows and its session. See [Web pages and WebGPU](BROWSER.md).

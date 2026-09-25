@@ -6,7 +6,7 @@
 // what each command touches. The Vulkan, Metal and D3D12 sources are in vulkan/frame_resources.ts,
 // metal/frame_resources.ts and d3d12/frame_resources.ts; the graph model they feed is render_graph.ts.
 import { buildRenderGraph, type NodeKind, type RawAccess, type RawPass, type RenderGraph, type SyncPoint } from "./render_graph.js";
-import { isAction, type CommandSets } from "./command_sets.js";
+import { isAction, opensComputeWork, type CommandSets } from "./command_sets.js";
 import { passKey } from "./capture_data.js";
 import type { CaptureData } from "./capture_data.js";
 import { backendFor } from "./backend.js";
@@ -186,7 +186,7 @@ export function collectPasses(data: CaptureData, sets: CommandSets, source: Reso
       finish();
     }
 
-    if (sets.DISPATCH.has(cmd.method) && !inPass && !state.open) {
+    if (opensComputeWork(sets, cmd.method) && !inPass && !state.open) {
       const cbKey = cmd.secondary || objId;
       const ordinal = computeCounters.get(cbKey) ?? 0;
       computeCounters.set(cbKey, ordinal + 1);

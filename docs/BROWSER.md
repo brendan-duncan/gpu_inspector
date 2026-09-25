@@ -6,7 +6,7 @@ A WebGPU page is a graphics application like any other, and GPU Inspector captur
 way — by putting its Direct3D 12 capture library into the process that does the rendering. For a
 browser that is not the process you start: the page's WebGPU work, and the browser's compositing,
 happen in a **GPU process** the browser spawns itself. The launch dialog's **A web page in a
-browser (WebGPU)** target starts the browser, follows it into that child, and gives you an
+browser (WebGPU, WebGL)** target starts the browser, follows it into that child, and gives you an
 ordinary session with the same Inspect and Capture tabs as a native application.
 
 What you get is the **Direct3D 12 underneath WebGPU**: the pipelines, descriptor heaps, command
@@ -30,9 +30,13 @@ creates no Vulkan device through the loader: the page renders, and there is noth
 The launch dialog hides the target on macOS, which has no capture layer for what a browser
 renders with.
 
+**WebGL** goes through the same launch with **Page API** set to WebGL: Chromium browsers are then
+started with ANGLE on Vulkan, which the Vulkan layer captures, and Firefox with the OpenGL ES plugin
+in place of the Direct3D 12 library. [A WebGL page](HOWTO_WEBGL.md) covers it.
+
 ## Launching a page
 
-Press **Launch...** and set *Run On* to **A web page in a browser (WebGPU)**.
+Press **Launch...** and set *Run On* to **A web page in a browser (WebGPU, WebGL)**.
 
 | Field | What it takes |
 |---|---|

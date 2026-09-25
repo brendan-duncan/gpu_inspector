@@ -61,6 +61,8 @@ Whole workflows for particular applications, where getting in is the hard part.
 | [A Unity player](HOWTO_UNITY.md) | Launching a built player, which backend to inspect, and why a Direct3D 12 Unity frame reads differently from a Vulkan one |
 | [A Quest application](HOWTO_QUEST.md) | An OpenXR application on a headset: the order to do it in, and the three things about a headset that get in the way |
 | [A WebGPU page](HOWTO_BROWSER.md) | Capturing what a browser's WebGPU implementation put on the GPU, and reading the frame it produced |
+| [Ray tracing](HOWTO_RAYTRACING.md) | Checking the scene and the binding table, finding what the builds and traces cost, and confirming a fix by replay |
+| [A WebGL page](HOWTO_WEBGL.md) | WebGL through ANGLE: ANGLE's Vulkan in Chrome, which replays, or the page's own OpenGL ES calls in Firefox |
 | [Minecraft Bedrock](HOWTO_MINECRAFT.md) | Inspecting and capturing Minecraft for Windows, which the inspector has to wait for rather than launch |
 
 ## Using the inspector

@@ -102,6 +102,12 @@ export interface CommandSets {
   DISPATCH: ReadonlySet<string>;
   /** Ray tracing launches; empty for an API without them. */
   TRACE: ReadonlySet<string>;
+  /**
+   * What opens (or joins) a timed compute pass outside a render pass, as the capture library
+   * brackets them: dispatches, and for Vulkan and Direct3D 12 ray tracing launches and acceleration
+   * structure builds too. DISPATCH when absent (see opensComputeWork).
+   */
+  COMPUTE_WORK?: ReadonlySet<string>;
   PASS_BEGIN: ReadonlySet<string>;
   PASS_END: ReadonlySet<string>;
   LABEL_BEGIN: ReadonlySet<string>;
@@ -218,6 +224,11 @@ export interface DrawArgs {
   firstIndex?: number;
   vertexOffset?: number;
   instanceCount?: number;
+}
+
+/** Whether `method`, outside a render pass, is compute work the capture library times as a compute pass. */
+export function opensComputeWork(sets: CommandSets, method: string): boolean {
+  return (sets.COMPUTE_WORK ?? sets.DISPATCH).has(method);
 }
 
 /** Draws, dispatches and ray tracing launches: the commands with reconstructed state. */

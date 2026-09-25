@@ -395,7 +395,7 @@ Limits:
 
 ## Per-draw timing and counters
 
-`--draws` measures every draw and dispatch of the frame (`draw_stats.cpp`, RenderDoc's
+`--draws` measures every draw, dispatch and ray trace of the frame (`draw_stats.cpp`, RenderDoc's
 `vk_counters.cpp` does the same). The frame replays exactly as the capture recorded it, with each
 action issued between a pair of timestamps and inside a pipeline statistics query:
 
@@ -1256,7 +1256,7 @@ was run. Synchronization validation does not report that hazard. Two runs of ide
 disagreeing does, which is what a replay is for.
 
 Not replayed yet: `vkCmdTraceRaysIndirect*`, the NV ray tracing commands, acceleration structure
-copies, queries whose results the frame reads back, and Metal captures. Shader objects are made one at a time from their payloads, so a linked set replays
+copies, and queries whose results the frame reads back. Shader objects are made one at a time from their payloads, so a linked set replays
 unlinked. Descriptor update templates are not created:
 sets are written from the snapshots their binds carry, and a push through a template is pushed
 again as plain writes from its own.

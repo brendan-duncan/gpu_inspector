@@ -633,6 +633,8 @@ private:
         Staging staging;
         size_t target = 0;
         const JValue* texture = nullptr;
+        /** The bytes of the captured payload compared: its first mip level, when the replay reads only that; 0 for all. */
+        size_t capturedBytes = 0;
     };
     /** One command buffer's recording in the command list: its begin to its end. */
     struct CommandGroup

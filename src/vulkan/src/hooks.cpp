@@ -701,6 +701,17 @@ void PreHook_vkCmdDispatch(VkCommandBuffer& commandBuffer, uint32_t&, uint32_t&,
 void PreHook_vkCmdDispatchBase(VkCommandBuffer& commandBuffer, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&) { BeforeDispatch(commandBuffer); }
 void PreHook_vkCmdDispatchBaseKHR(VkCommandBuffer& commandBuffer, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&, uint32_t&) { BeforeDispatch(commandBuffer); }
 void PreHook_vkCmdDispatchIndirect(VkCommandBuffer& commandBuffer, VkBuffer&, VkDeviceSize&) { BeforeDispatch(commandBuffer); }
+// Ray tracing launches and acceleration structure builds run outside render passes as dispatches do,
+// and are timed in the same compute passes.
+void PreHook_vkCmdTraceRaysKHR(VkCommandBuffer& commandBuffer, const VkStridedDeviceAddressRegionKHR*&, const VkStridedDeviceAddressRegionKHR*&,
+    const VkStridedDeviceAddressRegionKHR*&, const VkStridedDeviceAddressRegionKHR*&, uint32_t&, uint32_t&, uint32_t&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdTraceRaysIndirectKHR(VkCommandBuffer& commandBuffer, const VkStridedDeviceAddressRegionKHR*&, const VkStridedDeviceAddressRegionKHR*&,
+    const VkStridedDeviceAddressRegionKHR*&, const VkStridedDeviceAddressRegionKHR*&, VkDeviceAddress&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdTraceRaysIndirect2KHR(VkCommandBuffer& commandBuffer, VkDeviceAddress&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdBuildAccelerationStructuresKHR(VkCommandBuffer& commandBuffer, uint32_t&, const VkAccelerationStructureBuildGeometryInfoKHR*&,
+    const VkAccelerationStructureBuildRangeInfoKHR* const*&) { BeforeDispatch(commandBuffer); }
+void PreHook_vkCmdBuildAccelerationStructuresIndirectKHR(VkCommandBuffer& commandBuffer, uint32_t&, const VkAccelerationStructureBuildGeometryInfoKHR*&,
+    const VkDeviceAddress*&, const uint32_t*&, const uint32_t* const*&) { BeforeDispatch(commandBuffer); }
 void PreHook_vkCmdPipelineBarrier(VkCommandBuffer& commandBuffer, VkPipelineStageFlags&, VkPipelineStageFlags&, VkDependencyFlags&, uint32_t&,
     const VkMemoryBarrier*&, uint32_t&, const VkBufferMemoryBarrier*&, uint32_t&, const VkImageMemoryBarrier*&)
 {

@@ -290,13 +290,19 @@ class Emitter:
         reg = self.reg
         h.append("void PNextToJson(JsonWriter& w, const void* pNext);")
         body = [
+            "// The chain is written once, as the array: each element's own pNext is the rest of the array,",
+            "// written as null. Writing it again under every element doubled the output with every link,",
+            "// and ANGLE's vkCreateDevice chain of some thirty structs never finished.",
+            "static thread_local const void* t_chainRest = nullptr;",
             "void PNextToJson(JsonWriter& w, const void* pNext) {",
-            "    if (!pNext) { w.Null(); return; }",
+            "    if (!pNext || pNext == t_chainRest) { w.Null(); return; }",
+            "    const void* const saved = t_chainRest;",
             "    w.BeginArray();",
             "    for (auto* p = static_cast<const VkBaseInStructure*>(pNext); p; p = p->pNext) {",
             "        // Loader-internal link structs are not part of the application's chain.",
             "        if (p->sType == VK_STRUCTURE_TYPE_LOADER_INSTANCE_CREATE_INFO ||",
             "            p->sType == VK_STRUCTURE_TYPE_LOADER_DEVICE_CREATE_INFO) continue;",
+            "        t_chainRest = p->pNext;",
             "        switch ((int64_t)p->sType) {",
         ]
         seen = set()
@@ -311,6 +317,7 @@ class Emitter:
             "            break;",
             "        }",
             "    }",
+            "    t_chainRest = saved;",
             "    w.EndArray();",
             "}",
         ]

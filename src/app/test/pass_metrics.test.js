@@ -415,3 +415,24 @@ test("a secondary's own begin and end do not restart the primary's numbering", (
   assert.deepEqual(m.passes.map((p) => p.durationMs), [1, 2, 3, 4], "each pass found its own timing");
   assert.equal(m.gpuMs, 10, "not 4, which is the first pass counted four times");
 });
+
+test("Vulkan ray tracing work is timed in compute passes numbered as the layer numbers them", () => {
+  // The layer brackets builds and traces as it does dispatches (src/vulkan/src/hooks.cpp): a run
+  // that only builds acceleration structures is a compute pass too, and the trace after the
+  // barrier is the next one.
+  const data = capture([
+    ["vkBeginCommandBuffer", {}],
+    ["vkCmdBuildAccelerationStructuresKHR", {}],
+    ["vkCmdPipelineBarrier", {}],
+    ["vkCmdTraceRaysKHR", {}],
+    ["vkCmdPipelineBarrier", {}],
+    ["vkCmdDispatch", {}],
+    ["vkEndCommandBuffer", {}],
+  ], [
+    { frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 0, kind: "compute", durationMs: 1, startMs: 0 },
+    { frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 1, kind: "compute", durationMs: 2, startMs: 1 },
+    { frame: 0, commandBuffer: COMMAND_BUFFER, passIndex: 2, kind: "compute", durationMs: 3, startMs: 3 },
+  ], "vulkan");
+  const m = collectPassMetrics(data, db);
+  assert.deepEqual(m.passes.map((p) => [p.passIndex, p.compute, p.durationMs]), [[0, true, 1], [1, true, 2], [2, true, 3]]);
+});

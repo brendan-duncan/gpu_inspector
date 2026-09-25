@@ -18,7 +18,7 @@ The bar above it controls what is recorded:
 | **Render targets** | Read back each render pass's attachments at the end of the pass |
 | **Buffers** | Read back the buffers bound by descriptor sets, vertex and index bindings, and indirect draws, and the source of every buffer copy |
 | **Images** | Read back the images bound by descriptor sets, so the capture shows what the shaders sampled, and what the frame found in the images it reads before writing them (a pass that loads an attachment, a copy from an image), so a [replay](REPLAY.md) can start where the frame did |
-| **Profile passes** | Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card |
+| **Profile passes** | Write GPU timestamps around every render pass, and every run of compute work outside one (dispatches, ray traces, acceleration structure builds): pass durations, the pass timeline and the Frame Bound card |
 | **Measure draws** | Direct3D 12: a timestamp pair, a pipeline statistics query and an occlusion query around every draw and dispatch, so the Shader Flame Graph can split a pass's time between its draws. Costs GPU and CPU time in the captured frame ([Direct3D 12](D3D12.md#measuring-draws-overlays-and-meshes)) |
 | **Stack traces** | Record the call stack of every command in the frame. Costs CPU time in the application while capturing |
 | **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated, and a [replay](REPLAY.md) of the frame then says which buffers it could not start as the frame did |

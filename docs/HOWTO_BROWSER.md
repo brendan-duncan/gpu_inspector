@@ -11,7 +11,7 @@ changes and why. This is the short path, checked against Chrome on Windows with 
 
 ## Steps
 
-1. Press **Launch...** and set *Run On* to **A web page in a browser (WebGPU)**.
+1. Press **Launch...** and set *Run On* to **A web page in a browser (WebGPU, WebGL)**.
 2. Pick a **Browser** from the list of the ones found on this machine.
 3. Put the page in **Page URL** — an `http(s)://` address, or a `file:///` path to a local page.
    Leave it empty to start on the browser's own start page and navigate yourself.

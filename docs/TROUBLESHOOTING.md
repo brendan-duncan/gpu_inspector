@@ -101,7 +101,7 @@ every call. Untick **Validation layer**, and lower the capture's buffer and text
 
 **A browser, or a WebGPU page, does not connect or does not capture.** A browser renders in a GPU
 process it starts itself, and that process needs its sandbox off before the library can open its
-port. Use *Run On* › **A web page in a browser (WebGPU)** rather than launching the browser as an
+port. Use *Run On* › **A web page in a browser (WebGPU, WebGL)** rather than launching the browser as an
 ordinary application, and see [Web pages and WebGPU](BROWSER.md#if-it-does-not-work) for what each
 symptom means.
 

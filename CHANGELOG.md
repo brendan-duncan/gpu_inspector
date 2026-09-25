@@ -1,3 +1,20 @@
+## v0.24.1
+
+### Added
+- A browser launch's **Page API** can be WebGL: Chrome and Edge run ANGLE on Vulkan for the Vulkan layer, and Firefox gets the OpenGL ES plugin (docs/HOWTO_WEBGL.md).
+- The OpenGL ES plugin ends frames at `glFlush` and `glFinish` in an application that never swaps, such as a browser's WebGL.
+- Vulkan and Direct3D 12 captures time ray traces and acceleration structure builds as compute passes.
+- `vkinsp_replay --draws` measures each `vkCmdTraceRaysKHR` as well as the draws and dispatches.
+- How-to guides for a WebGL page (docs/HOWTO_WEBGL.md) and for debugging and profiling ray tracing (docs/HOWTO_RAYTRACING.md).
+
+### Fixed
+- The Vulkan layer no longer hangs in `vkCreateDevice` on a long feature chain, such as ANGLE's: a `pNext` chain was written once per link it had.
+- Vulkan replay compares the render targets of passes begun on an imageless framebuffer.
+- Vulkan replay no longer crashes the driver on a pipeline with creation feedback or an ignored tessellation state pointer.
+- Vulkan replay compares a mipmapped storage image's first level only, which is all it reads back.
+- A Direct3D 12 `DispatchRays` no longer shifts the timings of the compute passes after it onto the wrong passes.
+- A ray tracing command a Vulkan replay leaves out is named in its problems.
+
 ## v0.24.0
 
 ### Added

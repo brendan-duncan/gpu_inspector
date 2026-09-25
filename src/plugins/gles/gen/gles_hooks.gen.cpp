@@ -1272,6 +1272,7 @@ void GL_APIENTRY Hook_glFinish(void) {
         (void)jw;
         EndCall(call);
     }
+    Late_glFinish();
 }
 
 void GL_APIENTRY Hook_glFlush(void) {
@@ -1283,6 +1284,7 @@ void GL_APIENTRY Hook_glFlush(void) {
         (void)jw;
         EndCall(call);
     }
+    Late_glFlush();
 }
 
 void GL_APIENTRY Hook_glFramebufferRenderbuffer(GLenum target, GLenum attachment, GLenum renderbuffertarget, GLuint renderbuffer) {

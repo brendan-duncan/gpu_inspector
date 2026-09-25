@@ -750,6 +750,8 @@ void Late_glDeleteTransformFeedbacks(GLsizei n, const GLuint* names) { Deleted(O
 void Late_glDeleteProgramPipelines(GLsizei n, const GLuint* names) { Deleted(ObjType::ProgramPipeline, n, names); }
 void Late_glDeleteProgramPipelinesEXT(GLsizei n, const GLuint* names) { Deleted(ObjType::ProgramPipeline, n, names); }
 void Late_glDeleteShader(GLuint shader) { Deleted(ObjType::Shader, 1, &shader); }
+void Late_glFlush() { AfterFlush(Current()); }
+void Late_glFinish() { AfterFlush(Current()); }
 void Late_glDeleteProgram(GLuint program) { Deleted(ObjType::Program, 1, &program); }
 void Late_glDeleteSync(GLsync sync)
 {

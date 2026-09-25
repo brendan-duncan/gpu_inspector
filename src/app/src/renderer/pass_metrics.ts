@@ -16,7 +16,7 @@
 import { isObject, num, refId, str, type ObjectLookup } from "./vulkan/vulkan_object.js";
 import type { ArgObject, ArgValue, CaptureCommand, OverdrawMeasurement, PassTiming } from "../shared/protocol.js";
 import type { CaptureData } from "./capture_data.js";
-import { boundPipelineOf } from "./command_sets.js";
+import { boundPipelineOf, opensComputeWork } from "./command_sets.js";
 import { drawSumsByPass, passSumKey } from "./draw_stats.js";
 import { heaviestStage, hwCountersByPass, limiterAdvice, passLimiter, type PassLimiter } from "./hw_counters.js";
 
@@ -236,9 +236,9 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       }
       continue;
     }
-    if (sets.DISPATCH.has(m)) {
+    if (sets.DISPATCH.has(m) || opensComputeWork(sets, m)) {
       if (open) {
-        open.draws++;                        // Metal: the dispatch belongs to its compute encoder
+        if (sets.DISPATCH.has(m)) open.draws++;   // Metal: the dispatch belongs to its compute encoder
       } else if (!inPass) {
         // Vulkan: a run of dispatches outside a render pass is its own timed pass.
         if (!computeRun) {
@@ -414,7 +414,7 @@ function targetOf(cmd: CaptureCommand, db: ObjectLookup): { pixels: number; samp
 function blank(cmd: CaptureCommand, passIndex: number, compute: boolean, cb: number,
                target: { pixels: number; samples: number } | null): PassMetrics {
   return {
-    commandIndex: cmd.index, endIndex: cmd.index, label: passLabel(cmd, passIndex), frame: cmd.frame ?? 0,
+    commandIndex: cmd.index, endIndex: cmd.index, label: passLabel(cmd, passIndex, compute), frame: cmd.frame ?? 0,
     commandBuffer: cb, passIndex, compute, draws: 0, vertices: 0,
     pixels: target?.pixels ?? 0, samples: target?.samples ?? 1,
     timing: null, durationMs: null, vertexMs: null, fragmentMs: null,
@@ -425,7 +425,7 @@ function blank(cmd: CaptureCommand, passIndex: number, compute: boolean, cb: num
 }
 
 /** The encoder's label when it set one, else the pass's kind and number. */
-function passLabel(cmd: CaptureCommand, passIndex: number): string {
+function passLabel(cmd: CaptureCommand, passIndex: number, compute = false): string {
   const a = cmd.args;
   const descriptor = a && isObject(a.descriptor) ? a.descriptor : null;
   const label = str(a?.label) || str(descriptor?.label);
@@ -434,7 +434,7 @@ function passLabel(cmd: CaptureCommand, passIndex: number): string {
     : m.startsWith("blitCommandEncoder") ? "Blit"
     : m.startsWith("renderCommandEncoder") || m.startsWith("parallelRenderCommandEncoder") ? "Render Pass"
     : m.startsWith("vkCmdBeginRender") ? "Render Pass"
-    : m.startsWith("vkCmdDispatch") ? "Compute" : "Pass";
+    : compute ? "Compute" : "Pass";   // a run of dispatches, traces or builds outside a render pass
   return label ? `${kind} ${passIndex}: ${label}` : `${kind} ${passIndex}`;
 }
 

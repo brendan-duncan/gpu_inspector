@@ -58,6 +58,8 @@ inline VkImageAspectFlags AspectOf(std::string_view aspect)
 
 /** A command that does GPU work of its own: what per-draw timing and counters measure. */
 inline bool IsAction(std::string_view m) { return StartsWith(m, "vkCmdDraw") || StartsWith(m, "vkCmdDispatch"); }
+/** What per-draw timing and counters measure: the actions, and ray tracing launches (which ablation cannot replace). */
+inline bool IsMeasured(std::string_view m) { return IsAction(m) || StartsWith(m, "vkCmdTraceRays"); }
 
 /** The layer's names for shader stages, which name a pipeline's SPIR-V payloads ("fragment:main"). */
 inline const char* StageName(VkShaderStageFlagBits stage)

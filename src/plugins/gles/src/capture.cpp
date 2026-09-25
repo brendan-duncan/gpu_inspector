@@ -3,6 +3,7 @@
 #include "formats.h"
 #include "../gen/gles_constants.gen.h"
 
+#include <gpu_inspector/sdk/config.h>
 #include <gpu_inspector/sdk/transport.h>
 
 #include <algorithm>
@@ -72,6 +73,11 @@ CaptureOptions g_requested;
 CaptureOptions g_options;
 uint64_t g_swaps = 0;
 uint64_t g_startSwap = 0;
+uint64_t g_flushesSinceSwap = 0;
+// Frames end at flushes (AfterFlush); and whether anything drew, cleared or dispatched since the last
+// boundary, without which a flush is not a frame's end (Firefox flushes twice a frame, once after nothing).
+bool g_flushFrames = false;
+std::atomic<bool> g_workSinceBoundary{false};
 uint32_t g_frame = 0;
 std::vector<Recorded> g_commands;
 std::vector<TextureCapture> g_textures;
@@ -2044,7 +2050,7 @@ void FrameStats()
         w.Key("frames");
         w.Uint(g_intervals);
         w.Key("frameBoundary");
-        w.String("present");
+        w.String(g_flushFrames ? "flush" : "present");
         w.EndObject();
         Server::Get().SendJson(w.str());
     }
@@ -2118,6 +2124,7 @@ void RecordCommand(Context* c, const char* method, const std::string& argsJson, 
 
 void BeforeDraw(Context* c, const DrawParams& p)
 {
+    g_workSinceBoundary = true;
     if (!Recording() || !c)
         return;
     std::lock_guard lock(g_mutex);
@@ -2130,6 +2137,7 @@ void BeforeDraw(Context* c, const DrawParams& p)
 
 void BeforeDispatch(Context* c, bool indirect, intptr_t indirectOffset)
 {
+    g_workSinceBoundary = true;
     if (!Recording() || !c)
         return;
     std::lock_guard lock(g_mutex);
@@ -2142,6 +2150,7 @@ void BeforeDispatch(Context* c, bool indirect, intptr_t indirectOffset)
 
 void BeforeFramebufferWrite(Context* c, GLbitfield clearMask)
 {
+    g_workSinceBoundary = true;
     if (!Recording() || !c)
         return;
     std::lock_guard lock(g_mutex);
@@ -2253,7 +2262,41 @@ void BeforeSwap(Context* c, EGLDisplay display, EGLSurface surface, const char* 
     Append(c, method, w.str(), "", false);
 }
 
+void EndFrame(Context* c);
+
 void AfterSwap(Context* c)
+{
+    std::lock_guard lock(g_mutex);
+    g_flushesSinceSwap = 0;
+    g_flushFrames = false;
+    g_workSinceBoundary = false;
+    EndFrame(c);
+}
+
+void AfterFlush(Context* c)
+{
+    // 0: after kFlushesWithoutSwap flushes and no swap; 1: every flush; 2: never.
+    static const int mode = [] {
+        const std::string v = gpuinsp::sdk::Config::Get().Value("GLESINSP_FRAME_BOUNDARY");
+        return v == "flush" ? 1 : v == "swap" ? 2 : 0;
+    }();
+    constexpr uint64_t kFlushesWithoutSwap = 60;
+    std::lock_guard lock(g_mutex);
+    ++g_flushesSinceSwap;
+    if (mode == 2 || (mode == 0 && g_flushesSinceSwap < kFlushesWithoutSwap))
+        return;
+    if (!g_flushFrames && mode == 0)
+        Log("%llu flushes without a swap: frames end at glFlush and glFinish", (unsigned long long)kFlushesWithoutSwap);
+    g_flushFrames = true;
+    if (!g_workSinceBoundary.exchange(false))
+        return;
+    if (c && Recording() && c->passOpen)
+        EndPass(c);
+    EndFrame(c);
+}
+
+/** A frame boundary: a swap, or a flush when nothing swaps. */
+void EndFrame(Context* c)
 {
     std::lock_guard lock(g_mutex);
     ++g_swaps;

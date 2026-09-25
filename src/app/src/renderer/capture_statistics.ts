@@ -4,6 +4,7 @@
 // indirect draws), and the Frame Bound verdict. Frame Stats (frame_stats_view.ts) renders them and
 // the MCP server (src/mcp/) reports them.
 import { fmt, isObject, num, refId, str, type VulkanObject } from "./vulkan/vulkan_object.js";
+import { opensComputeWork } from "./command_sets.js";
 import type { CaptureData } from "./capture_data.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type { CaptureCommand } from "../shared/protocol.js";
@@ -111,6 +112,10 @@ export class CaptureStatistics {
       if (cmdSets.PASS_END.has(method)) inRenderPass.set(stream, false);
       if (cmd.object) commandBuffers.add(cmd.object.__id);
       if (cmd.secondary) secondaries.add(cmd.secondary);
+      if (opensComputeWork(cmdSets, method) && !inRenderPass.get(stream) && !computeOpen.get(stream)) {
+        this.computePasses++;
+        computeOpen.set(stream, true);
+      }
 
       if (cmdSets.DRAW.has(method)) {
         this.draws++;
@@ -120,10 +125,6 @@ export class CaptureStatistics {
         this._geometry(cmd, data, pipeline);
       } else if (cmdSets.DISPATCH.has(method)) {
         this.dispatches++;
-        if (!inRenderPass.get(stream) && !computeOpen.get(stream)) {
-          this.computePasses++;
-          computeOpen.set(stream, true);
-        }
       } else if (cmdSets.TRACE.has(method)) {
         this.traceRays++;
       } else if (COPY_METHODS.has(method)) {

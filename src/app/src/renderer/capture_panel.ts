@@ -89,7 +89,7 @@ import { decodeImage } from "./vulkan/texture_decode.js";
 import { encodeBase64 } from "./utils/base64.js";
 import { metalPipelineStages, type MetalPipelineStage } from "./metal/reflection.js";
 import { ImageView } from "./image_view.js";
-import { isAction, labelNameOf } from "./command_sets.js";
+import { isAction, labelNameOf, opensComputeWork } from "./command_sets.js";
 import { fmt, isObject, num, refId, type VulkanObject } from "./vulkan/vulkan_object.js";
 import { d3d12AttributeNames, isD3D12Type } from "./d3d12/d3d12_object.js";
 import type { SessionContext } from "./session_panel.js";
@@ -1893,7 +1893,7 @@ export class CaptureView implements CaptureHost {
         continue;
       }
       if (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method)) closeCompute();
-      if (sets.DISPATCH.has(cmd.method) && !inRenderPass) {
+      if (opensComputeWork(sets, cmd.method) && !inRenderPass) {
         if (!compute) openCompute(cmd.secondary || objId);
         compute!.dispatches++;
       }

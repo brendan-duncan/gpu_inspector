@@ -141,7 +141,7 @@ bool Replayer::PrepareCounters()
         for (uint32_t i = 0; i < commands->count; ++i)
         {
             const std::string m = Str(commands->items[i].Get("method"));
-            if (IsAction(m))
+            if (IsMeasured(m))
                 ++draws;
             else if (IsBeginRenderPass(m) || IsBeginRendering(m))
                 ++passes;

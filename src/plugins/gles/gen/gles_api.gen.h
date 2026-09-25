@@ -1362,6 +1362,8 @@ void Late_glDeleteTextures(GLsizei n, const GLuint *textures);
 void Late_glDeleteTransformFeedbacks(GLsizei n, const GLuint *ids);
 void Late_glDeleteVertexArrays(GLsizei n, const GLuint *arrays);
 void Late_glDeleteVertexArraysOES(GLsizei n, const GLuint *arrays);
+void Late_glFinish(void);
+void Late_glFlush(void);
 GLenum Override_glGetError();
 
 }  // namespace glesinsp

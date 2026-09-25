@@ -50,7 +50,7 @@ bool Replayer::PrepareDrawStats()
     if (const JValue* commands = _capture->Commands(); commands && commands->IsArray())
     {
         for (uint32_t i = 0; i < commands->count; ++i)
-            if (IsAction(Str(commands->items[i].Get("method"))))
+            if (IsMeasured(Str(commands->items[i].Get("method"))))
                 ++actions;
     }
     if (!actions)

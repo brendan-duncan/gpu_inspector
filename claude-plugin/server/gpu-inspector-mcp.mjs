@@ -908,6 +908,7 @@ function structureSummary(o) {
 var DRAW = /* @__PURE__ */ new Set(["DrawInstanced", "DrawIndexedInstanced", "DispatchMesh", "ExecuteIndirect"]);
 var DISPATCH = /* @__PURE__ */ new Set(["Dispatch", "DispatchGraph"]);
 var TRACE = /* @__PURE__ */ new Set(["DispatchRays"]);
+var COMPUTE_WORK = /* @__PURE__ */ new Set(["Dispatch", "DispatchGraph", "DispatchRays", "ExecuteIndirect", "BuildRaytracingAccelerationStructure"]);
 var PASS_BEGIN = /* @__PURE__ */ new Set(["OMSetRenderTargets", "BeginRenderPass"]);
 var PASS_END = /* @__PURE__ */ new Set(["EndRenderTargets", "EndRenderPass"]);
 var RECORD_BEGIN = /* @__PURE__ */ new Set(["Reset"]);
@@ -1095,6 +1096,7 @@ var D3D12_SETS = {
   DRAW,
   DISPATCH,
   TRACE,
+  COMPUTE_WORK,
   PASS_BEGIN,
   PASS_END,
   RECORD_BEGIN,
@@ -2161,6 +2163,15 @@ var DRAW_METHODS = /* @__PURE__ */ new Set([
 ]);
 var DISPATCH_METHODS = /* @__PURE__ */ new Set(["vkCmdDispatch", "vkCmdDispatchIndirect", "vkCmdDispatchBase"]);
 var TRACE_METHODS = /* @__PURE__ */ new Set(["vkCmdTraceRaysKHR", "vkCmdTraceRaysIndirectKHR", "vkCmdTraceRaysIndirect2KHR"]);
+var COMPUTE_WORK2 = /* @__PURE__ */ new Set([
+  "vkCmdDispatch",
+  "vkCmdDispatchIndirect",
+  "vkCmdDispatchBase",
+  "vkCmdDispatchBaseKHR",
+  ...TRACE_METHODS,
+  "vkCmdBuildAccelerationStructuresKHR",
+  "vkCmdBuildAccelerationStructuresIndirectKHR"
+]);
 var PASS_BEGIN3 = /* @__PURE__ */ new Set(["vkCmdBeginRenderPass", "vkCmdBeginRenderPass2", "vkCmdBeginRenderPass2KHR", "vkCmdBeginRendering", "vkCmdBeginRenderingKHR"]);
 var PASS_END3 = /* @__PURE__ */ new Set(["vkCmdEndRenderPass", "vkCmdEndRenderPass2", "vkCmdEndRenderPass2KHR", "vkCmdEndRendering", "vkCmdEndRenderingKHR"]);
 var LABEL_BEGIN = /* @__PURE__ */ new Set(["vkCmdBeginDebugUtilsLabelEXT", "vkCmdDebugMarkerBeginEXT"]);
@@ -2199,6 +2210,7 @@ var VULKAN_SETS = {
   DRAW: DRAW_METHODS,
   DISPATCH: DISPATCH_METHODS,
   TRACE: TRACE_METHODS,
+  COMPUTE_WORK: COMPUTE_WORK2,
   PASS_BEGIN: PASS_BEGIN3,
   PASS_END: PASS_END3,
   RECORD_BEGIN: RECORD_BEGIN2,
@@ -2872,6 +2884,9 @@ function apiDisplayName(api) {
 }
 
 // src/renderer/command_sets.ts
+function opensComputeWork(sets, method) {
+  return (sets.COMPUTE_WORK ?? sets.DISPATCH).has(method);
+}
 function isAction(sets, method) {
   return sets.DRAW.has(method) || sets.DISPATCH.has(method) || sets.TRACE.has(method);
 }
@@ -4041,6 +4056,10 @@ var CaptureStatistics = class {
       if (cmdSets.PASS_END.has(method)) inRenderPass.set(stream, false);
       if (cmd.object) commandBuffers.add(cmd.object.__id);
       if (cmd.secondary) secondaries.add(cmd.secondary);
+      if (opensComputeWork(cmdSets, method) && !inRenderPass.get(stream) && !computeOpen.get(stream)) {
+        this.computePasses++;
+        computeOpen.set(stream, true);
+      }
       if (cmdSets.DRAW.has(method)) {
         this.draws++;
         if (method.includes("Indexed")) this.indexedDraws++;
@@ -4049,10 +4068,6 @@ var CaptureStatistics = class {
         this._geometry(cmd, data, pipeline);
       } else if (cmdSets.DISPATCH.has(method)) {
         this.dispatches++;
-        if (!inRenderPass.get(stream) && !computeOpen.get(stream)) {
-          this.computePasses++;
-          computeOpen.set(stream, true);
-        }
       } else if (cmdSets.TRACE.has(method)) {
         this.traceRays++;
       } else if (COPY_METHODS.has(method)) {
@@ -4653,7 +4668,7 @@ function collectPasses(data, sets, source) {
     if (!inPass && state.open?.pass.kind === "compute" && (sets.COMPUTE_PASS_END.has(cmd.method) || cmd.method === "vkEndCommandBuffer" || sets.LABEL_BEGIN.has(cmd.method) || sets.LABEL_END.has(cmd.method))) {
       finish2();
     }
-    if (sets.DISPATCH.has(cmd.method) && !inPass && !state.open) {
+    if (opensComputeWork(sets, cmd.method) && !inPass && !state.open) {
       const cbKey = cmd.secondary || objId;
       const ordinal = computeCounters.get(cbKey) ?? 0;
       computeCounters.set(cbKey, ordinal + 1);
@@ -5046,9 +5061,9 @@ function collectPassMetrics(data, db) {
       }
       continue;
     }
-    if (sets.DISPATCH.has(m)) {
+    if (sets.DISPATCH.has(m) || opensComputeWork(sets, m)) {
       if (open) {
-        open.draws++;
+        if (sets.DISPATCH.has(m)) open.draws++;
       } else if (!inPass) {
         if (!computeRun) {
           const key = cmd.secondary || cb;
@@ -5197,7 +5212,7 @@ function blank(cmd, passIndex, compute, cb, target) {
   return {
     commandIndex: cmd.index,
     endIndex: cmd.index,
-    label: passLabel(cmd, passIndex),
+    label: passLabel(cmd, passIndex, compute),
     frame: cmd.frame ?? 0,
     commandBuffer: cb,
     passIndex,
@@ -5224,12 +5239,12 @@ function blank(cmd, passIndex, compute, cb, target) {
     limiter: null
   };
 }
-function passLabel(cmd, passIndex) {
+function passLabel(cmd, passIndex, compute = false) {
   const a = cmd.args;
   const descriptor = a && isObject(a.descriptor) ? a.descriptor : null;
   const label = str(a?.label) || str(descriptor?.label);
   const m = cmd.method;
-  const kind = m.startsWith("computeCommandEncoder") ? "Compute" : m.startsWith("blitCommandEncoder") ? "Blit" : m.startsWith("renderCommandEncoder") || m.startsWith("parallelRenderCommandEncoder") ? "Render Pass" : m.startsWith("vkCmdBeginRender") ? "Render Pass" : m.startsWith("vkCmdDispatch") ? "Compute" : "Pass";
+  const kind = m.startsWith("computeCommandEncoder") ? "Compute" : m.startsWith("blitCommandEncoder") ? "Blit" : m.startsWith("renderCommandEncoder") || m.startsWith("parallelRenderCommandEncoder") ? "Render Pass" : m.startsWith("vkCmdBeginRender") ? "Render Pass" : compute ? "Compute" : "Pass";
   return label ? `${kind} ${passIndex}: ${label}` : `${kind} ${passIndex}`;
 }
 function decideBound(p) {
@@ -32033,29 +32048,29 @@ function collectPasses2(o) {
         scissor.set(stream, Array.isArray(rects) && rects.length ? rectArea(rects[0]) : null);
         continue;
       }
-      if (!isAction(sets, cmd.method)) continue;
+      if (opensComputeWork(sets, cmd.method) && !renderPass && !compute) {
+        const index = computeCounters.get(objId) ?? 0;
+        computeCounters.set(objId, index + 1);
+        const key = passKey(frame, objId, index, true);
+        const timing = data.passTimings.get(key);
+        compute = {
+          key,
+          kind: "compute",
+          label: `Compute ${index}`,
+          command: cmd,
+          items: [],
+          durationMs: timing ? timing.durationMs : null,
+          area: null,
+          measuredFragments: null
+        };
+        passes.push(compute);
+      }
+      if (!isAction(sets, cmd.method) || sets.TRACE.has(cmd.method)) continue;
       const isDispatch = sets.DISPATCH.has(cmd.method);
       const pipelineId = programs.at(cmd);
       if (pipelineId === void 0) continue;
       let pass;
       if (isDispatch && !renderPass) {
-        if (!compute) {
-          const index = computeCounters.get(objId) ?? 0;
-          computeCounters.set(objId, index + 1);
-          const key = passKey(frame, objId, index, true);
-          const timing = data.passTimings.get(key);
-          compute = {
-            key,
-            kind: "compute",
-            label: `Compute ${index}`,
-            command: cmd,
-            items: [],
-            durationMs: timing ? timing.durationMs : null,
-            area: null,
-            measuredFragments: null
-          };
-          passes.push(compute);
-        }
         pass = compute;
       } else {
         pass = renderPass;

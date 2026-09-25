@@ -24,7 +24,7 @@ import type { CaptureData } from "./capture_data.js";
 import { passKey } from "./capture_data.js";
 import type { ShaderStage } from "./vulkan/spirv_reflect.js";
 import { dominantDimension, weighCost, type CostDimension, type CostVec, type FunctionAnalysis, type ShaderAnalysis } from "./vulkan/spirv_analysis.js";
-import { isAction } from "./command_sets.js";
+import { isAction, opensComputeWork } from "./command_sets.js";
 import { ProgramTracker, shaderProgram } from "./shader_cache.js";
 import { drawStatsByCommand } from "./draw_stats.js";
 import { partShare, type MeasuredPart, type ShaderAblation } from "./shader_ablation.js";
@@ -301,22 +301,24 @@ function collectPasses(o: CostTreeOptions): { passes: Pass[]; notes: string[]; m
         scissor.set(stream, Array.isArray(rects) && rects.length ? rectArea(rects[0]) : null);
         continue;
       }
-      if (!isAction(sets, cmd.method)) continue;
+      // Every kind of compute work opens the run the capture library timed, so the runs are
+      // numbered as its timings are, even where this tree has no cost model for the work.
+      if (opensComputeWork(sets, cmd.method) && !renderPass && !compute) {
+        const index = computeCounters.get(objId) ?? 0;
+        computeCounters.set(objId, index + 1);
+        const key = passKey(frame, objId, index, true);
+        const timing = data.passTimings.get(key);
+        compute = { key, kind: "compute", label: `Compute ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area: null,
+                    measuredFragments: null };
+        passes.push(compute);
+      }
+      if (!isAction(sets, cmd.method) || sets.TRACE.has(cmd.method)) continue;   // no model for ray tracing stages
 
       const isDispatch = sets.DISPATCH.has(cmd.method);
       const pipelineId = programs.at(cmd);
       if (pipelineId === undefined) continue;
       let pass: Pass | null;
       if (isDispatch && !renderPass) {
-        if (!compute) {
-          const index = computeCounters.get(objId) ?? 0;
-          computeCounters.set(objId, index + 1);
-          const key = passKey(frame, objId, index, true);
-          const timing = data.passTimings.get(key);
-          compute = { key, kind: "compute", label: `Compute ${index}`, command: cmd, items: [], durationMs: timing ? timing.durationMs : null, area: null,
-                      measuredFragments: null };
-          passes.push(compute);
-        }
         pass = compute;
       } else {
         pass = renderPass;

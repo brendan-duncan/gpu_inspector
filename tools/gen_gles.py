@@ -100,7 +100,8 @@ POST_HOOKS = set(GEN_FUNCS + ["glPushDebugGroup", "glPushDebugGroupKHR", "glPush
     "glShaderSource", "glCompileShader", "glAttachShader", "glDetachShader", "glLinkProgram", "glProgramBinary",
     "glProgramBinaryOES", "glObjectLabel", "glObjectLabelKHR", "glLabelObjectEXT",
 ])
-LATE_HOOKS = set(DELETE_FUNCS)
+# glFlush and glFinish too: where a frame ends when nothing swaps (capture.cpp, AfterFlush).
+LATE_HOOKS = set(DELETE_FUNCS + ["glFlush", "glFinish"])
 # Replaced outright: the hook is Override_<name>(args), which calls the real entry point itself. glGetError,
 # so an error the library's own GL work cleared is still the application's to read.
 OVERRIDE_HOOKS = {"glGetError"}

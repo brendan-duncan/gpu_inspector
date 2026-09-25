@@ -31,7 +31,7 @@ import { CAPTURE_LIBRARY, captureEnvironment, findCaptureLibrary, injectionBlock
 import { WATCH_TIMED_OUT, findD3D12Tools as findD3D12ToolsIn, watchLaunch, windowsLaunch, type D3D12Tools } from "./d3d12.js";
 import { PLUGIN_SCHEME, androidPlugins, applyPreloads, findPlugins, isInside, pluginAndroidLaunch, pluginInfo, pluginLaunches, pluginSearchDirs, type Plugin, type PluginLaunch } from "./plugins.js";
 import { AndroidTarget, disableLayer, findAdb, findAndroidLayer, listDevices, listPackages, type AndroidLayerFiles } from "./android.js";
-import { browserArgs, browserFollow, browserProfileDir, installedBrowsers, prepareProfile } from "./browsers.js";
+import { browserArgs, browserFamily, browserFollow, browserProfileDir, installedBrowsers, prepareProfile } from "./browsers.js";
 import {
   THEMES, browserInstallName,
   type AndroidDeviceList,
@@ -250,15 +250,21 @@ function loadedPlugins(): Plugin[] {
 }
 
 /**
- * What the plugins put into a process launched for session `s`: their libraries and settings. None
- * for a browser: what its launch is for is the page's WebGPU device (Direct3D 12 on Windows, Vulkan on
- * Linux), and the browser's own compositing presents through Direct3D 11, whose plugin then connects
- * first and takes the session with a capture of the compositor.
+ * What the plugins put into a process launched for session `s`: their libraries and settings.
+ *
+ * A browser takes none for a WebGPU page: what its launch is for is the page's WebGPU device
+ * (Direct3D 12 on Windows, Vulkan on Linux), and the browser's own compositing presents through
+ * Direct3D 11, whose plugin then connects first and takes the session with a capture of the
+ * compositor. A WebGL page in Firefox takes the OpenGL ES plugin alone: Firefox's WebGL runs on
+ * ANGLE, which it ships as libGLESv2.dll, and the plugin hooks that. (Chromium builds ANGLE in, so
+ * its WebGL goes through ANGLE's Vulkan backend and the Vulkan layer instead: browsers.ts.)
  */
 function launchPlugins(s: Session): PluginLaunch[] {
   const c = s.config;
-  if (c?.target === "browser") return [];
-  return pluginLaunches(loadedPlugins(), { port: s.port, log: c?.log ?? true, recordAlways: c?.recordAlways ?? false, stacktraces: c?.stacktraces ?? false });
+  const plugins = pluginLaunches(loadedPlugins(), { port: s.port, log: c?.log ?? true, recordAlways: c?.recordAlways ?? false, stacktraces: c?.stacktraces ?? false });
+  if (c?.target !== "browser") return plugins;
+  if (c.api === "webgl" && browserFamily(c.exe) === "firefox") return plugins.filter((p) => (p.plugin.manifest.api ?? p.plugin.manifest.id) === "gles");
+  return [];
 }
 
 /**
@@ -579,7 +585,7 @@ function spawnTarget(s: Session, layerDir: string | null, d3d12: D3D12Tools | nu
   // Firefox takes the settings a capture needs as preferences rather than switches, so the profile
   // this launch uses is written before the browser reads it (browsers.ts).
   if (browser) prepareProfile(config.exe, profileDir);
-  const args = browser ? browserArgs(config.exe, config.args ?? "", profileDir) : splitArgs(config.args ?? "");
+  const args = browser ? browserArgs(config.exe, config.args ?? "", profileDir, process.platform, config.api) : splitArgs(config.args ?? "");
   // Following is the Windows launcher's way into the GPU process; on Linux the environment
   // already reaches it, so a browser there is launched like any other target.
   const follow = browser && process.platform === "win32" ? browserFollow(config.exe)

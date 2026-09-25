@@ -179,7 +179,7 @@ export function browserFollow(exe: string): string[] {
  * session and its extensions, and a browser already running does not hand the page to that instance
  * and exit, leaving nothing to capture (`-no-remote` is what tells Firefox not to).
  */
-export function browserArgs(exe: string, url: string, profileDir: string, platform: NodeJS.Platform = process.platform): string[] {
+export function browserArgs(exe: string, url: string, profileDir: string, platform: NodeJS.Platform = process.platform, api?: string): string[] {
   const page = url.trim() ? [url.trim()] : [];
   if (browserFamily(exe) === "firefox") {
     return ["-no-remote", "-profile", profileDir, ...page];
@@ -189,6 +189,11 @@ export function browserArgs(exe: string, url: string, profileDir: string, platfo
     "--disable-gpu-watchdog",
     "--no-first-run",
     "--no-default-browser-check",
+    // WebGL (`api` "webgl"): ANGLE, which Chromium builds in and runs on Direct3D 11 by default,
+    // on Vulkan instead, so the Vulkan layer captures what WebGL became -- with everything a
+    // Vulkan capture has, replay included. Firefox's WebGL is captured as OpenGL ES instead
+    // (main.ts, launchPlugins): its ANGLE is a DLL the OpenGL ES plugin hooks.
+    ...(api === "webgl" ? ["--use-angle=vulkan"] : []),
     // Linux: without this Chrome answers requestAdapter with SwiftShader, which renders WebGPU on
     // the CPU and makes no Vulkan device for the layer to capture. Windows needs no counterpart —
     // its default WebGPU adapter is the D3D12 one the library is already in.

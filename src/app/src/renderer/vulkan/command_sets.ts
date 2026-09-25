@@ -12,6 +12,11 @@ export const DRAW_METHODS = new Set([
 ]);
 export const DISPATCH_METHODS = new Set(["vkCmdDispatch", "vkCmdDispatchIndirect", "vkCmdDispatchBase"]);
 export const TRACE_METHODS = new Set(["vkCmdTraceRaysKHR", "vkCmdTraceRaysIndirectKHR", "vkCmdTraceRaysIndirect2KHR"]);
+/** What the layer times as a compute pass outside a render pass (its PreHooks call BeforeDispatch): src/vulkan/src/hooks.cpp. */
+export const COMPUTE_WORK = new Set([
+  "vkCmdDispatch", "vkCmdDispatchIndirect", "vkCmdDispatchBase", "vkCmdDispatchBaseKHR", ...TRACE_METHODS,
+  "vkCmdBuildAccelerationStructuresKHR", "vkCmdBuildAccelerationStructuresIndirectKHR",
+]);
 export const PASS_BEGIN = new Set(["vkCmdBeginRenderPass", "vkCmdBeginRenderPass2", "vkCmdBeginRenderPass2KHR", "vkCmdBeginRendering", "vkCmdBeginRenderingKHR"]);
 export const PASS_END = new Set(["vkCmdEndRenderPass", "vkCmdEndRenderPass2", "vkCmdEndRenderPass2KHR", "vkCmdEndRendering", "vkCmdEndRenderingKHR"]);
 export const LABEL_BEGIN = new Set(["vkCmdBeginDebugUtilsLabelEXT", "vkCmdDebugMarkerBeginEXT"]);
@@ -60,6 +65,7 @@ export const VULKAN_SETS: CommandSets = {
   DRAW: DRAW_METHODS,
   DISPATCH: DISPATCH_METHODS,
   TRACE: TRACE_METHODS,
+  COMPUTE_WORK,
   PASS_BEGIN,
   PASS_END,
   RECORD_BEGIN,

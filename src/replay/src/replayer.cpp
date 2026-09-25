@@ -966,6 +966,15 @@ uint64_t Replayer::CreatePipeline(const JValue& object, std::string_view cmd, ui
         info.flags &= ~VK_PIPELINE_CREATE_DERIVATIVE_BIT;
         info.basePipelineHandle = VK_NULL_HANDLE;
         info.basePipelineIndex = -1;
+        // Creation feedback is the driver's to write, into memory the capture never had.
+        info.pNext = StripPNext(info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_CREATION_FEEDBACK_CREATE_INFO});
+        // A state the pipeline ignores may be any pointer, and was read as whatever it pointed at
+        // (ANGLE leaves one in pTessellationState with no tessellation stage): not passed on.
+        const bool tessellation = std::any_of(stages.begin(), stages.end(), [](const VkPipelineShaderStageCreateInfo& s) {
+            return (s.stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)) != 0;
+        });
+        if (!tessellation)
+            info.pTessellationState = nullptr;
         r = _fns.CreateGraphicsPipelines(_device, VK_NULL_HANDLE, 1, &info, nullptr, &pipeline);
         if (_exporter && pipeline)
             _exporter->CreatePipeline(object.Get("id")->Uint(), pipeline, std::string(cmd), &info, nullptr, nullptr, exportedModules);
@@ -3094,7 +3103,7 @@ void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& ar
     }
     if (kRayTracing.count(m))
     {
-        _ctx.Problem("left out: ray tracing is not replayed yet");
+        _ctx.Problem("left out: " + m + " is not replayed yet");
         if (exporter)
             exporter->LeftOut(index, m, "the replay does not issue it");
         return;
@@ -3293,7 +3302,10 @@ void Replayer::InjectStorageReadbacks(VkCommandBuffer cb, const CommandGroup& gr
         PendingReadback pending;
         pending.target = _report->targets.size();
         pending.texture = &t;
-        if (!CreateStaging(capturedSize, pending.staging))
+        // The capture read every mip level; the replay reads the first, and compares that.
+        const uint32_t texel = std::max<uint32_t>(1, vkinsp::FormatBlockInfo(image.format, aspect).bytes);
+        pending.capturedBytes = std::min<size_t>(capturedSize, (size_t)std::max(1u, width) * std::max(1u, height) * texel);
+        if (!CreateStaging(pending.capturedBytes, pending.staging))
         {
             cmp.note = "no staging memory";
             _report->targets.push_back(cmp);
@@ -3586,6 +3598,8 @@ void Replayer::CompareReadbacks(std::vector<PendingReadback>& readbacks)
         }
         else
         {
+            if (p.capturedBytes)
+                capturedSize = std::min(capturedSize, p.capturedBytes);
             VkFormat format = (VkFormat)DecodeEnum_VkFormat(_ctx, p.texture->Get("info")->Get("format"));
             const VkImageAspectFlags aspect = AspectOf(cmp.aspect);
             const uint32_t texel = std::max<uint32_t>(1, vkinsp::FormatBlockInfo(format, aspect).bytes);
@@ -3684,10 +3698,10 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                     IssueAblation(cb, i, m, *args, frame, commandBuffer, passIndex, stream);
                 // Per-draw timing and counters: an engine that records its draws into secondaries
                 // (a Unity player records every one) has them measured here rather than above.
-                const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
+                const bool measure = _options.drawStats && _drawQueryCapacity && IsMeasured(m);
                 const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, commandBuffer, passIndex) : -1;
                 // Hardware counters: a draw's range, here too (a Unity player records every draw in a secondary).
-                const bool countDraw = _options.counters.enabled && _hw && IsAction(m);
+                const bool countDraw = _options.counters.enabled && _hw && IsMeasured(m);
                 const int counterRange = countDraw ? BeginCounterDraw(cb, i, frame, commandBuffer, passIndex) : -1;
                 IssueCommand(fn, c, *args, cb, i);
                 if (countDraw)
@@ -3801,6 +3815,13 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             auto fit = _framebufferViews.find(fb);
             if (fit != _framebufferViews.end())
                 pass.views = fit->second;
+            // An imageless framebuffer's views come with the begin (VkRenderPassAttachmentBeginInfo).
+            if (const JValue* chain = pass.views.empty() && beginInfo2 ? beginInfo2->Get("pNext") : nullptr; chain && chain->IsArray())
+                for (uint32_t k = 0; k < chain->count; ++k)
+                    if (Str(chain->items[k].Get("sType")) == "VK_STRUCTURE_TYPE_RENDER_PASS_ATTACHMENT_BEGIN_INFO")
+                        if (const JValue* list = chain->items[k].Get("pAttachments"); list && list->IsArray())
+                            for (uint32_t v = 0; v < list->count; ++v)
+                                pass.views.push_back(IdOf(&list->items[v]));
             if (auto eit = _framebufferExtents.find(fb); eit != _framebufferExtents.end())
                 pass.extent = eit->second;
             pass.renderPass = rp;
@@ -3976,10 +3997,10 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
         if (_options.ablation.enabled && IsAction(m) && _ctx.unresolved == unresolvedBefore && ArgsResolve(m, *args))
             IssueAblation(cb, i, m, *args, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX, stream);
         // Per-draw timing and counters: the action is issued between the queries (draw_stats.cpp).
-        const bool measure = _options.drawStats && _drawQueryCapacity && IsAction(m);
+        const bool measure = _options.drawStats && _drawQueryCapacity && IsMeasured(m);
         const int drawSlot = measure ? BeginDrawQuery(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
         // Hardware counters: each draw's range, nested inside its pass's (hw_counters.cpp).
-        const bool countDraw = _options.counters.enabled && _hw && IsAction(m);
+        const bool countDraw = _options.counters.enabled && _hw && IsMeasured(m);
         const int counterRange = countDraw ? BeginCounterDraw(cb, i, frame, group.commandBuffer, pass.active ? pass.index : UINT32_MAX) : -1;
         // Pixel history outside the render passes: what a clear, a copy, a blit, a resolve or a
         // dispatch did to the pixel, read straight out of the image once the command has run

@@ -1813,6 +1813,13 @@ void CaptureManager::OnBeforeDispatch(CommandRecorder* rec)
     if (!rec)
         return;
     NoteIndexedHeaps(rec, true);
+    OnBeforeComputeWork(rec);
+}
+
+void CaptureManager::OnBeforeComputeWork(CommandRecorder* rec)
+{
+    if (!rec)
+        return;
     ActiveComputePass& compute = rec->compute();
     if (rec->pass().active || compute.active)
         return;   // inside a render pass the dispatch stays there

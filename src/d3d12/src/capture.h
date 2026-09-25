@@ -185,6 +185,8 @@ public:
     uint32_t BeginPass(CommandRecorder* rec, std::vector<BoundTarget> targets, bool renderPassApi, bool split = false);
     /** Before a dispatch is forwarded: opens a compute pass when no pass is open. */
     void OnBeforeDispatch(CommandRecorder* rec);
+    /** Compute work that runs no shader of the application's (an acceleration structure build): timed as a dispatch is. */
+    void OnBeforeComputeWork(CommandRecorder* rec);
     /** Before a command that closes a compute pass (barrier, event, bundle, render pass begin, Close): its end timestamp. */
     void OnComputePassEnd(CommandRecorder* rec);
     /** A draw or trace was recorded in the open pass (for its draw count). */

@@ -262,6 +262,12 @@ PRE_HOOKS = {
     "vkCmdDispatchBase",
     "vkCmdDispatchBaseKHR",
     "vkCmdDispatchIndirect",
+    # ray tracing launches and acceleration structure builds are compute work the same way
+    "vkCmdTraceRaysKHR",
+    "vkCmdTraceRaysIndirectKHR",
+    "vkCmdTraceRaysIndirect2KHR",
+    "vkCmdBuildAccelerationStructuresKHR",
+    "vkCmdBuildAccelerationStructuresIndirectKHR",
     "vkCmdPipelineBarrier",
     "vkCmdPipelineBarrier2",
     "vkCmdPipelineBarrier2KHR",
