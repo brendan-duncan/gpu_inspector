@@ -173,6 +173,8 @@ export function overdrawBrief(o: OverdrawMeasurement | null): Record<string, unk
     perPixel: round(a.perPixel), perCoveredPixel: round(a.perCovered), maxCount: o.maxCount,
     fragments: o.fragments, coveredPixels: o.coveredPixels, draws: o.draws, skippedDraws: o.skippedDraws || undefined,
     pixelsByCount: Object.keys(histogram).length ? histogram : undefined, note: o.note,
+    // A multiview pass: every view's counts together, or the one view this is.
+    views: o.views, view: o.view,
   };
 }
 
@@ -623,6 +625,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         capture: CAPTURE_PARAM,
         pass: { type: "integer", minimum: 0, description: "A render pass: its heatmap and the counts at `texels`." },
         depthTested: { type: "boolean", description: "With pass: the fragments that passed depth and stencil (default true), or every rasterized fragment." },
+        view: { type: "integer", minimum: 0, description: "With pass, in a multiview pass (an XR frame's eyes): which view's heatmap (default 0). The pass list's figures are of every view together." },
         image: { type: "boolean", description: "With pass: return the PNG (default true)." },
         maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
         texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "With pass: [x, y] pixels to read the count of (up to 64)." },
@@ -679,7 +682,11 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         // index can equal a render pass's: it has no overdraw of its own.
         if (p.compute) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) is a compute pass, which has no overdraw. get_overdraw without pass lists the render passes.`);
         const depthTested = boolArg(args, "depthTested", true);
-        const o = c.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).find((m) => m.info.depthTested === depthTested);
+        const ofKind = c.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).filter((m) => m.info.depthTested === depthTested);
+        const views = ofKind.map((m) => m.info.view).filter((v): v is number => v !== undefined);
+        const view = optionalInt(args, "view");
+        const o = ofKind.find((m) => (m.info.view ?? 0) === (view ?? views[0] ?? 0));
+        if (!o && view !== undefined && ofKind.length) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) has no view ${view}: ${views.length ? `its views are ${views.join(", ")}` : "it is not a multiview pass"}.`);
         if (!o) throw new Error(`Pass ${passArg} (${c.passName(passArg)}) has no overdraw measurement.`);
         const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
         const texels = requested.map((pt) => {
@@ -691,6 +698,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         const result = jsonResult({
           capture: c.id, pass: passArg, label: c.passName(passArg), command: p.commandIndex, depthTested,
           width: o.info.width, height: o.info.height, ...overdrawBrief(o.info),
+          views: views.length > 1 ? views : undefined,
           texels: texels.length ? texels : undefined,
           note: o.data ? o.info.note : [o.info.note, "The per-pixel counts were not kept, so there is no heatmap."].filter(Boolean).join(" "),
         });

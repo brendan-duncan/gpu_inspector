@@ -444,6 +444,10 @@ export interface OverdrawMeasurement {
   /** Vulkan (vkinsp_replay): the fragment shader invocations the capture's pipeline statistics measured for the pass. */
   capturedFragments?: number;
   note?: string;
+  /** A multiview pass is measured per view: which one this is (the layer of its attachments). Absent in a single-view pass. */
+  view?: number;
+  /** A multiview pass's views taken together (mergeViews in renderer/overdraw.ts): how many, their counts summed and their pixels stacked. */
+  views?: number;
 }
 
 export interface CaptureOverdrawMessage { action: "CaptureOverdraw"; count: number; passes: OverdrawMeasurement[] }

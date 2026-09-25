@@ -155,6 +155,8 @@ bool WriteOverdrawData(const ReplayReport& report, const std::string& path)
             ",\"histogram\":[" + histogram + "],\"size\":" + std::to_string(size);
         if (o.capturedFragments >= 0)
             json += ",\"capturedFragments\":" + std::to_string(o.capturedFragments);
+        if (o.view >= 0)
+            json += ",\"view\":" + std::to_string(o.view);
         if (!o.note.empty())
             json += ",\"note\":" + JsonString(o.note);
         if (size)
@@ -1181,7 +1183,7 @@ void WriteOverdraw(const ReplayReport& report, const std::string& dir)
             continue;
         const std::string path = dir + "/overdraw_cb" + std::to_string(o.commandBuffer) + "_pass" + std::to_string(o.passIndex) +
             (report.overdraw.size() && o.frame ? "_frame" + std::to_string(o.frame) : "") +
-            (o.depthTested ? "_tested.png" : "_all.png");
+            (o.view >= 0 ? "_view" + std::to_string(o.view) : "") + (o.depthTested ? "_tested.png" : "_all.png");
         std::vector<uint8_t> rgba((size_t)o.width * o.height * 4, 255);
         for (size_t i = 0; i < o.counts.size(); ++i)
             Heat(o.counts[i], &rgba[i * 4]);
@@ -1367,8 +1369,8 @@ int Replay(const CaptureFile& capture, const ReplayOptions& options, const std::
         for (const OverdrawResult& o : report.overdraw)
         {
             const double pixels = (double)o.width * o.height;
-            std::printf("  command buffer %llu, pass %u, %s: ", (unsigned long long)o.commandBuffer, o.passIndex,
-                o.depthTested ? "fragments passing depth" : "every rasterized fragment");
+            std::printf("  command buffer %llu, pass %u%s, %s: ", (unsigned long long)o.commandBuffer, o.passIndex,
+                o.view >= 0 ? (", view " + std::to_string(o.view)).c_str() : "", o.depthTested ? "fragments passing depth" : "every rasterized fragment");
             if (o.counts.empty())
             {
                 std::printf("not measured: %s\n", o.note.c_str());

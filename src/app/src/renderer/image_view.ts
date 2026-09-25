@@ -46,6 +46,8 @@ export interface ImageViewOptions {
   pixelHistory?: (x: number, y: number, mip: number, layer: number) => void;
   /** A pixel was clicked: the capture's texture view follows it straight away. */
   onPick?: (x: number, y: number, mip: number, layer: number) => void;
+  /** The layer shown changed (a render target of a multiview pass has one per view). */
+  onLayer?: (layer: number) => void;
   overlay?: ImageOverlay;
   /** Widgets of the owner's own: in the toolbar, and in a row under it (the overdraw controls). */
   extras?: { toolbar?: (bar: Div) => void; row?: (parent: Widget) => void };
@@ -106,6 +108,7 @@ export class ImageView {
   /** Follows a pixel of a captured render target through the frame (pixel history); absent otherwise. */
   private _pixelHistory: ((x: number, y: number, mip: number, layer: number) => void) | null;
   private _onPick: ((x: number, y: number, mip: number, layer: number) => void) | null;
+  private _onLayer: ((layer: number) => void) | null;
   private _overlay: ImageOverlay | null;
   /** The owner gives the view its own pane, so a fit zoom fits that rather than the window. */
   private _fit = false;
@@ -130,6 +133,7 @@ export class ImageView {
     this.captured = captured;
     this._pixelHistory = options.pixelHistory ?? null;
     this._onPick = options.onPick ?? null;
+    this._onLayer = options.onLayer ?? null;
     this._fit = options.fit === true;
     this._overlay = options.overlay ?? null;
     this._extras = options.extras;
@@ -294,6 +298,7 @@ export class ImageView {
           this._layer = this._baseLayer + index;
           this.request();
         }
+        this._onLayer?.(this._layer);
       } });
     }
 

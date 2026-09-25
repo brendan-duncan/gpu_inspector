@@ -522,6 +522,29 @@ test("vkinsp_replay's overdraw file is read back with its counts", async () => {
   assert.deepEqual(OVERDRAW_LEGEND.map((e) => e.label), ["0", "1", "2", "3", "4", "5-6", "7-10", "11-16", "17-32", "33+"]);
 });
 
+test("a multiview pass's overdraw views are taken together for the pass's figures", async () => {
+  const { mergeViews, overdrawAverages } = await import(pathToFileURL(bundle("renderer/overdraw.ts", "overdraw")).href);
+  // Two eyes of a 4x2 target: 6 fragments on 4 pixels, and 2 on 2.
+  const eye = (view, fragments, coveredPixels, maxCount, histogram) => ({
+    frame: 0, commandBuffer: 6, passIndex: 0, depthTested: true, width: 4, height: 2, fragments, coveredPixels, maxCount,
+    draws: 1, skippedDraws: 0, histogram, size: 16, view,
+  });
+  const left = eye(0, 6, 4, 3, [3, 0, 1, 0, 0, 0, 0, 0]);
+  const right = eye(1, 2, 2, 1, [2, 0, 0, 0, 0, 0, 0, 0]);
+  assert.equal(mergeViews([left]), left, "a single measurement is itself");
+  assert.equal(mergeViews([]), null);
+  const both = mergeViews([left, right]);
+  assert.equal(both.views, 2);
+  assert.equal(both.view, undefined);
+  assert.equal(both.fragments, 8);
+  assert.equal(both.coveredPixels, 6);
+  assert.equal(both.maxCount, 3);
+  assert.deepEqual(both.histogram, [5, 0, 1, 0, 0, 0, 0, 0]);
+  assert.equal(both.size, 0, "no per-pixel counts of its own");
+  // Averages over every view's pixels: 8 fragments on 16 pixels, 6 of them covered.
+  assert.deepEqual(overdrawAverages(both), { perPixel: 0.5, perCovered: 8 / 6 });
+});
+
 test("vkinsp_replay's pixel history is read back and says what each draw met", async () => {
   const { parsePixelHistory, drawOutcome, eventSummary, sampleCountsText, texelValues, texelLines, touchesPixel } = await import(pathToFileURL(bundle("renderer/pixel_history.ts", "pixel_history")).href);
   const draw = (fields) => ({

@@ -144,6 +144,8 @@ export class CaptureTextureView {
   private _history: PixelHistoryView | null = null;
   private _overlayRow: Div | null = null;
   private _heat: { counts: Uint8Array; rgba: Uint8ClampedArray } | null = null;
+  /** The layer the image starts on (its view's first): a multiview pass's view is the layer shown less this. */
+  private _imageBaseLayer = 0;
   private _drawPaint: { overlay: DrawOverlay; kind: DrawOverlayKind; rgba: Uint8ClampedArray } | null = null;
   private _picked: PixelRequest | null = null;
   /** Percent of the width the image takes, dragged on the handle between the panes. */
@@ -269,11 +271,22 @@ export class CaptureTextureView {
     return viewportOverlayOf(state, info.width, info.height);
   }
 
-  /** The pass's measurement the overdraw overlay draws, if the capture has it. */
-  private _measurement(): CapturedOverdraw | null {
+  /**
+   * The pass's measurements of the view the image shows: a multiview pass has one per view, each
+   * of the layer of its index, and follows the image's layer choice; any other pass has the one.
+   */
+  private _viewMeasurements(): CapturedOverdraw[] {
     const k = this._target.key;
     const all = this.host.data.overdrawForPass(k.frame, k.commandBuffer, k.passIndex);
-    return all.find((m) => m.info.depthTested === this._depthTested) ?? all[0] ?? null;
+    const view = this._image ? this._image.layer - this._imageBaseLayer : 0;
+    const ofView = all.filter((m) => (m.info.view ?? 0) === view);
+    return ofView.length ? ofView : all.filter((m) => (m.info.view ?? 0) === (all[0]?.info.view ?? 0));
+  }
+
+  /** The pass's measurement the overdraw overlay draws, if the capture has it. */
+  private _measurement(): CapturedOverdraw | null {
+    const ofView = this._viewMeasurements();
+    return ofView.find((m) => m.info.depthTested === this._depthTested) ?? ofView[0] ?? null;
   }
 
   /** The replayed overlay of the chosen draw, if it has arrived. */
@@ -330,6 +343,11 @@ export class CaptureTextureView {
     this._image = new ImageView(left, this.host.session, this.host.imageObject(info.id), { info, data: tex.data }, {
       fit: true,
       onPick: (x, y, mip, layer) => this._follow({ image: info.id, x, y, mip, layer }),
+      // A multiview pass's overdraw is per view: the one of the layer shown.
+      onLayer: () => {
+        this._renderOverlayRow();
+        this._image?.refreshOverlay();
+      },
       overlay: this._overlay(),
       extras: {
         toolbar: (bar) => this._buildToolbar(bar),
@@ -339,6 +357,7 @@ export class CaptureTextureView {
         },
       },
     });
+    this._imageBaseLayer = this._image.layer;
 
     this._resize?.disconnect();
     this._resize = new ResizeObserver(() => this._image?.refit());
@@ -447,9 +466,8 @@ export class CaptureTextureView {
           return d ? drawOverlayLines(d, x, y) : [];
         }
         if (this._overlayKind !== "overdraw") return [];
-        const k = this._target.key;
         const lines: string[] = [];
-        for (const m of this.host.data.overdrawForPass(k.frame, k.commandBuffer, k.passIndex)) {
+        for (const m of this._viewMeasurements()) {
           if (!m.data) continue;
           const n = overdrawCount(m, x, y);
           lines.push(`${m.info.depthTested ? "Passing depth and stencil" : "Rasterized"}: ${n} fragment${n === 1 ? "" : "s"}`);
@@ -524,8 +542,7 @@ export class CaptureTextureView {
       return;
     }
 
-    const k = this._target.key;
-    const both = this.host.data.overdrawForPass(k.frame, k.commandBuffer, k.passIndex);
+    const both = this._viewMeasurements();
     if (both.length > 1) {
       new Select(row, {
         options: COUNT_LABELS,

@@ -3377,9 +3377,9 @@ var CaptureData = class {
     this._expectedCommands = 0;
     this._pendingBuffers = 0;
   }
-  /** A render pass's overdraw measurements: the depth-tested one first. */
+  /** A render pass's overdraw measurements: the depth-tested ones first, then by view (a multiview pass has one per view). */
   overdrawForPass(frame, commandBufferId, passIndex) {
-    return this.overdraw.filter((o) => o.info.frame === frame && o.info.commandBuffer === commandBufferId && o.info.passIndex === passIndex).sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested));
+    return this.overdraw.filter((o) => o.info.frame === frame && o.info.commandBuffer === commandBufferId && o.info.passIndex === passIndex).sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested) || (a.info.view ?? 0) - (b.info.view ?? 0));
   }
   /** The ablation measured for a pipeline's stage, if any. */
   ablation(pipeline, stage, entryPoint) {
@@ -4975,6 +4975,98 @@ function limiterAdvice(limiter) {
   return base;
 }
 
+// src/renderer/overdraw.ts
+function measuresWhileCapturing(api) {
+  const live = backendFor(api).live;
+  return live.overdraw || live.pixelHistory;
+}
+var OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
+function overdrawCount(o, x, y) {
+  const { width, height } = o.info;
+  if (!o.data || x < 0 || y < 0 || x >= width || y >= height) return 0;
+  const i = (y * width + x) * 2;
+  return i + 1 < o.data.byteLength ? o.data[i] | o.data[i + 1] << 8 : 0;
+}
+var RAMP = [
+  [0, 0, 0, 0],
+  [1, 20, 40, 150],
+  [2, 0, 120, 230],
+  [3, 0, 190, 170],
+  [4, 110, 210, 40],
+  [6, 240, 210, 0],
+  [10, 250, 120, 0],
+  [16, 220, 20, 20],
+  [32, 240, 0, 200],
+  [65535, 255, 255, 255]
+];
+var OVERDRAW_LEGEND = RAMP.map(([upTo, r, g, b], i) => {
+  const from = i === 0 ? 0 : RAMP[i - 1][0] + 1;
+  const label = i === RAMP.length - 1 ? `${from}+` : from === upTo ? String(upTo) : `${from}-${upTo}`;
+  return { label, color: [r, g, b] };
+});
+function heatColor(n) {
+  for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
+  return [255, 255, 255];
+}
+function overdrawRgba(o, transparentZero = false) {
+  const { width, height } = o.info;
+  const pixels = width * height;
+  if (!o.data || o.data.byteLength < pixels * 2) return null;
+  const out = new Uint8ClampedArray(pixels * 4);
+  for (let p = 0; p < pixels; p++) {
+    const count2 = o.data[p * 2] | o.data[p * 2 + 1] << 8;
+    const [r, g, b] = heatColor(count2);
+    out[p * 4] = r;
+    out[p * 4 + 1] = g;
+    out[p * 4 + 2] = b;
+    out[p * 4 + 3] = transparentZero && count2 === 0 ? 0 : 255;
+  }
+  return out;
+}
+function mergeViews(infos) {
+  if (infos.length <= 1) return infos[0] ?? null;
+  const first = infos[0];
+  const histogram = first.histogram.map((_, b) => infos.reduce((sum, i) => sum + (i.histogram[b] ?? 0), 0));
+  return {
+    ...first,
+    view: void 0,
+    views: infos.length,
+    height: first.height * infos.length,
+    size: 0,
+    histogram,
+    fragments: infos.reduce((sum, i) => sum + i.fragments, 0),
+    coveredPixels: infos.reduce((sum, i) => sum + i.coveredPixels, 0),
+    maxCount: Math.max(...infos.map((i) => i.maxCount))
+  };
+}
+function overdrawAverages(info) {
+  const pixels = info.width * info.height;
+  return {
+    perPixel: pixels > 0 ? info.fragments / pixels : 0,
+    perCovered: info.coveredPixels > 0 ? info.fragments / info.coveredPixels : 0
+  };
+}
+var OVERDRAW_MAGIC = "OVERDRAW 1\n";
+function parseOverdrawFile(bytes) {
+  const magic = new TextEncoder().encode(OVERDRAW_MAGIC);
+  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not an overdraw file from vkinsp_replay.");
+  const length2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
+  const start = magic.byteLength + 4;
+  const base = start + length2;
+  if (base > bytes.byteLength) throw new Error("The overdraw file is truncated.");
+  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
+  const measurements = (manifest.passes ?? []).map(({ payload, ...info }) => {
+    let data = null;
+    if (payload) {
+      const [offset, size2] = payload;
+      if (base + offset + size2 > bytes.byteLength) throw new Error("The overdraw file is truncated (counts out of range).");
+      data = bytes.slice(base + offset, base + offset + size2);
+    }
+    return { info, data };
+  });
+  return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
+}
+
 // src/renderer/pass_metrics.ts
 var HEALTHY_OVERDRAW = 1.2;
 var OVERDRAW_LIMIT = 2;
@@ -5159,8 +5251,8 @@ function collectPassMetrics(data, db) {
       if (p.compute) continue;
       const measured = data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).filter((o) => o.info.measured !== false);
       if (!measured.length) continue;
-      const depthTested = measured.find((o) => o.info.depthTested)?.info ?? null;
-      const rasterized = measured.find((o) => !o.info.depthTested)?.info ?? null;
+      const depthTested = mergeViews(measured.filter((o) => o.info.depthTested).map((o) => o.info));
+      const rasterized = mergeViews(measured.filter((o) => !o.info.depthTested).map((o) => o.info));
       p.measuredOverdraw = { depthTested, rasterized };
       const pixels = depthTested ? depthTested.width * depthTested.height : 0;
       if (p.overdraw === null && depthTested && pixels > 0) {
@@ -33614,82 +33706,6 @@ function resourceTools(store) {
   ];
 }
 
-// src/renderer/overdraw.ts
-function measuresWhileCapturing(api) {
-  const live = backendFor(api).live;
-  return live.overdraw || live.pixelHistory;
-}
-var OVERDRAW_BUCKETS = ["1", "2", "3", "4", "5-8", "9-16", "17-32", "33+"];
-function overdrawCount(o, x, y) {
-  const { width, height } = o.info;
-  if (!o.data || x < 0 || y < 0 || x >= width || y >= height) return 0;
-  const i = (y * width + x) * 2;
-  return i + 1 < o.data.byteLength ? o.data[i] | o.data[i + 1] << 8 : 0;
-}
-var RAMP = [
-  [0, 0, 0, 0],
-  [1, 20, 40, 150],
-  [2, 0, 120, 230],
-  [3, 0, 190, 170],
-  [4, 110, 210, 40],
-  [6, 240, 210, 0],
-  [10, 250, 120, 0],
-  [16, 220, 20, 20],
-  [32, 240, 0, 200],
-  [65535, 255, 255, 255]
-];
-var OVERDRAW_LEGEND = RAMP.map(([upTo, r, g, b], i) => {
-  const from = i === 0 ? 0 : RAMP[i - 1][0] + 1;
-  const label = i === RAMP.length - 1 ? `${from}+` : from === upTo ? String(upTo) : `${from}-${upTo}`;
-  return { label, color: [r, g, b] };
-});
-function heatColor(n) {
-  for (const [upTo, r, g, b] of RAMP) if (n <= upTo) return [r, g, b];
-  return [255, 255, 255];
-}
-function overdrawRgba(o, transparentZero = false) {
-  const { width, height } = o.info;
-  const pixels = width * height;
-  if (!o.data || o.data.byteLength < pixels * 2) return null;
-  const out = new Uint8ClampedArray(pixels * 4);
-  for (let p = 0; p < pixels; p++) {
-    const count2 = o.data[p * 2] | o.data[p * 2 + 1] << 8;
-    const [r, g, b] = heatColor(count2);
-    out[p * 4] = r;
-    out[p * 4 + 1] = g;
-    out[p * 4 + 2] = b;
-    out[p * 4 + 3] = transparentZero && count2 === 0 ? 0 : 255;
-  }
-  return out;
-}
-function overdrawAverages(info) {
-  const pixels = info.width * info.height;
-  return {
-    perPixel: pixels > 0 ? info.fragments / pixels : 0,
-    perCovered: info.coveredPixels > 0 ? info.fragments / info.coveredPixels : 0
-  };
-}
-var OVERDRAW_MAGIC = "OVERDRAW 1\n";
-function parseOverdrawFile(bytes) {
-  const magic = new TextEncoder().encode(OVERDRAW_MAGIC);
-  if (bytes.byteLength < magic.byteLength + 4 || magic.some((b, i) => bytes[i] !== b)) throw new Error("Not an overdraw file from vkinsp_replay.");
-  const length2 = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(magic.byteLength, true);
-  const start = magic.byteLength + 4;
-  const base = start + length2;
-  if (base > bytes.byteLength) throw new Error("The overdraw file is truncated.");
-  const manifest = JSON.parse(new TextDecoder().decode(bytes.subarray(start, base)));
-  const measurements = (manifest.passes ?? []).map(({ payload, ...info }) => {
-    let data = null;
-    if (payload) {
-      const [offset, size2] = payload;
-      if (base + offset + size2 > bytes.byteLength) throw new Error("The overdraw file is truncated (counts out of range).");
-      data = bytes.slice(base + offset, base + offset + size2);
-    }
-    return { info, data };
-  });
-  return { device: manifest.device ?? "", measurements, problems: manifest.problems ?? [] };
-}
-
 // src/mcp/tools.ts
 import fs13 from "node:fs";
 import path13 from "node:path";
@@ -34363,7 +34379,10 @@ function overdrawBrief(o) {
     draws: o.draws,
     skippedDraws: o.skippedDraws || void 0,
     pixelsByCount: Object.keys(histogram).length ? histogram : void 0,
-    note: o.note
+    note: o.note,
+    // A multiview pass: every view's counts together, or the one view this is.
+    views: o.views,
+    view: o.view
   };
 }
 function passMeasurements(c2, p, i, gpuMs) {
@@ -34843,6 +34862,7 @@ function captureTools(store) {
         capture: CAPTURE_PARAM,
         pass: { type: "integer", minimum: 0, description: "A render pass: its heatmap and the counts at `texels`." },
         depthTested: { type: "boolean", description: "With pass: the fragments that passed depth and stencil (default true), or every rasterized fragment." },
+        view: { type: "integer", minimum: 0, description: "With pass, in a multiview pass (an XR frame's eyes): which view's heatmap (default 0). The pass list's figures are of every view together." },
         image: { type: "boolean", description: "With pass: return the PNG (default true)." },
         maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
         texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "With pass: [x, y] pixels to read the count of (up to 64)." },
@@ -34899,7 +34919,11 @@ function captureTools(store) {
         if (!p) throw new Error(`No pass ${passArg}: the capture has ${passes.length} (get_bottlenecks lists them).`);
         if (p.compute) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) is a compute pass, which has no overdraw. get_overdraw without pass lists the render passes.`);
         const depthTested = boolArg(args, "depthTested", true);
-        const o = c2.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).find((m) => m.info.depthTested === depthTested);
+        const ofKind = c2.data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).filter((m) => m.info.depthTested === depthTested);
+        const views = ofKind.map((m) => m.info.view).filter((v) => v !== void 0);
+        const view = optionalInt(args, "view");
+        const o = ofKind.find((m) => (m.info.view ?? 0) === (view ?? views[0] ?? 0));
+        if (!o && view !== void 0 && ofKind.length) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no view ${view}: ${views.length ? `its views are ${views.join(", ")}` : "it is not a multiview pass"}.`);
         if (!o) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no overdraw measurement.`);
         const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
         const texels = requested.map((pt) => {
@@ -34917,6 +34941,7 @@ function captureTools(store) {
           width: o.info.width,
           height: o.info.height,
           ...overdrawBrief(o.info),
+          views: views.length > 1 ? views : void 0,
           texels: texels.length ? texels : void 0,
           note: o.data ? o.info.note : [o.info.note, "The per-pixel counts were not kept, so there is no heatmap."].filter(Boolean).join(" ")
         });

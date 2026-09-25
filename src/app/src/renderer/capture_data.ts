@@ -183,10 +183,10 @@ export class CaptureData {
     this._pendingBuffers = 0;
   }
 
-  /** A render pass's overdraw measurements: the depth-tested one first. */
+  /** A render pass's overdraw measurements: the depth-tested ones first, then by view (a multiview pass has one per view). */
   overdrawForPass(frame: number, commandBufferId: number, passIndex: number): CapturedOverdraw[] {
     return this.overdraw.filter((o) => o.info.frame === frame && o.info.commandBuffer === commandBufferId && o.info.passIndex === passIndex)
-      .sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested));
+      .sort((a, b) => Number(b.info.depthTested) - Number(a.info.depthTested) || (a.info.view ?? 0) - (b.info.view ?? 0));
   }
 
   /** The ablation measured for a pipeline's stage, if any. */

@@ -91,6 +91,23 @@ export function overdrawRgba(o: CapturedOverdraw, transparentZero = false): Uint
   return out;
 }
 
+/**
+ * A multiview pass's measurements of one kind taken as one, for the figures a pass is ranked by: the
+ * views' pixels stacked (the height times the views) and their counts summed, so the averages are
+ * over every view. One measurement is returned as it is.
+ */
+export function mergeViews(infos: OverdrawMeasurement[]): OverdrawMeasurement | null {
+  if (infos.length <= 1) return infos[0] ?? null;
+  const first = infos[0];
+  const histogram = first.histogram.map((_, b) => infos.reduce((sum, i) => sum + (i.histogram[b] ?? 0), 0));
+  return {
+    ...first, view: undefined, views: infos.length, height: first.height * infos.length, size: 0, histogram,
+    fragments: infos.reduce((sum, i) => sum + i.fragments, 0),
+    coveredPixels: infos.reduce((sum, i) => sum + i.coveredPixels, 0),
+    maxCount: Math.max(...infos.map((i) => i.maxCount)),
+  };
+}
+
 /** Fragments per pixel of the pass, and per pixel something landed on. */
 export function overdrawAverages(info: OverdrawMeasurement): { perPixel: number; perCovered: number } {
   const pixels = info.width * info.height;

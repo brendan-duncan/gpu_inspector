@@ -3535,7 +3535,8 @@ export class CaptureView implements CaptureHost {
     const strip = new Div(grp.body, { class: "capture_frameImages" });
     for (const o of measurements) {
       const box = new Div(strip, { class: "capture_pass_texture" });
-      new Div(box, { class: "capture-texture-title", text: o.info.depthTested ? "Fragments passing depth and stencil" : "Every rasterized fragment" });
+      const view = o.info.view !== undefined ? ` (view ${o.info.view})` : "";
+      new Div(box, { class: "capture-texture-title", text: (o.info.depthTested ? "Fragments passing depth and stencil" : "Every rasterized fragment") + view });
       new Div(box, { text: overdrawSummary(o.info), class: "text-muted font-sm" });
       if (!isMeasured(o.info)) continue;
       const histogram = overdrawHistogramText(o.info);

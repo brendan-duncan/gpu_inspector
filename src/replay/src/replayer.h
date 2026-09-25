@@ -410,6 +410,8 @@ struct OverdrawResult
     /** The count of every pixel, row by row. */
     std::vector<uint16_t> counts;
     std::string note;
+    /** A multiview pass has a measurement per view: its index (the attachments' layer); -1 in a single-view pass. */
+    int32_t view = -1;
 };
 
 /**
@@ -605,6 +607,8 @@ private:
         int depthAttachment = -1;
         /** Views a subpass renders at most (multiview): a query inside takes one index per view. */
         uint32_t views = 1;
+        /** Every view any subpass renders (multiview), 0 without. */
+        uint32_t viewMask = 0;
     };
     struct TransientImage
     {
@@ -667,6 +671,8 @@ private:
         VkClearDepthStencilValue depthClear{1.0f, 0};
         TransientImage overdrawDepth;
         bool overdraw = false;
+        /** Multiview: the views the pass renders, each the attachments' layer of its index; 0 without. */
+        uint32_t viewMask = 0;
         // Pixel history: what each attachment starts from, and the copies the pass is replayed into.
         uint64_t renderPass = 0;                 // 0 for dynamic rendering
         std::vector<VkFormat> formats;
@@ -701,7 +707,8 @@ private:
     struct PendingOverdraw
     {
         Staging staging;
-        size_t result = 0;
+        /** The report's measurement for each layer of the staging, in layer order (one per view of a multiview pass). */
+        std::vector<std::pair<size_t, uint32_t>> results;
     };
     /** One draw's vertex shader outputs waiting for its submission: the feedback buffer and its counter. */
     struct PendingMesh
@@ -945,10 +952,12 @@ private:
     void CompleteHistory(std::vector<PendingHistory>& histories);
 
     // Overdraw
+    /** An image of the replay's own and its view; with `layers` above 1, a 2D array (a multiview pass's). */
     TransientImage CreateTransientImage(VkFormat format, VkExtent2D extent, VkImageUsageFlags usage,
-        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT);
+        VkSampleCountFlagBits samples = VK_SAMPLE_COUNT_1_BIT, uint32_t layers = 1);
     void ReleaseTransients();
-    VkRenderPass OverdrawRenderPass(VkFormat depthFormat);
+    /** The counting render pass: a count target, and `depthFormat`'s depth when there is one; multiview with `viewMask`. */
+    VkRenderPass OverdrawRenderPass(VkFormat depthFormat, uint32_t viewMask = 0);
     VkPipeline OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode = ReissueMode::Count);
     void PrepareOverdraw(VkCommandBuffer cb, PassState& pass);
     void RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, std::vector<PendingOverdraw>& pending);
@@ -1302,8 +1311,10 @@ private:
     std::unordered_map<uint64_t, VkExtent2D> _framebufferExtents;
     VkShaderModule _countModule = VK_NULL_HANDLE;
     VkShaderModule _backFaceModule = VK_NULL_HANDLE;
-    /** Copies by pipeline, depth tested, depth format, mode, and whether they draw in dynamic rendering. */
-    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool>, VkPipeline> _overdrawPipelines;
+    /** Copies by pipeline, depth tested, depth format, mode, whether they draw in dynamic rendering, and the view mask. */
+    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool, uint32_t>, VkPipeline> _overdrawPipelines;
+    /** The views the pass being reissued renders into (overdraw of a multiview pass), 0 for one. */
+    uint32_t _reissueViewMask = 0;
     /** The pass being reissued is in dynamic rendering (it holds shader-object draws), so pipeline copies are made for it. */
     bool _reissueRendering = false;
     /** Shader objects are bound to the graphics stages in place of a pipeline. */
@@ -1314,7 +1325,7 @@ private:
     bool _reissueStateStale = false;
     /** The pipeline copy the reissued commands bound last, whose static state they must not set. */
     VkPipeline _reissueCopy = VK_NULL_HANDLE;
-    std::map<VkFormat, VkRenderPass> _overdrawRenderPasses;
+    std::map<std::pair<VkFormat, uint32_t>, VkRenderPass> _overdrawRenderPasses;
     std::vector<TransientImage> _transientImages;
     std::vector<VkFramebuffer> _transientFramebuffers;
     /** Whether a counting pipeline is bound in the overdraw pass being recorded (draws are left out otherwise). */

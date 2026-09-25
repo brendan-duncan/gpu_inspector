@@ -287,7 +287,9 @@ On Vulkan, a draw whose fragment shader discards (or writes depth or the sample 
 with its own shader, edited to write the count, so alpha-tested geometry counts only where it is
 drawn; a shader that writes memory is the exception, since drawing it again would repeat the writes,
 and it counts every fragment it rasterized. Metal's counting shader does not discard, so there
-alpha-tested geometry counts as opaque. A multiview pass is counted in its first view only.
+alpha-tested geometry counts as opaque. A multiview pass (an XR frame's two eyes) is counted
+in every view: the pass's figures are of the views together, its details show a heatmap per view, and
+the render target tab shows the heatmap of the layer it shows.
 
 ### Draw-call overlays
 

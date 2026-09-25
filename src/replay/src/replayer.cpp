@@ -1407,7 +1407,10 @@ void Replayer::CreateObject(const JValue& o)
                     continue;
                 const auto* mv = (const VkRenderPassMultiviewCreateInfo*)s;
                 for (uint32_t k = 0; mv->pViewMasks && k < mv->subpassCount; ++k)
+                {
                     rec.views = std::max(rec.views, ViewCount(mv->pViewMasks[k]));
+                    rec.viewMask |= mv->pViewMasks[k];
+                }
             }
             info.pAttachments = attachments.data();
             VkRenderPass rp = VK_NULL_HANDLE;
@@ -1441,7 +1444,10 @@ void Replayer::CreateObject(const JValue& o)
             if (info.subpassCount && info.pSubpasses[0].pDepthStencilAttachment && info.pSubpasses[0].pDepthStencilAttachment->attachment != VK_ATTACHMENT_UNUSED)
                 rec.depthAttachment = (int)info.pSubpasses[0].pDepthStencilAttachment->attachment;
             for (uint32_t k = 0; k < info.subpassCount; ++k)
+            {
                 rec.views = std::max(rec.views, ViewCount(info.pSubpasses[k].viewMask));
+                rec.viewMask |= info.pSubpasses[k].viewMask;
+            }
             info.pAttachments = attachments.data();
             VkRenderPass rp = VK_NULL_HANDLE;
             if (_fns.CreateRenderPass2(d, &info, nullptr, &rp) == VK_SUCCESS)
@@ -3844,6 +3850,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             pass.renderPass = rp;
             auto rit = _renderPasses.find(rp);
             _passViews = rit != _renderPasses.end() ? rit->second.views : 1;
+            pass.viewMask = rit != _renderPasses.end() ? rit->second.viewMask : 0;
             if (rit != _renderPasses.end())
             {
                 pass.layouts = rit->second.finalLayouts;
@@ -3908,6 +3915,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             {
                 VkRenderingInfo info = *a.pRenderingInfo;
                 _passViews = ViewCount(info.viewMask);
+                pass.viewMask = info.viewMask;
                 std::vector<VkRenderingAttachmentInfo> colors(info.pColorAttachments, info.pColorAttachments + info.colorAttachmentCount);
                 VkRenderingAttachmentInfo depth{}, stencil{};
                 const JValue* ri = args->Get("pRenderingInfo");

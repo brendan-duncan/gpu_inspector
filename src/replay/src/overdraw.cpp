@@ -23,8 +23,9 @@ namespace vkreplay
 //   * with the pass's depth and stencil tests, against a copy of the depth the pass started
 //     from (its load) or its clear value: the fragments that passed, in draw order;
 //   * without depth and stencil: every fragment the draws rasterized.
-// Limits: fragments a shader discards are counted (the counting shader does not discard),
-// and a multiview pass's pipelines cannot be copied into a single-view pass.
+// A multiview pass is counted in every view: the count target and the depth copy have a layer per
+// view, the counting render pass (or dynamic rendering) the pass's view mask, and the copies are
+// made for it, so each view's count is a layer of its own, reported as a measurement of its own.
 
 bool Replayer::ArgsResolve(const std::string& method, const JValue& args)
 {
@@ -54,15 +55,17 @@ void Replayer::Barrier(VkCommandBuffer cb, VkImage image, const VkImageSubresour
     _fns.CmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 0, nullptr, 0, nullptr, 1, &b);
 }
 
-Replayer::TransientImage Replayer::CreateTransientImage(VkFormat format, VkExtent2D extent, VkImageUsageFlags usage, VkSampleCountFlagBits samples)
+Replayer::TransientImage Replayer::CreateTransientImage(VkFormat format, VkExtent2D extent, VkImageUsageFlags usage, VkSampleCountFlagBits samples,
+    uint32_t layers)
 {
     TransientImage t;
+    layers = std::max(1u, layers);
     VkImageCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
     info.imageType = VK_IMAGE_TYPE_2D;
     info.format = format;
     info.extent = {extent.width, extent.height, 1};
     info.mipLevels = 1;
-    info.arrayLayers = 1;
+    info.arrayLayers = layers;
     info.samples = samples;
     info.tiling = VK_IMAGE_TILING_OPTIMAL;
     info.usage = usage;
@@ -80,9 +83,9 @@ Replayer::TransientImage Replayer::CreateTransientImage(VkFormat format, VkExten
     }
     VkImageViewCreateInfo view{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     view.image = t.image;
-    view.viewType = VK_IMAGE_VIEW_TYPE_2D;
+    view.viewType = layers > 1 ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
     view.format = format;
-    view.subresourceRange = {vkinsp::FormatAspects(format), 0, 1, 0, 1};
+    view.subresourceRange = {vkinsp::FormatAspects(format), 0, 1, 0, layers};
     _fns.CreateImageView(_device, &view, nullptr, &t.view);
     _transientImages.push_back(t);
     return t;
@@ -107,9 +110,10 @@ void Replayer::ReleaseTransients()
     _transientImages.clear();
 }
 
-VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat)
+VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat, uint32_t viewMask)
 {
-    auto it = _overdrawRenderPasses.find(depthFormat);
+    const auto key = std::make_pair(depthFormat, viewMask);
+    auto it = _overdrawRenderPasses.find(key);
     if (it != _overdrawRenderPasses.end())
         return it->second;
     VkAttachmentDescription attachments[2] = {};
@@ -143,16 +147,22 @@ VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat)
     info.pAttachments = attachments;
     info.subpassCount = 1;
     info.pSubpasses = &subpass;
+    // A multiview pass's views, each into the layer of its index.
+    VkRenderPassMultiviewCreateInfo multiview{VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO};
+    multiview.subpassCount = 1;
+    multiview.pViewMasks = &viewMask;
+    if (viewMask)
+        info.pNext = &multiview;
     VkRenderPass rp = VK_NULL_HANDLE;
     if (_fns.CreateRenderPass(_device, &info, nullptr, &rp) == VK_SUCCESS)
         Track("VkRenderPass", (uint64_t)rp);
-    _overdrawRenderPasses[depthFormat] = rp;
+    _overdrawRenderPasses[key] = rp;
     return rp;
 }
 
 VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode)
 {
-    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode, _reissueRendering);
+    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode, _reissueRendering, _reissueViewMask);
     auto it = _overdrawPipelines.find(key);
     if (it != _overdrawPipelines.end())
         return it->second;
@@ -162,6 +172,7 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
     // A pass that holds shader-object draws is reissued in dynamic rendering, with the same attachments.
     const VkFormat countFormat = VK_FORMAT_R16_SFLOAT;
     VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.viewMask = _reissueViewMask;
     rendering.colorAttachmentCount = 1;
     rendering.pColorAttachmentFormats = &countFormat;
     if (hasDepth && (vkinsp::FormatAspects(depthFormat) & VK_IMAGE_ASPECT_DEPTH_BIT))
@@ -331,7 +342,7 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
             }
             else
             {
-                p.info.renderPass = OverdrawRenderPass(hasDepth ? depthFormat : VK_FORMAT_UNDEFINED);
+                p.info.renderPass = OverdrawRenderPass(hasDepth ? depthFormat : VK_FORMAT_UNDEFINED, _reissueViewMask);
             }
             p.info.subpass = 0;
             return true;
@@ -348,23 +359,27 @@ void Replayer::PrepareOverdraw(VkCommandBuffer cb, PassState& pass)
     if (pass.depthFormat == VK_FORMAT_UNDEFINED || !pass.depthImage)
         return;
     auto sit = _images.find(pass.depthImage);
-    pass.overdrawDepth = sit == _images.end() ? TransientImage{} : CreateTransientImage(pass.depthFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
+    // A multiview pass tests each view against the depth of its own layer.
+    const uint32_t layers = ViewLayers(pass.viewMask);
+    pass.overdrawDepth = sit == _images.end() ? TransientImage{} : CreateTransientImage(pass.depthFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+        VK_SAMPLE_COUNT_1_BIT, layers);
     if (!pass.overdrawDepth.image)
     {
         pass.depthFormat = VK_FORMAT_UNDEFINED;
         return;
     }
     const VkImageAspectFlags aspects = vkinsp::FormatAspects(pass.depthFormat);
-    const VkImageSubresourceRange full{aspects, 0, 1, 0, 1};
+    const VkImageSubresourceRange full{aspects, 0, 1, 0, layers};
     Barrier(cb, pass.overdrawDepth.image, full, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-    if (pass.depthLoadOp != VK_ATTACHMENT_LOAD_OP_CLEAR && pass.depthLayoutBefore != VK_IMAGE_LAYOUT_UNDEFINED)
+    const ImageRecord& src = sit->second;
+    const uint32_t copied = std::min(layers, src.layers > pass.depthRange.baseArrayLayer ? src.layers - pass.depthRange.baseArrayLayer : 1u);
+    if (pass.depthLoadOp != VK_ATTACHMENT_LOAD_OP_CLEAR && pass.depthLayoutBefore != VK_IMAGE_LAYOUT_UNDEFINED && copied == layers)
     {
-        const ImageRecord& src = sit->second;
-        const VkImageSubresourceRange srcRange{aspects, pass.depthRange.baseMipLevel, 1, pass.depthRange.baseArrayLayer, 1};
+        const VkImageSubresourceRange srcRange{aspects, pass.depthRange.baseMipLevel, 1, pass.depthRange.baseArrayLayer, layers};
         Barrier(cb, src.image, srcRange, pass.depthLayoutBefore, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkImageCopy copy{};
-        copy.srcSubresource = {aspects, pass.depthRange.baseMipLevel, pass.depthRange.baseArrayLayer, 1};
-        copy.dstSubresource = {aspects, 0, 0, 1};
+        copy.srcSubresource = {aspects, pass.depthRange.baseMipLevel, pass.depthRange.baseArrayLayer, layers};
+        copy.dstSubresource = {aspects, 0, 0, layers};
         copy.extent = {std::min(pass.extent.width, std::max(1u, src.extent.width >> pass.depthRange.baseMipLevel)),
             std::min(pass.extent.height, std::max(1u, src.extent.height >> pass.depthRange.baseMipLevel)), 1};
         _fns.CmdCopyImage(cb, src.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pass.overdrawDepth.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
@@ -623,6 +638,7 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
         VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
         info.renderArea = {{0, 0}, pass.extent};
         info.layerCount = 1;
+        info.viewMask = _reissueViewMask;
         info.colorAttachmentCount = 1;
         info.pColorAttachments = &attachment;
         info.pDepthAttachment = (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) ? &depthStencil : nullptr;
@@ -720,6 +736,9 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
     }
     // Shader objects draw only in dynamic rendering; a pass without them keeps the render pass.
     const bool shaderObjects = PassUsesShaderObjects(group, endIndex) && _fns.CmdBeginRendering;
+    // A multiview pass: a layer of the count target per view, measured apart. The capture's count
+    // is of every view together, so no view's measurement carries it.
+    const uint32_t layers = ViewLayers(pass.viewMask);
     for (int mode = 0; mode < 2; ++mode)
     {
         const bool tested = mode == 0;
@@ -731,12 +750,13 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         result.depthTested = tested;
         result.width = pass.extent.width;
         result.height = pass.extent.height;
-        result.capturedFragments = measured;
+        result.capturedFragments = pass.viewMask ? -1 : measured;
         if (tested && depthFormat == VK_FORMAT_UNDEFINED)
             result.note = "the pass has no depth attachment";
 
-        TransientImage count = CreateTransientImage(VK_FORMAT_R16_SFLOAT, pass.extent, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT);
-        VkRenderPass rp = OverdrawRenderPass(depthFormat);
+        TransientImage count = CreateTransientImage(VK_FORMAT_R16_SFLOAT, pass.extent, VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
+            VK_SAMPLE_COUNT_1_BIT, layers);
+        VkRenderPass rp = OverdrawRenderPass(depthFormat, pass.viewMask);
         if (!count.image || !rp)
         {
             result.note = "no memory for the count target";
@@ -746,7 +766,7 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         if (shaderObjects)
         {
             // The count target is cleared by the pass's begin, from whatever it held.
-            Barrier(cb, count.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            Barrier(cb, count.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             rp = VK_NULL_HANDLE;
         }
         VkImageView views[2] = {count.view, pass.overdrawDepth.view};
@@ -767,25 +787,36 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         if (fb)
             _transientFramebuffers.push_back(fb);
 
+        _reissueViewMask = pass.viewMask;
         ReissuePass(cb, group, pass, endIndex, tested, depthFormat, rp, fb, count.view, depthFormat != VK_FORMAT_UNDEFINED ? pass.overdrawDepth.view : VK_NULL_HANDLE);
+        _reissueViewMask = 0;
         result.draws = _overdrawDraws;
         result.skippedDraws = _overdrawSkippedDraws;
 
         PendingOverdraw p;
-        p.result = _report->overdraw.size();
-        if (!CreateStaging((VkDeviceSize)pass.extent.width * pass.extent.height * 2, p.staging))
+        if (!CreateStaging((VkDeviceSize)pass.extent.width * pass.extent.height * 2 * layers, p.staging))
         {
             result.note = "no staging memory for the counts";
             _report->overdraw.push_back(std::move(result));
             continue;
         }
-        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        const VkImageSubresourceRange range{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
         Barrier(cb, count.image, range, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkBufferImageCopy copy{};
-        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        copy.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, layers};
         copy.imageExtent = {pass.extent.width, pass.extent.height, 1};
         _fns.CmdCopyImageToBuffer(cb, count.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, p.staging.buffer, 1, &copy);
-        _report->overdraw.push_back(std::move(result));
+        // One measurement per view, each of its own layer; a single-view pass has the one.
+        for (uint32_t layer = 0; layer < layers; ++layer)
+        {
+            if (pass.viewMask && !(pass.viewMask & (1u << layer)))
+                continue;
+            OverdrawResult view = result;
+            if (pass.viewMask)
+                view.view = (int32_t)layer;
+            p.results.push_back({_report->overdraw.size(), layer});
+            _report->overdraw.push_back(std::move(view));
+        }
         pending.push_back(p);
     }
 }
@@ -793,10 +824,11 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
 void Replayer::CompleteOverdraw(std::vector<PendingOverdraw>& pending)
 {
     for (PendingOverdraw& p : pending)
+    for (const auto& [index, layer] : p.results)
     {
-        OverdrawResult& r = _report->overdraw[p.result];
+        OverdrawResult& r = _report->overdraw[index];
         const size_t pixels = (size_t)r.width * r.height;
-        const auto* bytes = static_cast<const uint8_t*>(p.staging.mapped);
+        const auto* bytes = static_cast<const uint8_t*>(p.staging.mapped) + pixels * 2 * layer;
         r.counts.resize(pixels);
         for (size_t i = 0; i < pixels; ++i)
         {
@@ -814,8 +846,9 @@ void Replayer::CompleteOverdraw(std::vector<PendingOverdraw>& pending)
                                                             : 7;
             r.histogram[bucket]++;
         }
-        DestroyStaging(p.staging);
     }
+    for (PendingOverdraw& p : pending)
+        DestroyStaging(p.staging);
     pending.clear();
     ReleaseTransients();
 }

@@ -206,6 +206,13 @@ pass.
   storage buffer or image, an atomic) keeps the constant shader, since drawing it again would repeat
   the writes, and the replay says so among its problems. Every other shader counts the same either
   way, so it keeps the cheaper constant one.
+- **Multiview.** A multiview pass (an XR frame's eyes) is counted in every view. The count target
+  and the depth copy have a layer per view, and the counting render pass has the pass's view mask
+  (`VkRenderPassMultiviewCreateInfo`, or `viewMask` in dynamic rendering, where the copies take it
+  too). Each view is a measurement of its own, with its `view` index, and its own heatmap. Checked
+  on two XR frames captured on an Adreno 740: the views' tested counts add up to the draw's
+  occlusion count exactly (69,252 + 67,826 = 137,078, and 62,368 + 62,073 = 124,441). Multiview in
+  dynamic rendering has no test capture yet.
 - **Two counts per pass:**
   - **Fragments passing depth and stencil**, in draw order. The pipelines keep their tests, against
     a copy of the depth the pass started from: its contents when the pass loads depth, its clear
@@ -223,7 +230,6 @@ pass.
 
 Limits:
 - A shader that discards and writes memory counts every fragment it rasterized.
-- A multiview pass is counted in its first view only.
 - A pass the replay leaves out has no measurement.
 
 A Metal capture measures the same while capturing, with no replay: the capture library draws each

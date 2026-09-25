@@ -7,6 +7,7 @@
 - `test/triangle --device-local-descriptors` binds its set from a device-local descriptor buffer.
 - Vulkan overdraw and draw overlays count only the fragments a shader keeps, so alpha-tested geometry no longer counts as opaque.
 - `test/triangle --alpha-test` draws the cube with a fragment shader that discards.
+- Vulkan overdraw measures every view of a multiview pass, with a heatmap per view and `get_overdraw`'s `view`.
 
 ### Fixed
 - Vulkan pixel history binds a draw's own pipeline again after following it fragment by fragment.

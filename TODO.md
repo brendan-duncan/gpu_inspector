@@ -357,7 +357,16 @@ application with injected state. Route (a) is the general one and is the prerequ
       3,480 passing to 2,089, the draw's occlusion count, and every other draw is unchanged. The
       edit passes spirv-val on SPIR-V 1.0 and 1.6 shaders with `discard`, `demote`, an output array
       written through access chains, and `gl_FragDepth` / `gl_SampleMask`.
-- [ ] Overdraw of every view of a multiview pass.
+- [x] Overdraw of every view of a multiview pass (`RecordOverdraw`, `src/replay/src/overdraw.cpp`): the
+      count target and the depth copy have a layer per view, the counting render pass the pass's
+      view mask (`viewMask` in dynamic rendering, and on the copies), and each view is a measurement
+      of its own with its `view` index. The app takes the views together for a pass's figures
+      (`mergeViews`), shows a heatmap per view in the pass's details, and the render target tab's
+      heatmap follows the layer the image shows; `get_overdraw` takes `view`. On the two XR frames
+      captured on an Adreno 740 the eyes' tested counts add up to the draw's occlusion count exactly
+      (69,252 + 67,826 = 137,078; 62,368 + 62,073 = 124,441), with no validation messages, and view 0
+      matches what the replay measured before. Not yet exercised: multiview in dynamic rendering,
+      which no test capture has.
 - [x] Draw-call overlays (`vkinsp_replay --overlay`, `src/replay/src/overlay.cpp`): highlight draw,
       depth test and wireframe in the render target tab, for any draw of the pass.
 - [x] Draw overlays: the stencil test apart from the depth one, back-face culling, and

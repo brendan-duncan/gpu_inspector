@@ -47,6 +47,16 @@ inline uint32_t ViewCount(uint32_t mask)
     return n ? n : 1;
 }
 
+/** The layers a multiview pass's attachments need: one past its highest view (a view renders the layer of its index); 1 without. */
+inline uint32_t ViewLayers(uint32_t mask)
+{
+    uint32_t layers = 1;
+    for (uint32_t v = 0; v < 32; ++v)
+        if (mask & (1u << v))
+            layers = v + 1;
+    return layers;
+}
+
 inline bool IsBeginRendering(std::string_view m) { return m == "vkCmdBeginRendering" || m == "vkCmdBeginRenderingKHR"; }
 
 /** A capture texture's "aspect" ("color", "depth", "stencil") as the aspect its bytes were copied from. */

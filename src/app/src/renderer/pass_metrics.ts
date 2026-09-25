@@ -19,6 +19,7 @@ import type { CaptureData } from "./capture_data.js";
 import { boundPipelineOf, opensComputeWork } from "./command_sets.js";
 import { drawSumsByPass, passSumKey } from "./draw_stats.js";
 import { heaviestStage, hwCountersByPass, limiterAdvice, passLimiter, type PassLimiter } from "./hw_counters.js";
+import { mergeViews } from "./overdraw.js";
 
 /** Average overdraw a frame is doing well to stay near, from Apple's and Unity's guidance. */
 export const HEALTHY_OVERDRAW = 1.2;
@@ -359,10 +360,11 @@ export function collectPassMetrics(data: CaptureData, db: ObjectLookup): FrameMe
       if (p.compute) continue;
       const measured = data.overdrawForPass(p.frame, p.commandBuffer, p.passIndex).filter((o) => o.info.measured !== false);
       if (!measured.length) continue;
-      const depthTested = measured.find((o) => o.info.depthTested)?.info ?? null;
-      const rasterized = measured.find((o) => !o.info.depthTested)?.info ?? null;
+      // A multiview pass's views together: the pass paid for every one.
+      const depthTested = mergeViews(measured.filter((o) => o.info.depthTested).map((o) => o.info));
+      const rasterized = mergeViews(measured.filter((o) => !o.info.depthTested).map((o) => o.info));
       p.measuredOverdraw = { depthTested, rasterized };
-      const pixels = depthTested ? depthTested.width * depthTested.height : 0;
+      const pixels = depthTested ? depthTested.width * depthTested.height : 0;   // every view's
       if (p.overdraw === null && depthTested && pixels > 0) {
         p.overdraw = depthTested.fragments / pixels;
         p.overdrawSource = "measured";
