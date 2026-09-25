@@ -574,7 +574,9 @@ export class CaptureTextureView {
     }
     const summary = note(drawOverlaySummary(d));
     summary.tooltip = [drawOverlaySummary(d), d.note ?? "",
-      "A fragment the draw's own shader discards is shown as covered: the replay draws it with a shader that does not discard."].filter(Boolean).join("\n");
+      this.host.data.api === "vulkan"
+        ? "A fragment the draw's own shader discards is not shown: the replay draws a shader that discards with its own code, unless it writes memory."
+        : "A fragment the draw's own shader discards is shown as covered: the draw is drawn again with a shader that does not discard."].filter(Boolean).join("\n");
     if (!d.measured) return;
     if (kind === "wireframe" && !d.wireframe) {
       note(d.note ?? "The replay could not draw the wireframe.");

@@ -3556,8 +3556,12 @@ export class CaptureView implements CaptureHost {
       canvas.onclick = () => this.openPassOverdraw(key, o.info.depthTested);
       box.element.appendChild(canvas);
     }
+    // The Vulkan replay counts with a draw's own shader where it discards (src/replay/src/count_patch.h).
+    const discards = this.data.api === "vulkan"
+      ? "Only the fragments a draw's shader keeps count: one that discards is drawn with its own code, unless it writes memory."
+      : "Discarded fragments count, since the counting shader does not discard.";
     new Div(grp.body, {
-      text: "Fragments per pixel: black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and more. Discarded fragments count, since the counting shader does not discard.",
+      text: `Fragments per pixel: black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and more. ${discards}`,
       class: "text-muted font-sm", style: "padding: 4px 6px;",
     });
   }

@@ -231,7 +231,31 @@ bool Replayer::ReissueShaderObjectDraw(VkCommandBuffer cb, ReissueMode mode, boo
 {
     if (!_reissueRendering || !_fns.CmdBindShadersEXT)
         return false;
-    VkShaderEXT fragment = ReplacementFragment(mode == ReissueMode::BackFace ? ReplacementShader::BackFace : ReplacementShader::Count, _reissueLayoutShader);
+    // The draw's own fragment shader counting what it keeps, where it decides that (a discard, a
+    // written depth); the replay's constant one otherwise, as OverdrawPipeline chooses.
+    VkShaderEXT fragment = VK_NULL_HANDLE;
+    const bool keeps = mode == ReissueMode::Count || mode == ReissueMode::DepthOnly || mode == ReissueMode::StencilOnly;
+    if (keeps && _reissueFragmentShader)
+    {
+        auto it = _countingShaders.find(_reissueFragmentShader);
+        if (it == _countingShaders.end())
+        {
+            VkShaderEXT made = VK_NULL_HANDLE;
+            VkShaderCreateInfoEXT info{};
+            std::string error;
+            if (ShaderObjectInfo(_reissueFragmentShader, info, error))
+            {
+                const std::string entry = info.pName ? info.pName : "main";
+                _arena.Reset();
+                if (const std::vector<uint32_t>* counting = CountingCode(_reissueFragmentShader, entry))
+                    made = ShaderObjectWithCode(_reissueFragmentShader, counting->data(), counting->size(), error);
+            }
+            it = _countingShaders.emplace(_reissueFragmentShader, made).first;
+        }
+        fragment = it->second;
+    }
+    if (!fragment)
+        fragment = ReplacementFragment(mode == ReissueMode::BackFace ? ReplacementShader::BackFace : ReplacementShader::Count, _reissueLayoutShader);
     if (!fragment)
         return false;
     // A pipeline copy bound since the last shader-object draw made static what the application's

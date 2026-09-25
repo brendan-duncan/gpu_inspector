@@ -87,6 +87,8 @@ add_executable(vkinsp_replay
     src/mesh.cpp
     src/xfb_patch.h
     src/xfb_patch.cpp
+    src/count_patch.h
+    src/count_patch.cpp
     src/history.cpp
     src/draw_stats.cpp
     src/ablation.cpp

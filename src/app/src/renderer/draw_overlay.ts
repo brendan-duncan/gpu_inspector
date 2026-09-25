@@ -1,9 +1,9 @@
 // Draw-call overlays: where one draw of a Vulkan capture landed, drawn over its pass's render target
 // (capture_texture_view.ts). RenderDoc's highlight drawcall, depth test and wireframe overlays
 // (vk_overlay.cpp), measured the same way: `vkinsp_replay --overlay <command>` draws the pass again up
-// to the draw, the draw with a constant fragment shader (src/replay/src/overlay.cpp). What it cannot see
-// is a fragment the draw's own shader discards: the constant shader does not discard, so alpha-tested
-// geometry covers its whole quad.
+// to the draw, the draw with a constant fragment shader (src/replay/src/overlay.cpp), or with its own
+// shader writing a constant where that shader discards or writes depth (src/replay/src/count_patch.h),
+// so alpha-tested geometry covers only what it keeps.
 
 /** Mask bits per pixel (OverlayResult in src/replay/src/replayer.h). */
 export const OVERLAY_COVERED = 1;

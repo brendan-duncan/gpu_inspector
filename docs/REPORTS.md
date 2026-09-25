@@ -283,9 +283,11 @@ How it is measured depends on the API:
 - **Metal** — tick **Overdraw** in the capture bar before capturing. The measurement happens
   inside the captured frame.
 
-The counting shader does not discard, so fragments the real shader would have thrown away are
-still counted and alpha-tested geometry counts as opaque. A multiview pass is counted in its first
-view only.
+On Vulkan, a draw whose fragment shader discards (or writes depth or the sample mask) is counted
+with its own shader, edited to write the count, so alpha-tested geometry counts only where it is
+drawn; a shader that writes memory is the exception, since drawing it again would repeat the writes,
+and it counts every fragment it rasterized. Metal's counting shader does not discard, so there
+alpha-tested geometry counts as opaque. A multiview pass is counted in its first view only.
 
 ### Draw-call overlays
 
@@ -319,7 +321,8 @@ and the line under the list counts the pixels it covered, passed and had rejecte
 ![The Backface Cull overlay: the part of the draw that survived culling in green, the larger part its own culling removed in red](images/backface-overlay.png)
 
 How the *measured* overlays are measured depends on the API (Viewport / Scissor is not measured at
-all), and as with overdraw a fragment the draw's own shader discards still shows as covered:
+all), and as with overdraw a fragment the draw's own shader discards is left out on Vulkan and still
+shows as covered on Direct3D 12 and Metal:
 
 - **Vulkan** — the capture is replayed on this machine's GPU with the draw drawn on its own (see
   [Capture replay](REPLAY.md#draw-call-overlays)).

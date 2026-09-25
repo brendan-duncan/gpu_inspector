@@ -36,6 +36,7 @@
 #include "decode.h"
 #include "gpucap.h"
 #include "vk_decode.gen.h"
+#include "count_patch.h"
 #include "xfb_patch.h"
 
 namespace vkreplay
@@ -854,6 +855,21 @@ private:
     std::unordered_map<VkPipeline, std::vector<VkDynamicState>> _copyDynamic;
     /** The fragment shader that writes 1.0 (overdraw counts, and coverage without discards). */
     VkShaderModule CountModule();
+    /**
+     * A stage's SPIR-V from the capture: the payload `blobName` of the object, or of a graphics
+     * pipeline library it links (libraries linked from libraries included). False when none holds it.
+     */
+    bool StageCode(uint64_t objectId, const std::string& blobName, std::vector<uint32_t>& words) const;
+    /**
+     * A fragment shader that counts only the fragments the object's own shader keeps (count_patch.h):
+     * its code with its color outputs made private and 1.0 written to location 0. Null where the
+     * constant counting shader counts the same (no discard, no depth or sample mask written), or
+     * where the edit could not be made, which is reported once as a problem.
+     */
+    const std::vector<uint32_t>* CountingCode(uint64_t objectId, const std::string& entryPoint);
+    std::map<std::pair<uint64_t, std::string>, CountPatch> _countPatches;
+    /** Shader objects made from CountingCode, by captured fragment shader object. */
+    std::map<uint64_t, VkShaderEXT> _countingShaders;
     /** The fragment shader of the back-face overlay (util.h, kBackFaceFragmentSpirv). */
     VkShaderModule BackFaceModule();
     // --- The fragment round (history.cpp) -------------------------------------------------------
@@ -1006,6 +1022,8 @@ private:
     std::map<std::pair<ReplacementShader, uint64_t>, VkShaderEXT> _replacementShaders;
     /** A graphics shader object the reissued commands bound, whose layouts a replacement fragment shader is made with. */
     uint64_t _reissueLayoutShader = 0;
+    /** The fragment shader object the reissued commands bound, whose own discards the counting keeps. */
+    uint64_t _reissueFragmentShader = 0;
 
     // Draw-call overlays (overlay.cpp): one draw of a pass issued on its own into a mask.
     /** Whether one of `commands` is in the pass beginning at `beginIndex` (its secondaries included). */

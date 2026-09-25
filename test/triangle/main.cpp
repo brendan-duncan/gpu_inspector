@@ -199,6 +199,9 @@ struct App
     // capture snapshots and the replay pushes again as plain writes.
     bool pushTemplate = false;
     bool descriptorBuffer = false;
+    // --alpha-test: the cube's fragment shader is alpha.frag, which discards the checker's dark
+    // squares: alpha-tested geometry, whose overdraw counts only the fragments it keeps.
+    bool alphaTest = false;
     // --device-local-descriptors: --descriptor-buffer, with the descriptor buffer in memory the host
     // never maps, filled by a copy from a staging buffer, so the layer cannot read it where it is bound.
     bool deviceLocalDescriptors = false;
@@ -2037,7 +2040,7 @@ struct App
 
         // Pipeline
         VkShaderModule vs = LoadShader("cube.vert.spv");
-        VkShaderModule fs = LoadShader(heavy ? "heavy.frag.spv" : "cube.frag.spv");
+        VkShaderModule fs = LoadShader(heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv");
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
         stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
@@ -2175,7 +2178,7 @@ struct App
         {
             // The same code as linked shader objects, with the pipeline layout's set layout and push constants.
             std::vector<char> vcode = ReadFile(ExeDir() + "cube.vert.spv");
-            std::vector<char> fcode = ReadFile(ExeDir() + (heavy ? "heavy.frag.spv" : "cube.frag.spv"));
+            std::vector<char> fcode = ReadFile(ExeDir() + (heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv"));
             VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
             VkShaderCreateInfoEXT sci[2]{};
             for (int i = 0; i < 2; ++i)
@@ -2984,6 +2987,8 @@ int RunApp(int argc, char** argv)
             app.pushTemplate = true;
         else if (!strcmp(argv[i], "--descriptor-buffer"))
             app.descriptorBuffer = true;
+        else if (!strcmp(argv[i], "--alpha-test"))
+            app.alphaTest = true;
         else if (!strcmp(argv[i], "--device-local-descriptors"))
             app.descriptorBuffer = app.deviceLocalDescriptors = true;
         else if (!strcmp(argv[i], "--compile-hitch"))

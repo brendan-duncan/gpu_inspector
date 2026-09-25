@@ -6,6 +6,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstring>
 #include <string>
 
 #include "util.h"
@@ -274,6 +275,49 @@ void PipelineCopy::AddDynamic(VkDynamicState state)
 bool PipelineCopy::HasDynamic(VkDynamicState state) const
 {
     return std::find(dynamic.begin(), dynamic.end(), state) != dynamic.end();
+}
+
+bool Replayer::StageCode(uint64_t objectId, const std::string& blobName, std::vector<uint32_t>& words) const
+{
+    // Depth-first through the libraries the object links, the object itself first.
+    std::vector<uint64_t> pending{objectId};
+    for (size_t visited = 0; !pending.empty() && visited < 64; ++visited)
+    {
+        const JValue* object = _capture->Object(pending.back());
+        pending.pop_back();
+        if (!object)
+            continue;
+        const uint8_t* data = nullptr;
+        size_t size = 0;
+        if (_capture->Blob(*object, blobName, data, size) && size >= 20)
+        {
+            words.resize(size / 4);
+            std::memcpy(words.data(), data, words.size() * 4);
+            return true;
+        }
+        const JValue* link = PNextEntry(CreateInfoOf(*object), "VK_STRUCTURE_TYPE_PIPELINE_LIBRARY_CREATE_INFO_KHR");
+        const JValue* list = link ? link->Get("pLibraries") : nullptr;
+        for (uint32_t k = 0; list && list->IsArray() && k < list->count; ++k)
+            pending.push_back(IdOf(&list->items[k]));
+    }
+    return false;
+}
+
+const std::vector<uint32_t>* Replayer::CountingCode(uint64_t objectId, const std::string& entryPoint)
+{
+    const auto key = std::make_pair(objectId, entryPoint);
+    auto it = _countPatches.find(key);
+    if (it == _countPatches.end())
+    {
+        CountPatch patch;
+        std::vector<uint32_t> code;
+        if (StageCode(objectId, std::string(StageName(VK_SHADER_STAGE_FRAGMENT_BIT)) + ":" + entryPoint, code))
+            patch = PatchForCounting(code.data(), code.size(), entryPoint);
+        if (patch.needed && !patch.error.empty())
+            Problem("overdraw: object " + std::to_string(objectId) + "'s fragment shader is counted as if it kept every fragment: " + patch.error);
+        it = _countPatches.emplace(key, std::move(patch)).first;
+    }
+    return it->second.needed && it->second.error.empty() ? &it->second.words : nullptr;
 }
 
 VkShaderModule Replayer::CountModule()

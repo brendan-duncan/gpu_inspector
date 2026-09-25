@@ -198,6 +198,14 @@ pass.
   pass's framebuffer. Each pixel ends up holding the number of fragments that landed on it.
 - **The copies** keep the vertex stages, rasterization and dynamic state, and drop blending and
   multisampling state.
+- **Discards.** Where the pipeline's fragment shader discards (`OpKill`, `OpTerminateInvocation`,
+  a demote to a helper) or writes depth, the sample mask or the stencil reference, the copy runs
+  that shader itself, edited to count (`count_patch.cpp`): its color outputs become private
+  variables, and an output of its own at location 0 is written 1.0 first thing. Its discards and
+  depth then decide what is counted, as they decided what was drawn. A shader that writes memory (a
+  storage buffer or image, an atomic) keeps the constant shader, since drawing it again would repeat
+  the writes, and the replay says so among its problems. Every other shader counts the same either
+  way, so it keeps the cheaper constant one.
 - **Two counts per pass:**
   - **Fragments passing depth and stencil**, in draw order. The pipelines keep their tests, against
     a copy of the depth the pass started from: its contents when the pass loads depth, its clear
@@ -209,11 +217,12 @@ pass.
   invocations the capture measured. The heatmap runs black, blue, cyan, green, yellow, orange, red,
   magenta and white as the count grows.
 - **Checked against pipeline statistics.** The triangle's pass counts 51,204 fragments, exactly the
-  51,204 fragment shader invocations its capture measured with pipeline statistics.
+  51,204 fragment shader invocations its capture measured with pipeline statistics. With
+  `--alpha-test`, whose shader discards the checker's dark squares, it counts 25,342 of the 50,655
+  invocations: exactly the samples the draw's occlusion query (`--draws`) says passed.
 
 Limits:
-- Fragments a shader discards are counted, because the counting shader does not discard.
-  Alpha-tested geometry therefore counts as opaque.
+- A shader that discards and writes memory counts every fragment it rasterized.
 - A multiview pass is counted in its first view only.
 - A pass the replay leaves out has no measurement.
 
@@ -288,10 +297,13 @@ draw overlays: 1
 That is the triangle's `--occluded` mode, which draws the cube a second time where it already is,
 so every fragment of the second draw fails its `LESS` depth test.
 
+A draw whose shader discards is drawn with its own shader, as overdraw counts it (above), so
+Rasterized, Passed and Stencil leave out what it discards; Wireframe and Back-facing are its geometry
+alone. On a Unity frame the text quads now show 2,089 fragments passing, the 2,089 samples the draw's
+occlusion query (`--draws`) counts; the constant shader had shown 3,480, its whole glyph quads.
+
 Limits:
-- A fragment the draw's own shader discards shows as covered and, when nothing else rejects it,
-  passed. On a Unity frame the text quads show 3,480 fragments passing, while the draw's occlusion
-  query (`--draws`) counts 2,089 samples: the rest were alpha-discarded.
+- A shader that discards and writes memory shows as covered where it discarded.
 - A pass the replay leaves out, and a draw whose pipeline cannot be copied, have no overlay.
 
 ## Mesh output

@@ -137,7 +137,10 @@ interpreter and re-created pipelines.
       depth hazard.
 - [ ] Descriptor buffer descriptors made before the layer attached: reported as unread, and not
       recoverable, since the bytes say nothing about what they name.
-- [ ] Sampled images bound through shader objects.
+- [x] Sampled images bound through shader objects: a shader-object draw binds its sets with
+      `vkCmdBindDescriptorSets` like a pipeline's, so its images are read back the same way. Checked
+      on `test/triangle --shader-object`: the combined image sampler carries its read-back (all
+      four mips of the 8x8 checker), the replay uploads it, and the target replays identical.
 
 ### Inspect
 - [x] GPU-assisted validation messages attached to the commands they name
@@ -340,8 +343,21 @@ application with injected state. Route (a) is the general one and is the prerequ
       WebGPU Inspector's capture texture viewer: the image with the pass's overdraw over it when
       **Overdraw** is ticked (legend, counts under the pointer, how much color covers it), and the
       history of the pixel clicked beside the image.
-- [ ] Overdraw of fragments a shader discards (alpha-tested geometry counts as opaque), and of every
-      view of a multiview pass.
+- [x] Overdraw and the draw overlays count only the fragments a shader keeps
+      (`src/replay/src/count_patch.cpp`). Where a pipeline's or shader object's fragment shader
+      discards (`OpKill`, `OpTerminateInvocation`, a demote) or writes depth, the sample mask or the
+      stencil reference, the counting copy runs that shader itself: its color outputs made private
+      variables, and a location 0 output of its own written 1.0 at the start. Its discards and depth
+      then decide the count. A shader that writes memory keeps the constant counting shader (drawing
+      it again would repeat the writes) and is named among the replay's problems; every other shader
+      counts the same with the constant one, which it keeps. `test/triangle --alpha-test` discards
+      the checker's dark squares: tested overdraw 25,342 of 50,655 invocations, equal to the draw's
+      occlusion samples, with a pipeline, with shader objects (23,961 = 23,961), and with
+      `--no-cull --occluded` (40,238). On the Unity URP frame the text quads' overlay went from
+      3,480 passing to 2,089, the draw's occlusion count, and every other draw is unchanged. The
+      edit passes spirv-val on SPIR-V 1.0 and 1.6 shaders with `discard`, `demote`, an output array
+      written through access chains, and `gl_FragDepth` / `gl_SampleMask`.
+- [ ] Overdraw of every view of a multiview pass.
 - [x] Draw-call overlays (`vkinsp_replay --overlay`, `src/replay/src/overlay.cpp`): highlight draw,
       depth test and wireframe in the render target tab, for any draw of the pass.
 - [x] Draw overlays: the stencil test apart from the depth one, back-face culling, and
@@ -514,16 +530,8 @@ application with injected state. Route (a) is the general one and is the prerequ
       time. A negative height (Vulkan's flipped Y) keeps the rectangle it covers and says it is
       flipped. `test/triangle --half-scissor`, the `overlay-viewport` UI case and
       `src/app/test/viewport_overlay.test.js` cover it.
-- [ ] Draw overlays, the rest of the rest: the three that need real work in the replay.
-  - **The fragments a shader discards.** The overlays draw the pass again with a constant fragment
-    shader, which does not discard, so alpha-tested geometry covers its whole quad. Two routes, both
-    in `OverdrawPipeline` (`src/replay/src/overdraw.cpp`): keep the application's own fragment shader
-    and count with a **stencil increment** instead of a color write (no shader edit, but the overlay
-    render pass then needs a color attachment per output the shader declares, and the stencil read
-    back), or edit the SPIR-V to keep the discard and replace the outputs with one constant (the
-    edit "overdraw of fragments a shader discards" needs as well). A shader with side effects
-    (storage writes) is re-run either way, which is what to decide first. `test/triangle` has no
-    discarding shader yet.
+- [ ] Draw overlays, the rest of the rest: the two that need real work in the replay (the fragments
+  a shader discards are done, with overdraw's, above).
   - **Triangle size**: a geometry shader passing the primitive's screen area through to the
     fragment stage, which means generating one (and the `geometryShader` feature), and a value per
     pixel rather than a mask bit.

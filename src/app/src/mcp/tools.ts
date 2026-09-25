@@ -617,7 +617,8 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         "with the fragments that passed its depth and stencil tests and every fragment it rasterized — per pixel, per covered " +
         "pixel, the maximum and pixels by count. With `pass` (get_bottlenecks' pass numbers): that pass's heatmap as a PNG " +
         "(black none, dark blue 1, blue 2, teal 3, green 4, yellow 5-6, orange 7-10, red 11-16, magenta 17-32, white 33 and " +
-        "more) and the counts at `texels`. Discarded fragments are counted, since the counting shader does not discard.",
+        "more) and the counts at `texels`. A Vulkan replay counts only the fragments a draw's shader keeps (one that discards, or " +
+        "writes depth, is drawn with its own code), unless the shader writes memory; a Metal capture counts discarded fragments too.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         pass: { type: "integer", minimum: 0, description: "A render pass: its heatmap and the counts at `texels`." },

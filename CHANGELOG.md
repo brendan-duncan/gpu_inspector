@@ -5,6 +5,8 @@
 - `test/triangle --mixed` draws one pass with both shader objects and a pipeline.
 - Vulkan captures decode descriptor buffers in memory the application never maps, such as a device-local buffer filled by a copy.
 - `test/triangle --device-local-descriptors` binds its set from a device-local descriptor buffer.
+- Vulkan overdraw and draw overlays count only the fragments a shader keeps, so alpha-tested geometry no longer counts as opaque.
+- `test/triangle --alpha-test` draws the cube with a fragment shader that discards.
 
 ### Fixed
 - Vulkan pixel history binds a draw's own pipeline again after following it fragment by fragment.

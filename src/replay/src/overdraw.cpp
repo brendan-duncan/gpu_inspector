@@ -251,10 +251,37 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
                 p.rasterization.lineWidth = 1.0f;
                 p.RemoveDynamic({VK_DYNAMIC_STATE_LINE_WIDTH, VK_DYNAMIC_STATE_POLYGON_MODE_EXT});
             }
+            // Where the draw's own fragment shader decides which fragments are kept (a discard, a
+            // written depth), the count is its own code writing 1.0; everywhere else the constant
+            // shader counts the same. The edges and the culled faces are the draw's geometry alone.
+            auto own = std::find_if(p.stages.begin(), p.stages.end(), [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_FRAGMENT_BIT; });
+            const bool keeps = mode == ReissueMode::Count || mode == ReissueMode::DepthOnly || mode == ReissueMode::StencilOnly;
+            const std::vector<uint32_t>* counting = keeps && own != p.stages.end() ? CountingCode(pipelineId, own->pName ? own->pName : "main") : nullptr;
+            VkShaderModule countingModule = VK_NULL_HANDLE;
+            if (counting)
+            {
+                VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                m.codeSize = counting->size() * 4;
+                m.pCode = counting->data();
+                if (_fns.CreateShaderModule(_device, &m, nullptr, &countingModule) == VK_SUCCESS)
+                    p.temporary.push_back(countingModule);
+                else
+                    countingModule = VK_NULL_HANDLE;
+            }
             if (mode == ReissueMode::BackFace)
+            {
                 p.ReplaceFragment(BackFaceModule());
+            }
+            else if (countingModule)
+            {
+                // Its entry point and specialization stay the application's.
+                own->module = countingModule;
+                own->pNext = nullptr;
+            }
             else if (mode != ReissueMode::Xfb)
+            {
                 p.ReplaceFragment(CountModule());
+            }
             VkPipelineColorBlendAttachmentState add{};
             add.blendEnable = VK_TRUE;
             add.srcColorBlendFactor = add.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
@@ -375,6 +402,8 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
             const uint64_t id = shaders && shaders->IsArray() && k < shaders->count ? IdOf(&shaders->items[k]) : 0;
             if (id)
                 _reissueLayoutShader = id;
+            if (stage == "VK_SHADER_STAGE_FRAGMENT_BIT")
+                _reissueFragmentShader = id;
             if (stage == "VK_SHADER_STAGE_VERTEX_BIT")
                 _overlayVertexShader = id;
             else if (stage.find("TESSELLATION") != std::string::npos || stage == "VK_SHADER_STAGE_GEOMETRY_BIT")
@@ -560,6 +589,7 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
     _reissueShaders = false;
     _reissueSetCommands.clear();
     _reissueLayoutShader = 0;
+    _reissueFragmentShader = 0;
     _reissueCopy = VK_NULL_HANDLE;
     _reissueSets = ShaderObjectSets{};
     _reissueStateStale = false;
@@ -623,6 +653,7 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
                 const uint64_t id = IdOf(&list->items[s]);
                 _overdrawDrawable = false;  // a secondary starts without a pipeline
                 _reissueShaders = false;
+                _reissueFragmentShader = 0;
                 _reissueCopy = VK_NULL_HANDLE;
                 _overlayPipeline = 0;
                 _overlayVertexShader = 0;
