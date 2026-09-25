@@ -1314,7 +1314,7 @@ npm run dist                               # installer (electron-builder), see d
 npm run icons                              # re-render assets/icon.{ico,png} from assets/icon.svg
 
 # test application (re-records every frame; built by the top-level CMake)
-build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object, --mixed, --alpha-test, --suspend, --stencil, --ray-tracing, --shader-record
+build/bin/vkinsp_triangle --frames 600     # window is resizable; --msaa, --bad-scissor, --leak, --occluded, --persistent, --heavy, --prerecord, --push-template, --second-device, --second-queue, --pipeline-library, --shader-object, --mixed, --alpha-test, --multiview, --dynamic-rendering, --suspend, --stencil, --ray-tracing, --shader-record
 ```
 
 On Linux the layer serializes the surface arguments of each windowing system whose headers CMake

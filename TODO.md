@@ -327,6 +327,17 @@ application with injected state. Route (a) is the general one and is the prerequ
       both eyes come out at exactly the values the capture read back for their layers, with the
       fragments each eye's overdraw counted there, and no validation messages; the replay used to
       crash on any pixel history of these frames.
+- [x] `test/triangle --multiview`: the cube in both views of a two-layer target in one pass (view mask
+      0b11, `cube_mv.vert` shifting each view), blitted side by side into the swapchain image, in a
+      render pass or, with `--dynamic-rendering` (the main pass in dynamic rendering with the cube's
+      pipeline), in dynamic rendering. It exercised what the XR frames could not: overdraw and pixel
+      history of a multiview pass in dynamic rendering, both views exact, no validation messages.
+      Found on the way: shader objects cannot draw multiview (`VK_EXT_shader_object` issue 5.9: the
+      view mask is compile-time state for an implementation), which the validation layer does not
+      report and which leaves the second view empty, so `--multiview` refuses `--shader-object`; and
+      in the pixel history's single-view pass the validation layer reported the pass's bindings as
+      unbound, which the history now makes again after each pipeline it binds. The `multiview` UI
+      case covers the app's side: a measurement per view, the tab drawing view 0's heat on layer 0.
 - [ ] Pixel history in a pass layered through `gl_Layer` (not multiview), past its first layer: the
       queries and the one-pixel scissor would meet every layer's fragments, so the draw needs its
       output limited to the followed layer, which no test capture here has to check against.
@@ -371,8 +382,9 @@ application with injected state. Route (a) is the general one and is the prerequ
       heatmap follows the layer the image shows; `get_overdraw` takes `view`. On the two XR frames
       captured on an Adreno 740 the eyes' tested counts add up to the draw's occlusion count exactly
       (69,252 + 67,826 = 137,078; 62,368 + 62,073 = 124,441), with no validation messages, and view 0
-      matches what the replay measured before. Not yet exercised: multiview in dynamic rendering,
-      which no test capture has.
+      matches what the replay measured before. `test/triangle --multiview` checks the same in a render
+      pass and, with `--dynamic-rendering`, in dynamic rendering (the `multiview` UI case covers the
+      app's side).
 - [x] Draw-call overlays (`vkinsp_replay --overlay`, `src/replay/src/overlay.cpp`): highlight draw,
       depth test and wireframe in the render target tab, for any draw of the pass.
 - [x] Draw overlays: the stencil test apart from the depth one, back-face culling, and
@@ -1757,15 +1769,10 @@ library does not read back yet.
         deserialized from the blob `RootSignatureInfo` now keeps, the stream-output flag added and
         the signature created again; the copy is layout-compatible, so the application's root
         arguments still apply. `d3d12-mesh-output` covers it.
-  - [ ] **Shader cost by ablation.** The one that genuinely needs source. Ablation means removing a
-        function's calls, a line's values or a texture's reads from the shader and timing what that
-        saves (`src/replay/src/ablation.cpp`), and there is no DXIL editor here to do it with — so
-        on D3D12 it falls under the rule the shader debugger already states: it needs the HLSL, from
-        a `-Zi` build or a `-Zs` build's PDB under the symbol directories, compiled the way the
-        build compiled it. Two experiments need no source at all and are worth having for the
-        shaders that have none, as long as the report says what each one does and does not measure:
-        replacing a whole stage with a trivial shader (what that stage costs, not which line of it),
-        and binding a 1x1 texture in place of one SRV (that texture's bandwidth, not its ALU).
+  - [x] **Shader cost by ablation.** Done without source after all: the variants are of the stage's
+        DXIL, edited as its disassembly and assembled by dxc (`renderer/d3d12/dxil_ablate.ts`,
+        `dxinsp_shader --assemble`), and timed by `dxinsp_replay --ablate` (the changelog's **Measure
+        shader** on Direct3D 12). This entry still described it as needing the HLSL.
 - [x] Stencil read-back: plane 1 of a depth-stencil target, beside its depth (`--stencil` in
       `test/d3d12_triangle`, the `d3d12-stencil` UI case). A multisampled stencil is not resolved.
 - [x] Ray tracing (`src/d3d12/src/raytracing.h`), the DXR half of what the Vulkan layer does. Three

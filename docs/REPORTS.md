@@ -445,8 +445,7 @@ more than one fragment on the pixel. The first 16 fragments of a draw are measur
 - **Metal** — another frame is captured while following the pixel, so the application must still
   be running.
 
-Current limits of the Vulkan replay: a draw is one event, so it names the primitive that won the
-pixel but not every fragment of the draw with its own value; a pass layered through `gl_Layer` is
+Current limits of the Vulkan replay: a draw lists at most its first 16 fragments at the pixel; a pass layered through `gl_Layer` is
 followed in its first layer only (a multiview pass, an XR frame's eyes, in every view); and a multisampled depth target cannot be read (a multisampled color target is,
 through the resolve of the pixel's samples). The full list is in
 [Capture replay](REPLAY.md#pixel-history). What a Metal capture reports instead — layered passes,

@@ -211,8 +211,10 @@ pass.
   (`VkRenderPassMultiviewCreateInfo`, or `viewMask` in dynamic rendering, where the copies take it
   too). Each view is a measurement of its own, with its `view` index, and its own heatmap. Checked
   on two XR frames captured on an Adreno 740: the views' tested counts add up to the draw's
-  occlusion count exactly (69,252 + 67,826 = 137,078, and 62,368 + 62,073 = 124,441). Multiview in
-  dynamic rendering has no test capture yet.
+  occlusion count exactly (69,252 + 67,826 = 137,078, and 62,368 + 62,073 = 124,441), and so do
+  test/triangle `--multiview` in a render pass (67,698 + 67,723 = 135,421) and with
+  `--dynamic-rendering` (64,973 + 64,969 = 129,942), and with `--alpha-test --occluded` there, whose
+  discards and fully rejected second draw leave 41,309 + 41,295 = 82,604 + 0.
 - **Two counts per pass:**
   - **Fragments passing depth and stencil**, in draw order. The pipelines keep their tests, against
     a copy of the depth the pass started from: its contents when the pass loads depth, its clear
@@ -434,13 +436,15 @@ The shaders then see the view's own index, and the queries and the one-pixel sci
 view's fragments only; views never read one another's layers, so nothing the followed view sees
 changes. The attachments' copies hold the layer of that view. On two XR frames captured on an Adreno
 740, pixels in both eyes come out at exactly the values the capture read back for their layers, with
-as many fragments as each eye's overdraw counted there, and no validation messages. Before this, any
-pixel history of such a frame crashed the replay.
+as many fragments as each eye's overdraw counted there, and no validation messages; so do both
+views of test/triangle `--multiview`, in a render pass and in dynamic rendering. Before this, any
+pixel history of such a frame crashed the replay. In the single-view pass the history also binds
+the pass's descriptor sets, buffers and push constants again after each pipeline it binds: the
+validation layer reports what was bound before a multiview pass began as unbound in it, although
+the draws find it.
 
 Limits:
 - A pass layered through `gl_Layer` rather than multiview is followed in its first layer only.
-- Per-fragment detail is partial: a draw is one event, which names the primitive of the fragment
-  that won the pixel but not every fragment of the draw with its own value.
 - A multisampled *depth* target cannot be resolved to be read, so a pixel of one is not followed;
   a multisampled color target is, through the resolve of its samples.
 - A dispatch or a trace is reported by what it had bound, not by what it wrote (see above).
@@ -1208,6 +1212,8 @@ Every capture replayed so far, with its result:
 | test/triangle `--pipeline-library` (the cube pipeline linked from a vertex and a fragment library) | identical, no validation messages |
 | test/triangle `--shader-object` (linked vertex and fragment shader objects, all state dynamic, dynamic rendering) | identical, no validation messages |
 | test/triangle `--mixed` (the cube drawn with shader objects, then again with its pipeline, in one pass) | identical, no validation messages |
+| test/triangle `--multiview` (both views of a two-layer target in one pass, blitted side by side), with and without `--dynamic-rendering` | both layers identical, no validation messages |
+| test/triangle `--dynamic-rendering` (the main pass in dynamic rendering, drawn with the cube's pipeline) | identical, no validation messages |
 | test/triangle `--second-device` / `--second-queue` (a 256x256 target cleared each frame on a second VkDevice, or on a second queue) | all 3 targets identical, no validation messages: the second device's objects replay on the one device |
 | test/triangle `--push-template` (the cube's uniform buffer and texture pushed through a descriptor update template) | identical, no validation messages: pushed again as plain writes from the snapshot |
 | test/triangle `--msaa` | identical: the multisampled color and depth through their resolves, and the resolve target |

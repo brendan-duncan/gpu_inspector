@@ -347,6 +347,13 @@ struct App
     // --offscreen: render into an image of our own and never present, like an OpenXR
     // application whose runtime composites (the inspector's frame boundaries without presents).
     bool offscreen = false;
+    // --multiview: the main pass renders both views of a two-layer stereo target at once (view mask
+    // 0b11, cube_mv.vert shifting each view the other way), as an XR application's eyes are drawn;
+    // the layers are then blitted side by side into the swapchain image.
+    bool multiview = false;
+    // --dynamic-rendering: the main pass in dynamic rendering, drawn with the cube's pipeline made
+    // for it (with --multiview, its view mask in the rendering info and the pipeline).
+    bool dynamicRenderingPass = false;
     // --persistent: every frame reads state the frames before it left behind, which a capture
     // must hold for its replay to match (see RecordPersistent).
     bool persistent = false;
@@ -386,6 +393,9 @@ struct App
     VkImage msaaImage{};        // multisampled color target (--msaa)
     VkDeviceMemory msaaMemory{};
     VkImageView msaaView{};
+    VkImage stereoImage{};      // --multiview: the two-layer color target, one layer per view
+    VkDeviceMemory stereoMemory{};
+    VkImageView stereoView{};
     VkImage offImage{};         // --offscreen: the color target that stands in for the swapchain image
     VkDeviceMemory offMemory{};
     VkImageView offView{};
@@ -618,7 +628,7 @@ struct App
         // 1.2's buffer device addresses and SPIR-V 1.4.
         // 1.2 for the modes that take a buffer's device address: vkGetBufferDeviceAddress is core
         // there, and on a 1.1 instance the loader has no entry point for it to call.
-        ai.apiVersion = shaderObject || suspend ? VK_API_VERSION_1_3
+        ai.apiVersion = shaderObject || suspend || dynamicRenderingPass ? VK_API_VERSION_1_3
             : rayTracing || descriptorBuffer    ? VK_API_VERSION_1_2
                                                 : VK_API_VERSION_1_1;
         std::vector<const char*> instExts = {
@@ -731,7 +741,23 @@ struct App
         }
         VkPhysicalDeviceShaderObjectFeaturesEXT soFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_OBJECT_FEATURES_EXT};
         VkPhysicalDeviceDynamicRenderingFeatures dynamicRendering{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DYNAMIC_RENDERING_FEATURES};
-        if (shaderObject || suspend)
+        VkPhysicalDeviceMultiviewFeatures multiviewFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_MULTIVIEW_FEATURES};
+        if (multiview)
+        {
+            // Core in 1.1. The modes it does not combine with change the targets it renders to, and
+            // shader objects cannot draw multiview at all: the view mask is state an implementation
+            // needs when it compiles, which a shader object does not have (VK_EXT_shader_object,
+            // issue 5.9). The validation layer does not say so, and the second view comes out empty.
+            if (samples != VK_SAMPLE_COUNT_1_BIT || stencil || offscreen || suspend || prerecord || pipelineLibrary || shaderObject)
+            {
+                fprintf(stderr, "--multiview does not combine with --msaa, --stencil, --offscreen, --suspend, --prerecord, --pipeline-library, --shader-object or --mixed\n");
+                exit(1);
+            }
+            multiviewFeatures.multiview = VK_TRUE;
+            multiviewFeatures.pNext = (void*)dci.pNext;
+            dci.pNext = &multiviewFeatures;
+        }
+        if (shaderObject || suspend || dynamicRenderingPass)
         {
             // Dynamic rendering (core in the 1.3 instance these modes ask for): what shader objects
             // draw in, and what a pass can be suspended and resumed in. Its targets here are
@@ -957,7 +983,7 @@ struct App
         sci.imageColorSpace = chosen.colorSpace;
         sci.imageExtent = {width, height};
         sci.imageArrayLayers = 1;
-        sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
+        sci.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | (multiview ? VK_IMAGE_USAGE_TRANSFER_DST_BIT : 0u);
         sci.imageSharingMode = VK_SHARING_MODE_EXCLUSIVE;
         sci.preTransform = caps.currentTransform;
         sci.compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR;
@@ -990,7 +1016,7 @@ struct App
         ici.format = depthFormat;
         ici.extent = {width, height, 1};
         ici.mipLevels = 1;
-        ici.arrayLayers = 1;
+        ici.arrayLayers = multiview ? 2 : 1;
         ici.samples = samples;
         ici.tiling = VK_IMAGE_TILING_OPTIMAL;
         ici.usage = VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
@@ -1005,11 +1031,41 @@ struct App
         CHECK(vkBindImageMemory(device, depthImage, depthMemory, 0));
         VkImageViewCreateInfo dvci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
         dvci.image = depthImage;
-        dvci.viewType = VK_IMAGE_VIEW_TYPE_2D;
+        dvci.viewType = multiview ? VK_IMAGE_VIEW_TYPE_2D_ARRAY : VK_IMAGE_VIEW_TYPE_2D;
         dvci.format = depthFormat;
-        dvci.subresourceRange = {(VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT | (stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u), 0, 1, 0, 1};
+        dvci.subresourceRange = {(VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT | (stencil ? VK_IMAGE_ASPECT_STENCIL_BIT : 0u), 0, 1, 0, multiview ? 2u : 1u};
         CHECK(vkCreateImageView(device, &dvci, nullptr, &depthView));
         Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)depthImage, "Depth buffer");
+
+        if (multiview)
+        {
+            // The stereo target: a layer per view, blitted into the swapchain image after the pass.
+            VkImageCreateInfo mvci{VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+            mvci.imageType = VK_IMAGE_TYPE_2D;
+            mvci.format = colorFormat;
+            mvci.extent = {width, height, 1};
+            mvci.mipLevels = 1;
+            mvci.arrayLayers = 2;
+            mvci.samples = VK_SAMPLE_COUNT_1_BIT;
+            mvci.tiling = VK_IMAGE_TILING_OPTIMAL;
+            mvci.usage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
+            mvci.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+            CHECK(vkCreateImage(device, &mvci, nullptr, &stereoImage));
+            VkMemoryRequirements sreq;
+            vkGetImageMemoryRequirements(device, stereoImage, &sreq);
+            VkMemoryAllocateInfo smai{VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO};
+            smai.allocationSize = sreq.size;
+            smai.memoryTypeIndex = FindMemoryType(sreq.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+            CHECK(vkAllocateMemory(device, &smai, nullptr, &stereoMemory));
+            CHECK(vkBindImageMemory(device, stereoImage, stereoMemory, 0));
+            VkImageViewCreateInfo svci{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
+            svci.image = stereoImage;
+            svci.viewType = VK_IMAGE_VIEW_TYPE_2D_ARRAY;
+            svci.format = colorFormat;
+            svci.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 2};
+            CHECK(vkCreateImageView(device, &svci, nullptr, &stereoView));
+            Name(VK_OBJECT_TYPE_IMAGE, (uint64_t)stereoImage, "Stereo color");
+        }
 
         if (offscreen)
         {
@@ -1083,7 +1139,9 @@ struct App
         atts[0].stencilLoadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
         atts[0].stencilStoreOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
         atts[0].initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
-        atts[0].finalLayout = msaa || offscreen ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        atts[0].finalLayout = multiview ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+            : msaa || offscreen        ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                       : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
         atts[2].format = colorFormat;
         atts[2].samples = VK_SAMPLE_COUNT_1_BIT;
         atts[2].loadOp = VK_ATTACHMENT_LOAD_OP_DONT_CARE;
@@ -1122,6 +1180,15 @@ struct App
         rpci.pSubpasses = &sp;
         rpci.dependencyCount = 1;
         rpci.pDependencies = &dep;
+        // --multiview: both views in the one subpass, each into the layer of its index.
+        const uint32_t viewMask = 0b11;
+        VkRenderPassMultiviewCreateInfo mv{VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO};
+        mv.subpassCount = 1;
+        mv.pViewMasks = &viewMask;
+        mv.correlationMaskCount = 1;
+        mv.pCorrelationMasks = &viewMask;
+        if (multiview)
+            rpci.pNext = &mv;
         CHECK(vkCreateRenderPass(device, &rpci, nullptr, &renderPass));
     }
 
@@ -1145,7 +1212,7 @@ struct App
         for (uint32_t i = 0; i < count; ++i)
         {
             const bool msaa = samples != VK_SAMPLE_COUNT_1_BIT;
-            VkImageView views[] = {msaa ? msaaView : swapViews[i], depthView, swapViews[i]};
+            VkImageView views[] = {msaa ? msaaView : multiview ? stereoView : swapViews[i], depthView, swapViews[i]};
             VkFramebufferCreateInfo fci{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
             fci.renderPass = renderPass;
             fci.attachmentCount = msaa ? 3 : 2;
@@ -1721,6 +1788,15 @@ struct App
         depthView = VK_NULL_HANDLE;
         depthImage = VK_NULL_HANDLE;
         depthMemory = VK_NULL_HANDLE;
+        if (stereoView)
+            vkDestroyImageView(device, stereoView, nullptr);
+        if (stereoImage)
+            vkDestroyImage(device, stereoImage, nullptr);
+        if (stereoMemory)
+            vkFreeMemory(device, stereoMemory, nullptr);
+        stereoView = VK_NULL_HANDLE;
+        stereoImage = VK_NULL_HANDLE;
+        stereoMemory = VK_NULL_HANDLE;
         if (msaaView)
             vkDestroyImageView(device, msaaView, nullptr);
         if (msaaImage)
@@ -2039,7 +2115,7 @@ struct App
         }
 
         // Pipeline
-        VkShaderModule vs = LoadShader("cube.vert.spv");
+        VkShaderModule vs = LoadShader(multiview ? "cube_mv.vert.spv" : "cube.vert.spv");
         VkShaderModule fs = LoadShader(heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv");
         VkPipelineShaderStageCreateInfo stages[2]{};
         stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
@@ -2119,7 +2195,8 @@ struct App
         dynamicTargets.colorAttachmentCount = 1;
         dynamicTargets.pColorAttachmentFormats = &colorFormat;
         dynamicTargets.depthAttachmentFormat = depthFormat;
-        if (suspend || mixed)
+        dynamicTargets.viewMask = multiview ? 0b11 : 0;
+        if (suspend || mixed || dynamicRenderingPass)
         {
             gpci.pNext = &dynamicTargets;
             gpci.renderPass = VK_NULL_HANDLE;
@@ -2177,7 +2254,7 @@ struct App
         if (shaderObject)
         {
             // The same code as linked shader objects, with the pipeline layout's set layout and push constants.
-            std::vector<char> vcode = ReadFile(ExeDir() + "cube.vert.spv");
+            std::vector<char> vcode = ReadFile(ExeDir() + (multiview ? "cube_mv.vert.spv" : "cube.vert.spv"));
             std::vector<char> fcode = ReadFile(ExeDir() + (heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv"));
             VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
             VkShaderCreateInfoEXT sci[2]{};
@@ -2466,9 +2543,10 @@ struct App
         }
         // Shader objects can only draw in dynamic rendering, and a pass is only suspended there:
         // the same targets and clears, with the layout transitions the render pass would have made.
-        const bool dynamic = shaderObject || suspend;
-        const VkImageView colorView = offscreen ? offView : swapViews[imageIndex];
-        const VkImage colorImage = offscreen ? offImage : swapImages[imageIndex];
+        const bool dynamic = shaderObject || suspend || dynamicRenderingPass;
+        const VkImageView colorView = multiview ? stereoView : offscreen ? offView : swapViews[imageIndex];
+        const VkImage colorImage = multiview ? stereoImage : offscreen ? offImage : swapImages[imageIndex];
+        const uint32_t layers = multiview ? 2 : 1;
         VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
         VkRenderingInfo ri{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -2484,11 +2562,11 @@ struct App
             toTargets[0].image = colorImage;
             toTargets[0].newLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
             toTargets[0].dstAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            toTargets[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+            toTargets[0].subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
             toTargets[1].image = depthImage;
             toTargets[1].newLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
             toTargets[1].dstAccessMask = VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT;
-            toTargets[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, 1};
+            toTargets[1].subresourceRange = {VK_IMAGE_ASPECT_DEPTH_BIT, 0, 1, 0, layers};
             vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
                 0, 0, nullptr, 0, nullptr, 2, toTargets);
             color.imageView = colorView;
@@ -2503,6 +2581,7 @@ struct App
             depth.clearValue = clears[1];
             ri.renderArea = {{0, 0}, {width, height}};
             ri.layerCount = 1;
+            ri.viewMask = multiview ? 0b11 : 0;
             ri.colorAttachmentCount = 1;
             ri.pColorAttachments = &color;
             ri.pDepthAttachment = &depth;
@@ -2540,18 +2619,56 @@ struct App
             toPresent.srcQueueFamilyIndex = toPresent.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
             toPresent.image = colorImage;
             toPresent.oldLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
-            toPresent.newLayout = offscreen ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+            // The stereo target is blitted next, as the render pass leaves it for.
+            toPresent.newLayout = multiview ? VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL
+                : offscreen                 ? VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL
+                                            : VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
             toPresent.srcAccessMask = VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT;
-            toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
-            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
+            toPresent.dstAccessMask = multiview ? VK_ACCESS_TRANSFER_READ_BIT : 0;
+            toPresent.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
+            vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+                multiview ? VK_PIPELINE_STAGE_TRANSFER_BIT : VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
         }
         else
         {
             vkCmdEndRenderPass(cb);
         }
+        if (multiview)
+            BlitStereo(cb, imageIndex);
         if (endLabel)
             endLabel(cb);
         CHECK(vkEndCommandBuffer(cb));
+    }
+
+    // --multiview: the stereo target's two layers side by side in the swapchain image, the left view
+    // on the left, and the swapchain image then ready to present.
+    void BlitStereo(VkCommandBuffer cb, uint32_t imageIndex)
+    {
+        VkImageMemoryBarrier toDst{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER};
+        toDst.srcQueueFamilyIndex = toDst.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+        toDst.image = swapImages[imageIndex];
+        toDst.oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+        toDst.newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toDst.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toDst.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 0, nullptr, 0, nullptr, 1, &toDst);
+        VkImageBlit blits[2]{};
+        for (uint32_t v = 0; v < 2; ++v)
+        {
+            blits[v].srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, v, 1};
+            blits[v].srcOffsets[1] = {(int32_t)width, (int32_t)height, 1};
+            blits[v].dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            blits[v].dstOffsets[0] = {(int32_t)(v * width / 2), 0, 0};
+            blits[v].dstOffsets[1] = {(int32_t)((v + 1) * width / 2), (int32_t)height, 1};
+        }
+        vkCmdBlitImage(cb, stereoImage, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, swapImages[imageIndex], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+            2, blits, VK_FILTER_LINEAR);
+        VkImageMemoryBarrier toPresent = toDst;
+        toPresent.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+        toPresent.newLayout = VK_IMAGE_LAYOUT_PRESENT_SRC_KHR;
+        toPresent.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+        toPresent.dstAccessMask = 0;
+        vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, 0, 0, nullptr, 0, nullptr, 1, &toPresent);
     }
 
     // The cube's draw inside the main pass: its pipeline or shader objects, state, bindings and the draw
@@ -2989,6 +3106,10 @@ int RunApp(int argc, char** argv)
             app.descriptorBuffer = true;
         else if (!strcmp(argv[i], "--alpha-test"))
             app.alphaTest = true;
+        else if (!strcmp(argv[i], "--multiview"))
+            app.multiview = true;
+        else if (!strcmp(argv[i], "--dynamic-rendering"))
+            app.dynamicRenderingPass = true;
         else if (!strcmp(argv[i], "--device-local-descriptors"))
             app.descriptorBuffer = app.deviceLocalDescriptors = true;
         else if (!strcmp(argv[i], "--compile-hitch"))

@@ -2060,6 +2060,8 @@ export class CaptureView implements CaptureHost {
       })),
       buffers: d.buffers.size, passTimings: d.passTimings.size,
       overdraw: d.overdraw.length, overdrawCounts: d.overdraw.filter((o) => !!o.data).length,
+      // A multiview pass's measurements, one per view.
+      overdrawViews: [...new Set(d.overdraw.map((o) => o.info.view).filter((v): v is number => v !== undefined))].sort(),
       // Validate: the frame replayed under the validation layer (replay_validation.ts).
       replayValidation: this.replayValidation ? { ...replayValidationCounts(this.replayValidation), layer: this.replayValidation.layer, messages: this.replayValidation.messages.length, sync: this._replayValidationSync } : null,
       // A shader edited and run in the capture (Compile & Replay): what it did to the render targets.

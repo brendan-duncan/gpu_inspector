@@ -397,6 +397,25 @@ def triangle_overdraw(state, log):
         expect(any("begins" in e for e in touched), f"no pass start in the pixel history: {touched}")
 
 
+def triangle_multiview(state, log):
+    c = capture(state)
+    t = c.get("textureTab") or {}
+    h = t.get("history") or {}
+    # test/triangle --multiview: the main pass renders both views of a two-layer target at once. The
+    # replay measures overdraw per view (src/replay/src/overdraw.cpp), the render target tab draws the
+    # heat of the layer it shows, and the click follows the pixel in that view. The pass is timed but
+    # carries no pipeline statistics: a query across a multiview pass takes one result per view, which
+    # the layer does not take (PassShape::multiview in src/vulkan/src/capture.h).
+    return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
+        expect((c.get("passTimings") or 0) >= 1, "no pass timings") + \
+        expect((c.get("overdraw") or 0) >= 4, f"{c.get('overdraw')} overdraw measurements (two per view of the pass)") + \
+        expect(c.get("overdrawViews") == [0, 1], f"the measurements are of views {c.get('overdrawViews')}, not 0 and 1") + \
+        expect(t.get("measured") is True and t.get("counts") is True, f"the tab's pass has no counts to draw over the image: {t}") + \
+        expect(t.get("overdrawView") == 0, f"the tab starts on layer 0 but draws view {t.get('overdrawView')}'s heat") + \
+        expect(not h.get("error"), f"the pixel history failed: {h.get('error')}") + \
+        expect(bool(h.get("touched")), f"the pixel history lists no events: {h}")
+
+
 def triangle_pixel_history(state, log):
     h = (capture(state).get("textureTab") or {}).get("history") or {}
     touched = h.get("touched") or []
@@ -1769,6 +1788,9 @@ def triangle_cases(triangle):
                           triangle_overdraw, delay_ms=20000))
         cases.append(Case("pixel-history", launch + ["--debug-capture", "--debug-view=pixel-history", "--debug-settle=8000"],
                           triangle_pixel_history, delay_ms=20000))
+        cases.append(Case("multiview", launch + ["--args=--multiview", "--debug-capture", "--debug-view=overdraw",
+                                                 "--debug-mouse=340,560", "--debug-settle=8000"],
+                          triangle_multiview, delay_ms=20000))
         cases.append(Case("pixel-fragments", launch + ["--args=--no-cull", "--debug-capture", "--debug-view=pixel-history", "--debug-settle=8000"],
                           triangle_pixel_fragments, delay_ms=22000))
         cases.append(Case("overlay-backface", launch + ["--args=--inside-out", "--debug-capture", "--debug-view=overlay:backface:last",

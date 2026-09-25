@@ -994,6 +994,8 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
     bool scissorSet = false;
     VkRect2D scissor{};
     std::vector<uint32_t> dynamicCommands;
+    // The bindings the pass made (descriptor sets, vertex and index buffers), for one view of a multiview pass.
+    std::vector<uint32_t> bindCommands;
 
     auto beginPass = [&]() {
         if (!dynamic)
@@ -1097,6 +1099,11 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 }
             }
         }
+        else if (StartsWith(m, "vkCmdBindDescriptorSets") || StartsWith(m, "vkCmdBindVertexBuffers") ||
+            StartsWith(m, "vkCmdBindIndexBuffer") || StartsWith(m, "vkCmdPushDescriptorSet"))
+        {
+            bindCommands.push_back(index);
+        }
         else if (StartsWith(m, "vkCmdPushConstants"))
         {
             // Pushed again after every pipeline the history binds, with the dynamic state.
@@ -1149,6 +1156,12 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
     // The dynamic state set so far, again, after a pipeline was bound: only what it takes dynamically
     // (the copy's own list, or the captured pipeline's), since it may not set what the pipeline holds.
     auto issueDynamic = [&](VkPipeline copy) {
+        // One view of a multiview pass: the bindings again too, in the pass instance the draw is in.
+        // The validation layer reports what was bound before a multiview pass began as unbound in
+        // it (the draws themselves find their buffers), so they are made again where it looks.
+        if (_historyView)
+            for (uint32_t b : bindCommands)
+                issue(b);
         for (uint32_t d : dynamicCommands)
         {
             const std::string state = DynamicStateOf(Str(commands->items[d].Get("method")));

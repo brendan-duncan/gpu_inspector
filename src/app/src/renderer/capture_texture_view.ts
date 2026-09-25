@@ -223,7 +223,7 @@ export class CaptureTextureView {
       // frame merely sampled: both are in a capture's textures.
       target: { kind: this._target.texture.info.kind, width: this._target.texture.info.width, height: this._target.texture.info.height },
       overlay: this._overlayKind, overdraw: this._overlayKind === "overdraw", depthTested: this._depthTested,
-      measured: m ? isMeasured(m.info) : false, counts: !!m?.data,
+      measured: m ? isMeasured(m.info) : false, counts: !!m?.data, overdrawView: m?.info.view ?? null,
       draw: this._draw, drawRunning: this._drawRunning, drawError: this._drawError || null,
       drawOverlay: d ? {
         measured: d.measured, pixelsCovered: d.pixelsCovered, pixelsPassed: d.pixelsPassed, pixelsRejected: d.pixelsRejected,

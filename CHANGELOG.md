@@ -9,6 +9,7 @@
 - `test/triangle --alpha-test` draws the cube with a fragment shader that discards.
 - Vulkan overdraw measures every view of a multiview pass, with a heatmap per view and `get_overdraw`'s `view`.
 - Vulkan pixel history follows a pixel in any view of a multiview pass, such as an XR frame's right eye.
+- `test/triangle --multiview` renders both views of a two-layer target in one pass, and `--dynamic-rendering` runs its main pass in dynamic rendering.
 
 ### Fixed
 - Vulkan pixel history no longer crashes the replay on a multiview pass.
