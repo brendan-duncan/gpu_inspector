@@ -2222,6 +2222,22 @@ def d3d12_cases(triangle):
 
     saved_bindless = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_bindless.gpucap")
     saved_late = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_late_descriptor.gpucap")
+    saved_keep_depth = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_keep_depth.gpucap")
+
+    def d3d12_keep_depth_replay(_work):
+        # --keep-depth: every frame depth-tests against what the frames before left in the depth
+        # buffer, which it never clears. The capture takes the buffer as the frame found it before
+        # the submission (texture kind `initial`, CaptureManager::BeforeExecuteCommandLists), and a
+        # replay is only identical if it starts from that.
+        if not os.path.isfile(saved_keep_depth):
+            return ["the capture was not saved, so there is nothing to replay"]
+        with open(saved_keep_depth, "rb") as f:
+            head = f.read(64 << 20)
+        out = subprocess.run([find_d3d12_replay(), saved_keep_depth, "--debug-layer"], capture_output=True, text=True, timeout=600)
+        text = out.stdout + out.stderr
+        return expect(b'"kind":"initial"' in head, "the capture holds nothing of what the frame found (no texture of kind initial)") + \
+            expect("differ" not in text and text.count("identical (") >= 2, f"the replay differs from the capture:\n{text[-2000:]}") + \
+            expect(re.search(r"^problems: 0", text, re.M) is not None, f"the replay reported problems:\n{text[-2000:]}")
 
     def d3d12_late_descriptor_replay(_work):
         # --late-descriptor: the cube table's volatile SRV slot is rewritten with the stripes texture
@@ -2284,7 +2300,10 @@ def d3d12_cases(triangle):
                          d3d12_bindless_details, delay_ms=9000),
                     Case("d3d12-late-descriptor", launch + ["--args=--late-descriptor", "--validation", "--debug-capture",
                                                             f"--debug-save={saved_late}", "--debug-save-delay=9000"],
-                         lambda state, log: check_connected(state, log), delay_ms=16000, then=d3d12_late_descriptor_replay)] if find_d3d12_replay() else []
+                         lambda state, log: check_connected(state, log), delay_ms=16000, then=d3d12_late_descriptor_replay),
+                    Case("d3d12-keep-depth", launch + ["--args=--keep-depth", "--validation", "--debug-capture",
+                                                       f"--debug-save={saved_keep_depth}", "--debug-save-delay=9000"],
+                         lambda state, log: check_connected(state, log), delay_ms=16000, then=d3d12_keep_depth_replay)] if find_d3d12_replay() else []
     if not export_cases:
         print("  (no dxinsp_replay build: skipping the D3D12 Export to C++ case)")
     return export_cases + [

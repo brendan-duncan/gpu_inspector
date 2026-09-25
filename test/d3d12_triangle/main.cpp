@@ -9,7 +9,7 @@
 //                        [--render-pass] [--suspend] [--pool] [--compute] [--async-compute] [--offscreen] [--leak]
 //                        [--debug-layer] [--stencil]
 //                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas] [--local-root]]
-//                        [--bindless] [--late-descriptor]
+//                        [--bindless] [--late-descriptor] [--keep-depth]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -285,6 +285,12 @@ struct App
     // rewritten with the stripes texture. The GPU reads a volatile descriptor when the list runs, so
     // the cubes show stripes, while a snapshot taken at the draw holds the checker.
     bool lateDescriptor = false;
+    // --keep-depth: the depth buffer is cleared only when it is new, and every frame after tests
+    // against what the frames before left in it, so the cubes leave trails where they were nearer.
+    // A frame then reads a depth buffer it does not write first -- what a capture has to take as the
+    // frame found it for a replay to start from (Unity's back-buffer depth is one such).
+    bool keepDepth = false;
+    bool depthFresh = true;   // --keep-depth: the depth buffer was just made, and is cleared once
     DXGI_FORMAT depthFormat = kDepthFormat;
     bool debugLayer = false;   // the application enables the D3D12 debug layer itself
     bool resized = false;      // the swap chain must be resized before the next frame
@@ -734,6 +740,7 @@ struct App
         CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &rd, D3D12_RESOURCE_STATE_DEPTH_WRITE, &clear,
             IID_PPV_ARGS(&depthBuffer)));
         depthBuffer->SetName(L"Depth buffer");
+        depthFresh = true;
         device->CreateDepthStencilView(depthBuffer.Get(), nullptr, dsvHeap->GetCPUDescriptorHandleForHeapStart());
 
         if (msaa)
@@ -990,6 +997,9 @@ struct App
             device->CreateShaderResourceView(stripesTexture.Get(), &stripes, SrvCpuHandle(kHeapBindless));
         }
     }
+
+    /** Whether this frame clears the depth buffer: always, but with --keep-depth only a new one. */
+    bool ClearDepthNow() const { return !keepDepth || depthFresh; }
 
     /** The frame slot's SRV (the table's t0): the checker, or with `stripes` the --late-descriptor texture. */
     void WriteFrameSrv(uint32_t slot, bool stripes)
@@ -1697,7 +1707,7 @@ struct App
             rt.EndingAccess.Type = D3D12_RENDER_PASS_ENDING_ACCESS_TYPE_PRESERVE;
             D3D12_RENDER_PASS_DEPTH_STENCIL_DESC ds{};
             ds.cpuDescriptor = dsv;
-            ds.DepthBeginningAccess.Type = D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR;
+            ds.DepthBeginningAccess.Type = ClearDepthNow() ? D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR : D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_PRESERVE;
             ds.DepthBeginningAccess.Clear.ClearValue.Format = depthFormat;
             ds.DepthBeginningAccess.Clear.ClearValue.DepthStencil.Depth = 1.0f;
             ds.StencilBeginningAccess.Type = stencil ? D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR : D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_NO_ACCESS;
@@ -1713,8 +1723,10 @@ struct App
         {
             list->OMSetRenderTargets(1, &rtv, FALSE, &dsv);
             list->ClearRenderTargetView(rtv, kClearColor, 0, nullptr);
-            list->ClearDepthStencilView(dsv, stencil ? D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL : D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+            if (ClearDepthNow())
+                list->ClearDepthStencilView(dsv, stencil ? D3D12_CLEAR_FLAG_DEPTH | D3D12_CLEAR_FLAG_STENCIL : D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
         }
+        depthFresh = false;
         if (stencil)
             list->OMSetStencilRef(1);
 
@@ -1982,6 +1994,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
             app.bindless = true;
         else if (!strcmp(argv[i], "--late-descriptor"))
             app.lateDescriptor = true;
+        else if (!strcmp(argv[i], "--keep-depth"))
+            app.keepDepth = true;
         else if (!strcmp(argv[i], "--local-root"))
         {
             app.rayTracing = true;

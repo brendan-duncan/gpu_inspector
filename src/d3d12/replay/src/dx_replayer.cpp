@@ -349,6 +349,21 @@ void DxReplayer::CreateObjects()
     std::sort(ordered.begin(), ordered.end(), [](const JValue* a, const JValue* b) { return a->Get("id")->Uint() < b->Get("id")->Uint(); });
     for (const JValue* o : ordered)
         CreateObject(*o);
+    // The application's names, so what the debug layer says about an object names the one the
+    // capture shows rather than "Unnamed ID3D12Resource Object".
+    for (const JValue* o : ordered)
+    {
+        const std::string label = Str(o->Get("label"));
+        IUnknown* made = label.empty() ? nullptr : Object(o->Get("id")->Uint());
+        ID3D12Object* named = nullptr;
+        if (!made || FAILED(made->QueryInterface(IID_PPV_ARGS(&named))))
+            continue;
+        const int wide = MultiByteToWideChar(CP_UTF8, 0, label.c_str(), (int)label.size(), nullptr, 0);
+        std::wstring name((size_t)wide, L'\0');
+        MultiByteToWideChar(CP_UTF8, 0, label.c_str(), (int)label.size(), name.data(), wide);
+        named->SetName(name.c_str());
+        named->Release();
+    }
 }
 
 ID3D12Resource* DxReplayer::CreateResource(uint64_t id, const D3D12_HEAP_PROPERTIES& capturedHeap, D3D12_HEAP_FLAGS, const D3D12_RESOURCE_DESC& capturedDesc,
@@ -1148,15 +1163,25 @@ void DxReplayer::UploadTextures()
     const JValue* textures = _capture->Textures();
     if (!textures || !textures->IsArray())
         return;
-    // A subresource is uploaded once. The capture can hold a texture twice (read in the frame of
-    // recording before the capture, and again in the captured frame), and the later reading is the
-    // one the frame saw, so the entries are taken last first.
+    // A subresource is uploaded once. What the frame found in a texture (kind `initial`, read back
+    // before the first submission that reads it) is what the frame starts from and comes first; a
+    // sampled read-back is taken at a pass's end or after its submission, and may already hold what
+    // the frame wrote (a history texture read and then overwritten). The capture can hold a texture
+    // sampled twice (in the frame of recording before the capture, and again in the captured
+    // frame), and the later reading is the one the frame saw, so those are taken last first.
     std::set<std::pair<uint64_t, UINT>> uploaded;
+    std::vector<const JValue*> order;
+    for (uint32_t n = 0; n < textures->count; ++n)
+        if (const JValue* info = textures->items[n].Get("info"); info && Str(info->Get("kind")) == "initial")
+            order.push_back(&textures->items[n]);
     for (uint32_t n = textures->count; n-- > 0;)
+        if (const JValue* info = textures->items[n].Get("info"); info && Str(info->Get("kind")) == "sampled")
+            order.push_back(&textures->items[n]);
+    for (const JValue* entry : order)
     {
-        const JValue& t = textures->items[n];
+        const JValue& t = *entry;
         const JValue* info = t.Get("info");
-        if (!info || Str(info->Get("kind")) != "sampled" || info->Get("error"))
+        if (!info || info->Get("error"))
             continue;
         const uint8_t* data = nullptr;
         size_t size = 0;

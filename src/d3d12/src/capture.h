@@ -240,7 +240,21 @@ public:
      * once per resource per capture, under maxImageTotal. Returns the CaptureTextureInfo `capture`
      * id the descriptor carries in `data`, 0 when not read.
      */
-    uint32_t QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture);
+    /**
+     * `initialInto`: the texture as the frame found it (kind `initial`, once per capture), its copy
+     * handed to the caller to run before a submission instead of recorded into the list
+     * (BeforeExecuteCommandLists).
+     */
+    uint32_t QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture, std::vector<std::function<void(ID3D12GraphicsCommandList*)>>* initialInto = nullptr);
+    /**
+     * Before a submission is forwarded, while the tracker still has each resource in the state the
+     * submission finds it in: the textures its lists read before anything of the capture wrote
+     * them, read back in a list of the capture's own run first on the queue. That is what a replay
+     * starts them from -- a depth buffer a pass loads, a history texture the frame reads and then
+     * overwrites -- where the read-backs taken at a pass's end or after the submission see what the
+     * frame did to them.
+     */
+    void BeforeExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists);
 
     // --- Queues and frames ---------------------------------------------------------------------
 

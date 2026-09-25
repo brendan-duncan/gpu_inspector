@@ -270,6 +270,8 @@ struct TextureEntry
     uint32_t samples = 1;
     uint64_t size = 0;        // tight bytes
     bool sampled = false;
+    /** What the frame found in it, taken before the first submission that reads it (kind `initial`). */
+    bool initial = false;
     uint32_t captureId = 0;
     bool failed = false;
     std::string note;
@@ -592,6 +594,9 @@ struct CaptureManager::Impl
     std::vector<BufferEntry> buffers;
     std::vector<TimingEntry> timings;
     std::vector<DrawEntry> draws;
+    /** The textures read back as the frame found them (kind `initial`), and those a submission of the capture wrote: BeforeExecuteCommandLists. */
+    std::unordered_map<ID3D12Resource*, uint32_t> initialIds;
+    std::unordered_set<ID3D12Resource*> frameWritten;
     /** Per directly indexed heap, the write of each slot the capture last sent (IndexedHeapContents). */
     std::mutex heapSeenMutex;
     std::unordered_map<ID3D12DescriptorHeap*, std::vector<uint64_t>> heapSeen;
@@ -908,6 +913,8 @@ void CaptureManager::RequestCapture(const CaptureOptions& options)
     i.pendingDrawSlots.clear();
     i.bufferIds.clear();
     i.textureIds.clear();
+    i.initialIds.clear();
+    i.frameWritten.clear();
     i.bufferBytes = i.imageBytes = 0;
     // The query counters start over here rather than when the capture starts: the warm-up frame
     // records passes of the frame to be captured and reserves their slots (BeginPass), and starting
@@ -1315,6 +1322,19 @@ void CaptureManager::EndSplitPassTimestamp(CommandRecorder* rec)
 void CaptureManager::OnDraw(CommandRecorder* rec)
 {
     NoteIndexedHeaps(rec, false);
+    // The pass's attachments: a draw loads what it does not clear, and writes it.
+    if (rec)
+    {
+        for (const BoundTarget& t : rec->pass().targets)
+        {
+            const bool cleared = t.beginAccess == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_CLEAR ||
+                t.beginAccess == D3D12_RENDER_PASS_BEGINNING_ACCESS_TYPE_DISCARD;
+            if (!cleared)
+                rec->NoteRead(t.resource);
+            if (!t.readOnlyDepth)
+                rec->NoteWritten(t.resource);
+        }
+    }
     if (rec && rec->pass().active)
         rec->pass().drawCount++;
 }
@@ -2063,19 +2083,24 @@ uint32_t CaptureManager::QueueAddressCapture(CommandRecorder* rec, D3D12_GPU_VIR
     return QueueBufferCapture(rec, buffer, offset, size ? std::min<UINT64>(size, remaining) : remaining, whole && size);
 }
 
-uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture)
+uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resource* texture, std::vector<DeferredCopy>* initialInto)
 {
     if (!rec || !texture)
         return 0;
+    const bool initial = initialInto != nullptr;
+    // A shader reading it: what the frame found there may be what the replay has to start from.
+    if (!initial)
+        rec->NoteRead(texture);
     Impl& i = impl();
     {
         std::lock_guard lock(i.mutex);
         if (!i.TakesContents() || !i.options.captureImages)
             return 0;
-        auto it = i.textureIds.find(texture);
-        if (it != i.textureIds.end())
+        std::unordered_map<ID3D12Resource*, uint32_t>& ids = initial ? i.initialIds : i.textureIds;
+        auto it = ids.find(texture);
+        if (it != ids.end())
         {
-            if (it->second && it->second <= i.textures.size())
+            if (!initial && it->second && it->second <= i.textures.size())
                 ShareEntry(i.textures[it->second - 1], rec->list());
             return it->second;
         }
@@ -2091,7 +2116,8 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     const bool volume = desc.Dimension == D3D12_RESOURCE_DIMENSION_TEXTURE3D;
 
     TextureEntry e;
-    e.sampled = true;
+    e.sampled = !initial;
+    e.initial = initial;
     e.resourceId = Tracker::Get().IdOf(texture);
     e.list = list;
     e.listId = Tracker::Get().IdOf(list);
@@ -2130,7 +2156,7 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
             return 0u;
         e.warmup = i.state != Impl::State::Capturing;
         e.captureId = (uint32_t)i.textures.size() + 1;
-        i.textureIds[texture] = e.captureId;
+        (initial ? i.initialIds : i.textureIds)[texture] = e.captureId;
         if (!e.failed)
             i.imageBytes += e.size;
         i.textures.push_back(e);
@@ -2208,12 +2234,98 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
             CopySubresource(list, texture, c.subresource, state, staging, c.footprint);
         }
     };
+    if (initial)
+        initialInto->push_back(std::move(copy));
     // A suspended pass takes nothing at all, so there they wait for the submission (HeldCopiesOf).
-    if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec))
+    else if (std::vector<DeferredCopy>* held = i.HeldCopiesOf(rec))
         held->push_back(std::move(copy));
     else if (!rec->bundle())
         copy(list);
     return id;
+}
+
+void CaptureManager::BeforeExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
+{
+    if (!queue || !lists || !IsCapturing())
+        return;
+    Impl& i = impl();
+    // Copies move a resource to COPY_SOURCE and back, which only a direct queue may do from every
+    // state a draw leaves it in; the read-backs taken later cover the other queues.
+    if (queue->GetDesc().Type != D3D12_COMMAND_LIST_TYPE_DIRECT)
+        return;
+    // The lists' reads in submission order, less what an earlier list of this submission or an
+    // earlier submission of the capture wrote: a replay does those writes itself.
+    std::vector<std::pair<ID3D12Resource*, CommandRecorder*>> reads;
+    std::unordered_set<ID3D12Resource*> written;
+    {
+        std::lock_guard lock(i.mutex);
+        written = i.frameWritten;
+    }
+    std::unordered_set<ID3D12Resource*> taken;
+    std::unordered_set<ID3D12Resource*> writes;   // by this submission
+    for (UINT k = 0; k < count; ++k)
+    {
+        CommandRecorder* rec = lists[k] ? LookupRecorder(static_cast<ID3D12GraphicsCommandList*>(lists[k])) : nullptr;
+        if (!rec || rec->bundle())
+            continue;
+        for (ID3D12Resource* r : rec->readsBeforeWrites())
+            if (!written.count(r) && taken.insert(r).second)
+                reads.push_back({r, rec});
+        written.insert(rec->writes().begin(), rec->writes().end());
+        writes.insert(rec->writes().begin(), rec->writes().end());
+    }
+    {
+        std::lock_guard lock(i.mutex);
+        i.frameWritten = std::move(written);
+        // A texture the submission only reads is the same after it as before, and one already read
+        // back as sampled (at a pass's end, or right after the submission) has what it held: a
+        // second copy would only double what a frame's static textures cost. What the submission
+        // writes, and what nothing else reads back (a depth buffer a pass only tests against), is
+        // taken here.
+        reads.erase(std::remove_if(reads.begin(), reads.end(),
+                        [&](const auto& r) { return !writes.count(r.first) && i.textureIds.count(r.first); }),
+            reads.end());
+    }
+    if (reads.empty())
+        return;
+    std::vector<DeferredCopy> copies;
+    ID3D12Device* device = reads.front().second->device();
+    for (const auto& [resource, rec] : reads)
+    {
+        D3D12_RESOURCE_DESC desc{};
+        if (!DescOf(resource, desc) || desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+            continue;
+        QueueTextureCapture(rec, resource, &copies);
+    }
+    if (copies.empty())
+        return;
+    DeviceCapture* dc = i.CaptureFor(device);
+    ComPtr<ID3D12CommandAllocator> allocator;
+    ComPtr<ID3D12GraphicsCommandList> list;
+    ScopedInternal internal;
+    if (!dc || FAILED(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(allocator.put()))) ||
+        FAILED(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr, IID_PPV_ARGS(list.put()))))
+    {
+        Log("capture: no list for what the frame found in %zu texture(s)", copies.size());
+        return;
+    }
+    list->SetName(L"GPU Inspector: what the frame found, before a submission");
+    // Not one of the application's lists, so a resource's state in it is the global state, which
+    // the submission's own transitions have not reached yet (Hook_ExecuteCommandLists).
+    for (DeferredCopy& copy : copies)
+        copy(list.get());
+    if (SUCCEEDED(list->Close()))
+    {
+        ID3D12CommandList* const submit[] = {list.get()};
+        queue->ExecuteCommandLists(1, submit);
+    }
+    else
+    {
+        Log("capture: the list of what the frame found did not close");
+    }
+    std::lock_guard lock(dc->mutex);
+    dc->ownAllocators.push_back(std::move(allocator));
+    dc->ownLists.push_back(std::move(list));
 }
 
 namespace
@@ -2491,9 +2603,10 @@ std::vector<DeferredCopy>* CaptureManager::Impl::HeldCopiesOf(CommandRecorder* r
     // ended suspended (the pass is kept as it was once it ends). A pass that resumes and ends for
     // good does have room after it, but its list is one a job recorded, which does not know the
     // state the lists before it in the submission leave a resource in: a copy there was tried, and
-    // its barriers were wrong. After the submission the state is the tracker's own. The cost is a
-    // texture the frame reads and then overwrites (temporal anti-aliasing's history), which is
-    // read back as it was written.
+    // its barriers were wrong. After the submission the state is the tracker's own. A texture the
+    // frame reads and then overwrites (temporal anti-aliasing's history) is read back here as it
+    // was written, which the draw's details show; what the frame found in it, which a replay
+    // starts from, is taken before the submission (BeforeExecuteCommandLists).
     // A list already closed (a submission's own read-backs, IndexedHeapContents) can only be followed.
     const bool closed = rec->adopted() || (!rec->bundle() && rec->closed()) || (pass.split && (pass.active || pass.suspending));
     if (!rec->bundle() && !closed && !(pass.active && pass.renderPassApi))
@@ -3144,6 +3257,8 @@ void CaptureManager::EndFrame(ID3D12Device* device, ID3D12CommandQueue* queue, I
                 // armed instead (RequestCapture).
                 i.bufferIds.clear();
                 i.textureIds.clear();
+                i.initialIds.clear();
+                i.frameWritten.clear();
                 i.bufferBytes = i.imageBytes = i.targetBytes = i.commandTotal = 0;
                 i.splitPasses = 0;
                 // The host calls the frame spends its time in, from here until Finish
@@ -3456,10 +3571,10 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures)
             w.Key("samples");
             w.Uint(e.samples);
         }
-        if (e.sampled)
+        if (e.sampled || e.initial)
         {
             w.Key("kind");
-            w.String("sampled");
+            w.String(e.initial ? "initial" : "sampled");
             w.Key("capture");
             w.Uint(e.captureId);
             w.Key("baseLayer");
@@ -3519,7 +3634,8 @@ void CaptureManager::Impl::SendTextures(std::vector<TextureEntry>& textures)
         h.Key("aspect");
         h.String(e.depthAspect ? "depth" : e.stencilAspect ? "stencil"
                                                            : "color");
-        if (e.sampled)
+        // What names the data's entry: a sampled or initial one shares its key with a target's read-back.
+        if (e.sampled || e.initial)
         {
             h.Key("capture");
             h.Uint(e.captureId);
@@ -3920,6 +4036,8 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device)
         pendingDrawSlots.clear();
         bufferIds.clear();
         textureIds.clear();
+        initialIds.clear();
+        frameWritten.clear();
         bufferBytes = imageBytes = targetBytes = commandTotal = 0;
         splitPassCount = splitPasses;
         splitPasses = 0;

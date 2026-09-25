@@ -13,8 +13,9 @@
 //     subresource starts in is inferred (the first barrier's StateBefore, else what the frame's use
 //     of it needs), and each descriptor is written from what the capture says it held: a render
 //     target's view when it is bound, a table's descriptors from the snapshot taken when it was set.
-//   * the contents it read back: sampled textures are uploaded before the frame, and each buffer
-//     range a list binds before that list is executed.
+//   * the contents it read back: what the frame found in the textures it reads before writing
+//     them (kind `initial`, taken before the submission) and sampled textures are uploaded before
+//     the frame, and each buffer range a list binds before that list is executed.
 //
 // Every render target the capture read back at the end of a pass is read back here at the same
 // point and compared byte for byte.

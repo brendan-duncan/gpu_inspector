@@ -433,7 +433,23 @@ ranges named by a snapshot, by `IASetVertexBuffers` / `IASetIndexBuffer` (whose 
 bound in — a copy may not interrupt a render pass's attachments — and referenced by id in `data`
 and `bufferData`. Textures an SRV or UAV names are read back once per resource per capture
 (`QueueTextureCapture`, every mip with all its slices, under `maxImageTotal`) and referenced in the
-descriptor's `data`; a `CaptureTextureInfo` of `kind: "sampled"` carries them. Root constants are
+descriptor's `data`; a `CaptureTextureInfo` of `kind: "sampled"` carries them.
+
+**What the frame found** in a texture it reads before writing is read back apart, as
+`kind: "initial"`, for a replay to start from. Each list notes, as it is recorded, the textures it
+reads before it writes them (`CommandRecorder::NoteRead` / `NoteWritten`): a sampled texture, a
+render target or depth buffer a draw loads rather than one the list cleared (or a render pass
+began with CLEAR or DISCARD), a copy's source. When the lists are submitted, and before they are
+forwarded (`CaptureManager::BeforeExecuteCommandLists`), the textures they read that no earlier
+list of the submission and no earlier submission of the capture wrote are copied, once per capture,
+in a list of the library's own run first on the queue -- while the tracker still has each resource
+in the state the submission finds it in. A texture the submission only reads, and that is read
+back as sampled anyway, is left to that read-back, which holds the same pixels: a frame's static
+textures would otherwise be copied twice (on the URP sample, 20 to 38 copies rather than 101). A sampled read-back, taken at a pass's end or after the
+submission, may already hold what the frame did to the texture: temporal anti-aliasing's history,
+read and then overwritten in the same submission, was read back as the new history, and a replay
+that started from it drew a different image. Direct queues only; the depth plane of a
+depth-stencil texture, not its stencil. Root constants are
 `SetGraphicsRoot32BitConstants` / `SetComputeRoot32BitConstants` commands whose arguments carry
 the bytes inline (`pValues`, with `offset` and `size` in bytes and `stageFlags` naming the bind
 point), which is the UI's push constant shape. Vertex and index buffer views carry the resolved

@@ -14,6 +14,7 @@
 #include <functional>
 #include <memory>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace dxinsp
@@ -214,10 +215,32 @@ public:
     };
     std::vector<TableSlots>& tableSlots() { return _tables; }
 
+    /**
+     * What the list reads of a texture before it writes it, and what it writes: a sampled texture,
+     * a render target or depth buffer a draw loads rather than one the list cleared, a copy's
+     * source. Of those the list reads first, the submission takes what they held beforehand
+     * (CaptureManager::BeforeExecuteCommandLists), which is what a replay has to start them from.
+     */
+    void NoteRead(ID3D12Resource* resource)
+    {
+        if (resource && !_written.count(resource) && _readSeen.insert(resource).second)
+            _reads.push_back(resource);
+    }
+    void NoteWritten(ID3D12Resource* resource)
+    {
+        if (resource)
+            _written.insert(resource);
+    }
+    const std::vector<ID3D12Resource*>& readsBeforeWrites() const { return _reads; }
+    const std::unordered_set<ID3D12Resource*>& writes() const { return _written; }
+
     void Reset()
     {
         _commands = std::make_shared<CommandList>();
         _tables.clear();
+        _reads.clear();
+        _readSeen.clear();
+        _written.clear();
         _pass = ActivePass{};
         _passCount = 0;
         _compute = ActiveComputePass{};
@@ -270,6 +293,9 @@ private:
     };
     std::vector<DeferredSnapshot> _deferred;
     std::vector<TableSlots> _tables;
+    std::vector<ID3D12Resource*> _reads;   // in the order first read
+    std::unordered_set<ID3D12Resource*> _readSeen;
+    std::unordered_set<ID3D12Resource*> _written;
     bool _adopted = false;
     bool _captureStacks = false;
     bool _closed = false;

@@ -822,6 +822,9 @@ void STDMETHODCALLTYPE Hook_CopyTextureRegion(List* This, const D3D12_TEXTURE_CO
         args.null("pSrc");
     Write(args.key("pSrcBox"), pSrcBox);
     rec->Record("CopyTextureRegion", args.str());
+    // A texture it copies from is read. What it writes is a region, which leaves the rest as it was.
+    if (pSrc && pSrc->Type == D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX)
+        rec->NoteRead(pSrc->pResource);
     // A texture filled from a buffer (an upload): the rows the copy reads, whole, as above. The
     // footprint's height in rows is an upper bound for a block-compressed format, which the
     // buffer's end clips.
@@ -846,6 +849,8 @@ void STDMETHODCALLTYPE Hook_CopyResource(List* This, ID3D12Resource* pDstResourc
     Args args;
     args.ref("pDstResource", pDstResource, "ID3D12Resource").ref("pSrcResource", pSrcResource, "ID3D12Resource");
     rec->Record("CopyResource", args.str());
+    rec->NoteRead(pSrcResource);
+    rec->NoteWritten(pDstResource);
     // A buffer copied whole is read whole (QueueBufferCapture takes nothing of a texture).
     if (const uint32_t id = Cap().QueueBufferCapture(rec, pSrcResource, 0, UINT64_MAX, true))
         rec->SetExtraOnLast(BufferDataExtra({id}));
@@ -889,6 +894,8 @@ void STDMETHODCALLTYPE Hook_ResolveSubresource(List* This, ID3D12Resource* pDstR
     Args args;
     args.ref("pDstResource", pDstResource, "ID3D12Resource").u("DstSubresource", DstSubresource).ref("pSrcResource", pSrcResource, "ID3D12Resource").u("SrcSubresource", SrcSubresource).e("Format", ToString_DXGI_FORMAT(Format), Format);
     rec->Record("ResolveSubresource", args.str());
+    rec->NoteRead(pSrcResource);
+    rec->NoteWritten(pDstResource);
 }
 
 void STDMETHODCALLTYPE Hook_ResolveSubresourceRegion(List* This, ID3D12Resource* pDstResource, UINT DstSubresource, UINT DstX, UINT DstY, ID3D12Resource* pSrcResource, UINT SrcSubresource, D3D12_RECT* pSrcRect, DXGI_FORMAT Format, D3D12_RESOLVE_MODE ResolveMode)
@@ -1001,6 +1008,9 @@ void STDMETHODCALLTYPE Hook_ClearDepthStencilView(List* This, D3D12_CPU_DESCRIPT
     args.d("Depth", Depth).u("Stencil", Stencil).u("NumRects", NumRects);
     WriteRects(args.key("pRects"), NumRects, pRects);
     rec->Record("ClearDepthStencilView", args.str());
+    // A whole depth clear writes the depth the pass would otherwise load.
+    if (NumRects == 0 && (ClearFlags & D3D12_CLEAR_FLAG_DEPTH))
+        rec->NoteWritten(t.record.resource);
     // A D3D12 pass has no load action: a clear inside it is what a measurement's copy of the
     // attachment has to be given too.
     std::vector<D3D12_RECT> rects(pRects, pRects + (pRects ? NumRects : 0));
@@ -1029,6 +1039,8 @@ void STDMETHODCALLTYPE Hook_ClearRenderTargetView(List* This, D3D12_CPU_DESCRIPT
     args.u("NumRects", NumRects);
     WriteRects(args.key("pRects"), NumRects, pRects);
     rec->Record("ClearRenderTargetView", args.str());
+    if (NumRects == 0)
+        rec->NoteWritten(t.record.resource);
     std::vector<D3D12_RECT> rects(pRects, pRects + (pRects ? NumRects : 0));
     std::array<FLOAT, 4> color{};
     if (ColorRGBA)

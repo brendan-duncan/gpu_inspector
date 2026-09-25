@@ -30,6 +30,8 @@
 - A Direct3D 12 draw's details and `get_command` list the heap its shaders index directly, as of its submission.
 - They also say which of its slots the shaders take, worked out from the DXIL and the draw's constants.
 - `test/d3d12_triangle --late-descriptor` rewrites a volatile descriptor after recording the draw that reads it.
+- `test/d3d12_triangle --keep-depth` keeps its depth buffer from frame to frame.
+- The Direct3D 12 replay names its objects as the application did, so debug-layer messages name them too.
 - `test/d3d12_triangle --local-root` and `test/triangle --shader-record` put arguments in a hit group's record.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
@@ -49,6 +51,7 @@
 - The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ### Fixed
+- A Direct3D 12 capture takes what the frame found in the textures it reads before writing, so the Unity URP sample's frames replay identical.
 - A Direct3D 12 capture sends a volatile descriptor the application rewrote after the draw was recorded, so the replay draws what the GPU did.
 - Present latency on the frame meter no longer drops to nothing whenever the display's statistics skip a report.
 - A Direct3D 12 capture of an application with async compute no longer trips the debug layer by writing one staging buffer from two queues.

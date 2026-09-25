@@ -956,6 +956,26 @@ vendor's driver is listed at the end so nobody spends time on it.
       not on `MTLRenderCommandEncoder` in the macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
 - [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, and the analyses
       `vkinsp_replay` serves (overlays, mesh output, per-draw timing).
+  - [x] What the frame found in the textures it reads before writing (kind `initial`,
+    `CaptureManager::BeforeExecuteCommandLists`, `CommandRecorder::NoteRead`). The Unity URP sample
+    did not replay: of one frame 12 of 14 targets differed, of another the back-buffer depth. The
+    first was TAA -- its history texture is read and then overwritten in one submission, inside a
+    suspended render pass, so its only read-back was taken after the submission and held the new
+    history. The second was a depth buffer the frame loads and never writes, which nothing read back
+    at all: the replay drew against a new allocation, zeros by luck without the debug layer and
+    0.2759 with it. Each list now notes the textures it reads before writing, and before a
+    submission is forwarded the library copies those no earlier list or submission wrote, in its
+    own list run first. Both URP frames replay with every target identical (14/14, 11/11), 0
+    problems; with the uploads left out 11 differ. `d3d12_triangle --keep-depth` (new): identical,
+    export too, debug layer clean; UI case `d3d12-keep-depth`. Found on the way: the texture
+    data message named its entry only for sampled read-backs, so an initial one overwrote the
+    pass read-back sharing its key; and the replay now gives its objects the application's names,
+    which is what showed the rest of the URP replay's 30 debug-layer messages to be Unity's own --
+    its G-buffers attached and sampled in one pass, its back-buffer depth barriers contradicting
+    each other -- which the live player raises by the hundred under the debug layer too, and which
+    leave its depth undefined there as well (0.19 in a capture taken with the debug layer on).
+    Left: the stencil plane and multisampled textures, and textures read on a compute or copy
+    queue first.
   - [x] A table slot rewritten after the draw was recorded (`CommandRecorder::tableSlots`,
     `DescriptorTracker::ChangedFrom`). This entry used to ask for descriptors staged per draw, for a
     slot "rewritten within one submission", and that was the wrong way round: the GPU reads a

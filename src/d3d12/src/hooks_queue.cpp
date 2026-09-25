@@ -184,6 +184,9 @@ void STDMETHODCALLTYPE Hook_ExecuteCommandLists(ID3D12CommandQueue* This, UINT N
         QueryPerformanceFrequency(&f);
         g_qpcToMs = 1000.0 / (double)f.QuadPart;
     }
+    // What the lists read before writing, as the frame found it: first, while the global state is
+    // still the one the submission starts from (CaptureManager::BeforeExecuteCommandLists).
+    Cap().BeforeExecuteCommandLists(This, NumCommandLists, ppCommandLists);
     // The lists' transitions go into the global state before the lists are handed over, not after:
     // the moment ExecuteCommandLists returns, an engine that pools its lists may reset one from
     // another thread (Unity does), and a Reset that got in first would clear the list's log before

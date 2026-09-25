@@ -951,6 +951,17 @@ Not replayed: an opacity micromap array build, and `DispatchRays` whose binding 
 did not read back. What does replay is exported to C++ as well ([Export to C++](#export-to-c)): the
 exported program looks its own shader identifiers up at run time by export name.
 
+**What the frame found.** A frame reads resources it does not write first: a depth buffer it loads
+rather than clears, the history texture temporal anti-aliasing reads and then overwrites, what
+earlier frames left in a target. The capture library takes each such texture as the frame found it,
+before the submission that first reads it (`kind: "initial"`, src/d3d12/README.md), and the replay
+uploads those before the frame, ahead of any read-back taken later. On the Unity URP sample
+(800x600, `-force-d3d12`) that was the difference between 12 of 14 targets differing -- the TAA
+history read back after the frame overwrote it, so every pass from TAA on drifted -- and all 14
+identical; in another frame, a back-buffer depth the frame only loads, left to whatever a new
+allocation held. `test/d3d12_triangle --keep-depth` never clears its depth after the first frame:
+identical, where without the uploads both targets differ.
+
 **Bindless descriptors.** A shader of model 6.6 can take a descriptor straight out of the heap
 (`ResourceDescriptorHeap[i]`), and then no root table says which slots it reads: a replay that only
 writes what tables name leaves those slots empty, and the draw samples nothing without a word. The
