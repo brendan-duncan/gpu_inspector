@@ -114,7 +114,9 @@ CPU was elsewhere. That idle stretch is the space *between* the spans, so it has
 total and no card above can show it.
 
 The **Timeline** card draws them instead: one lane per thread with the calls the layer timed, and a
-GPU lane with the passes, on one axis. Both lanes sharing an axis needs the device clock related to
+GPU lane with the passes, on one axis. A frame whose passes ran on more than one queue (async
+compute beside the graphics queue) gets a GPU lane per queue, and the card says whether the queues'
+work overlapped or took turns — which is the whole question async compute exists to answer. Both lanes sharing an axis needs the device clock related to
 the host clock, which the layer samples where the device has `VK_KHR_calibrated_timestamps`; without
 it the CPU lanes are still drawn and the GPU lane is left out rather than placed on a guessed origin.
 
@@ -364,6 +366,19 @@ They apply to both APIs, sometimes under a slightly different name:
 
 The **Render Graph** report adds the rules that need the frame's dependencies rather than one
 command: results nothing reads, targets replaced before use, and passes that could be one pass.
+
+### Step 5b: on a tile-based GPU
+
+A frame headed for a phone, a headset or an Apple GPU has a cost the steps above do not show on a
+desktop GPU: every render pass loads its attachments into on-chip tile memory and stores them back,
+and that traffic, not shading, is often what limits it. **Reports → Tile-Based GPUs** puts a number
+on it — the bytes each pass loads and stores, at 60 frames a second — and separates out the part the
+frame could avoid: a target stored and loaded straight back by the next pass, a store nothing
+reads, a post-processing step that reads each pixel once and could have stayed in the tile. It also
+lists what forces work out of the tile altogether, such as a pass sampling the target it renders to.
+Read it on a capture from the device when you have one; a desktop capture of the same renderer
+answers the same questions, since the load and store actions are the application's
+([Tile-Based GPUs](REPORTS.md#tile-based-gpus)).
 
 ## Step 6: confirm the fix
 

@@ -9,7 +9,7 @@ do, next to the three tools it is most often compared with.
 
 | Tool | Version this page describes | Who makes it | License |
 |---|---|---|---|
-| **GPU Inspector** | 0.23.0 | this project | MIT, free |
+| **GPU Inspector** | 0.24.0 | this project | MIT, free |
 | **RenderDoc** | 1.47 | Baldur Karlsson and contributors | MIT, free |
 | **PIX on Windows** | 2026 releases | Microsoft | proprietary, free |
 | **Nsight Graphics** | 2025.x / 2026.x | NVIDIA | proprietary, free |
@@ -136,7 +136,7 @@ while it runs.
 | Shader edit and re-run inside the capture | ● [Compile & Replay, with the changed targets side by side: Vulkan, D3D12](INSPECT.md#editing-a-shader) | ● | ● Edit & Continue, with a diff | ● dynamic shader editing |
 | Shader edit applied to the **running application** | ● [Vulkan, D3D12, Metal, Android](INSPECT.md#editing-a-shader) | ○ | ○ | ◐ live editing during replay |
 | Acceleration structure contents and instances, drawn | ● [all three backends, from the build, with overlap analysis](INSPECT.md#acceleration-structures) | ◐ | ◐ | ● the AS viewer, with overlap analysis |
-| Shader binding table records matched to their groups | ● [Vulkan](CAPTURE.md#reading-the-frame) | ◐ | ● | ● |
+| Shader binding table records matched to their groups | ● [Vulkan, D3D12](CAPTURE.md#reading-the-frame) | ◐ | ● | ● |
 
 ---
 
@@ -158,6 +158,7 @@ while it runs.
 | What each thread was doing in the hitch | ◐ [call stacks sampled in the process, running or blocked: Windows, macOS and Linux](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) | ○ | ● ETW: context switches, every process | ● (Nsight Systems) |
 | Memory allocation analysis | ◐ [Memory Capture, every allocation and free: Vulkan, D3D12](PROFILING.md#what-is-allocating); no residency per resource | ◐ | ● memory captures | ● |
 | Render graph: passes, the resources between them, the critical path | ● [Render Graph](REPORTS.md#render-graph) | ○ | ○ | ○ |
+| What a frame costs a tile-based (mobile) GPU in attachment traffic | ● [Tile-Based GPUs](REPORTS.md#tile-based-gpus): every backend, from any capture | ○ | ○ | ○ |
 | Frame-level rules flagging waste, each linked to its command | ● [Frame Issues](REPORTS.md#frame-stats) | ○ | ● Warnings | ◐ |
 | Static shader analysis with no source needed | ● [Analyze Shaders](REPORTS.md#analyze-shaders) | ○ | ○ | ◐ |
 | Driver compiler statistics (registers, spills, binary size) | ● [Vulkan](INSPECT.md#compiler-statistics) | ○ | ◐ occupancy | ● |

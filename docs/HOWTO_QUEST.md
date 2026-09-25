@@ -75,6 +75,12 @@ a depth buffer stored when nothing reads it, a clear that a load op would have d
 small enough that the bind around them costs more than the draw. **Frame Stats** lists them against
 the commands they are about.
 
+A Quest's GPU is a tiled one, so **Reports → Tile-Based GPUs** is the report to read next: the
+bytes each pass moves between tile memory and DRAM, and which of them the frame could keep on chip
+([Tile-Based GPUs](REPORTS.md#tile-based-gpus)). The eye buffers show there as stored and read by
+nothing in the capture — they go to the XR compositor, which the capture does not see — and are
+not counted as avoidable; eye depth stored for nothing is.
+
 ## What capturing costs
 
 Expect the captured frame to take noticeably longer than the frames around it: every render target

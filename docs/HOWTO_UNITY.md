@@ -109,9 +109,18 @@ each draw. That matters for one thing only: a pass that executes secondaries can
 statistics counters only where the device has the `inheritedQueries` feature, so a pass may be timed
 and uncounted ([Finding GPU bottlenecks](PROFILING.md)).
 
-The same scene on Direct3D 12 is ~1,900 commands over 58 pass segments, and the capture bar reports
-read-backs that failed — the buffers and textures of lists that were built inside the captured frame
-but run after it, which is what recording a frame ahead looks like from the capture's side.
+The same scene on Direct3D 12 is ~2,900 commands over 58 pass segments. Unity splits a render pass
+across command lists (a suspended pass, resumed in the next list), so one of its passes is several
+segments in the command list; the render graph and the Tile-Based GPUs report count them as the one
+pass they are. The lists Unity builds inside the captured frame run after it, so they are not in
+the capture; what they asked to have read back is dropped with them, rather than reported as failed.
+
+**A Direct3D 12 Unity frame replays identical** ([Capture replay](REPLAY.md#direct3d-12)): the URP
+sample's frames do, every target. Replay it without the debug layer to judge that. Under the debug
+layer the replay reports some thirty errors, and they are Unity's own — its G-buffers attached and
+sampled in the same pass, and back-buffer depth barriers that contradict each other — which the
+player raises by the hundred when it runs under the debug layer itself, and which leave its depth
+buffer undefined there too.
 
 Two things about the numbers, both inherent to capturing rather than to Unity:
 

@@ -1874,7 +1874,7 @@ library does not read back yet.
       (`StateIn(..., inList)`); read-only depth still takes the global state. Still no statistics,
       occlusion or measurements (overdraw, pixel history, overlays) in an adopted list.
       Checked: `d3d12_triangle --pool` with and without `--render-pass`, `--msaa` and `--stencil`
-      under the debug layer, every target read back and the colour target the frame on the screen;
+      under the debug layer, every target read back and the color target the frame on the screen;
       on the URP player, captures with 60 adopted lists read back 14 targets where they had 0, and
       the final image is right. The entry's "107 textures against ~166" was the *sampled* count, and
       a capture without adopted lists has had 107 as well, so that is not adoption's doing.

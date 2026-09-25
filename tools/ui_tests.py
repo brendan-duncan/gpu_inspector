@@ -2131,7 +2131,7 @@ def d3d12_cases(triangle):
         # and recorded into again frames later (Unity does), so the list the captured frame runs was
         # reset before the capture was asked for and the library adopts it at its first command. A
         # pass the library sees begin in such a list is timed and has its targets read back like any
-        # other (the colour and the depth here, from the state the pass needs them in); what it does
+        # other (the color and the depth here, from the state the pass needs them in); what it does
         # not take is pipeline statistics, since the application may have a query of its own open,
         # so those are not asked for.
         c = capture(state)

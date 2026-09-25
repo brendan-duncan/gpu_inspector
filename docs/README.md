@@ -24,6 +24,8 @@ Supports **Vulkan**, **Direct3D 12**, **Direct3D 11**, **Metal**, **OpenGL ES**,
 * **Mesh view**: a draw's vertices before and after its vertex shader, in 3D and as a table.
 * **Acceleration structures**: a ray tracing scene in 3D, with its instances, their costs and where they overlap.
 * **Render graph**: the frame's passes and the resources between them.
+* **Tile-based GPUs**: what a frame would cost a mobile GPU in memory traffic, and what could stay on chip.
+* **Bindless descriptors**: the heap a Direct3D 12 shader indexes directly, and the slots it takes.
 * **WebGPU pages**: debug the D3D12 backend of WebGPU running in Chrome, Edge, Brave or Firefox.
 * **Claude Code**: a plugin that lets Claude analyze captures and drive applications.
 * **Custom plugins**: add custom plug-ins for console or NDA platforms.
@@ -67,7 +69,7 @@ Whole workflows for particular applications, where getting in is the hard part.
 |---|---|
 | [Inspect](INSPECT.md) | The live object list: creation arguments, textures, buffers, shaders, validation messages |
 | [Capture](CAPTURE.md) | Capturing a frame, reading the command list, and capture files |
-| [Reports](REPORTS.md) | Frame Stats, shader analysis, bottlenecks, render graph, overdraw, draw overlays, mesh view, pixel history, shader debugger |
+| [Reports](REPORTS.md) | Frame Stats, shader analysis, bottlenecks, render graph, tile-based GPUs, overdraw, draw overlays, mesh view, pixel history, shader debugger |
 | [Finding GPU bottlenecks](PROFILING.md) | A step-by-step method for working out what limits a frame |
 
 ## Claude Code

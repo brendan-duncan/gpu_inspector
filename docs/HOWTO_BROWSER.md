@@ -50,6 +50,13 @@ Things worth recognising in it:
 - **The browser's own compositing is in the process too.** A capture may hold the page's frame, the
   compositor's, or both, depending on when it lands. The passes' render targets say which is which.
 
+**To replay or export a WebGPU frame**, capture a few frames rather than one (**Frames** 4 in the
+capture bar): Dawn submits a page frame in more than one part, the page's work and then a blit of
+the result, and a one-frame capture may hold only the blit. And raise **Max KB**: a simulation's
+buffers are larger than the 128 KB a buffer read-back is cut at, and a replay of a frame whose
+buffers were cut says so rather than drawing something else. Taken that way the WebGPU samples replay
+identical ([Web pages and WebGPU](BROWSER.md#capturing-a-frame) has the list).
+
 For the question one level up — *which WebGPU call did this, with what arguments* —
 [WebGPU Inspector](https://github.com/brendan-duncan/webgpu_inspector) answers that in the
 browser's own DevTools. The two go together: WebGPU Inspector to find the call, this to see what

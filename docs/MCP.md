@@ -37,6 +37,8 @@ Save a capture from the capture bar, then ask:
 > Launch `build\bin\Release\my_game.exe`, capture a frame, and make the most expensive fragment
 > shader cheaper. Show me the before and after.
 
+> Would this frame be bandwidth bound on a Quest? What would keep more of it in tile memory?
+
 Without a path, Claude picks from the captures GPU Inspector saved or opened recently.
 
 Or use a command:

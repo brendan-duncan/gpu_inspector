@@ -122,7 +122,10 @@ Selecting a command fills the right side with everything that was true at that p
   and reads the table back from the addresses the trace points at, so each record is matched to its
   group, and the bytes after the handle are reported as the application's own shader record data.
   Device addresses among them are resolved at the end of the frame to a buffer and offset, and
-  what they point at is read back (`recordAddresses`), for the replay to translate.
+  what they point at is read back, so a replay can put its own addresses there. On Direct3D 12 a
+  record begins with a shader identifier, matched to the export name the state object gave it
+  out for, and what follows is the local root signature's arguments: descriptor tables and root
+  views are resolved to the heap slots and buffers they name the same way.
   A record whose handle this pipeline never gave out is called out: a table filled from another
   pipeline, or from handles fetched before the pipeline was rebuilt, sends rays to the wrong shader
   or to none, and nothing else in a capture would show it. The structures a trace runs against are
