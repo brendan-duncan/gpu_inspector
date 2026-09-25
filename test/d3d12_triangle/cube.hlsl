@@ -10,7 +10,7 @@ cbuffer Cube : register(b0) {
 // Root parameter 1, root constants.
 cbuffer Frame : register(b1) {
     float time;
-    uint flags;      // bit 0: swap the red and blue channels
+    uint flags;      // bit 0: swap the red and blue channels; bits 8 and up: --bindless's heap slot
 };
 
 Texture2D checker : register(t0);
@@ -44,6 +44,11 @@ float4 PSMain(PSInput input) : SV_Target {
     float4 texel = checker.Sample(pointSampler, input.uv);
     float pulse = 0.75 + 0.25 * sin(time * 2.0);
     float3 color = texel.rgb * input.color * pulse;
+#ifdef BINDLESS
+    // --bindless: a texture no root table binds, found by its slot in the heap.
+    Texture2D stripes = ResourceDescriptorHeap[flags >> 8];
+    color *= stripes.Sample(pointSampler, input.uv).rgb;
+#endif
     if (flags & 1) color = color.bgr;
     return float4(color, 1.0);
 }

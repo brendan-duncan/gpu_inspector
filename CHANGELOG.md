@@ -25,6 +25,8 @@
 - Export to C++ writes a Direct3D 12 frame's state objects, acceleration structure builds and `DispatchRays` too.
 - Direct3D 12 ray tracing replay and export translate the descriptor tables and root views in binding table records.
 - Vulkan ray tracing replay and export translate the device addresses in shader record data.
+- Direct3D 12 replay and export write the descriptors shaders index straight out of the heap (shader model 6.6).
+- `test/d3d12_triangle --bindless` samples a texture through `ResourceDescriptorHeap`.
 - `test/d3d12_triangle --local-root` and `test/triangle --shader-record` put arguments in a hit group's record.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.

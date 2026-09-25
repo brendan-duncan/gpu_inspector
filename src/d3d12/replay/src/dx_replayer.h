@@ -501,6 +501,12 @@ private:
     // Descriptors, written from what the capture says each held.
     bool WriteTargetDescriptor(const vkreplay::JValue* entry, bool depth, PassTarget* out);
     void WriteTableDescriptors(const vkreplay::JValue& command, const vkreplay::JValue& args);
+    /**
+     * A submission's `heapDescriptors`: the slots of the heaps its lists' shaders index directly
+     * (shader model 6.6), as they were when it was submitted. Written after its lists are recorded
+     * and before it runs, which is when the application's writes had to land too.
+     */
+    void WriteHeapDescriptors(const vkreplay::JValue& submission, uint32_t index);
     bool WriteDescriptor(uint64_t heapId, uint32_t index, D3D12_DESCRIPTOR_RANGE_TYPE type, const vkreplay::JValue& record);
 
     // States

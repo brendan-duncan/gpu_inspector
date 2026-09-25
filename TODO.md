@@ -955,9 +955,19 @@ vendor's driver is listed at the end so nobody spends time on it.
       (`mtl_raytracing.mm`), so what is left of that entry is the rest. Tile shading is recorded but is
       not on `MTLRenderCommandEncoder` in the macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
 - [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, the analyses
-      `vkinsp_replay` serves (overlays, mesh output, per-draw timing), descriptors indexed out of
-      the heap (shader model 6.6), which no table snapshot covers, and a slot rewritten within one
-      submission, which needs descriptors staged per draw rather than written at record time.
+      `vkinsp_replay` serves (overlays, mesh output, per-draw timing), and a slot rewritten within
+      one submission, which needs descriptors staged per draw rather than written at record time.
+  - [x] Descriptors indexed out of the heap directly (shader model 6.6), which no table snapshot
+    covers (`CaptureManager::IndexedHeapContents`, `DxReplayer::WriteHeapDescriptors`). A list
+    that draws or dispatches under a root signature with a `*_HEAP_DIRECTLY_INDEXED` flag marks
+    the heap; its submission carries the slots written since the capture last sent them (the
+    descriptor tracker now numbers every write), taken at the submission because that is when the
+    GPU reads them, and what they name is read back after it -- a closed list's read-backs now
+    follow its submission rather than going nowhere. `d3d12_triangle --bindless` (new) replays and
+    exports identical, debug layer clean; without the slot writes 33,419 texels differ and the
+    replay reported no problem at all. UI case `d3d12-export-cpp-bindless`. Left: a heap slot
+    rewritten between draws of one submission (the item above), and the UI shows a bindless draw's
+    heap nowhere yet -- the draw state lists its root tables only.
 - [x] In-app HUD and live pause, both on all three backends. The HUD draws the application's frame
       time over its own window (`src/vulkan/src/hud_text.h` holds the font and the layout, with no
       graphics API in it, so the three libraries only differ in how they put flat rectangles on the

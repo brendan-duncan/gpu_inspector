@@ -93,6 +93,13 @@ public:
     std::vector<DescriptorRecord> Slots(ID3D12DescriptorHeap* heap, uint32_t first, uint32_t count);
     /** The number of slots ever written in a heap. */
     uint32_t WrittenCount(ID3D12DescriptorHeap* heap);
+    /**
+     * The slots written since the caller last looked, with what they hold now. `seen` is the
+     * caller's, one entry per slot: the write it last saw there, which this brings up to date.
+     * For a shader that indexes the heap itself (shader model 6.6), where no root table says
+     * which slots it reads.
+     */
+    std::vector<std::pair<uint32_t, DescriptorRecord>> ChangedSince(ID3D12DescriptorHeap* heap, std::vector<uint64_t>& seen);
 
 private:
     DescriptorTracker() = default;

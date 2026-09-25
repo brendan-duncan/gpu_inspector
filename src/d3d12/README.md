@@ -400,6 +400,22 @@ descriptors: { bindPoint: "graphics" | "compute", sets: [ {
                                | null ] } ] } ] }
 ```
 
+**Directly indexed heaps** (shader model 6.6, `ResourceDescriptorHeap[i]` and
+`SamplerDescriptorHeap[i]`) have no table to say which slots a shader reads. A draw or dispatch
+under a root signature with `D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED` (or the
+sampler flag) marks the heap it ran with on its list (`ListState::indexed`), and the
+`ExecuteCommandLists` that submits the list carries the heap's slots as they are then -- which is
+what the GPU reads, since an application may write a descriptor until the submission:
+
+```
+heapDescriptors: [ { heap: {ref}, slots: [ { slot, type: <D3D12_DESCRIPTOR_RANGE_TYPE>, descriptor: {as above} } ] } ]
+```
+
+The descriptor tracker numbers every slot write, so a submission sends only the slots written since
+the last one sent them -- the whole written heap the first time, little after that
+(`CaptureManager::IndexedHeapContents`). Views of released resources are left out. What the
+views name is read back like a table's, after the submission (the list is closed by then).
+
 The heap contents behind a table come from `descriptors.cpp`, which follows every
 `Create*View`, `CreateSampler`, `CopyDescriptors` and `CopyDescriptorsSimple` into a record per
 heap slot (`CPU handle - heap start` over the increment size), the way the Vulkan layer follows

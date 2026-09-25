@@ -189,6 +189,8 @@ public:
     void OnComputePassEnd(CommandRecorder* rec);
     /** A draw or trace was recorded in the open pass (for its draw count). */
     void OnDraw(CommandRecorder* rec);
+    /** A draw (graphics) or a dispatch: notes the heaps its root signature lets its shaders index directly (ListState::indexed). */
+    void NoteIndexedHeaps(CommandRecorder* rec, bool compute);
     /**
      * Before a draw or dispatch is forwarded, when the capture measures draws (`drawTimings`):
      * reserves its queries and writes the begin timestamp. Returns the slot, or UINT32_MAX when
@@ -253,6 +255,14 @@ public:
     bool OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs);
     /** A bundle ran inside a list: its recording becomes the ExecuteBundle command's children. */
     void OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle);
+    /**
+     * The contents of the heaps a submission's lists let shaders index directly, as the
+     * submission's extra (`heapDescriptors`): the slots written since the capture last sent them,
+     * which is every written slot the first time. A bindless shader reads what the heap holds when
+     * the GPU runs it, which is what it holds at the submission; what the views name is read back
+     * after it. Empty when no list of the submission indexes a heap.
+     */
+    std::string IndexedHeapContents(UINT count, ID3D12CommandList* const* lists);
     /**
      * The frame boundary, from Present: counts the frame, arms a pending capture, and finishes a
      * capture whose last frame just ended (waiting for the GPU, then streaming everything).

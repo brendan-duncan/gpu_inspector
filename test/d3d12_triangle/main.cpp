@@ -9,6 +9,7 @@
 //                        [--render-pass] [--suspend] [--pool] [--compute] [--async-compute] [--offscreen] [--leak]
 //                        [--debug-layer] [--stencil]
 //                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas] [--local-root]]
+//                        [--bindless]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -174,7 +175,10 @@ constexpr uint32_t kHeapRtTarget = kHeapRtScene + 1;
 // --local-root: the CBV the tinted hit group's local descriptor table points at. Nothing binds this
 // slot through a root table, so only the binding table record names it.
 constexpr uint32_t kHeapRtLocal = kHeapRtTarget + 1;
-constexpr uint32_t kHeapSize = kHeapRtLocal + 1;
+// --bindless: the stripes texture the cube's pixel shader reads through ResourceDescriptorHeap. No
+// root table covers this slot, so only the heap's contents at the submission say what it holds.
+constexpr uint32_t kHeapBindless = kHeapRtLocal + 1;
+constexpr uint32_t kHeapSize = kHeapBindless + 1;
 
 // --ray-tracing: the traced image, and the two instances of the one triangle.
 constexpr uint32_t kTraceSize = 256;
@@ -271,6 +275,11 @@ struct App
     // which is what a replay has to translate, and the buffers they name are bound nowhere else, so
     // the capture has to read them back from the record alone.
     bool localRoot = false;
+    // --bindless: the cube's root signature lets shaders index the CBV/SRV/UAV heap directly
+    // (D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED), and its pixel shader
+    // (cube_bindless.hlsl, shader model 6.6) multiplies in a texture taken from a heap slot no root
+    // table names -- what an engine that is bindless throughout does for every resource.
+    bool bindless = false;
     DXGI_FORMAT depthFormat = kDepthFormat;
     bool debugLayer = false;   // the application enables the D3D12 debug layer itself
     bool resized = false;      // the swap chain must be resized before the next frame
@@ -319,6 +328,7 @@ struct App
     ComPtr<ID3D12Resource> msaaTarget;
 
     ComPtr<ID3D12Resource> vertexBuffer, indexBuffer, constantBuffer, texture, waveBuffer, indirectArgs;
+    ComPtr<ID3D12Resource> stripesTexture;   // --bindless
     D3D12_VERTEX_BUFFER_VIEW vertexBufferView{};
     D3D12_INDEX_BUFFER_VIEW indexBufferView{};
     uint8_t* constantMapped = nullptr;
@@ -799,6 +809,8 @@ struct App
         rs.Desc_1_1.NumStaticSamplers = 1;
         rs.Desc_1_1.pStaticSamplers = &sampler;
         rs.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+        if (bindless)
+            rs.Desc_1_1.Flags |= D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED;
         rootSignature = MakeRootSignature(rs, L"Cube root signature");
 
         // Compute root signature: [0] a table {UAV u0}, [1] root constants b0.
@@ -814,7 +826,7 @@ struct App
         computeRootSignature = MakeRootSignature(rs, L"Wave root signature");
 
         std::vector<char> vs = ReadFile(ExeDir() + "cube_vs.cso");
-        std::vector<char> ps = ReadFile(ExeDir() + (heavy ? "heavy_ps.cso" : "cube_ps.cso"));
+        std::vector<char> ps = ReadFile(ExeDir() + (bindless ? "cube_bindless_ps.cso" : heavy ? "heavy_ps.cso" : "cube_ps.cso"));
         std::vector<char> cs = ReadFile(ExeDir() + "wave_cs.cso");
 
         D3D12_INPUT_ELEMENT_DESC layout[] = {
@@ -924,6 +936,8 @@ struct App
         indexBuffer = CreateBufferWithData(indices, sizeof(indices), D3D12_RESOURCE_STATE_INDEX_BUFFER, L"Cube indices");
         indirectArgs = CreateBufferWithData(&drawArgs, sizeof(drawArgs), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, L"Draw arguments");
         CreateTexture();
+        if (bindless)
+            CreateStripesTexture();
         EndUpload();
         vertexBufferView = {vertexBuffer->GetGPUVirtualAddress(), sizeof(verts), sizeof(Vertex)};
         indexBufferView = {indexBuffer->GetGPUVirtualAddress(), sizeof(indices), DXGI_FORMAT_R16_UINT};
@@ -962,6 +976,57 @@ struct App
         uav.Buffer.NumElements = kWaveCount;
         uav.Buffer.StructureByteStride = sizeof(float);
         device->CreateUnorderedAccessView(waveBuffer.Get(), nullptr, &uav, SrvCpuHandle(kHeapUav));
+        if (bindless)
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC stripes = srv;
+            stripes.Texture2D.MipLevels = 1;
+            device->CreateShaderResourceView(stripesTexture.Get(), &stripes, SrvCpuHandle(kHeapBindless));
+        }
+    }
+
+    /** The cube's root constant `flags`: `base`, and --bindless's heap slot in bits 8 and up (cube.hlsl). */
+    uint32_t CubeFlags(uint32_t base) const { return base | (bindless ? kHeapBindless << 8 : 0u); }
+
+    // --bindless: a 4x4 texture of four colored stripes, one mip, which only the heap names.
+    void CreateStripesTexture()
+    {
+        constexpr uint32_t kSize = 4;
+        const uint8_t colors[kSize][4] = {{255, 80, 80, 255}, {80, 255, 80, 255}, {80, 80, 255, 255}, {255, 255, 80, 255}};
+        D3D12_HEAP_PROPERTIES hp{};
+        hp.Type = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC td{};
+        td.Dimension = D3D12_RESOURCE_DIMENSION_TEXTURE2D;
+        td.Width = td.Height = kSize;
+        td.DepthOrArraySize = 1;
+        td.MipLevels = 1;
+        td.Format = kColorFormat;
+        td.SampleDesc.Count = 1;
+        CHECK(device->CreateCommittedResource(&hp, D3D12_HEAP_FLAG_NONE, &td, D3D12_RESOURCE_STATE_COPY_DEST, nullptr,
+            IID_PPV_ARGS(&stripesTexture)));
+        stripesTexture->SetName(L"Bindless stripes texture");
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT layout;
+        UINT rows;
+        UINT64 rowSize, total;
+        device->GetCopyableFootprints(&td, 0, 1, 0, &layout, &rows, &rowSize, &total);
+        ComPtr<ID3D12Resource> staging = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, total, D3D12_RESOURCE_STATE_GENERIC_READ,
+            D3D12_RESOURCE_FLAG_NONE, L"Stripes staging");
+        uint8_t* mapped = nullptr;
+        CHECK(staging->Map(0, nullptr, (void**)&mapped));
+        for (UINT y = 0; y < rows; ++y)
+            for (uint32_t x = 0; x < kSize; ++x)
+                memcpy(mapped + layout.Offset + y * layout.Footprint.RowPitch + x * 4, colors[x], 4);
+        staging->Unmap(0, nullptr);
+        D3D12_TEXTURE_COPY_LOCATION dst{};
+        dst.pResource = stripesTexture.Get();
+        dst.Type = D3D12_TEXTURE_COPY_TYPE_SUBRESOURCE_INDEX;
+        D3D12_TEXTURE_COPY_LOCATION src{};
+        src.pResource = staging.Get();
+        src.Type = D3D12_TEXTURE_COPY_TYPE_PLACED_FOOTPRINT;
+        src.PlacedFootprint = layout;
+        list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+        D3D12_RESOURCE_BARRIER b = Transition(stripesTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        list->ResourceBarrier(1, &b);
+        uploads.push_back(staging);
     }
 
     // An 8x8 RGBA8 checkerboard with a mip chain, every level box-filtered from the one above on
@@ -1057,7 +1122,7 @@ struct App
             bundles[i]->SetDescriptorHeaps(1, heaps);
             bundles[i]->SetGraphicsRootSignature(rootSignature.Get());
             bundles[i]->SetGraphicsRootDescriptorTable(0, SrvGpuHandle(2 * i));
-            RootConstants constants{0.0f, 1u};
+            RootConstants constants{0.0f, CubeFlags(1u)};
             bundles[i]->SetGraphicsRoot32BitConstants(1, sizeof(constants) / 4, &constants, 0);
             bundles[i]->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             bundles[i]->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -1637,7 +1702,7 @@ struct App
         list->RSSetScissorRects(1, &scissor);
         list->SetGraphicsRootSignature(rootSignature.Get());
         list->SetGraphicsRootDescriptorTable(0, SrvGpuHandle(2 * frameIndex));
-        RootConstants frame{t, 0u};
+        RootConstants frame{t, CubeFlags(0u)};
         list->SetGraphicsRoot32BitConstants(1, sizeof(frame) / 4, &frame, 0);
         if (bundle)
         {
@@ -1692,7 +1757,7 @@ struct App
             resumeList->SetGraphicsRootDescriptorTable(0, SrvGpuHandle(2 * frameIndex));
             // The second half's cube is tinted differently, so the two halves are told apart on
             // the screen as well as in the capture.
-            RootConstants second{t, 1u};
+            RootConstants second{t, CubeFlags(1u)};
             resumeList->SetGraphicsRoot32BitConstants(1, sizeof(second) / 4, &second, 0);
             resumeList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             resumeList->IASetVertexBuffers(0, 1, &vertexBufferView);
@@ -1887,6 +1952,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
             app.rayTracing = true;
             app.rebuildBlas = true;
         }
+        else if (!strcmp(argv[i], "--bindless"))
+            app.bindless = true;
         else if (!strcmp(argv[i], "--local-root"))
         {
             app.rayTracing = true;

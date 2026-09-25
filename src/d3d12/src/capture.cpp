@@ -400,6 +400,8 @@ struct Submission
     uint64_t objectId = 0;      // the queue, or the swap chain
     uint32_t frame = 0;
     std::string args;
+    /** ExecuteCommandLists: the heaps its lists index directly (CaptureManager::IndexedHeapContents). */
+    std::string extra;
     std::vector<SubmittedList> lists;
 };
 
@@ -590,6 +592,9 @@ struct CaptureManager::Impl
     std::vector<BufferEntry> buffers;
     std::vector<TimingEntry> timings;
     std::vector<DrawEntry> draws;
+    /** Per directly indexed heap, the write of each slot the capture last sent (IndexedHeapContents). */
+    std::mutex heapSeenMutex;
+    std::unordered_map<ID3D12DescriptorHeap*, std::vector<uint64_t>> heapSeen;
     /**
      * The draw slots each open list has taken and not resolved yet, packed as BeginDrawQueries
      * returned them. A resolve is only allowed outside a BeginRenderPass region, so it happens at
@@ -870,6 +875,11 @@ void CaptureManager::RequestCapture(const CaptureOptions& options)
 {
     ForgetPendingTraces();
     Impl& i = impl();
+    {
+        // A new capture sends each directly indexed heap whole again, on its first submission.
+        std::lock_guard seen(i.heapSeenMutex);
+        i.heapSeen.clear();
+    }
     std::lock_guard lock(i.mutex);
     if (i.state == Impl::State::Capturing)
     {
@@ -1304,8 +1314,23 @@ void CaptureManager::EndSplitPassTimestamp(CommandRecorder* rec)
 
 void CaptureManager::OnDraw(CommandRecorder* rec)
 {
+    NoteIndexedHeaps(rec, false);
     if (rec && rec->pass().active)
         rec->pass().drawCount++;
+}
+
+void CaptureManager::NoteIndexedHeaps(CommandRecorder* rec, bool compute)
+{
+    if (!rec)
+        return;
+    ListState& s = rec->state();
+    const std::shared_ptr<const RootSignatureInfo>& layout = compute ? s.computeLayout : s.graphicsLayout;
+    if (!layout)
+        return;
+    if ((layout->flags & D3D12_ROOT_SIGNATURE_FLAG_CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED) && s.heaps[0])
+        s.indexed[0] = s.heaps[0];
+    if ((layout->flags & D3D12_ROOT_SIGNATURE_FLAG_SAMPLER_HEAP_DIRECTLY_INDEXED) && s.heaps[1])
+        s.indexed[1] = s.heaps[1];
 }
 
 uint32_t CaptureManager::BeginDrawQueries(CommandRecorder* rec)
@@ -1767,6 +1792,7 @@ void CaptureManager::OnBeforeDispatch(CommandRecorder* rec)
 {
     if (!rec)
         return;
+    NoteIndexedHeaps(rec, true);
     ActiveComputePass& compute = rec->compute();
     if (rec->pass().active || compute.active)
         return;   // inside a render pass the dispatch stays there
@@ -2465,7 +2491,8 @@ std::vector<DeferredCopy>* CaptureManager::Impl::HeldCopiesOf(CommandRecorder* r
     // its barriers were wrong. After the submission the state is the tracker's own. The cost is a
     // texture the frame reads and then overwrites (temporal anti-aliasing's history), which is
     // read back as it was written.
-    const bool closed = rec->adopted() || (pass.split && (pass.active || pass.suspending));
+    // A list already closed (a submission's own read-backs, IndexedHeapContents) can only be followed.
+    const bool closed = rec->adopted() || (!rec->bundle() && rec->closed()) || (pass.split && (pass.active || pass.suspending));
     if (!rec->bundle() && !closed && !(pass.active && pass.renderPassApi))
         return nullptr;
     std::shared_lock lock(recorderMutex);
@@ -2790,6 +2817,8 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
             if (DeviceCapture* dc = i.CaptureFor(listDevice))
                 NoteQueue(*dc, queue);
         }
+        // What bindless shaders read, as the heaps hold it now (before the entries below get the frame).
+        s.extra = IndexedHeapContents(count, lists);
         std::lock_guard lock(i.mutex);
         if (i.state == Impl::State::Capturing)
         {
@@ -2848,6 +2877,74 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
     return boundary;
 }
 
+std::string CaptureManager::IndexedHeapContents(UINT count, ID3D12CommandList* const* lists)
+{
+    Impl& i = impl();
+    // Each heap once, with a list of the submission that indexes it, whose read-backs follow it.
+    std::vector<std::pair<ID3D12DescriptorHeap*, CommandRecorder*>> heaps;
+    for (UINT k = 0; k < count && lists; ++k)
+    {
+        CommandRecorder* rec = lists[k] ? LookupRecorder(static_cast<ID3D12GraphicsCommandList*>(lists[k])) : nullptr;
+        if (!rec || rec->bundle())
+            continue;
+        for (ID3D12DescriptorHeap* heap : rec->state().indexed)
+            if (heap && std::none_of(heaps.begin(), heaps.end(), [&](const auto& h) { return h.first == heap; }))
+                heaps.push_back({heap, rec});
+    }
+    if (heaps.empty())
+        return {};
+    JsonWriter w(&Tracker::Get());
+    w.BeginArray();
+    for (const auto& [heap, rec] : heaps)
+    {
+        HeapInfo info;
+        if (!DescriptorTracker::Get().GetHeap(heap, info))
+            continue;
+        std::vector<std::pair<uint32_t, DescriptorRecord>> changed;
+        {
+            std::lock_guard seen(i.heapSeenMutex);
+            changed = DescriptorTracker::Get().ChangedSince(heap, i.heapSeen[heap]);
+        }
+        if (changed.empty())
+            continue;
+        const bool samplers = info.desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
+        w.BeginObject();
+        w.Key("heap");
+        WriteRef(w, heap, "ID3D12DescriptorHeap");
+        w.Key("slots");
+        w.BeginArray();
+        for (const auto& [slot, r] : changed)
+        {
+            D3D12_DESCRIPTOR_RANGE_TYPE type;
+            switch (r.kind)
+            {
+                case DescriptorKind::CBV: type = D3D12_DESCRIPTOR_RANGE_TYPE_CBV; break;
+                case DescriptorKind::SRV: type = D3D12_DESCRIPTOR_RANGE_TYPE_SRV; break;
+                case DescriptorKind::UAV: type = D3D12_DESCRIPTOR_RANGE_TYPE_UAV; break;
+                case DescriptorKind::Sampler: type = D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER; break;
+                default: continue;
+            }
+            // A bindless heap keeps views of resources the application has since released, in slots
+            // it no longer indexes: those name nothing, and are left out.
+            D3D12_RESOURCE_DESC desc{};
+            if (r.resource && !DescOf(r.resource, desc))
+                continue;
+            w.BeginObject();
+            w.Key("slot");
+            w.Uint(slot);
+            w.Key("type");
+            w.Uint((uint32_t)type);
+            w.Key("descriptor");
+            WriteDescriptorRecord(w, r, samplers ? 0 : QueueRecordData(*this, rec, r));
+            w.EndObject();
+        }
+        w.EndArray();
+        w.EndObject();
+    }
+    w.EndArray();
+    return ",\"heapDescriptors\":" + w.str();
+}
+
 void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle)
 {
     if (!rec || !bundle)
@@ -2856,6 +2953,13 @@ void CaptureManager::OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommand
     CommandRecorder* bundleRec = LookupRecorder(bundle);
     if (!bundleRec)
         return;
+    // A bundle's draws index the heaps of the list that executes it, under its own root
+    // signature or the list's (a bundle that sets none inherits it).
+    for (int k = 0; k < 2; ++k)
+        if (bundleRec->state().indexed[k] && rec->state().heaps[k])
+            rec->state().indexed[k] = rec->state().heaps[k];
+    NoteIndexedHeaps(rec, false);
+    NoteIndexedHeaps(rec, true);
     // The bundle's read-back copies (a bundle records none itself) go into the executing list, and
     // its entries count as this list's for the frame they run in.
     if (std::vector<DeferredCopy>* deferred = i.DeferredOf(bundleRec))
@@ -3205,7 +3309,7 @@ void SendCommands(const CaptureData& data)
             emit(s.frame, -1, "Present", "IDXGISwapChain", s.objectId, s.args, kNone);
             continue;
         }
-        emit(s.frame, -1, "ExecuteCommandLists", "ID3D12CommandQueue", s.objectId, s.args, kNone);
+        emit(s.frame, -1, "ExecuteCommandLists", "ID3D12CommandQueue", s.objectId, s.args, s.extra);
         for (const SubmittedList& l : s.lists)
         {
             if (!l.commands)

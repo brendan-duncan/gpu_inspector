@@ -951,6 +951,20 @@ Not replayed: an opacity micromap array build, and `DispatchRays` whose binding 
 did not read back. What does replay is exported to C++ as well ([Export to C++](#export-to-c)): the
 exported program looks its own shader identifiers up at run time by export name.
 
+**Bindless descriptors.** A shader of model 6.6 can take a descriptor straight out of the heap
+(`ResourceDescriptorHeap[i]`), and then no root table says which slots it reads: a replay that only
+writes what tables name leaves those slots empty, and the draw samples nothing without a word. The
+capture library sends the heaps such shaders index with each submission that uses them -- the slots
+written since it last sent them, as they were when the list was submitted, which is when the GPU
+reads them -- and reads back what their views name (src/d3d12/README.md, "Directly indexed heaps").
+The replay writes them into its heap after recording the submission's lists and before executing
+them (`WriteHeapDescriptors`), and Export to C++ writes the same `Create*View` calls there. Slots
+whose resource the replay lacks are counted into one problem per submission, since a bindless heap
+keeps views the frame never reads. `test/d3d12_triangle --bindless` multiplies the cubes' color by
+a texture that only a heap slot names: replay and export identical, debug layer clean; with the
+slot writes left out, 33,419 texels differ and the replay reports nothing, which is what made this
+worth doing.
+
 A frame the driver cannot run ends the replay without taking the export's reason with it: a removed
 device is reported once, with its reason and the submission it followed, and nothing after it is
 issued; a crash writes the export summary with the exception and the command it happened at, which
@@ -963,11 +977,12 @@ Limits:
   which makes most captures of a Unity frame replay exactly; a list recorded entirely before the
   capture was asked for is still missing, and **Record always** from launch is what avoids it.
 - Video, work graphs and meta commands are left out: each such command is reported, and in the
-  export is a comment where it would be. Ray tracing replays ([Ray tracing](#ray-tracing)) but is
-  not exported.
+  export is a comment where it would be.
 - What the frame reads with no command naming it is not in the capture: a buffer reached through
-  a GPU address inside another buffer, a descriptor indexed out of the heap directly (shader model
-  6.6). Multisampled textures are not uploaded, and multisampled depth is not compared.
+  a GPU address inside another buffer. Multisampled textures are not uploaded, and multisampled
+  depth is not compared.
+- A heap slot rewritten between two submissions is right in each, but one rewritten between two
+  draws of the same submission is not: descriptors are written before the submission runs.
 - Queries are issued but their results are not compared, and fences, tiled resource mappings and
   residency are not replayed.
 

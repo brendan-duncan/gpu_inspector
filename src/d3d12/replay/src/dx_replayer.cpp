@@ -1518,6 +1518,18 @@ void DxReplayer::ApplyBufferData(const Group& group)
                 }
             }
         }
+        // A submission's directly indexed heaps: the buffers their views name (WriteHeapDescriptors).
+        const JValue* heaps = c.Get("heapDescriptors");
+        for (uint32_t h = 0; heaps && heaps->IsArray() && h < heaps->count; ++h)
+        {
+            const JValue* slots = heaps->items[h].Get("slots");
+            for (uint32_t k = 0; slots && slots->IsArray() && k < slots->count; ++k)
+            {
+                const JValue* record = slots->items[k].Get("descriptor");
+                if (record && record->Get("buffer") && record->Get("data"))
+                    apply(record->Get("data")->Uint());
+            }
+        }
     }
     flush();
 }
@@ -1806,6 +1818,49 @@ void DxReplayer::WriteTableDescriptors(const JValue& command, const JValue& args
                 hit->second.written[slot] = content;
         }
         append = start + (count == UINT_MAX ? (list && list->IsArray() ? list->count : 0) : count);
+    }
+}
+
+void DxReplayer::WriteHeapDescriptors(const JValue& submission, uint32_t index)
+{
+    const JValue* heaps = submission.Get("heapDescriptors");
+    if (!heaps || !heaps->IsArray())
+        return;
+    // A bindless heap keeps views of resources the frame never touches, and some of them the replay
+    // does not have: those are counted into one line rather than one problem each.
+    const size_t problems = _report->problems.size();
+    uint32_t failed = 0;
+    for (uint32_t h = 0; h < heaps->count; ++h)
+    {
+        const uint64_t heapId = IdOf(heaps->items[h].Get("heap"));
+        auto hit = _heaps.find(heapId);
+        const JValue* slots = heaps->items[h].Get("slots");
+        if (hit == _heaps.end() || !slots || !slots->IsArray())
+            continue;
+        for (uint32_t k = 0; k < slots->count; ++k)
+        {
+            const JValue& e = slots->items[k];
+            const JValue* record = e.Get("descriptor");
+            if (!record || record->IsNull() || !e.Get("slot"))
+                continue;
+            const uint32_t slot = (uint32_t)e.Get("slot")->Uint();
+            const auto type = (D3D12_DESCRIPTOR_RANGE_TYPE)(e.Get("type") ? e.Get("type")->Uint() : 0);
+            // What the slot holds as a root table's snapshot would have it, so neither writes it twice.
+            std::string content = std::to_string((int)type) + ";";
+            Canonical(*record, content);
+            if (hit->second.written[slot] == content)
+                continue;
+            if (WriteDescriptor(heapId, slot, type, *record))
+                hit->second.written[slot] = content;
+            else
+                ++failed;
+        }
+    }
+    if (failed)
+    {
+        _report->problems.resize(problems);
+        Problem("submission " + std::to_string(index) + ": " + std::to_string(failed) +
+            " descriptor(s) of a heap its shaders index directly name what the replay does not have; a shader that reads one reads nothing");
     }
 }
 
@@ -3050,6 +3105,12 @@ void DxReplayer::ReplayCommands()
         }
         std::vector<Readback> readbacks;
         std::vector<ID3D12CommandList*> lists;
+        if (c.Get("heapDescriptors"))
+        {
+            Group submission;
+            submission.first = submission.last = i;
+            ApplyBufferData(submission);
+        }
         const JValue* ids = args ? args->Get("ppCommandLists") : nullptr;
         for (uint32_t k = 0; ids && ids->IsArray() && k < ids->count; ++k)
         {
@@ -3071,6 +3132,7 @@ void DxReplayer::ReplayCommands()
         }
         if (lists.empty())
             continue;
+        WriteHeapDescriptors(c, i);
         queue->ExecuteCommandLists((UINT)lists.size(), lists.data());
         // Inside a counter collection pass the wait belongs after the pass, not here (_inCounterRound).
         if (!_inCounterRound)

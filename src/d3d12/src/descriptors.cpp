@@ -10,6 +10,7 @@
 #include "tracker.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -33,8 +34,11 @@ struct DescriptorTracker::Impl
         // and the write that follows contends only with writes into the same heap.
         std::mutex mutex;
         std::vector<DescriptorRecord> records;
+        // Per slot, which write last changed it (0: never written), numbered across all heaps.
+        std::vector<uint64_t> writes;
         uint32_t written = 0;   // the highest slot ever written + 1
     };
+    std::atomic<uint64_t> nextWrite{1};
 
     // The list of heaps is read on every descriptor write and every handle serialized, and
     // changes only when the application creates or destroys a heap: a shared_mutex, and a
@@ -117,6 +121,7 @@ void DescriptorTracker::OnHeapCreated(ID3D12Device* device, ID3D12DescriptorHeap
         h->info.increment = device->GetDescriptorHandleIncrementSize(desc.Type);
     }
     h->records.resize(desc.NumDescriptors);
+    h->writes.resize(desc.NumDescriptors);
     Impl& i = impl();
     std::unique_lock lock(i.mutex);
     // The address of a destroyed heap can come back for a new one before its Release hook ran
@@ -164,6 +169,7 @@ void DescriptorTracker::Write(D3D12_CPU_DESCRIPTOR_HANDLE handle, const Descript
     if (index >= h->records.size())
         return;
     h->records[index] = record;
+    h->writes[index] = i.nextWrite++;
     h->written = std::max(h->written, index + 1);
 }
 
@@ -210,6 +216,7 @@ void DescriptorTracker::Copy(UINT numDestRanges, const D3D12_CPU_DESCRIPTOR_HAND
             if (index + k >= h->records.size())
                 continue;
             h->records[index + k] = staged[cursor];
+            h->writes[index + k] = i.nextWrite++;
             h->written = std::max(h->written, index + k + 1);
         }
     }
@@ -280,6 +287,27 @@ uint32_t DescriptorTracker::WrittenCount(ID3D12DescriptorHeap* heap)
         return 0;
     std::lock_guard<std::mutex> records(h->mutex);
     return h->written;
+}
+
+std::vector<std::pair<uint32_t, DescriptorRecord>> DescriptorTracker::ChangedSince(ID3D12DescriptorHeap* heap, std::vector<uint64_t>& seen)
+{
+    std::vector<std::pair<uint32_t, DescriptorRecord>> out;
+    Impl& i = impl();
+    std::shared_lock lock(i.mutex);
+    Impl::Heap* h = i.FindByObject(heap);
+    if (!h)
+        return out;
+    std::lock_guard<std::mutex> records(h->mutex);
+    if (seen.size() < h->writes.size())
+        seen.resize(h->writes.size());
+    for (uint32_t k = 0; k < h->written && k < h->writes.size(); ++k)
+    {
+        if (!h->writes[k] || h->writes[k] == seen[k])
+            continue;
+        seen[k] = h->writes[k];
+        out.emplace_back(k, h->records[k]);
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------------------------

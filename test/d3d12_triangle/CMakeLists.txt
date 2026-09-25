@@ -27,6 +27,8 @@ set(OUT_DIR "${CMAKE_BINARY_DIR}/bin")
 set(SHADERS
     "cube.hlsl|vs_6_0|VSMain|cube_vs.cso"
     "cube.hlsl|ps_6_0|PSMain|cube_ps.cso"
+    # --bindless: the same pixel shader reading a texture through ResourceDescriptorHeap (6.6).
+    "cube_bindless.hlsl|ps_6_6|PSMain|cube_bindless_ps.cso"
     "heavy.hlsl|ps_6_0|PSMain|heavy_ps.cso"
     "wave.hlsl|cs_6_0|CSMain|wave_cs.cso"
     # --ray-tracing: one DXIL library with every [shader(...)] export in it, which is what a DXR
@@ -52,7 +54,7 @@ foreach(spec ${SHADERS})
         # silences dxc's warning about having no -Fd to write a PDB to instead.
         COMMAND ${DXC} -T ${profile} ${entry_arg} -Zi -Qembed_debug
                 -Fo "${CMAKE_CURRENT_BINARY_DIR}/${out}" "${CMAKE_CURRENT_SOURCE_DIR}/${src}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${src}" "${CMAKE_CURRENT_SOURCE_DIR}/raytrace.hlsl"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${src}" "${CMAKE_CURRENT_SOURCE_DIR}/raytrace.hlsl" "${CMAKE_CURRENT_SOURCE_DIR}/cube.hlsl"
         COMMENT "Compiling ${src} (${entry})"
         VERBATIM)
     list(APPEND CSO_OUTPUTS "${CMAKE_CURRENT_BINARY_DIR}/${out}")

@@ -2220,6 +2220,25 @@ def d3d12_cases(triangle):
                    f"the rewrites are not a buffer address and a descriptor handle: {patches.group(1) if patches else None}") + \
             expect("CreateConstantBufferView(" in commands, "the local table's descriptor is not written into the program's heap")
 
+    saved_bindless = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_bindless.gpucap")
+
+    def d3d12_export_cpp_bindless(state, log):
+        # --bindless: the cube's pixel shader reads a texture through ResourceDescriptorHeap, from a
+        # heap slot no root table covers. The capture library sends the directly indexed heap's
+        # slots with the submission (heapDescriptors) and reads what they name back; the export
+        # writes the slot into the program's heap before the submission runs.
+        projects = [os.path.join(exported_cpp, d) for d in os.listdir(exported_cpp)] if os.path.isdir(exported_cpp) else []
+        project = projects[0] if projects else ""
+        commands = ""
+        if project and os.path.isfile(os.path.join(project, "frame_commands.cpp")):
+            with open(os.path.join(project, "frame_commands.cpp"), encoding="utf-8") as f:
+                commands = f.read()
+        # kHeapBindless in test/d3d12_triangle/main.cpp: 2 * kFrameCount + 4.
+        slot = re.search(r"CreateShaderResourceView\([^;]*CpuHandle\(\w+, 10\)\);", commands)
+        return check_connected(state, log) + \
+            expect(len(projects) == 1, f"one project folder in {exported_cpp}: {projects}") + \
+            expect(slot is not None, "the bindless texture's heap slot (10) is not written into the program's heap")
+
     export_cases = [Case("d3d12-export-cpp", launch + ["--args=--bundle", "--record-always", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
                          d3d12_export_cpp, delay_ms=20000, before=remove_exported_cpp),
                     Case("d3d12-export-cpp-ray-tracing", launch + ["--args=--ray-tracing", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
@@ -2227,7 +2246,10 @@ def d3d12_cases(triangle):
                     # Without --validation: a ray tracing capture taken under the debug layer reads its
                     # binding tables back as zeros more often than not (TODO.md, Direct3D 12).
                     Case("d3d12-export-cpp-local-root", launch + ["--args=--local-root", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
-                         d3d12_export_cpp_local_root, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
+                         d3d12_export_cpp_local_root, delay_ms=20000, before=remove_exported_cpp),
+                    Case("d3d12-export-cpp-bindless", launch + ["--args=--bindless", "--validation", "--debug-capture", f"--debug-export-cpp={exported_cpp}",
+                                                                f"--debug-save={saved_bindless}", "--debug-save-delay=9000"],
+                         d3d12_export_cpp_bindless, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
     if not export_cases:
         print("  (no dxinsp_replay build: skipping the D3D12 Export to C++ case)")
     return export_cases + [

@@ -115,6 +115,13 @@ struct ListState
     std::shared_ptr<const RootSignatureInfo> graphicsLayout;
     std::shared_ptr<const RootSignatureInfo> computeLayout;
     ID3D12DescriptorHeap* heaps[2] = {nullptr, nullptr};   // CBV_SRV_UAV, sampler
+    /**
+     * The heaps a draw or dispatch ran with under a root signature that lets its shaders index
+     * them directly (D3D12_ROOT_SIGNATURE_FLAG_*_HEAP_DIRECTLY_INDEXED, shader model 6.6): which
+     * slots those read is up to the shader, so the submission carries the heaps' contents
+     * (CaptureManager::IndexedHeapContents).
+     */
+    ID3D12DescriptorHeap* indexed[2] = {nullptr, nullptr};
     D3D_PRIMITIVE_TOPOLOGY topology = D3D_PRIMITIVE_TOPOLOGY_UNDEFINED;
     /** Queries the application has open (BeginQuery without EndQuery), which ours must not nest inside. */
     uint32_t appQueryDepth = 0;
