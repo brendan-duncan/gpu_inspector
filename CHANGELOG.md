@@ -1,3 +1,8 @@
+## v0.24.2
+
+### Fixed
+- A Chrome WebGPU capture holds whole page frames, ended where Dawn waits for the canvas back, instead of one `ExecuteCommandLists` each (often only the blit).
+
 ## v0.24.1
 
 ### Added
@@ -8,7 +13,6 @@
 - How-to guides for a WebGL page (docs/HOWTO_WEBGL.md) and for debugging and profiling ray tracing (docs/HOWTO_RAYTRACING.md).
 
 ### Fixed
-- A Chrome WebGPU capture holds whole page frames, ended where Dawn waits for the canvas back, instead of one `ExecuteCommandLists` each (often only the blit).
 - The Vulkan layer no longer hangs in `vkCreateDevice` on a long feature chain, such as ANGLE's: a `pNext` chain was written once per link it had.
 - Vulkan replay compares the render targets of passes begun on an imageless framebuffer.
 - Vulkan replay no longer crashes the driver on a pipeline with creation feedback or an ignored tessellation state pointer.
