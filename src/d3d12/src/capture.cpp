@@ -2319,7 +2319,10 @@ void CaptureManager::SnapshotRootTable(CommandRecorder* rec, bool compute, uint3
                 // Unbounded: the rest of the heap, within reason.
                     count = first < heap.desc.NumDescriptors ? std::min(heap.desc.NumDescriptors - first, 1024u) : 0;
                 }
-                std::vector<DescriptorRecord> records = DescriptorTracker::Get().Slots(heap.heap, first, count);
+                std::vector<uint64_t> writes;
+                std::vector<DescriptorRecord> records = DescriptorTracker::Get().Slots(heap.heap, first, count, &writes);
+                // Which writes the snapshot saw, for the submission to tell a later rewrite by.
+                rec->tableSlots().push_back({heap.heap, first, std::move(writes)});
                 w.BeginObject();
                 w.Key("binding");
                 w.Uint(k);
@@ -2880,33 +2883,61 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
 std::string CaptureManager::IndexedHeapContents(UINT count, ID3D12CommandList* const* lists)
 {
     Impl& i = impl();
-    // Each heap once, with a list of the submission that indexes it, whose read-backs follow it.
-    std::vector<std::pair<ID3D12DescriptorHeap*, CommandRecorder*>> heaps;
+    // Per heap, the slots to send and a list of the submission whose read-backs follow them: every
+    // slot of a directly indexed heap written since the capture last sent it, and every slot a table
+    // snapshot read that was rewritten after it.
+    struct HeapSlots
+    {
+        ID3D12DescriptorHeap* heap;
+        CommandRecorder* rec;
+        std::map<uint32_t, DescriptorRecord> slots;
+    };
+    std::vector<HeapSlots> heaps;
+    auto entry = [&](ID3D12DescriptorHeap* heap, CommandRecorder* rec) -> HeapSlots& {
+        for (HeapSlots& h : heaps)
+            if (h.heap == heap)
+                return h;
+        heaps.push_back({heap, rec, {}});
+        return heaps.back();
+    };
+    std::vector<ID3D12DescriptorHeap*> indexed;
     for (UINT k = 0; k < count && lists; ++k)
     {
         CommandRecorder* rec = lists[k] ? LookupRecorder(static_cast<ID3D12GraphicsCommandList*>(lists[k])) : nullptr;
         if (!rec || rec->bundle())
             continue;
         for (ID3D12DescriptorHeap* heap : rec->state().indexed)
-            if (heap && std::none_of(heaps.begin(), heaps.end(), [&](const auto& h) { return h.first == heap; }))
-                heaps.push_back({heap, rec});
+        {
+            if (!heap || std::find(indexed.begin(), indexed.end(), heap) != indexed.end())
+                continue;
+            indexed.push_back(heap);
+            std::vector<std::pair<uint32_t, DescriptorRecord>> changed;
+            {
+                std::lock_guard seen(i.heapSeenMutex);
+                changed = DescriptorTracker::Get().ChangedSince(heap, i.heapSeen[heap]);
+            }
+            HeapSlots& h = entry(heap, rec);
+            for (auto& [slot, r] : changed)
+                h.slots[slot] = r;
+        }
+        for (const CommandRecorder::TableSlots& t : rec->tableSlots())
+        {
+            for (auto& [slot, r] : DescriptorTracker::Get().ChangedFrom(t.heap, t.first, t.writes))
+                entry(t.heap, rec).slots[slot] = r;
+        }
     }
-    if (heaps.empty())
+    if (std::all_of(heaps.begin(), heaps.end(), [](const HeapSlots& h) { return h.slots.empty(); }))
         return {};
     JsonWriter w(&Tracker::Get());
     w.BeginArray();
-    for (const auto& [heap, rec] : heaps)
+    for (const HeapSlots& h : heaps)
     {
+        ID3D12DescriptorHeap* heap = h.heap;
+        CommandRecorder* rec = h.rec;
         HeapInfo info;
-        if (!DescriptorTracker::Get().GetHeap(heap, info))
+        if (h.slots.empty() || !DescriptorTracker::Get().GetHeap(heap, info))
             continue;
-        std::vector<std::pair<uint32_t, DescriptorRecord>> changed;
-        {
-            std::lock_guard seen(i.heapSeenMutex);
-            changed = DescriptorTracker::Get().ChangedSince(heap, i.heapSeen[heap]);
-        }
-        if (changed.empty())
-            continue;
+        const auto& changed = h.slots;
         const bool samplers = info.desc.Type == D3D12_DESCRIPTOR_HEAP_TYPE_SAMPLER;
         w.BeginObject();
         w.Key("heap");

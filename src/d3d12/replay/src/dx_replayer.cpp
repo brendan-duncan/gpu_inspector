@@ -1806,14 +1806,18 @@ void DxReplayer::WriteTableDescriptors(const JValue& command, const JValue& args
                 break;
             // A slot keeps what it was given until the frame gives it something else: what a record
             // holds is its members' text, and its view's.
+            //
+            // Two draws of one submission can have been recorded with different contents in a slot,
+            // and the later write standing for both is right: the GPU reads a descriptor when the
+            // submission runs, so every draw of it reads the one slot's one contents (a static range
+            // may not change at all once set, a volatile one may until the list runs). What the slot
+            // held then comes with the submission when it differs from the snapshots
+            // (`heapDescriptors`, WriteHeapDescriptors), and is written last.
             const uint32_t slot = baseIndex + start + i;
             std::string content = std::to_string((int)type) + ";";
             Canonical(record, content);
-            const bool wasBound = !hit->second.bound.insert(slot).second;
             if (hit->second.written[slot] == content)
                 continue;
-            if (wasBound && !hit->second.written[slot].empty())
-                Problem("descriptor heap " + std::to_string(heapId) + ": a slot is given other contents after a draw of the same submission bound it, and the replay writes descriptors before the submission runs, so the earlier draw sees the later contents");
             if (WriteDescriptor(heapId, slot, type, record))
                 hit->second.written[slot] = content;
         }
@@ -3138,8 +3142,6 @@ void DxReplayer::ReplayCommands()
         if (!_inCounterRound)
             WaitForQueue(queue);
         CompleteMeasurements(queue, !_deviceLost);
-        for (auto& [heapId, heap] : _heaps)
-            heap.bound.clear();
         _report->submissions++;
         if (_x)
         {

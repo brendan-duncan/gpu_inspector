@@ -29,6 +29,9 @@ const HELD_REFERENCES: Record<string, Set<string>> = {
 
 type ObjectSignal = Signal<(id: number, object: VulkanObject) => void>;
 
+/** How long a measured present latency stands through reports that measured none (ObjectDatabase.presentLatencyMs). */
+const LATENCY_HOLD_MS = 2000;
+
 export class ObjectDatabase implements ObjectLookup {
   allObjects = new Map<number, VulkanObject>();        // live objects
   destroyedObjects = new Map<number, VulkanObject>();  // destroyed but still referenced by live objects
@@ -59,8 +62,14 @@ export class ObjectDatabase implements ObjectLookup {
   droppedFramesTotal = 0;  // since the connection
   /** The count came from the display's own refresh counters rather than from an estimate. */
   droppedFramesMeasured = false;
-  /** From the present call to the display showing the frame, median over the last interval; 0 when not measured. */
+  /**
+   * From the present call to the display showing the frame, median over the last interval that
+   * measured any; 0 when not measured. A report whose interval saw no newly shown present carries
+   * none -- the display's statistics can stand still for a few frames -- and the last figure then
+   * stands for `LATENCY_HOLD_MS` rather than dropping to nothing between two that did.
+   */
   presentLatencyMs = 0;
+  private _latencyAt = 0;
   inspectedObject: VulkanObject | null = null;
   /** Ids of the objects referenced by the most recent capture (for the object list filter). */
   capturedObjects = new Set<number>();
@@ -241,6 +250,7 @@ export class ObjectDatabase implements ObjectLookup {
     this.droppedFramesTotal = 0;
     this.droppedFramesMeasured = false;
     this.presentLatencyMs = 0;
+    this._latencyAt = 0;
     this.inspectedObject = null;
     this.capturedObjects = new Set();
     this.memory = { device: 0, allocations: 0, buffers: 0, images: 0, reported: 0, workingSet: 0 };
@@ -374,7 +384,12 @@ export class ObjectDatabase implements ObjectLookup {
         this.droppedFrames = msg.dropped ?? 0;
         this.droppedFramesTotal = msg.droppedTotal ?? this.droppedFramesTotal + (msg.dropped ?? 0);
         this.droppedFramesMeasured = msg.droppedMeasured === true;
-        this.presentLatencyMs = msg.presentLatencyMs ?? 0;
+        if (msg.presentLatencyMs !== undefined && msg.presentLatencyMs > 0) {
+          this.presentLatencyMs = msg.presentLatencyMs;
+          this._latencyAt = Date.now();
+        } else if (Date.now() - this._latencyAt > LATENCY_HOLD_MS) {
+          this.presentLatencyMs = 0;
+        }
         if (msg.allocatedBytes !== undefined) this.memory.reported = msg.allocatedBytes;
         if (msg.workingSetBytes !== undefined) this.memory.workingSet = msg.workingSetBytes;
         this.onFrameStats.emit(msg);

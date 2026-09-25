@@ -414,10 +414,6 @@ private:
         uint32_t increment = 0;
         /** What each slot was last written with, so a slot is not written again with what it holds. */
         std::unordered_map<uint32_t, std::string> written;
-        // The slots the lists recorded for the submission at hand have bound. Descriptors are written as the
-        // lists are recorded, which is before any of them runs: a slot given something else after a
-        // draw bound it would show that draw the later contents.
-        std::unordered_set<uint32_t> bound;
     };
     /** The state a subresource has to be in when the frame starts, as far as the frame's commands say. */
     struct InitialState
@@ -502,9 +498,10 @@ private:
     bool WriteTargetDescriptor(const vkreplay::JValue* entry, bool depth, PassTarget* out);
     void WriteTableDescriptors(const vkreplay::JValue& command, const vkreplay::JValue& args);
     /**
-     * A submission's `heapDescriptors`: the slots of the heaps its lists' shaders index directly
-     * (shader model 6.6), as they were when it was submitted. Written after its lists are recorded
-     * and before it runs, which is when the application's writes had to land too.
+     * A submission's `heapDescriptors`: heap slots as they were when it was submitted -- of the
+     * heaps its lists' shaders index directly (shader model 6.6), and the table slots rewritten after
+     * the draw's snapshot. Written after its lists are recorded and before it runs, which is when
+     * the application's writes had to land too.
      */
     void WriteHeapDescriptors(const vkreplay::JValue& submission, uint32_t index);
     bool WriteDescriptor(uint64_t heapId, uint32_t index, D3D12_DESCRIPTOR_RANGE_TYPE type, const vkreplay::JValue& record);

@@ -954,9 +954,26 @@ vendor's driver is listed at the end so nobody spends time on it.
       ablation and **Compile & Replay** are not). Ray tracing *is* replayed now
       (`mtl_raytracing.mm`), so what is left of that entry is the rest. Tile shading is recorded but is
       not on `MTLRenderCommandEncoder` in the macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
-- [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, the analyses
-      `vkinsp_replay` serves (overlays, mesh output, per-draw timing), and a slot rewritten within
-      one submission, which needs descriptors staged per draw rather than written at record time.
+- [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, and the analyses
+      `vkinsp_replay` serves (overlays, mesh output, per-draw timing).
+  - [x] A table slot rewritten after the draw was recorded (`CommandRecorder::tableSlots`,
+    `DescriptorTracker::ChangedFrom`). This entry used to ask for descriptors staged per draw, for a
+    slot "rewritten within one submission", and that was the wrong way round: the GPU reads a
+    descriptor when the submission runs, so every draw of a submission reads a slot's one contents
+    -- a static range may not change at all once set, a volatile one (and every range of a 1.0
+    root signature) may until the list runs. Staging per draw would have made the replay differ
+    from the GPU. What was wrong is that a table's snapshot is taken at the draw, and a volatile
+    slot rewritten after it went unseen: the snapshot now keeps each slot's write number, and the
+    submission sends the slots whose write has moved since, in `heapDescriptors`, which the
+    replay writes last. `d3d12_triangle --late-descriptor` (new) rewrites its volatile SRV slot
+    between Close and ExecuteCommandLists: 33,434 texels differed and the replay said nothing;
+    now replay and export are identical, debug layer clean. UI case `d3d12-late-descriptor`. The
+    replay's "a slot is given other contents after a draw of the same submission bound it"
+    problem is gone with the premise. Checked first on two captures of the URP player, which
+    never rewrite a slot within a submission (0 of the old problem either way).
+    Left: the command details and the draw state still show the table as the draw's snapshot had
+    it, not as the submission sent it; and a bundle's tables are not followed to its executing
+    list's submission.
   - [x] Descriptors indexed out of the heap directly (shader model 6.6), which no table snapshot
     covers (`CaptureManager::IndexedHeapContents`, `DxReplayer::WriteHeapDescriptors`). A list
     that draws or dispatches under a root signature with a `*_HEAP_DIRECTLY_INDEXED` flag marks
@@ -965,14 +982,20 @@ vendor's driver is listed at the end so nobody spends time on it.
     GPU reads them, and what they name is read back after it -- a closed list's read-backs now
     follow its submission rather than going nowhere. `d3d12_triangle --bindless` (new) replays and
     exports identical, debug layer clean; without the slot writes 33,419 texels differ and the
-    replay reported no problem at all. UI case `d3d12-export-cpp-bindless`. Left: a heap slot
-    rewritten between draws of one submission (the item above).
+    replay reported no problem at all. UI case `d3d12-export-cpp-bindless`.
   - [x] A bindless draw's heap in the command details and in `get_command` (`indexedHeapsAt` in
     `renderer/d3d12/indexed_heap.ts`): every slot written by the draw's submission, folded from
     the submissions' `heapDescriptors`, with a filter; unit test `d3d12_indexed_heap.test.js`, UI
-    case `d3d12-bindless-details` (the dump gained `commandDetails`, the pane's text). Left: which
-    slots a shader actually reads -- a constant index could be found in the DXIL, and a computed
-    one only by instrumenting the shader.
+    case `d3d12-bindless-details` (the dump gained `commandDetails`, the pane's text).
+  - [x] Which heap slots a bindless shader takes (`heapAccesses` in `renderer/d3d12/heap_indices.ts`,
+    `drawConstants` in `indexed_heap.ts`): each stage's DXIL disassembled, every
+    `createHandleFromHeap`'s index followed back through integer arithmetic and conversions to
+    literals and `cbufferLoadLegacy` reads, and those read from the draw's root constants and
+    captured CBVs. The slots come first in the heap section, and `get_command` has them as
+    `shaderReads`. `d3d12_triangle --bindless` works out to slot 10 from `flags >> 8`; unit test
+    `d3d12_heap_indices.test.js`. Left: an index made from a shader input, a loaded buffer
+    element or a loop -- only instrumenting the shader would say which slots those took; and a
+    constant buffer indexed at run time, or one bound through an array, is not followed.
 - [x] In-app HUD and live pause, both on all three backends. The HUD draws the application's frame
       time over its own window (`src/vulkan/src/hud_text.h` holds the font and the layout, with no
       graphics API in it, so the three libraries only differ in how they put flat rectangles on the

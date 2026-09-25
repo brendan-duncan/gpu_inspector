@@ -3,7 +3,9 @@
 // the validation messages.
 import { backendFor, type DetailSection, type DetailValue } from "../renderer/backend.js";
 import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer } from "../renderer/command_sets.js";
-import { indexedHeapsAt } from "../renderer/d3d12/indexed_heap.js";
+import { heapAccesses } from "../renderer/d3d12/heap_indices.js";
+import { drawConstants, indexedHeapsAt } from "../renderer/d3d12/indexed_heap.js";
+import { shaderText } from "../main/shader_tools.js";
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type VertexLayout } from "../renderer/draw_state.js";
 import { argumentBufferEntries, isArgumentBufferType, type ArgumentEntry } from "../renderer/metal/argument_buffer.js";
 import { metalBufferResource, metalStages } from "../renderer/metal/reflection.js";
@@ -368,6 +370,38 @@ function argumentBufferBrief(db: ObjectDatabase, entries: ArgumentEntry[]): unkn
   return out;
 }
 
+/**
+ * D3D12: what the draw's shaders take out of the heaps they index directly, on each `indexedHeaps`
+ * entry as `shaderReads` -- every createHandleFromHeap of each stage's DXIL, with its slot where the
+ * index comes from constants the capture holds (renderer/d3d12/heap_indices.ts). Async because the
+ * DXIL is disassembled by dxinsp_shader.exe.
+ */
+async function addHeapReads(c: Capture, cmd: CaptureCommand, detail: Record<string, unknown>): Promise<void> {
+  const state = isObject(detail.state as ArgValue) ? (detail.state as Record<string, unknown>) : null;
+  const heaps = state && Array.isArray(state.indexedHeaps) ? (state.indexedHeaps as Record<string, unknown>[]) : null;
+  if (!heaps?.length) return;
+  const d = c.data;
+  const draw = drawState(d, c.db, cmd);
+  const constants = drawConstants(d.commands, cmd, (id) => c.db.getObject(id), draw.bindPoint === "compute", [...draw.sets.values()].map((s) => s.set), (id) => {
+    const b = d.buffer(id);
+    return b?.data ? { bytes: b.data, offset: num(b.info.offset) } : null;
+  });
+  const reads: { stage: string; samplers: boolean; slot: number | null; expression: string; nonUniform?: boolean; line?: number }[] = [];
+  for (const source of stateStages(draw, c.db)) {
+    const bytes = c.spirv(source.object, source.blobIndex);
+    if (!bytes) continue;
+    const dis = await shaderText(bytes, "dis");
+    if (!dis.ok) continue;
+    for (const a of heapAccesses(dis.text, constants)) {
+      reads.push({ stage: source.stage, samplers: a.samplers, slot: a.slot, expression: a.expression, nonUniform: a.nonUniform || undefined, line: a.line ?? undefined });
+    }
+  }
+  for (const heap of heaps) {
+    const mine = reads.filter((r) => r.samplers === !!heap.samplers).map(({ samplers: _, ...r }) => r);
+    heap.shaderReads = mine;
+  }
+}
+
 function commandDetail(c: Capture, cmd: CaptureCommand, values: boolean): Record<string, unknown> {
   const d = c.data;
   const db = c.db;
@@ -580,6 +614,7 @@ export function commandTools(store: CaptureStore): ToolDefinition[] {
         const cmd = c.data.commands[index];
         if (!cmd) throw new Error(`No command ${index}: ${c.id} has ${c.data.commands.length} commands (0-${c.data.commands.length - 1}).`);
         const detail = commandDetail(c, cmd, boolArg(args, "values", true));
+        await addHeapReads(c, cmd, detail);
         // The recording stack again, with the frames named by module and offset resolved on this machine.
         if (cmd.stack?.length) detail.stack = stackLines(await symbolizeOnHost(cmd.stack.map((a) => c.db.symbols.get(a) ?? { address: a, offset: 0 })));
         return jsonResult(detail);

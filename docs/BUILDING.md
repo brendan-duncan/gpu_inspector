@@ -197,6 +197,7 @@ differently or misbehave on purpose.
 | `--suspend` | A render pass suspended across two command lists, submitted together (implies `--render-pass`) |
 | `--pool` | Records each frame into one of a pool of lists reset as soon as they run, so the captured frame's list is adopted |
 | `--async-compute` | The compute dispatch on a compute queue of its own, beside the render pass, for the Timeline's lane per queue (implies `--compute`) |
+| `--late-descriptor` | The cubes' volatile SRV slot is rewritten between `Close` and `ExecuteCommandLists` |
 | `--bindless` | The cubes' pixel shader reads a texture through `ResourceDescriptorHeap` (shader model 6.6), from a slot no root table covers |
 | `--local-root` | Ray tracing with a local root signature on one hit group, whose arguments the binding table record holds (implies `--ray-tracing`) |
 | `--debug-layer` | Turns the D3D12 debug layer on from the application |

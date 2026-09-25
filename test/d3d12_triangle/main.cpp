@@ -9,7 +9,7 @@
 //                        [--render-pass] [--suspend] [--pool] [--compute] [--async-compute] [--offscreen] [--leak]
 //                        [--debug-layer] [--stencil]
 //                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas] [--local-root]]
-//                        [--bindless]
+//                        [--bindless] [--late-descriptor]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -280,6 +280,11 @@ struct App
     // (cube_bindless.hlsl, shader model 6.6) multiplies in a texture taken from a heap slot no root
     // table names -- what an engine that is bindless throughout does for every resource.
     bool bindless = false;
+    // --late-descriptor: the cube table's SRV range is DESCRIPTORS_VOLATILE, and after the frame's
+    // list is closed -- after the draw was recorded, before ExecuteCommandLists -- its texture slot is
+    // rewritten with the stripes texture. The GPU reads a volatile descriptor when the list runs, so
+    // the cubes show stripes, while a snapshot taken at the draw holds the checker.
+    bool lateDescriptor = false;
     DXGI_FORMAT depthFormat = kDepthFormat;
     bool debugLayer = false;   // the application enables the D3D12 debug layer itself
     bool resized = false;      // the swap chain must be resized before the next frame
@@ -788,6 +793,8 @@ struct App
         ranges[1].RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
         ranges[1].NumDescriptors = 1;
         ranges[1].OffsetInDescriptorsFromTableStart = D3D12_DESCRIPTOR_RANGE_OFFSET_APPEND;
+        if (lateDescriptor)
+            ranges[1].Flags = D3D12_DESCRIPTOR_RANGE_FLAG_DESCRIPTORS_VOLATILE;
         D3D12_ROOT_PARAMETER1 params[2]{};
         params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
         params[0].DescriptorTable.NumDescriptorRanges = 2;
@@ -936,7 +943,7 @@ struct App
         indexBuffer = CreateBufferWithData(indices, sizeof(indices), D3D12_RESOURCE_STATE_INDEX_BUFFER, L"Cube indices");
         indirectArgs = CreateBufferWithData(&drawArgs, sizeof(drawArgs), D3D12_RESOURCE_STATE_INDIRECT_ARGUMENT, L"Draw arguments");
         CreateTexture();
-        if (bindless)
+        if (bindless || lateDescriptor)
             CreateStripesTexture();
         EndUpload();
         vertexBufferView = {vertexBuffer->GetGPUVirtualAddress(), sizeof(verts), sizeof(Vertex)};
@@ -982,6 +989,17 @@ struct App
             stripes.Texture2D.MipLevels = 1;
             device->CreateShaderResourceView(stripesTexture.Get(), &stripes, SrvCpuHandle(kHeapBindless));
         }
+    }
+
+    /** The frame slot's SRV (the table's t0): the checker, or with `stripes` the --late-descriptor texture. */
+    void WriteFrameSrv(uint32_t slot, bool stripes)
+    {
+        D3D12_SHADER_RESOURCE_VIEW_DESC srv{};
+        srv.Format = kColorFormat;
+        srv.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srv.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srv.Texture2D.MipLevels = stripes ? 1 : kTextureMips;
+        device->CreateShaderResourceView(stripes ? stripesTexture.Get() : texture.Get(), &srv, SrvCpuHandle(2 * slot + 1));
     }
 
     /** The cube's root constant `flags`: `base`, and --bindless's heap slot in bits 8 and up (cube.hlsl). */
@@ -1610,6 +1628,10 @@ struct App
             CHECK(allocators[frameIndex]->Reset());
             CHECK(list->Reset(allocators[frameIndex].Get(), pipeline.Get()));
         }
+        // --late-descriptor: the checker while the list is recorded (this frame slot's GPU work is
+        // done, so the slot is free to write); the stripes go in after it is closed, below.
+        if (lateDescriptor)
+            WriteFrameSrv(frameIndex, false);
         ID3D12DescriptorHeap* heaps[] = {srvHeap.Get()};
         list->SetDescriptorHeaps(1, heaps);
 
@@ -1787,6 +1809,10 @@ struct App
             EndRayTracing();
 
         CHECK(tail->Close());
+        // --late-descriptor: after the draw was recorded and before the list runs, which a volatile
+        // range allows: the GPU reads this, not what the slot held when the draw was recorded.
+        if (lateDescriptor)
+            WriteFrameSrv(frameIndex, true);
         ID3D12CommandList* lists[] = {list.Get(), resumeList.Get()};
         queue->ExecuteCommandLists(suspend ? 2 : 1, lists);
         if (!offscreen)
@@ -1954,6 +1980,8 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         }
         else if (!strcmp(argv[i], "--bindless"))
             app.bindless = true;
+        else if (!strcmp(argv[i], "--late-descriptor"))
+            app.lateDescriptor = true;
         else if (!strcmp(argv[i], "--local-root"))
         {
             app.rayTracing = true;

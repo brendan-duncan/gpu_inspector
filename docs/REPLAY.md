@@ -981,8 +981,10 @@ Limits:
 - What the frame reads with no command naming it is not in the capture: a buffer reached through
   a GPU address inside another buffer. Multisampled textures are not uploaded, and multisampled
   depth is not compared.
-- A heap slot rewritten between two submissions is right in each, but one rewritten between two
-  draws of the same submission is not: descriptors are written before the submission runs.
+- Descriptors are right as of each submission, which is when the GPU reads them: a table's
+  snapshot is taken at the draw, and a volatile slot the application rewrites before submitting is
+  sent again with the submission (`test/d3d12_triangle --late-descriptor`). Two draws of one
+  submission can never see different contents in one slot, on the GPU or here.
 - Queries are issued but their results are not compared, and fences, tiled resource mappings and
   residency are not replayed.
 

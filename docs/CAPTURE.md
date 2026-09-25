@@ -101,8 +101,12 @@ Selecting a command fills the right side with everything that was true at that p
 - **Descriptor heap indexed by the shaders** (Direct3D 12) — when the draw's root signature lets its
   shaders take descriptors straight out of the heap (shader model 6.6, `ResourceDescriptorHeap[i]`),
   no root table says which slots they read, so every slot written by the draw's submission is
-  listed, with what it named then, and a filter by slot number or resource name. Which of them a
-  shader actually reads depends on the indices it computes.
+  listed, with what it named then, and a filter by slot number or resource name. Above them,
+  the slots the shaders take: each stage's DXIL is disassembled and every `ResourceDescriptorHeap[i]`
+  followed back to where `i` comes from -- a literal, or root constants and constant buffers, whose
+  values the capture holds, so `flags >> 8` from a root constant reads as the slot it was. Those
+  slots come first in the list, marked with the stages that read them. An index made from a shader
+  input, a loaded value or a loop is shown as computed at run time, with what it came from.
 - **View Mesh** (a draw) — the draw's mesh in a tab of its own, as a wireframe and a table: the
   vertices it read, and what its vertex shader wrote. See [Mesh view](REPORTS.md#mesh-view).
 - **Debug Vertex**, **Debug Pixel** (a draw) and **Debug Invocation** (a dispatch) — step through

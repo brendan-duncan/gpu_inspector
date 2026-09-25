@@ -200,9 +200,24 @@ public:
     std::shared_ptr<const CommandList> Snapshot() const { return _commands; }
     size_t commandCount() const { return _commands->size(); }
 
+    /**
+     * The heap slots the list's table snapshots read, with the write each slot held then. The GPU
+     * reads a descriptor when the list runs, and one a volatile range names may be rewritten after
+     * the draw was recorded; the submission sends those slots again as they are then
+     * (CaptureManager::IndexedHeapContents).
+     */
+    struct TableSlots
+    {
+        ID3D12DescriptorHeap* heap = nullptr;
+        uint32_t first = 0;
+        std::vector<uint64_t> writes;
+    };
+    std::vector<TableSlots>& tableSlots() { return _tables; }
+
     void Reset()
     {
         _commands = std::make_shared<CommandList>();
+        _tables.clear();
         _pass = ActivePass{};
         _passCount = 0;
         _compute = ActiveComputePass{};
@@ -254,6 +269,7 @@ private:
         ExtraRefresh take;
     };
     std::vector<DeferredSnapshot> _deferred;
+    std::vector<TableSlots> _tables;
     bool _adopted = false;
     bool _captureStacks = false;
     bool _closed = false;

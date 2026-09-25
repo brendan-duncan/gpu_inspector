@@ -28,6 +28,8 @@
 - Direct3D 12 replay and export write the descriptors shaders index straight out of the heap (shader model 6.6).
 - `test/d3d12_triangle --bindless` samples a texture through `ResourceDescriptorHeap`.
 - A Direct3D 12 draw's details and `get_command` list the heap its shaders index directly, as of its submission.
+- They also say which of its slots the shaders take, worked out from the DXIL and the draw's constants.
+- `test/d3d12_triangle --late-descriptor` rewrites a volatile descriptor after recording the draw that reads it.
 - `test/d3d12_triangle --local-root` and `test/triangle --shader-record` put arguments in a hit group's record.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
@@ -47,6 +49,8 @@
 - The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ### Fixed
+- A Direct3D 12 capture sends a volatile descriptor the application rewrote after the draw was recorded, so the replay draws what the GPU did.
+- Present latency on the frame meter no longer drops to nothing whenever the display's statistics skip a report.
 - A Direct3D 12 capture of an application with async compute no longer trips the debug layer by writing one staging buffer from two queues.
 - A Direct3D 12 state object with a subobject-to-exports association replays; the replay read the association's target under the wrong name.
 

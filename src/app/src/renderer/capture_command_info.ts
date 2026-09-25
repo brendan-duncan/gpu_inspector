@@ -48,7 +48,9 @@ import {
   boundStructure, shaderGroupViewOf, tableRegionsOf, vulkanGroupName,
 } from "./ray_tracing_view.js";
 import { d3d12TableRecords, traceStateObjectId } from "./d3d12/raytracing.js";
-import { indexedHeapsAt, type IndexedHeap } from "./d3d12/indexed_heap.js";
+import { drawConstants, indexedHeapsAt, type IndexedHeap } from "./d3d12/indexed_heap.js";
+import { heapAccesses, type HeapAccess } from "./d3d12/heap_indices.js";
+import { stateStages } from "./shader_cache.js";
 import { structuresOfCommand } from "./acceleration_view.js";
 import { tableRecords } from "./binding_table.js";
 import type { SessionContext } from "./session_panel.js";
@@ -809,10 +811,35 @@ export class CommandInfoView {
   private _renderIndexedHeaps(container: Widget, state: DrawState, cmd: CaptureCommand): void {
     const data = this.panel.data;
     const heaps = indexedHeapsAt(data.commands, cmd, (id) => this.db.getObject(id), state.bindPoint === "compute");
-    for (const heap of heaps) this._renderIndexedHeap(container, state, heap);
+    if (!heaps.length) return;
+    const reads = this._heapReads(state, cmd);
+    for (const heap of heaps) this._renderIndexedHeap(container, state, heap, reads);
   }
 
-  private _renderIndexedHeap(container: Widget, state: DrawState, heap: IndexedHeap): void {
+  /**
+   * Which heap slots the draw's shaders take: each stage's DXIL disassembled, and every
+   * createHandleFromHeap's index worked out from the draw's constants where it comes from them
+   * (d3d12/heap_indices.ts). Stages whose code the capture does not hold are left out.
+   */
+  private async _heapReads(state: DrawState, cmd: CaptureCommand): Promise<{ stage: string; access: HeapAccess }[]> {
+    const data = this.panel.data;
+    const compute = state.bindPoint === "compute";
+    const constants = drawConstants(data.commands, cmd, (id) => this.db.getObject(id), compute, [...state.sets.values()].map((s) => s.set), (id) => {
+      const b = data.buffer(id);
+      return b?.data ? { bytes: b.data, offset: num(b.info.offset) } : null;
+    });
+    const out: { stage: string; access: HeapAccess }[] = [];
+    for (const source of stateStages(state, this.db)) {
+      const blob = await fetchBlob(this.panel.window, source.object, source.blobIndex);
+      if (!blob) continue;
+      const dis = await window.inspector.shaderText(blob, "dis");
+      if (!dis.ok) continue;
+      for (const access of heapAccesses(dis.text, constants)) out.push({ stage: source.stage, access });
+    }
+    return out;
+  }
+
+  private _renderIndexedHeap(container: Widget, state: DrawState, heap: IndexedHeap, reads: Promise<{ stage: string; access: HeapAccess }[]>): void {
     const db = this.db;
     const heapObj = db.getObject(heap.heap);
     const kind = heap.samplers ? "Sampler heap" : "Descriptor heap";
@@ -828,8 +855,38 @@ export class CommandInfoView {
     }
     if (heap.submission >= 0) new Span(head, { text: `  as submitted by #${heap.submission} ExecuteCommandLists`, class: "text-muted" });
     new Div(grp.body, {
-      text: `The root signature lets the shaders take any slot of this heap themselves (${heap.samplers ? "SamplerDescriptorHeap" : "ResourceDescriptorHeap"}[i]), so every slot written by then is listed; which ones a shader reads depends on its indices.`,
+      text: `The root signature lets the shaders take any slot of this heap themselves (${heap.samplers ? "SamplerDescriptorHeap" : "ResourceDescriptorHeap"}[i]), so every slot written by then is listed; the ones the shaders' code shows them taking come first.`,
       class: "text-muted font-sm capture-note",
+    });
+    // What the shaders take, once their code is disassembled: a line per access, and the slots it
+    // resolves to first in the list below.
+    const readsBox = new Div(grp.body, { text: "Working out which slots the shaders take...", class: "text-muted font-sm" });
+    const readBy = new Map<number, string[]>();
+    // The slot list, once it exists (not for a heap the capture holds no contents of).
+    let rerender: (() => void) | null = null;
+    const token = this._token;
+    void reads.then((all) => {
+      if (token !== this._token) return;
+      readsBox.removeAllChildren();
+      readsBox.text = "";
+      const mine = all.filter((r) => r.access.samplers === heap.samplers);
+      if (!mine.length) {
+        new Div(readsBox, { text: `No stage of the draw indexes this heap${all.length ? " (they index the other one)" : ""}.`, class: "text-muted font-sm" });
+        return;
+      }
+      new Div(readsBox, { text: "The shaders take:", class: "font-md" });
+      for (const { stage, access } of mine) {
+        const where = `${stageLabel(stage as ShaderStage)}${access.line !== null ? `, line ${access.line}` : ""}`;
+        const what = access.slot !== null ? `slot ${access.slot}` : "a slot computed at run time";
+        const how = access.slot !== null ? access.expression : `from ${access.expression}`;
+        new Div(readsBox, { text: `  ${where}: ${what}  ${how}${access.nonUniform ? "  (non-uniform)" : ""}`, class: "font-sm" });
+        if (access.slot !== null) {
+          const stages = readBy.get(access.slot) ?? [];
+          if (!stages.includes(stageLabel(stage as ShaderStage))) stages.push(stageLabel(stage as ShaderStage));
+          readBy.set(access.slot, stages);
+        }
+      }
+      rerender?.();
     });
     if (!heap.captured) {
       new Div(grp.body, { text: "The capture holds none of this heap's contents (it was taken by a capture library that did not read directly indexed heaps).", class: "text-muted" });
@@ -846,7 +903,9 @@ export class CommandInfoView {
       const filter = (search.element as HTMLInputElement).value.trim().toLowerCase();
       let shown = 0;
       let matched = 0;
-      for (const s of heap.slots) {
+      // The slots the shaders were found to take come first.
+      const ordered = readBy.size ? [...heap.slots].sort((a, b) => Number(readBy.has(b.slot)) - Number(readBy.has(a.slot)) || a.slot - b.slot) : heap.slots;
+      for (const s of ordered) {
         const { resourceText, sizeText } = this._descriptorText(s.descriptor);
         if (filter && !String(s.slot).startsWith(filter) && !resourceText.toLowerCase().includes(filter)) continue;
         ++matched;
@@ -854,8 +913,9 @@ export class CommandInfoView {
         ++shown;
         const d = s.descriptor;
         const isBuffer = d.buffer !== undefined;
+        const takenBy = readBy.get(s.slot);
         const row = new collapsible(rows, {
-          label: `Slot ${s.slot}: ${fmt(s.type)}  ${resourceText}${sizeText}`,
+          label: `Slot ${s.slot}: ${fmt(s.type)}  ${resourceText}${sizeText}${takenBy ? `  (read by ${takenBy.join(", ")})` : ""}`,
           collapsed: true,
           class: "descriptor-binding",
         });
@@ -871,6 +931,7 @@ export class CommandInfoView {
       else if (!matched) new Div(rows, { text: filter ? "No written slot matches." : "No slot of this heap was written.", class: "text-muted" });
     };
     search.element.oninput = render;
+    rerender = render;
     render();
   }
 

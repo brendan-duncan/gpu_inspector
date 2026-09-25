@@ -416,6 +416,12 @@ the last one sent them -- the whole written heap the first time, little after th
 (`CaptureManager::IndexedHeapContents`). Views of released resources are left out. What the
 views name is read back like a table's, after the submission (the list is closed by then).
 
+The same goes for a table's slots rewritten after its snapshot. A range marked
+`DESCRIPTORS_VOLATILE` (and every range of a 1.0 root signature) may be rewritten until the list
+runs, and the GPU reads what is there then. Each table snapshot keeps the write number of every slot
+it read (`CommandRecorder::tableSlots`), and the submission adds to `heapDescriptors` the slots
+whose write has moved since (`DescriptorTracker::ChangedFrom`).
+
 The heap contents behind a table come from `descriptors.cpp`, which follows every
 `Create*View`, `CreateSampler`, `CopyDescriptors` and `CopyDescriptorsSimple` into a record per
 heap slot (`CPU handle - heap start` over the increment size), the way the Vulkan layer follows

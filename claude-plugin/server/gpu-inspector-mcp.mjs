@@ -10210,6 +10210,7 @@ var HELD_REFERENCES = {
   VkDescriptorSet: /* @__PURE__ */ new Set(["VkImageView", "VkSampler", "VkBuffer", "VkBufferView"]),
   VkSwapchainKHR: /* @__PURE__ */ new Set(["VkSurfaceKHR"])
 };
+var LATENCY_HOLD_MS = 2e3;
 var ObjectDatabase = class _ObjectDatabase {
   allObjects = /* @__PURE__ */ new Map();
   // live objects
@@ -10245,8 +10246,14 @@ var ObjectDatabase = class _ObjectDatabase {
   // since the connection
   /** The count came from the display's own refresh counters rather than from an estimate. */
   droppedFramesMeasured = false;
-  /** From the present call to the display showing the frame, median over the last interval; 0 when not measured. */
+  /**
+   * From the present call to the display showing the frame, median over the last interval that
+   * measured any; 0 when not measured. A report whose interval saw no newly shown present carries
+   * none -- the display's statistics can stand still for a few frames -- and the last figure then
+   * stands for `LATENCY_HOLD_MS` rather than dropping to nothing between two that did.
+   */
   presentLatencyMs = 0;
+  _latencyAt = 0;
   inspectedObject = null;
   /** Ids of the objects referenced by the most recent capture (for the object list filter). */
   capturedObjects = /* @__PURE__ */ new Set();
@@ -10415,6 +10422,7 @@ var ObjectDatabase = class _ObjectDatabase {
     this.droppedFramesTotal = 0;
     this.droppedFramesMeasured = false;
     this.presentLatencyMs = 0;
+    this._latencyAt = 0;
     this.inspectedObject = null;
     this.capturedObjects = /* @__PURE__ */ new Set();
     this.memory = { device: 0, allocations: 0, buffers: 0, images: 0, reported: 0, workingSet: 0 };
@@ -10557,7 +10565,12 @@ var ObjectDatabase = class _ObjectDatabase {
         this.droppedFrames = msg.dropped ?? 0;
         this.droppedFramesTotal = msg.droppedTotal ?? this.droppedFramesTotal + (msg.dropped ?? 0);
         this.droppedFramesMeasured = msg.droppedMeasured === true;
-        this.presentLatencyMs = msg.presentLatencyMs ?? 0;
+        if (msg.presentLatencyMs !== void 0 && msg.presentLatencyMs > 0) {
+          this.presentLatencyMs = msg.presentLatencyMs;
+          this._latencyAt = Date.now();
+        } else if (Date.now() - this._latencyAt > LATENCY_HOLD_MS) {
+          this.presentLatencyMs = 0;
+        }
         if (msg.allocatedBytes !== void 0) this.memory.reported = msg.allocatedBytes;
         if (msg.workingSetBytes !== void 0) this.memory.workingSet = msg.workingSetBytes;
         this.onFrameStats.emit(msg);
@@ -10940,6 +10953,161 @@ function recentCaptureFiles() {
   return Array.isArray(recent) ? recent.filter((p) => typeof p === "string" && !!p) : [];
 }
 
+// src/renderer/d3d12/heap_indices.ts
+var BINARY = /* @__PURE__ */ new Map([
+  ["add", ["+", (a, b) => a + b >>> 0]],
+  ["sub", ["-", (a, b) => a - b >>> 0]],
+  ["mul", ["*", (a, b) => Math.imul(a, b) >>> 0]],
+  ["udiv", ["/", (a, b) => b ? Math.floor(a / b) >>> 0 : NaN]],
+  ["sdiv", ["/", (a, b) => b ? Math.trunc((a | 0) / (b | 0)) >>> 0 : NaN]],
+  ["urem", ["%", (a, b) => b ? a % b >>> 0 : NaN]],
+  ["shl", ["<<", (a, b) => a << (b & 31) >>> 0]],
+  ["lshr", [">>", (a, b) => a >>> (b & 31)]],
+  ["ashr", [">>", (a, b) => a >> (b & 31) >>> 0]],
+  ["and", ["&", (a, b) => (a & b) >>> 0]],
+  ["or", ["|", (a, b) => (a | b) >>> 0]],
+  ["xor", ["^", (a, b) => (a ^ b) >>> 0]]
+]);
+function runtimeReason(rhs) {
+  if (rhs.includes("@dx.op.loadInput")) return "a shader input";
+  if (rhs.includes("@dx.op.bufferLoad") || rhs.includes("@dx.op.rawBufferLoad") || rhs.includes("@dx.op.textureLoad")) return "a value loaded from a resource";
+  if (/@dx\.op\.(threadId|groupId|threadIdInGroup|flattenedThreadIdInGroup|dispatchRaysIndex|instanceID|instanceIndex|primitiveID|viewID)/.test(rhs)) return "a system value (thread, instance or primitive id)";
+  if (rhs.startsWith("phi ")) return "a value that depends on control flow (a loop or a branch)";
+  if (rhs.startsWith("select ")) return "a conditional choice";
+  if (rhs.startsWith("load ")) return "a value read from shader memory";
+  const op = rhs.match(/@dx\.op\.(\w+)/)?.[1] ?? rhs.split(/\s+/)[0];
+  return `computed at run time (${op})`;
+}
+function heapAccesses(disassembly, constants) {
+  const defs = /* @__PURE__ */ new Map();
+  const heapCalls = [];
+  for (const raw of disassembly.split(/\r?\n/)) {
+    const m = raw.match(/^\s*(%[^\s=]+) = (.*)$/);
+    if (!m) continue;
+    const comment = m[2].indexOf(" ; ");
+    const rhs = (comment >= 0 ? m[2].slice(0, comment) : m[2]).replace(/, !dbg !\d+.*$/, "").trim();
+    defs.set(m[1], rhs);
+    if (rhs.includes("@dx.op.createHandleFromHeap(")) {
+      const line = raw.match(/; line:(\d+)/);
+      heapCalls.push({ rhs, line: line ? Number(line[1]) : null });
+    }
+  }
+  const memo = /* @__PURE__ */ new Map();
+  const unknown2 = (text) => ({ value: null, float: false, text });
+  const operand = (token, depth) => {
+    const t = token.trim();
+    if (/^-?\d+$/.test(t)) return { value: Number(t) >>> 0, float: false, text: String(Number(t)) };
+    if (t === "true") return { value: 1, float: false, text: "1" };
+    if (t === "false") return { value: 0, float: false, text: "0" };
+    if (/^-?\d+(\.\d+)?e[+-]\d+$/.test(t)) return { value: Number(t), float: true, text: String(Number(t)) };
+    if (t.startsWith("%")) return evaluate2(t, depth + 1);
+    return unknown2(`an operand dxc wrote as ${t}`);
+  };
+  const bufferOf = (handle, depth) => {
+    if (depth > 16) return null;
+    const rhs = defs.get(handle);
+    if (!rhs) return null;
+    const annotated = rhs.match(/@dx\.op\.annotateHandle\(i32 216, %dx\.types\.Handle (%[^\s,]+)/);
+    if (annotated) return bufferOf(annotated[1], depth + 1);
+    const bound = rhs.match(/@dx\.op\.createHandleFromBinding\(i32 217, %dx\.types\.ResBind (zeroinitializer|\{[^}]*\}), i32 ([^,]+),/);
+    if (!bound) return null;
+    const fields = bound[1] === "zeroinitializer" ? [0, 0, 0, 0] : [...bound[1].matchAll(/i\d+ (-?\d+)/g)].map((f) => Number(f[1]));
+    const index = operand(bound[2].replace(/^i32\s+/, ""), depth);
+    return index.value === null ? null : { register: index.value, space: fields[2] ?? 0 };
+  };
+  const evaluate2 = (name, depth) => {
+    const known = memo.get(name);
+    if (known) return known;
+    if (depth > 64) return unknown2("an expression too deep to follow");
+    const rhs = defs.get(name);
+    let out2;
+    if (!rhs) {
+      out2 = unknown2(`${name}, defined outside the function`);
+    } else {
+      out2 = evaluateRhs(rhs, depth);
+    }
+    memo.set(name, out2);
+    return out2;
+  };
+  const evaluateRhs = (rhs, depth) => {
+    const bin = rhs.match(/^(\w+)\s+(?:(?:nuw|nsw|exact)\s+)*i32\s+([^,]+),\s*(.+)$/);
+    if (bin && BINARY.has(bin[1])) {
+      const [symbol, fn] = BINARY.get(bin[1]);
+      const a = operand(bin[2], depth);
+      const b = operand(bin[3], depth);
+      const text = `(${a.text} ${symbol} ${b.text})`;
+      if (a.value === null || b.value === null) return { value: null, float: false, text: a.value === null ? a.text : b.text };
+      const v = fn(a.value, b.value);
+      return Number.isNaN(v) ? unknown2("a division by zero") : { value: v, float: false, text };
+    }
+    const conv = rhs.match(/^(zext|sext|trunc|fptoui|fptosi|bitcast)\s+\w+\s+(\S+)\s+to\s+(\w+)$/);
+    if (conv) {
+      const v = operand(conv[2], depth);
+      if (v.value === null) return v;
+      if (conv[1] === "fptoui" || conv[1] === "fptosi") return { value: Math.trunc(v.value) >>> 0, float: false, text: `uint(${v.text})` };
+      if (conv[1] === "bitcast" && v.float && conv[3] === "i32") {
+        const view = new DataView(new ArrayBuffer(4));
+        view.setFloat32(0, v.value, true);
+        return { value: view.getUint32(0, true), float: false, text: `asuint(${v.text})` };
+      }
+      return v;
+    }
+    const element = rhs.match(/^extractvalue %dx\.types\.CBufRet\.(i32|f32) (%[^\s,]+), (\d+)$/);
+    if (element) {
+      const load = defs.get(element[2]) ?? "";
+      const call = load.match(/@dx\.op\.cbufferLoadLegacy\.(?:i32|f32)\(i32 59, %dx\.types\.Handle (%[^\s,]+), i32 ([^)]+)\)/);
+      if (!call) return unknown2("a constant buffer read dxc wrote in a form not followed here");
+      const buffer = bufferOf(call[1], depth);
+      const row = operand(call[2], depth);
+      if (!buffer) return unknown2("a constant buffer whose binding is not a fixed register");
+      if (row.value === null) return unknown2("a constant buffer row chosen at run time");
+      const byteOffset = row.value * 16 + Number(element[3]) * 4;
+      const text = `(b${buffer.register}${buffer.space ? ` space${buffer.space}` : ""} byte ${byteOffset})`;
+      const bits = constants(buffer.register, buffer.space, byteOffset);
+      if (bits === null) return { value: null, float: false, text: `${text}, whose value the capture does not hold` };
+      if (element[1] === "i32") return { value: bits >>> 0, float: false, text };
+      const view = new DataView(new ArrayBuffer(4));
+      view.setUint32(0, bits, true);
+      return { value: view.getFloat32(0, true), float: true, text };
+    }
+    return unknown2(runtimeReason(rhs));
+  };
+  const out = [];
+  for (const call of heapCalls) {
+    const args = call.rhs.match(/@dx\.op\.createHandleFromHeap\(i32 218, i32 ([^,]+), i1 (\w+), i1 (\w+)\)/);
+    if (!args) continue;
+    const index = operand(args[1], 0);
+    const slot = index.value !== null && !index.float ? index.value : null;
+    out.push({
+      samplers: args[2] === "true",
+      slot,
+      // A constant index reads as itself; an expression shows what it was made of, and a runtime one why.
+      expression: slot !== null && index.text !== String(slot) ? `${index.text} = ${slot}` : index.text,
+      nonUniform: args[3] === "true",
+      line: call.line
+    });
+  }
+  return out;
+}
+
+// src/renderer/utils/base64.ts
+var _uint8Proto = Uint8Array.prototype;
+var _uint8Ctor = Uint8Array;
+var _hasNativeToBase64 = typeof _uint8Proto.toBase64 === "function";
+var _hasNativeFromBase64 = typeof _uint8Ctor.fromBase64 === "function";
+function decodeBase64(str3) {
+  if (_hasNativeFromBase64) {
+    return _uint8Ctor.fromBase64(str3);
+  }
+  const binary = atob(str3);
+  const len = binary.length;
+  const out = new Uint8Array(len);
+  for (let i = 0; i < len; i++) {
+    out[i] = binary.charCodeAt(i);
+  }
+  return out;
+}
+
 // src/renderer/d3d12/indexed_heap.ts
 var RANGE_TYPES = ["D3D12_DESCRIPTOR_RANGE_TYPE_SRV", "D3D12_DESCRIPTOR_RANGE_TYPE_UAV", "D3D12_DESCRIPTOR_RANGE_TYPE_CBV", "D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER"];
 var GRAPHICS_ROOT = "SetGraphicsRootSignature";
@@ -11015,6 +11183,87 @@ function heapContents(commands, submission) {
   bySubmission.set(submission, heaps);
   return heaps;
 }
+function drawConstants(commands, cmd, objectOf, compute, sets, bytesOf3) {
+  const roots = /* @__PURE__ */ new Map();
+  const rootParams = /* @__PURE__ */ new Map();
+  const writes = [];
+  const prefix = compute ? "SetComputeRoot32BitConstant" : "SetGraphicsRoot32BitConstant";
+  const list = cmd.object?.__id;
+  let root = null;
+  for (let i = cmd.index - 1; i >= 0; i--) {
+    const c2 = commands[i];
+    if (!c2 || c2.object?.__id !== list) break;
+    if (c2.secondary && c2.secondary !== cmd.secondary) continue;
+    if (c2.method === "Reset" && !c2.secondary) break;
+    if (c2.method === (compute ? COMPUTE_ROOT : GRAPHICS_ROOT)) {
+      root = refId(c2.args?.pRootSignature);
+      break;
+    }
+    if (c2.method === prefix || c2.method === `${prefix}s`) writes.push(c2);
+  }
+  const params = rootParameters(root === null ? null : objectOf(root)?.args ?? null);
+  params.forEach((p, index) => {
+    if (!isObject(p) || !str(p.ParameterType).endsWith("_32BIT_CONSTANTS") || !isObject(p.Constants)) return;
+    const key = `${num(p.Constants.ShaderRegister)}:${num(p.Constants.RegisterSpace)}`;
+    rootParams.set(index, key);
+    roots.set(key, new Uint32Array(num(p.Constants.Num32BitValues)));
+  });
+  const known = /* @__PURE__ */ new Map();
+  for (const c2 of writes.reverse()) {
+    const a = c2.args;
+    const key = a ? rootParams.get(num(a.RootParameterIndex)) : void 0;
+    const values = key ? roots.get(key) : void 0;
+    if (!a || !key || !values) continue;
+    const dest = num(a.DestOffsetIn32BitValues);
+    let words2 = [];
+    if (c2.method.endsWith("s")) {
+      const src = isObject(a.pSrcData) ? a.pSrcData : isObject(a.pValues) ? a.pValues : null;
+      const bytes = src && typeof src.base64 === "string" ? decodeBase64(src.base64) : null;
+      if (bytes) words2 = Array.from({ length: bytes.length >> 2 }, (_, k) => new DataView(bytes.buffer, bytes.byteOffset).getUint32(k * 4, true));
+    } else {
+      words2 = [num(a.SrcData) >>> 0];
+    }
+    let seen = known.get(key);
+    if (!seen) known.set(key, seen = /* @__PURE__ */ new Set());
+    words2.forEach((w, k) => {
+      if (dest + k < values.length) {
+        values[dest + k] = w;
+        seen.add(dest + k);
+      }
+    });
+  }
+  const views = /* @__PURE__ */ new Map();
+  for (const set of sets) {
+    for (const b of set.bindings) {
+      if (!b.type.endsWith("_CBV") || b.register === void 0) continue;
+      b.descriptors.forEach((d, k) => {
+        if (d && d.data !== void 0) views.set(`${num(b.register) + k}:${num(b.space)}`, { data: num(d.data), offset: num(d.offset) });
+      });
+    }
+  }
+  return (register, space, byteOffset) => {
+    const key = `${register}:${space}`;
+    const values = roots.get(key);
+    if (values) {
+      const word = byteOffset >> 2;
+      return (byteOffset & 3) === 0 && known.get(key)?.has(word) ? values[word] : null;
+    }
+    const view = views.get(key);
+    const captured = view ? bytesOf3(view.data) : null;
+    if (!view || !captured) return null;
+    const at = view.offset - captured.offset + byteOffset;
+    if (at < 0 || at + 4 > captured.bytes.length) return null;
+    return new DataView(captured.bytes.buffer, captured.bytes.byteOffset).getUint32(at, true);
+  };
+}
+function rootParameters(args) {
+  const desc = isObject(args?.pDesc) ? args.pDesc : null;
+  for (const version of ["Desc_1_2", "Desc_1_1", "Desc_1_0"]) {
+    const d = desc?.[version];
+    if (isObject(d)) return Array.isArray(d.pParameters) ? d.pParameters : [];
+  }
+  return [];
+}
 function rootSignatureFlags(args) {
   const desc = isObject(args?.pDesc) ? args.pDesc : null;
   for (const version of ["Desc_1_2", "Desc_1_1", "Desc_1_0"]) {
@@ -11028,22 +11277,677 @@ function heapIsSamplers(args) {
   return JSON.stringify(desc?.Type ?? "").includes("SAMPLER");
 }
 
-// src/renderer/utils/base64.ts
-var _uint8Proto = Uint8Array.prototype;
-var _uint8Ctor = Uint8Array;
-var _hasNativeToBase64 = typeof _uint8Proto.toBase64 === "function";
-var _hasNativeFromBase64 = typeof _uint8Ctor.fromBase64 === "function";
-function decodeBase64(str3) {
-  if (_hasNativeFromBase64) {
-    return _uint8Ctor.fromBase64(str3);
+// src/main/shader_tools.ts
+import { execFile as execFile2 } from "node:child_process";
+import fs4 from "node:fs";
+import os3 from "node:os";
+import path4 from "node:path";
+import { fileURLToPath } from "node:url";
+
+// src/main/d3d12.ts
+import fs3 from "node:fs";
+import path3 from "node:path";
+
+// src/main/launch_env.ts
+import { execFile, execFileSync } from "node:child_process";
+import fs2 from "node:fs";
+import net from "node:net";
+import os2 from "node:os";
+import path2 from "node:path";
+var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
+var DEFAULT_PORT = 47531;
+function findLayerDir(roots, packaged = []) {
+  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
+  const candidates = [];
+  for (const root of roots) {
+    const bin = path2.join(root, "build", "bin");
+    candidates.push(path2.join(bin, "Release"), path2.join(bin, "RelWithDebInfo"), path2.join(bin, "Debug"), bin);
   }
-  const binary = atob(str3);
-  const len = binary.length;
-  const out = new Uint8Array(len);
-  for (let i = 0; i < len; i++) {
-    out[i] = binary.charCodeAt(i);
+  candidates.push(...packaged);
+  for (const dir of candidates) {
+    if (fs2.existsSync(path2.join(dir, `${LAYER_NAME}.json`))) return dir;
   }
+  return null;
+}
+function findValidationLayerDir() {
+  const manifest = "VkLayer_khronos_validation.json";
+  const candidates = [];
+  const sdk = process.env.VULKAN_SDK;
+  if (sdk) candidates.push(path2.join(sdk, "Bin"), path2.join(sdk, "share", "vulkan", "explicit_layer.d"), path2.join(sdk, "etc", "vulkan", "explicit_layer.d"));
+  if (process.platform === "win32") {
+    for (const root of ["C:\\VulkanSDK", path2.join(os2.homedir(), "VulkanSDK")]) {
+      try {
+        const versions = fs2.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
+        for (const v of versions) candidates.push(path2.join(root, v, "Bin"));
+      } catch {
+      }
+    }
+  } else {
+    candidates.push(
+      "/usr/share/vulkan/explicit_layer.d",
+      "/usr/local/share/vulkan/explicit_layer.d",
+      "/etc/vulkan/explicit_layer.d",
+      path2.join(os2.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
+    );
+  }
+  for (const c2 of candidates) if (fs2.existsSync(path2.join(c2, manifest))) return c2;
+  return null;
+}
+function vulkanLayerEnvironment(o) {
+  const layers = [LAYER_NAME, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
+  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
+  return {
+    VK_ADD_LAYER_PATH: layerPaths.join(path2.delimiter),
+    // The layer's manifest among the implicit layers as well, ahead of the registered ones. Once a
+    // GPU Inspector is installed (or "Set for my account" ran), its layer is registered as an
+    // implicit layer of the same name, and VK_LOADER_LAYERS_ENABLE force-enables that one rather
+    // than the one in VK_ADD_LAYER_PATH: a launch from any other build silently ran the installed
+    // layer. The implicit search is added to, not replaced, so the driver's own layers stay.
+    VK_ADD_IMPLICIT_LAYER_PATH: [o.layerDir, ...process.env.VK_ADD_IMPLICIT_LAYER_PATH ? [process.env.VK_ADD_IMPLICIT_LAYER_PATH] : []].join(path2.delimiter),
+    VK_LOADER_LAYERS_ENABLE: layers.join(","),
+    // Older loaders:
+    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path2.delimiter),
+    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path2.delimiter),
+    VKINSP_PORT: String(o.port),
+    VKINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
+    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    ...o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {},
+    ...o.shaderStatistics ? { VKINSP_SHADER_STATISTICS: "1" } : {},
+    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...o.symbolDirs ? { VKINSP_SYMBOL_PATH: o.symbolDirs } : {},
+    // The validation layer stops reporting a message after a few repeats (its
+    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
+    // attaches a message to the captured command it fired on, which needs every occurrence.
+    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
+    // Synchronization and GPU-assisted validation: the settings-file names for current layers, and
+    // the enable list for older ones, which takes several separated by the platform's path
+    // separator — so the two are built together rather than one overwriting the other.
+    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true" } : {},
+    ...o.validation && o.gpuValidation ? { VK_LAYER_VALIDATE_GPU_BASED: "GPU_BASED_GPU_ASSISTED" } : {},
+    ...o.validation && (o.syncValidation || o.gpuValidation) ? { VK_LAYER_ENABLES: [
+      ...o.syncValidation ? ["VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"] : [],
+      ...o.gpuValidation ? ["VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"] : []
+    ].join(path2.delimiter) } : {}
+  };
+}
+function splitArgs(s) {
+  const out = [];
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
+  let m;
+  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
   return out;
+}
+function portFree(port) {
+  return new Promise((resolve) => {
+    const srv = net.createServer();
+    srv.once("error", () => resolve(false));
+    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
+  });
+}
+async function findFreePort(start, taken = () => false) {
+  for (let port = start; port < start + 100 && port < 65536; port++) {
+    if (taken(port)) continue;
+    if (await portFree(port)) return port;
+  }
+  return start;
+}
+function terminate(proc, wait = false) {
+  if (process.platform === "win32" && proc.pid) {
+    const args = ["/PID", String(proc.pid), "/T", "/F"];
+    if (wait) {
+      try {
+        execFileSync("taskkill", args, { stdio: "ignore" });
+        return;
+      } catch {
+      }
+    } else {
+      execFile("taskkill", args, () => {
+        try {
+          proc.kill();
+        } catch {
+        }
+      });
+      return;
+    }
+  }
+  try {
+    proc.kill();
+  } catch {
+  }
+}
+
+// src/main/d3d12.ts
+var CAPTURE_LIBRARY = "dxinsp_capture.dll";
+var LAUNCHER = "dxinsp_launch.exe";
+var SHADER_TOOL = "dxinsp_shader.exe";
+function d3d12ToolDirs(roots, packaged = []) {
+  const dirs = [];
+  if (process.env.INSPECTOR_D3D12_DIR) dirs.push(process.env.INSPECTOR_D3D12_DIR);
+  for (const root of roots) {
+    const bin = path3.join(root, "build", "bin");
+    dirs.push(path3.join(bin, "Release"), path3.join(bin, "RelWithDebInfo"), path3.join(bin, "Debug"), bin);
+  }
+  dirs.push(...packaged);
+  return dirs;
+}
+function findD3D12Tools(roots, packaged = []) {
+  for (const dir of d3d12ToolDirs(roots, packaged)) {
+    const library = path3.join(dir, CAPTURE_LIBRARY);
+    const launcher = path3.join(dir, LAUNCHER);
+    if (!fs3.existsSync(library) || !fs3.existsSync(launcher)) continue;
+    const shaderTool = path3.join(dir, SHADER_TOOL);
+    return { dir, library, launcher, shaderTool: fs3.existsSync(shaderTool) ? shaderTool : null };
+  }
+  return null;
+}
+function findD3D12ShaderTool(roots, packaged = []) {
+  for (const dir of d3d12ToolDirs(roots, packaged)) {
+    const tool = path3.join(dir, SHADER_TOOL);
+    if (fs3.existsSync(tool)) return tool;
+  }
+  return null;
+}
+function d3d12Environment(o) {
+  return {
+    DXINSP_PORT: String(o.port),
+    DXINSP_LOG: o.log ? "1" : "0",
+    ...o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {},
+    DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
+    DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
+    ...o.symbolDirs ? { DXINSP_SYMBOL_PATH: o.symbolDirs } : {},
+    DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
+    ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
+  };
+}
+function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false, extraDlls = []) {
+  return {
+    exe: tools.launcher,
+    args: [
+      "--dll",
+      tools.library,
+      ...extraDlls.flatMap((d) => ["--dll", d]),
+      ...cwd ? ["--cwd", cwd] : [],
+      ...followChildren ? ["--follow-children"] : [],
+      ...follow.flatMap((f) => ["--follow", f]),
+      "--",
+      exe,
+      ...args
+    ]
+  };
+}
+function watchLaunch(tools, o) {
+  const { image, timeoutSeconds, once, follow, followChildren, extraDlls, extraEnv, ...environment } = o;
+  const env = Object.entries({ ...d3d12Environment(environment), ...extraEnv }).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
+  return {
+    exe: tools.launcher,
+    args: [
+      "--watch",
+      image,
+      "--dll",
+      tools.library,
+      ...(extraDlls ?? []).flatMap((d) => ["--dll", d]),
+      ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
+      ...once ? ["--once"] : [],
+      ...followChildren ? ["--follow-children"] : [],
+      ...(follow ?? []).flatMap((f) => ["--follow", f]),
+      ...env
+    ]
+  };
+}
+function windowsLaunch(o) {
+  const env = { ...o.env };
+  const notes = [];
+  let exe = o.exe;
+  let args = o.args;
+  if (o.vulkan) {
+    Object.assign(env, vulkanLayerEnvironment(o.vulkan));
+    notes.push(`layer: ${o.vulkan.layerDir}`);
+  } else {
+    notes.push("Vulkan layer not found: build it (docs/BUILDING.md); only D3D12 will be captured");
+  }
+  const plugins2 = (o.plugins ?? []).filter((p) => {
+    if (p.missing.length) notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
+    else if (p.inject.length && !o.d3d12) notes.push(`${p.plugin.manifest.name} capture library: not injected, since the launcher that injects it (the D3D12 tools) was not found`);
+    else return true;
+    return false;
+  });
+  for (const p of plugins2) {
+    Object.assign(env, p.env);
+    notes.push(`${p.plugin.manifest.name} capture library: ${p.inject.join(", ")} (plugin ${p.plugin.dir})`);
+  }
+  if (o.d3d12) {
+    const { tools, ...options } = o.d3d12;
+    Object.assign(env, d3d12Environment(options));
+    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false, plugins2.flatMap((p) => p.inject)));
+    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
+    if (o.followChildren) notes.push("capturing every process the target starts");
+    if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
+  } else {
+    notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
+  }
+  return { exe, args, env, notes };
+}
+
+// src/shared/hlsl_debug.ts
+var HLSL_BINDING_SHIFT = 65536;
+var HLSL_REGISTER_KINDS = ["b", "t", "s", "u"];
+var HLSL_SHIFT_ARGS = HLSL_REGISTER_KINDS.flatMap((k, i) => i ? [`-fvk-${k}-shift`, String(i * HLSL_BINDING_SHIFT), "all"] : []);
+function hlslRegisterOf(set, binding) {
+  const kind = HLSL_REGISTER_KINDS[Math.min(3, Math.floor(binding / HLSL_BINDING_SHIFT))];
+  return { kind, register: binding % HLSL_BINDING_SHIFT, space: set };
+}
+function hlslBindingName(set, binding) {
+  const r = hlslRegisterOf(set, binding);
+  return `${r.kind}${r.register}${r.space ? ` space ${r.space}` : ""}`;
+}
+
+// src/main/shader_tools.ts
+var tempCounter = 0;
+function tempBase() {
+  return path4.join(os3.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
+}
+var moduleDir = path4.dirname(fileURLToPath(import.meta.url));
+function findTool(name) {
+  const exe = process.platform === "win32" ? `${name}.exe` : name;
+  const candidates = [];
+  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path4.join(process.env.INSPECTOR_TOOLS_DIR, exe));
+  if (process.env.VULKAN_SDK) candidates.push(path4.join(process.env.VULKAN_SDK, "Bin", exe), path4.join(process.env.VULKAN_SDK, "bin", exe));
+  for (const c2 of candidates) if (fs4.existsSync(c2)) return c2;
+  return exe;
+}
+function isDxbc(bytes) {
+  return bytes.byteLength >= 4 && bytes[0] === 68 && bytes[1] === 88 && bytes[2] === 66 && bytes[3] === 67;
+}
+function findShaderTool() {
+  if (process.env.INSPECTOR_TOOLS_DIR) {
+    const c2 = path4.join(process.env.INSPECTOR_TOOLS_DIR, SHADER_TOOL);
+    if (fs4.existsSync(c2)) return c2;
+  }
+  const roots = [
+    path4.resolve(moduleDir, "..", ".."),
+    path4.resolve(moduleDir, "..", "..", ".."),
+    path4.resolve(moduleDir, "..", "..", "..", "..")
+  ];
+  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
+  const packaged = process.resourcesPath ? [path4.join(process.resourcesPath, "layer")] : [];
+  return findD3D12ShaderTool(roots, packaged);
+}
+var NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (src/d3d12/README.md)`;
+function embeddedSource(entry2) {
+  if (Array.isArray(entry2) && entry2.length >= 2) return { name: String(entry2[0]), text: String(entry2[1]) };
+  if (entry2 && typeof entry2 === "object") {
+    const o = entry2;
+    const text = o.text ?? o.source ?? o.contents;
+    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text, from: typeof o.from === "string" ? o.from : void 0 };
+  }
+  return null;
+}
+var NO_HLSL_HINT = "dxc -Zi embeds the HLSL in the container; dxc -Zs keeps it out and writes it to a PDB beside the build (-Fd <dir>\\), which GPU Inspector reads when a symbol directory names that directory.";
+function compileInfo(entry2) {
+  if (!entry2 || typeof entry2 !== "object") return null;
+  const c2 = entry2.compile;
+  if (!c2 || typeof c2 !== "object") return null;
+  const o = c2;
+  const strings = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
+  return { mainFile: String(o.mainFile ?? ""), entryPoint: String(o.entryPoint ?? ""), target: String(o.target ?? ""), defines: strings(o.defines), args: strings(o.args) };
+}
+function dxbcSources(bytes, pdbDirs = []) {
+  const tool = findShaderTool();
+  if (!tool) return Promise.resolve({ ok: false, text: NO_SHADER_TOOL });
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.dxbc`;
+    fs4.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    const args = ["--sources", tmp];
+    for (const dir of pdbDirs) if (dir && fs4.existsSync(dir)) args.push("--pdb-dir", dir);
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs4.unlinkSync(tmp);
+      } catch {
+      }
+      if (err) {
+        resolve({ ok: false, text: err.code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
+        return;
+      }
+      let parsed;
+      try {
+        parsed = JSON.parse(stdout);
+      } catch {
+        resolve({ ok: false, text: `${SHADER_TOOL} printed no source list: ${stdout.trim().split(/\r?\n/)[0] ?? ""}` });
+        return;
+      }
+      const entries = Array.isArray(parsed) ? parsed : [];
+      const files = entries.map(embeddedSource).filter((s) => s !== null);
+      if (!files.length) resolve({ ok: false, text: `${(stderr || "").trim() || "no HLSL source"}. ${NO_HLSL_HINT}` });
+      else resolve({ ok: true, sources: { files, compile: entries.map(compileInfo).find((c2) => c2 !== null) ?? null } });
+    });
+  });
+}
+async function dxbcText(bytes, mode, pdbDirs = []) {
+  if (mode !== "dis" && mode !== "hlsl") return { ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its HLSL source` };
+  if (mode === "hlsl") {
+    const r = await dxbcSources(bytes, pdbDirs);
+    if (!r.ok) return { ok: false, text: r.text };
+    return { ok: true, text: r.sources.files.map((s) => `// ==== ${s.name}${s.from ? ` (from ${s.from})` : ""}
+${s.text.endsWith("\n") ? s.text : `${s.text}
+`}`).join("\n") };
+  }
+  const tool = findShaderTool();
+  if (!tool) return { ok: false, text: NO_SHADER_TOOL };
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.dxbc`;
+    fs4.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
+    execFile2(tool, ["--disassemble", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs4.unlinkSync(tmp);
+      } catch {
+      }
+      if (err) resolve({ ok: false, text: err.code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
+      else resolve({ ok: true, text: stdout });
+    });
+  });
+}
+function disassembleDxil(container) {
+  return dxbcText(container, "dis");
+}
+function assembleDxil(text) {
+  const tool = findShaderTool();
+  if (!tool) return Promise.resolve({ ok: false, error: NO_SHADER_TOOL });
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const source = `${base}.ll`;
+    const out = `${base}.dxil`;
+    fs4.writeFileSync(source, text);
+    execFile2(tool, ["--assemble", source, "--out", out], { maxBuffer: 4 * 1024 * 1024 }, (err, _stdout, stderr) => {
+      let container = null;
+      if (!err) {
+        try {
+          container = new Uint8Array(fs4.readFileSync(out));
+        } catch {
+        }
+      }
+      for (const f of [source, out]) {
+        try {
+          fs4.unlinkSync(f);
+        } catch {
+        }
+      }
+      if (container) resolve({ ok: true, container });
+      else resolve({ ok: false, error: (stderr || err?.message || "no container was written").trim().split(/\r?\n/).slice(0, 3).join(" ") });
+    });
+  });
+}
+function shaderText(spirv, mode, options = {}) {
+  if (isDxbc(spirv)) return dxbcText(spirv, mode, options.pdbDirs);
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.spv`;
+    fs4.writeFileSync(tmp, Buffer.from(spirv));
+    let tool;
+    let args;
+    if (mode === "dis") {
+      tool = findTool("spirv-dis");
+      args = ["--comment", "--no-color", tmp];
+    } else {
+      tool = findTool("spirv-cross");
+      args = [tmp];
+      if (mode === "hlsl") args.push("--hlsl", "--shader-model", "60");
+      else if (mode === "msl") args.push("--msl");
+      else args.push("--vulkan-semantics", "--version", "460");
+      if (options.entry) args.push("--entry", options.entry.name, "--stage", GLSL_STAGES[options.entry.stage] ?? "frag");
+      if (options.forceTemporary) args.push("--force-temporary");
+    }
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs4.unlinkSync(tmp);
+      } catch {
+      }
+      if (err) resolve({ ok: false, text: `${path4.basename(tool)} failed: ${stderr || err.message}` });
+      else resolve({ ok: true, text: stdout });
+    });
+  });
+}
+function validateSpirv(spirv) {
+  return new Promise((resolve) => {
+    const tmp = `${tempBase()}.spv`;
+    fs4.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
+    execFile2(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      try {
+        fs4.unlinkSync(tmp);
+      } catch {
+      }
+      if (!err) resolve(null);
+      else if (err.code === "ENOENT") resolve(void 0);
+      else resolve((stderr || stdout || err.message).trim().split(/\r?\n/).slice(0, 3).join(" "));
+    });
+  });
+}
+var GLSL_STAGES = {
+  vertex: "vert",
+  tess_control: "tesc",
+  tess_eval: "tese",
+  geometry: "geom",
+  fragment: "frag",
+  compute: "comp",
+  task: "task",
+  mesh: "mesh",
+  raygen: "rgen",
+  intersection: "rint",
+  any_hit: "rahit",
+  closest_hit: "rchit",
+  miss: "rmiss",
+  callable: "rcall"
+};
+var HLSL_PROFILES = {
+  vertex: "vs_6_0",
+  tess_control: "hs_6_0",
+  tess_eval: "ds_6_0",
+  geometry: "gs_6_0",
+  fragment: "ps_6_0",
+  compute: "cs_6_0",
+  task: "as_6_5",
+  mesh: "ms_6_5",
+  raygen: "lib_6_3",
+  intersection: "lib_6_3",
+  any_hit: "lib_6_3",
+  closest_hit: "lib_6_3",
+  miss: "lib_6_3",
+  callable: "lib_6_3"
+};
+function targetEnv(spirvVersion, tool) {
+  const v = spirvVersion || "1.5";
+  if (tool === "spirv-as") return `spv${v}`;
+  const glslang = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
+  const env = glslang[v] ?? "vulkan1.2";
+  return tool === "dxc" ? env : env.replace("spirv", "spv");
+}
+function needsIncludeExtension(source) {
+  return /^[ \t]*#[ \t]*include/m.test(source) && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
+}
+function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs4.existsSync(d));
+    const debugName = language === "glsl" ? options.debugFileName : void 0;
+    const dir = debugName ? fs4.mkdtempSync(`${base}_`) : null;
+    const src = dir ? path4.join(dir, debugName) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
+    const out = base + ".spv";
+    fs4.writeFileSync(src, source);
+    const entry2 = entryPoint || "main";
+    let tool;
+    let args;
+    if (language === "spirv-asm") {
+      tool = findTool("spirv-as");
+      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
+    } else if (language === "hlsl") {
+      tool = findTool("dxc");
+      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry2, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
+      for (const dir2 of includeDirs) args.push("-I", dir2);
+    } else {
+      tool = findTool("glslangValidator");
+      args = [
+        "-V",
+        "-S",
+        GLSL_STAGES[stage] ?? "frag",
+        "--target-env",
+        targetEnv(spirvVersion, "glslang"),
+        "--source-entrypoint",
+        "main",
+        "-e",
+        entry2,
+        "-o",
+        out
+      ];
+      if (debugName) args.push("-g", debugName);
+      else args.push(src);
+      for (const dir2 of includeDirs) args.push(`-I${dir2}`);
+      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
+    }
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? void 0 }, (err, stdout, stderr) => {
+      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+      let spirv;
+      try {
+        if (fs4.existsSync(out)) spirv = new Uint8Array(fs4.readFileSync(out));
+      } catch {
+        spirv = void 0;
+      }
+      for (const f of [src, out]) {
+        try {
+          fs4.unlinkSync(f);
+        } catch {
+        }
+      }
+      if (dir) fs4.rmSync(dir, { recursive: true, force: true });
+      const name = path4.basename(tool);
+      if (err || !spirv || spirv.byteLength < 20) {
+        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
+        resolve({ ok: false, log: reason, tool: name });
+      } else {
+        resolve({ ok: true, spirv, log, tool: name });
+      }
+    });
+  });
+}
+var DXIL_PROFILES = {
+  vertex: "vs",
+  fragment: "ps",
+  tess_control: "hs",
+  tess_eval: "ds",
+  geometry: "gs",
+  compute: "cs",
+  task: "as",
+  mesh: "ms"
+};
+function compileDxil(source, stage, entryPoint, shaderModel = "6_0", options = {}) {
+  const prefix = DXIL_PROFILES[stage];
+  if (!prefix) return Promise.resolve({ ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" });
+  return new Promise((resolve) => {
+    const base = tempBase();
+    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs4.existsSync(d));
+    const src = `${base}.hlsl`;
+    const out = `${base}.dxil`;
+    fs4.writeFileSync(src, source);
+    const tool = findTool("dxc");
+    const args = ["-T", `${prefix}_${shaderModel.replace(/^[^0-9]*/, "").replace(".", "_") || "6_0"}`, "-E", entryPoint || "main", "-Zi", "-Qembed_debug", "-Fo", out, src];
+    for (const dir of includeDirs) args.push("-I", dir);
+    execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+      let bytecode;
+      try {
+        if (fs4.existsSync(out)) bytecode = new Uint8Array(fs4.readFileSync(out));
+      } catch {
+        bytecode = void 0;
+      }
+      for (const f of [src, out]) {
+        try {
+          fs4.unlinkSync(f);
+        } catch {
+        }
+      }
+      if (err || !bytecode || !isDxbc(bytecode)) {
+        const reason = log || (err && "code" in err && err.code === "ENOENT" ? "dxc not found: install the Vulkan SDK (or the DirectX Shader Compiler) and set VULKAN_SDK or INSPECTOR_TOOLS_DIR" : err?.message ?? "dxc produced no output");
+        resolve({ ok: false, log: reason, tool: "dxc" });
+      } else {
+        resolve({ ok: true, spirv: bytecode, log, tool: "dxc" });
+      }
+    });
+  });
+}
+function relativeSourcePath(name) {
+  const parts2 = name.replace(/\\/g, "/").replace(/^[A-Za-z]:/, "").split("/").filter((p) => p && p !== "." && p !== "..");
+  return parts2.length ? parts2.join("/") : "shader.hlsl";
+}
+function spirvProfile(stage, target) {
+  const prefix = DXIL_PROFILES[stage];
+  if (!prefix) return null;
+  const m = /_(\d+)_(\d+)$/.exec(target);
+  const model = m && Number(m[1]) >= 6 ? `${m[1]}_${m[2]}` : "6_0";
+  return `${prefix}_${model}`;
+}
+async function compileHlslForDebugging(container, stage, entryPoint, options = {}) {
+  const found2 = await dxbcSources(container, options.pdbDirs ?? []);
+  if (!found2.ok) return { ok: false, log: found2.text, tool: SHADER_TOOL };
+  const { files, compile } = found2.sources;
+  const entry2 = entryPoint || compile?.entryPoint || "main";
+  const profile = spirvProfile(stage, options.target || compile?.target || "");
+  if (!profile) return { ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" };
+  const mainName = compile?.mainFile ?? "";
+  const same = (a, b) => relativeSourcePath(a).toLowerCase() === relativeSourcePath(b).toLowerCase();
+  const defines = new RegExp(`\\b${entry2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`);
+  const main = files.find((f) => mainName && same(f.name, mainName)) ?? files.find((f) => mainName && path4.basename(relativeSourcePath(f.name)).toLowerCase() === path4.basename(relativeSourcePath(mainName)).toLowerCase()) ?? files.find((f) => defines.test(f.text)) ?? files[0];
+  const dir = fs4.mkdtempSync(`${tempBase()}_`);
+  try {
+    const written = /* @__PURE__ */ new Map();
+    for (const f of files) {
+      const rel = relativeSourcePath(f.name);
+      if (written.has(rel)) continue;
+      const p = path4.join(dir, rel);
+      fs4.mkdirSync(path4.dirname(p), { recursive: true });
+      fs4.writeFileSync(p, f.text);
+      written.set(rel, p);
+    }
+    const mainPath = written.get(relativeSourcePath(main.name));
+    const out = path4.join(dir, "debug.spv");
+    const tool = findTool("dxc");
+    const args = ["-spirv", "-T", profile, "-E", entry2, "-fspv-target-env=vulkan1.2", "-fspv-debug=line", "-fspv-debug=source", "-fspv-reflect", "-fvk-use-dx-layout", ...HLSL_SHIFT_ARGS];
+    for (const d of compile?.defines ?? []) args.push("-D", d);
+    for (const a of compile?.args ?? []) args.push(a);
+    args.push("-O0", "-I", dir);
+    for (const inc of (options.includeDirs ?? []).filter((d) => d && fs4.existsSync(d))) args.push("-I", inc);
+    args.push("-Fo", out, path4.basename(mainPath));
+    return await new Promise((resolve) => {
+      execFile2(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: path4.dirname(mainPath) }, (err, stdout, stderr) => {
+        const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
+        let spirv;
+        try {
+          if (fs4.existsSync(out)) spirv = new Uint8Array(fs4.readFileSync(out));
+        } catch {
+          spirv = void 0;
+        }
+        if (err || !spirv || spirv.byteLength < 20) {
+          const reason = log || (err && "code" in err && err.code === "ENOENT" ? "dxc not found: install the Vulkan SDK (or the DirectX Shader Compiler) and set VULKAN_SDK or INSPECTOR_TOOLS_DIR" : err?.message ?? "dxc produced no output");
+          resolve({ ok: false, log: reason, tool: "dxc", source: main.text });
+        } else {
+          resolve({ ok: true, spirv, log, tool: "dxc", source: main.text });
+        }
+      });
+    });
+  } finally {
+    fs4.rmSync(dir, { recursive: true, force: true });
+  }
+}
+var DECOMPILED_FILE = "decompiled.glsl";
+async function decompileForDebugging(spirv, stage, entryPoint) {
+  const glsl = await shaderText(spirv, "glsl", { entry: { stage, name: entryPoint || "main" }, forceTemporary: true });
+  if (!glsl.ok) return { ok: false, log: glsl.text, tool: "spirv-cross" };
+  const version = spirv.byteLength >= 8 ? new DataView(spirv.buffer, spirv.byteOffset, 8).getUint32(4, true) : 0;
+  const spirvVersion = version ? `${version >> 16 & 255}.${version >> 8 & 255}` : "1.5";
+  const compiled = await compileShader(glsl.text, "glsl", stage, entryPoint, spirvVersion, { debugFileName: DECOMPILED_FILE });
+  if (!compiled.ok) {
+    const log = compiled.log.split(/\r?\n/).filter((l) => l.trim() && l.trim() !== DECOMPILED_FILE).join("\n");
+    return { ok: false, log: `the decompiled GLSL did not compile: ${log}`, tool: compiled.tool, source: glsl.text };
+  }
+  return { ok: true, spirv: compiled.spirv, log: compiled.log, tool: compiled.tool, source: glsl.text };
 }
 
 // src/renderer/draw_state.ts
@@ -11743,11 +12647,11 @@ function page(items, args, defaultLimit, maxLimit) {
 }
 
 // src/mcp/search_paths.ts
-import fs4 from "node:fs";
+import fs7 from "node:fs";
 
 // src/main/shader_sources.ts
-import fs2 from "node:fs";
-import path2 from "node:path";
+import fs5 from "node:fs";
+import path5 from "node:path";
 var SEARCH_DEPTH = 6;
 var MAX_SOURCE_BYTES = 4 * 1024 * 1024;
 var SKIP_DIRS = /* @__PURE__ */ new Set(["node_modules", ".git", ".svn", "__pycache__"]);
@@ -11759,12 +12663,12 @@ function indexRoot(root) {
   const visit = (dir, depth) => {
     let entries;
     try {
-      entries = fs2.readdirSync(dir, { withFileTypes: true });
+      entries = fs5.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
     for (const e of entries) {
-      const full = path2.join(dir, e.name);
+      const full = path5.join(dir, e.name);
       if (e.isFile()) {
         const key = e.name.toLowerCase();
         const list = byName.get(key);
@@ -11793,18 +12697,18 @@ function suffixMatch(name, candidate) {
 }
 function readText(file) {
   try {
-    if (fs2.statSync(file).size > MAX_SOURCE_BYTES) return null;
-    return fs2.readFileSync(file, "utf8");
+    if (fs5.statSync(file).size > MAX_SOURCE_BYTES) return null;
+    return fs5.readFileSync(file, "utf8");
   } catch {
     return null;
   }
 }
 function findShaderSources(names, roots) {
   const out = {};
-  const cleanRoots = roots.map((r) => r.trim()).filter((r) => r && fs2.existsSync(r));
+  const cleanRoots = roots.map((r) => r.trim()).filter((r) => r && fs5.existsSync(r));
   for (const name of names) {
     if (!name) continue;
-    if (path2.isAbsolute(name) && fs2.existsSync(name)) {
+    if (path5.isAbsolute(name) && fs5.existsSync(name)) {
       const text2 = readText(name);
       if (text2 !== null) {
         out[name] = text2;
@@ -11829,10 +12733,10 @@ function findShaderSources(names, roots) {
 }
 
 // src/main/symbolize.ts
-import { execFile } from "node:child_process";
-import fs3 from "node:fs";
-import os2 from "node:os";
-import path3 from "node:path";
+import { execFile as execFile3 } from "node:child_process";
+import fs6 from "node:fs";
+import os4 from "node:os";
+import path6 from "node:path";
 var SEARCH_DEPTH2 = 5;
 var SYMBOLIZER_TIMEOUT_MS = 3e4;
 function findSymbolizer() {
@@ -11841,26 +12745,26 @@ function findSymbolizer() {
   for (const v of ["ANDROID_NDK_HOME", "ANDROID_NDK_ROOT", "ANDROID_NDK"]) if (process.env[v]) roots.push(process.env[v]);
   const sdks = [];
   for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) if (process.env[v]) sdks.push(process.env[v]);
-  if (process.platform === "win32" && process.env.LOCALAPPDATA) sdks.push(path3.join(process.env.LOCALAPPDATA, "Android", "Sdk"));
-  else if (process.platform === "darwin") sdks.push(path3.join(os2.homedir(), "Library", "Android", "sdk"));
-  else sdks.push(path3.join(os2.homedir(), "Android", "Sdk"));
+  if (process.platform === "win32" && process.env.LOCALAPPDATA) sdks.push(path6.join(process.env.LOCALAPPDATA, "Android", "Sdk"));
+  else if (process.platform === "darwin") sdks.push(path6.join(os4.homedir(), "Library", "Android", "sdk"));
+  else sdks.push(path6.join(os4.homedir(), "Android", "Sdk"));
   for (const sdk of sdks) {
-    const ndk = path3.join(sdk, "ndk");
-    if (fs3.existsSync(ndk)) for (const v of fs3.readdirSync(ndk).sort().reverse()) roots.push(path3.join(ndk, v));
+    const ndk = path6.join(sdk, "ndk");
+    if (fs6.existsSync(ndk)) for (const v of fs6.readdirSync(ndk).sort().reverse()) roots.push(path6.join(ndk, v));
   }
   for (const root of roots) {
-    const prebuilt = path3.join(root, "toolchains", "llvm", "prebuilt");
-    if (!fs3.existsSync(prebuilt)) continue;
-    for (const host of fs3.readdirSync(prebuilt)) {
-      const candidate = path3.join(prebuilt, host, "bin", `llvm-symbolizer${exe}`);
-      if (fs3.existsSync(candidate)) return { exe: candidate, llvm: true };
+    const prebuilt = path6.join(root, "toolchains", "llvm", "prebuilt");
+    if (!fs6.existsSync(prebuilt)) continue;
+    for (const host of fs6.readdirSync(prebuilt)) {
+      const candidate = path6.join(prebuilt, host, "bin", `llvm-symbolizer${exe}`);
+      if (fs6.existsSync(candidate)) return { exe: candidate, llvm: true };
     }
   }
-  for (const dir of (process.env.PATH ?? "").split(path3.delimiter)) {
+  for (const dir of (process.env.PATH ?? "").split(path6.delimiter)) {
     if (!dir) continue;
     for (const [name, llvm] of [["llvm-symbolizer", true], ["addr2line", false]]) {
-      const candidate = path3.join(dir, name + exe);
-      if (fs3.existsSync(candidate)) return { exe: candidate, llvm };
+      const candidate = path6.join(dir, name + exe);
+      if (fs6.existsSync(candidate)) return { exe: candidate, llvm };
     }
   }
   return null;
@@ -11870,14 +12774,14 @@ function findModule(module, dirs) {
   const visit = (dir, depth) => {
     let entries;
     try {
-      entries = fs3.readdirSync(dir, { withFileTypes: true });
+      entries = fs6.readdirSync(dir, { withFileTypes: true });
     } catch {
       return;
     }
     for (const e of entries) {
-      const full = path3.join(dir, e.name);
+      const full = path6.join(dir, e.name);
       if (e.isFile() && e.name === module) {
-        const size2 = fs3.statSync(full).size;
+        const size2 = fs6.statSync(full).size;
         if (!best || size2 > best.size) best = { file: full, size: size2 };
       } else if (e.isDirectory() && depth < SEARCH_DEPTH2 && !e.name.startsWith(".") && e.name !== "node_modules") {
         visit(full, depth + 1);
@@ -11889,7 +12793,7 @@ function findModule(module, dirs) {
 }
 function run(exe, args) {
   return new Promise((resolve) => {
-    execFile(exe, args, { timeout: SYMBOLIZER_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => resolve(err ? "" : stdout));
+    execFile3(exe, args, { timeout: SYMBOLIZER_TIMEOUT_MS, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout) => resolve(err ? "" : stdout));
   });
 }
 var moduleCache = /* @__PURE__ */ new Map();
@@ -11989,7 +12893,7 @@ function setSearchPaths(kind, dirs) {
 function describeSearchPaths() {
   const describe = (kind) => {
     const { dirs, from } = searchPaths(kind);
-    const missing = dirs.filter((d) => !fs4.existsSync(d));
+    const missing = dirs.filter((d) => !fs7.existsSync(d));
     return { dirs, from, missing: missing.length ? missing : void 0 };
   };
   const symbolizer = findSymbolizer();
@@ -12059,17 +12963,17 @@ async function symbolizeSymbolMap(db, frames) {
 
 // src/main/replay.ts
 import { spawn } from "node:child_process";
-import fs5 from "node:fs";
-import os3 from "node:os";
-import path4 from "node:path";
+import fs8 from "node:fs";
+import os5 from "node:os";
+import path7 from "node:path";
 var REPLAY_TOOL = process.platform === "win32" ? "vkinsp_replay.exe" : "vkinsp_replay";
 function findReplayTool(roots, layerDirs) {
   const candidates = [
     process.env.INSPECTOR_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path4.join(dir, REPLAY_TOOL))
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path7.join(root, "build", "bin", config, REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path7.join(dir, REPLAY_TOOL))
   ].filter((f) => !!f);
-  return candidates.find((f) => fs5.existsSync(f)) ?? null;
+  return candidates.find((f) => fs8.existsSync(f)) ?? null;
 }
 var NO_REPLAY_TOOL = `${REPLAY_TOOL} not found. Build it (cmake --build build --target vkinsp_replay), or set INSPECTOR_REPLAY to its path.`;
 var D3D12_REPLAY_TOOL = "dxinsp_replay.exe";
@@ -12077,10 +12981,10 @@ function findD3D12ReplayTool(roots, layerDirs) {
   if (process.platform !== "win32") return null;
   const candidates = [
     process.env.INSPECTOR_D3D12_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, D3D12_REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path4.join(dir, D3D12_REPLAY_TOOL))
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path7.join(root, "build", "bin", config, D3D12_REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path7.join(dir, D3D12_REPLAY_TOOL))
   ].filter((f) => !!f);
-  return candidates.find((f) => fs5.existsSync(f)) ?? null;
+  return candidates.find((f) => fs8.existsSync(f)) ?? null;
 }
 var NO_D3D12_REPLAY_TOOL = process.platform === "win32" ? `${D3D12_REPLAY_TOOL} not found. Build it (cmake --build build --target dxinsp_replay), or set INSPECTOR_D3D12_REPLAY to its path.` : "a Direct3D 12 capture replays on Windows only.";
 var METAL_REPLAY_TOOL = "mtlinsp_replay";
@@ -12088,10 +12992,10 @@ function findMetalReplayTool(roots, layerDirs) {
   if (process.platform !== "darwin") return null;
   const candidates = [
     process.env.INSPECTOR_METAL_REPLAY,
-    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path4.join(root, "build", "bin", config, METAL_REPLAY_TOOL))),
-    ...layerDirs.map((dir) => path4.join(dir, METAL_REPLAY_TOOL))
+    ...roots.flatMap((root) => ["Release", "RelWithDebInfo", "Debug", ""].map((config) => path7.join(root, "build", "bin", config, METAL_REPLAY_TOOL))),
+    ...layerDirs.map((dir) => path7.join(dir, METAL_REPLAY_TOOL))
   ].filter((f) => !!f);
-  return candidates.find((f) => fs5.existsSync(f)) ?? null;
+  return candidates.find((f) => fs8.existsSync(f)) ?? null;
 }
 var NO_METAL_REPLAY_TOOL = process.platform === "darwin" ? `${METAL_REPLAY_TOOL} not found. Build it (cmake --build build --target mtlinsp_replay), or set INSPECTOR_METAL_REPLAY to its path.` : "a Metal capture replays on macOS only.";
 function findExportTool(api, roots, layerDirs) {
@@ -12117,13 +13021,13 @@ function tail(text, lines = 12) {
 function inputFile(analysis) {
   if (analysis.kind !== "ablate" && analysis.kind !== "replace") return null;
   const file = tempOutput(`${analysis.kind}_request`);
-  fs5.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
+  fs8.writeFileSync(file, Buffer.from(analysis.request.buffer, analysis.request.byteOffset, analysis.request.byteLength));
   return file;
 }
 function removeFile(file) {
   if (!file) return;
   try {
-    fs5.unlinkSync(file);
+    fs8.unlinkSync(file);
   } catch {
   }
 }
@@ -12152,7 +13056,7 @@ function analysisArgs(analysis, out, input) {
 }
 function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
   return new Promise((resolve) => {
-    const out = path4.join(os3.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+    const out = path7.join(os5.tmpdir(), `vkinsp_${analysis.kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
     let output = "";
     let done = false;
     let timedOut = false;
@@ -12175,8 +13079,8 @@ function runReplay(tool, capturePath, analysis, timeoutMs = 10 * 60 * 1e3) {
       removeFile(input);
       let data = null;
       try {
-        data = new Uint8Array(fs5.readFileSync(out));
-        fs5.unlinkSync(out);
+        data = new Uint8Array(fs8.readFileSync(out));
+        fs8.unlinkSync(out);
       } catch {
       }
       if (data) {
@@ -12203,7 +13107,7 @@ function serveRequest(id, analysis, out, input) {
   return { id, ...analysis, out };
 }
 function tempOutput(kind) {
-  return path4.join(os3.tmpdir(), `vkinsp_${kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
+  return path7.join(os5.tmpdir(), `vkinsp_${kind}_${process.pid}_${Date.now()}_${Math.random().toString(36).slice(2)}.bin`);
 }
 var ReplayServer = class {
   tool;
@@ -12270,8 +13174,8 @@ var ReplayServer = class {
     this.lastUsed = Date.now();
     let data = null;
     try {
-      data = new Uint8Array(fs5.readFileSync(out));
-      fs5.unlinkSync(out);
+      data = new Uint8Array(fs8.readFileSync(out));
+      fs8.unlinkSync(out);
     } catch {
     }
     if (answer.ok && data) return { data, output: tail(this._output) };
@@ -12332,13 +13236,13 @@ var ReplayServerPool = class {
   async run(tool, capturePath, analysis, timeoutMs) {
     let stamp = 0;
     try {
-      stamp = fs5.statSync(capturePath).mtimeMs;
+      stamp = fs8.statSync(capturePath).mtimeMs;
     } catch {
       return { data: null, output: "", error: `${capturePath} does not exist` };
     }
     if (needsOwnProcess(analysis)) return runReplay(tool, capturePath, analysis, timeoutMs);
     const key = `${tool}
-${path4.resolve(capturePath)}
+${path7.resolve(capturePath)}
 ${stamp}`;
     let server = this._servers.get(key);
     if (!server || !server.alive) {
@@ -12355,9 +13259,9 @@ ${stamp}`;
   }
   /** Stops the replays of a capture file (it is closed, or about to be deleted). */
   release(capturePath) {
-    const resolved = path4.resolve(capturePath);
+    const resolved = path7.resolve(capturePath);
     for (const [key, server] of this._servers) {
-      if (path4.resolve(server.capturePath) !== resolved) continue;
+      if (path7.resolve(server.capturePath) !== resolved) continue;
       server.dispose();
       this._servers.delete(key);
     }
@@ -12425,43 +13329,43 @@ function replayValidationCounts(v) {
 }
 
 // src/main/plugins.ts
-import fs6 from "node:fs";
-import os4 from "node:os";
-import path5 from "node:path";
+import fs9 from "node:fs";
+import os6 from "node:os";
+import path8 from "node:path";
 
 // src/shared/protocol.ts
 var PLUGIN_SDK_VERSION = 1;
 
 // src/main/plugins.ts
 function userPluginDir() {
-  if (process.env.GPU_INSPECTOR_HOME) return path5.join(process.env.GPU_INSPECTOR_HOME, "plugins");
-  const home = os4.homedir();
-  if (process.platform === "win32") return path5.join(process.env.APPDATA ?? path5.join(home, "AppData", "Roaming"), "gpu-inspector", "plugins");
-  if (process.platform === "darwin") return path5.join(home, "Library", "Application Support", "gpu-inspector", "plugins");
-  return path5.join(process.env.XDG_CONFIG_HOME ?? path5.join(home, ".config"), "gpu-inspector", "plugins");
+  if (process.env.GPU_INSPECTOR_HOME) return path8.join(process.env.GPU_INSPECTOR_HOME, "plugins");
+  const home = os6.homedir();
+  if (process.platform === "win32") return path8.join(process.env.APPDATA ?? path8.join(home, "AppData", "Roaming"), "gpu-inspector", "plugins");
+  if (process.platform === "darwin") return path8.join(home, "Library", "Application Support", "gpu-inspector", "plugins");
+  return path8.join(process.env.XDG_CONFIG_HOME ?? path8.join(home, ".config"), "gpu-inspector", "plugins");
 }
 function pluginSearchDirs(checkoutRoots2, packaged = []) {
   const dirs = [];
-  for (const d of (process.env.GPU_INSPECTOR_PLUGINS ?? "").split(path5.delimiter)) if (d.trim()) dirs.push(d.trim());
+  for (const d of (process.env.GPU_INSPECTOR_PLUGINS ?? "").split(path8.delimiter)) if (d.trim()) dirs.push(d.trim());
   dirs.push(userPluginDir());
-  for (const root of checkoutRoots2) dirs.push(path5.join(root, "build", "plugins"));
+  for (const root of checkoutRoots2) dirs.push(path8.join(root, "build", "plugins"));
   dirs.push(...packaged);
   return dirs;
 }
 function readManifest(dir) {
-  const file = path5.join(dir, "plugin.json");
-  if (!fs6.existsSync(file)) return null;
+  const file = path8.join(dir, "plugin.json");
+  if (!fs9.existsSync(file)) return null;
   let manifest;
   try {
-    manifest = JSON.parse(fs6.readFileSync(file, "utf8"));
+    manifest = JSON.parse(fs9.readFileSync(file, "utf8"));
   } catch (e) {
-    const id = path5.basename(dir);
+    const id = path8.basename(dir);
     return { manifest: { id, name: id, version: "", sdk: 0 }, dir, backend: null, error: `plugin.json does not parse: ${e.message}` };
   }
   const plugin = { manifest, dir, backend: null, error: null };
   if (typeof manifest.id !== "string" || !/^[a-z][a-z0-9_-]*$/.test(manifest.id)) {
     plugin.error = "plugin.json needs an id: lower case letters, digits, - and _";
-    manifest.id = typeof manifest.id === "string" && manifest.id ? manifest.id : path5.basename(dir);
+    manifest.id = typeof manifest.id === "string" && manifest.id ? manifest.id : path8.basename(dir);
     return plugin;
   }
   manifest.name ||= manifest.id;
@@ -12472,16 +13376,16 @@ function readManifest(dir) {
     return plugin;
   }
   if (manifest.backend) {
-    const backend = path5.resolve(dir, manifest.backend);
+    const backend = path8.resolve(dir, manifest.backend);
     if (!isInside(dir, backend)) plugin.error = "the backend module is outside the plugin's directory";
-    else if (!fs6.existsSync(backend)) plugin.error = `the backend module ${manifest.backend} is missing (is the plugin built?)`;
+    else if (!fs9.existsSync(backend)) plugin.error = `the backend module ${manifest.backend} is missing (is the plugin built?)`;
     else plugin.backend = backend;
   }
   return plugin;
 }
 function isInside(dir, file) {
-  const rel = path5.relative(path5.resolve(dir), path5.resolve(file));
-  return rel === "" || !rel.startsWith("..") && !path5.isAbsolute(rel);
+  const rel = path8.relative(path8.resolve(dir), path8.resolve(file));
+  return rel === "" || !rel.startsWith("..") && !path8.isAbsolute(rel);
 }
 function findPlugins(dirs) {
   const found2 = /* @__PURE__ */ new Map();
@@ -12492,16 +13396,16 @@ function findPlugins(dirs) {
   for (const dir of dirs) {
     let entries;
     try {
-      if (!fs6.statSync(dir).isDirectory()) continue;
-      if (fs6.existsSync(path5.join(dir, "plugin.json"))) {
+      if (!fs9.statSync(dir).isDirectory()) continue;
+      if (fs9.existsSync(path8.join(dir, "plugin.json"))) {
         consider(dir);
         continue;
       }
-      entries = fs6.readdirSync(dir, { withFileTypes: true });
+      entries = fs9.readdirSync(dir, { withFileTypes: true });
     } catch {
       continue;
     }
-    for (const e of entries) if (e.isDirectory()) consider(path5.join(dir, e.name));
+    for (const e of entries) if (e.isDirectory()) consider(path8.join(dir, e.name));
   }
   return [...found2.values()];
 }
@@ -12514,12 +13418,12 @@ function pluginLaunches(plugins2, settings, platform = process.platform) {
     if (plugin.error) continue;
     const c2 = plugin.manifest.capture?.[platform];
     if (!c2) continue;
-    const resolve = (files) => (files ?? []).map((f) => path5.resolve(plugin.dir, f));
+    const resolve = (files) => (files ?? []).map((f) => path8.resolve(plugin.dir, f));
     const inject = platform === "win32" ? resolve(c2.inject) : [];
     const preload = platform === "win32" ? [] : resolve(c2.preload);
     const env = {};
     for (const [k, v] of Object.entries(c2.env ?? {})) env[k] = expand(String(v), plugin, settings);
-    const missing = [...inject, ...preload].filter((f) => !fs6.existsSync(f));
+    const missing = [...inject, ...preload].filter((f) => !fs9.existsSync(f));
     if (!inject.length && !preload.length && !Object.keys(env).length) continue;
     out.push({ plugin, inject, preload, env, missing });
   }
@@ -12550,10 +13454,10 @@ function pluginAndroidLaunch(plugin, abilist, pkg, settings) {
   const properties = {};
   for (const [k, v] of Object.entries(a.properties ?? {})) properties[k] = expandAndroid(String(v));
   const socket = expandAndroid(a.socket);
-  const layerName = path5.basename(a.glesLayer);
+  const layerName = path8.basename(a.glesLayer);
   for (const abi of abilist) {
-    const library = path5.resolve(plugin.dir, a.glesLayer.replace(/\$\{abi\}/g, abi));
-    if (isInside(plugin.dir, library) && fs6.existsSync(library)) return { plugin, library, abi, layerName, socket, properties, error: null };
+    const library = path8.resolve(plugin.dir, a.glesLayer.replace(/\$\{abi\}/g, abi));
+    if (isInside(plugin.dir, library) && fs9.existsSync(library)) return { plugin, library, abi, layerName, socket, properties, error: null };
   }
   return {
     plugin,
@@ -12566,7 +13470,7 @@ function pluginAndroidLaunch(plugin, abilist, pkg, settings) {
   };
 }
 function pluginInfo(p) {
-  const rel = p.backend ? path5.relative(p.dir, p.backend).split(path5.sep).map(encodeURIComponent).join("/") : null;
+  const rel = p.backend ? path8.relative(p.dir, p.backend).split(path8.sep).map(encodeURIComponent).join("/") : null;
   return {
     id: p.manifest.id,
     name: p.manifest.name,
@@ -12580,7 +13484,7 @@ function pluginInfo(p) {
 var PLUGIN_SCHEME = "gpuinsp-plugin";
 
 // src/mcp/plugins.ts
-import path6 from "node:path";
+import path9 from "node:path";
 import { pathToFileURL } from "node:url";
 
 // src/renderer/plugin_host.ts
@@ -12607,7 +13511,7 @@ async function activatePlugin(mod, info, context) {
 // src/mcp/plugins.ts
 var found = null;
 function plugins() {
-  found ??= findPlugins(pluginSearchDirs(checkoutRoots(), installedLayerDirs().map((d) => path6.join(path6.dirname(d), "plugins"))));
+  found ??= findPlugins(pluginSearchDirs(checkoutRoots(), installedLayerDirs().map((d) => path9.join(path9.dirname(d), "plugins"))));
   return found;
 }
 async function loadPluginBackends() {
@@ -12638,19 +13542,19 @@ function launchPlugins(port, recordAlways, stacktraces) {
 
 // src/mcp/live_session.ts
 import { spawn as spawn3 } from "node:child_process";
-import fs11 from "node:fs";
+import fs12 from "node:fs";
 import net2 from "node:net";
-import os7 from "node:os";
-import path11 from "node:path";
-import { fileURLToPath as fileURLToPath2 } from "node:url";
+import os8 from "node:os";
+import path12 from "node:path";
+import { fileURLToPath as fileURLToPath3 } from "node:url";
 
 // src/main/android.ts
-import { execFile as execFile2, execFileSync, spawn as spawn2 } from "node:child_process";
+import { execFile as execFile4, execFileSync as execFileSync2, spawn as spawn2 } from "node:child_process";
 import crypto from "node:crypto";
-import fs7 from "node:fs";
-import os5 from "node:os";
-import path7 from "node:path";
-var LAYER_NAME = "VK_LAYER_INSPECTOR_capture";
+import fs10 from "node:fs";
+import os7 from "node:os";
+import path10 from "node:path";
+var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
 var LAYER_LIB = "libVkLayer_inspector_capture.so";
 var LAYER_APK = "gpu_inspector_layer.apk";
 var DEVICE_TMP = "/data/local/tmp";
@@ -12667,18 +13571,18 @@ function findAdb() {
   const candidates = [];
   if (process.env.INSPECTOR_ADB) candidates.push(process.env.INSPECTOR_ADB);
   for (const v of ["ANDROID_HOME", "ANDROID_SDK_ROOT"]) {
-    if (process.env[v]) candidates.push(path7.join(process.env[v], "platform-tools", exe));
+    if (process.env[v]) candidates.push(path10.join(process.env[v], "platform-tools", exe));
   }
   if (process.platform === "win32") {
-    if (process.env.LOCALAPPDATA) candidates.push(path7.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
+    if (process.env.LOCALAPPDATA) candidates.push(path10.join(process.env.LOCALAPPDATA, "Android", "Sdk", "platform-tools", exe));
   } else if (process.platform === "darwin") {
-    candidates.push(path7.join(os5.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
+    candidates.push(path10.join(os7.homedir(), "Library", "Android", "sdk", "platform-tools", exe));
   } else {
-    candidates.push(path7.join(os5.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
+    candidates.push(path10.join(os7.homedir(), "Android", "Sdk", "platform-tools", exe), "/opt/android-sdk/platform-tools/adb");
   }
-  for (const c2 of candidates) if (fs7.existsSync(c2)) return c2;
-  for (const dir of (process.env.PATH ?? "").split(path7.delimiter)) {
-    if (dir && fs7.existsSync(path7.join(dir, exe))) return path7.join(dir, exe);
+  for (const c2 of candidates) if (fs10.existsSync(c2)) return c2;
+  for (const dir of (process.env.PATH ?? "").split(path10.delimiter)) {
+    if (dir && fs10.existsSync(path10.join(dir, exe))) return path10.join(dir, exe);
   }
   return null;
 }
@@ -12687,7 +13591,7 @@ function adbArgs(serial, args) {
 }
 function adb(adbPath, serial, args, timeoutMs = ADB_TIMEOUT_MS) {
   return new Promise((resolve, reject) => {
-    execFile2(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
+    execFile4(adbPath, adbArgs(serial, args), { timeout: timeoutMs, maxBuffer: 16 * 1024 * 1024, windowsHide: true }, (err, stdout, stderr) => {
       if (err) {
         const detail = `${stderr ?? ""}${stdout ?? ""}`.trim() || err.message;
         reject(new Error(`adb ${args[0] === "shell" ? "shell" : args.slice(0, 2).join(" ")}: ${detail}`));
@@ -12746,19 +13650,19 @@ async function resolveActivity(adbPath, serial, pkg) {
 }
 function findAndroidLayer(candidates) {
   for (const dir of candidates) {
-    const libRoot = path7.join(dir, "lib");
-    if (!fs7.existsSync(libRoot)) continue;
+    const libRoot = path10.join(dir, "lib");
+    if (!fs10.existsSync(libRoot)) continue;
     const libs = {};
-    for (const abi of fs7.readdirSync(libRoot)) {
-      const lib = path7.join(libRoot, abi, LAYER_LIB);
-      if (fs7.existsSync(lib)) libs[abi] = lib;
+    for (const abi of fs10.readdirSync(libRoot)) {
+      const lib = path10.join(libRoot, abi, LAYER_LIB);
+      if (fs10.existsSync(lib)) libs[abi] = lib;
     }
     if (!Object.keys(libs).length) continue;
-    const apk = path7.join(dir, LAYER_APK);
+    const apk = path10.join(dir, LAYER_APK);
     let apkInfo = null;
-    if (fs7.existsSync(apk)) {
+    if (fs10.existsSync(apk)) {
       try {
-        apkInfo = JSON.parse(fs7.readFileSync(`${apk}.json`, "utf8"));
+        apkInfo = JSON.parse(fs10.readFileSync(`${apk}.json`, "utf8"));
       } catch {
         apkInfo = null;
       }
@@ -12809,7 +13713,7 @@ var AndroidTarget = class {
       log(`layer: ${how}`);
       await shell(adbPath, serial, "settings put global enable_gpu_debug_layers 1");
       await shell(adbPath, serial, `settings put global gpu_debug_app ${pkg}`);
-      await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME}`);
+      await shell(adbPath, serial, `settings put global gpu_debug_layers ${LAYER_NAME2}`);
       if (sdk >= LAYER_APP_SDK) await shell(adbPath, serial, "settings delete global gpu_debug_layers_gles");
       await shell(adbPath, serial, `setprop debug.vkinsp.port ${port}`);
       await shell(adbPath, serial, `setprop debug.vkinsp.log ${this.opts.log ? 1 : 0}`);
@@ -12897,7 +13801,7 @@ var AndroidTarget = class {
     const { adb: adbPath, serial, package: pkg, port } = this.opts;
     for (const args of [["shell", `am force-stop ${pkg}`], ["forward", "--remove", `tcp:${port}`]]) {
       try {
-        execFileSync(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
+        execFileSync2(adbPath, adbArgs(serial, args), { timeout: 3e3, stdio: "ignore", windowsHide: true });
       } catch {
       }
     }
@@ -12955,7 +13859,7 @@ var AndroidTarget = class {
    */
   async _copyIntoDataDir(lib, name, abi) {
     const { adb: adbPath, serial, package: pkg } = this.opts;
-    const local = crypto.createHash("md5").update(fs7.readFileSync(lib)).digest("hex");
+    const local = crypto.createHash("md5").update(fs10.readFileSync(lib)).digest("hex");
     let remote = "";
     try {
       remote = (await shell(adbPath, serial, `run-as ${pkg} md5sum ${name}`)).trim().split(/\s+/)[0] ?? "";
@@ -13106,175 +14010,45 @@ var FrameReader = class {
   }
 };
 
-// src/main/launch_env.ts
-import { execFile as execFile3, execFileSync as execFileSync2 } from "node:child_process";
-import fs8 from "node:fs";
-import net from "node:net";
-import os6 from "node:os";
-import path8 from "node:path";
-var LAYER_NAME2 = "VK_LAYER_INSPECTOR_capture";
-var VALIDATION_LAYER_NAME = "VK_LAYER_KHRONOS_validation";
-var DEFAULT_PORT = 47531;
-function findLayerDir(roots, packaged = []) {
-  if (process.env.INSPECTOR_LAYER_DIR) return process.env.INSPECTOR_LAYER_DIR;
-  const candidates = [];
-  for (const root of roots) {
-    const bin = path8.join(root, "build", "bin");
-    candidates.push(path8.join(bin, "Release"), path8.join(bin, "RelWithDebInfo"), path8.join(bin, "Debug"), bin);
-  }
-  candidates.push(...packaged);
-  for (const dir of candidates) {
-    if (fs8.existsSync(path8.join(dir, `${LAYER_NAME2}.json`))) return dir;
-  }
-  return null;
-}
-function findValidationLayerDir() {
-  const manifest = "VkLayer_khronos_validation.json";
-  const candidates = [];
-  const sdk = process.env.VULKAN_SDK;
-  if (sdk) candidates.push(path8.join(sdk, "Bin"), path8.join(sdk, "share", "vulkan", "explicit_layer.d"), path8.join(sdk, "etc", "vulkan", "explicit_layer.d"));
-  if (process.platform === "win32") {
-    for (const root of ["C:\\VulkanSDK", path8.join(os6.homedir(), "VulkanSDK")]) {
-      try {
-        const versions = fs8.readdirSync(root).filter((v) => /^\d/.test(v)).sort().reverse();
-        for (const v of versions) candidates.push(path8.join(root, v, "Bin"));
-      } catch {
-      }
-    }
-  } else {
-    candidates.push(
-      "/usr/share/vulkan/explicit_layer.d",
-      "/usr/local/share/vulkan/explicit_layer.d",
-      "/etc/vulkan/explicit_layer.d",
-      path8.join(os6.homedir(), ".local", "share", "vulkan", "explicit_layer.d")
-    );
-  }
-  for (const c2 of candidates) if (fs8.existsSync(path8.join(c2, manifest))) return c2;
-  return null;
-}
-function vulkanLayerEnvironment(o) {
-  const layers = [LAYER_NAME2, ...o.validationDir ? [VALIDATION_LAYER_NAME] : []];
-  const layerPaths = [o.layerDir, ...o.validationDir ? [o.validationDir] : []];
-  return {
-    VK_ADD_LAYER_PATH: layerPaths.join(path8.delimiter),
-    // The layer's manifest among the implicit layers as well, ahead of the registered ones. Once a
-    // GPU Inspector is installed (or "Set for my account" ran), its layer is registered as an
-    // implicit layer of the same name, and VK_LOADER_LAYERS_ENABLE force-enables that one rather
-    // than the one in VK_ADD_LAYER_PATH: a launch from any other build silently ran the installed
-    // layer. The implicit search is added to, not replaced, so the driver's own layers stay.
-    VK_ADD_IMPLICIT_LAYER_PATH: [o.layerDir, ...process.env.VK_ADD_IMPLICIT_LAYER_PATH ? [process.env.VK_ADD_IMPLICIT_LAYER_PATH] : []].join(path8.delimiter),
-    VK_LOADER_LAYERS_ENABLE: layers.join(","),
-    // Older loaders:
-    VK_LAYER_PATH: [...layerPaths, ...process.env.VK_LAYER_PATH ? [process.env.VK_LAYER_PATH] : []].join(path8.delimiter),
-    VK_INSTANCE_LAYERS: [...layers, ...process.env.VK_INSTANCE_LAYERS ? [process.env.VK_INSTANCE_LAYERS] : []].join(path8.delimiter),
-    VKINSP_PORT: String(o.port),
-    VKINSP_LOG: o.log ? "1" : "0",
-    ...o.logFile ? { VKINSP_LOG_FILE: o.logFile } : {},
-    VKINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
-    ...o.breadcrumbs ? { VKINSP_BREADCRUMBS: "1" } : {},
-    ...o.shaderStatistics ? { VKINSP_SHADER_STATISTICS: "1" } : {},
-    VKINSP_STACKTRACES: o.stacktraces ? "1" : "0",
-    ...o.symbolDirs ? { VKINSP_SYMBOL_PATH: o.symbolDirs } : {},
-    // The validation layer stops reporting a message after a few repeats (its
-    // duplicate_message_limit, 10 by default); the inspector's layer counts repeats itself and
-    // attaches a message to the captured command it fired on, which needs every occurrence.
-    ...o.validation && !process.env.VK_LAYER_DUPLICATE_MESSAGE_LIMIT ? { VK_LAYER_DUPLICATE_MESSAGE_LIMIT: "0" } : {},
-    // Synchronization and GPU-assisted validation: the settings-file names for current layers, and
-    // the enable list for older ones, which takes several separated by the platform's path
-    // separator — so the two are built together rather than one overwriting the other.
-    ...o.validation && o.syncValidation ? { VK_LAYER_VALIDATE_SYNC: "true" } : {},
-    ...o.validation && o.gpuValidation ? { VK_LAYER_VALIDATE_GPU_BASED: "GPU_BASED_GPU_ASSISTED" } : {},
-    ...o.validation && (o.syncValidation || o.gpuValidation) ? { VK_LAYER_ENABLES: [
-      ...o.syncValidation ? ["VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT"] : [],
-      ...o.gpuValidation ? ["VK_VALIDATION_FEATURE_ENABLE_GPU_ASSISTED_EXT"] : []
-    ].join(path8.delimiter) } : {}
-  };
-}
-function splitArgs(s) {
-  const out = [];
-  const re = /"([^"]*)"|'([^']*)'|(\S+)/g;
-  let m;
-  while (m = re.exec(s)) out.push(m[1] ?? m[2] ?? m[3]);
-  return out;
-}
-function portFree(port) {
-  return new Promise((resolve) => {
-    const srv = net.createServer();
-    srv.once("error", () => resolve(false));
-    srv.listen({ port, host: "127.0.0.1", exclusive: true }, () => srv.close(() => resolve(true)));
-  });
-}
-async function findFreePort(start, taken = () => false) {
-  for (let port = start; port < start + 100 && port < 65536; port++) {
-    if (taken(port)) continue;
-    if (await portFree(port)) return port;
-  }
-  return start;
-}
-function terminate(proc, wait = false) {
-  if (process.platform === "win32" && proc.pid) {
-    const args = ["/PID", String(proc.pid), "/T", "/F"];
-    if (wait) {
-      try {
-        execFileSync2("taskkill", args, { stdio: "ignore" });
-        return;
-      } catch {
-      }
-    } else {
-      execFile3("taskkill", args, () => {
-        try {
-          proc.kill();
-        } catch {
-        }
-      });
-      return;
-    }
-  }
-  try {
-    proc.kill();
-  } catch {
-  }
-}
-
 // src/main/metal.ts
 import { execFileSync as execFileSync3, spawnSync } from "node:child_process";
-import fs9 from "node:fs";
-import path9 from "node:path";
-import { fileURLToPath } from "node:url";
-var moduleDir = path9.dirname(fileURLToPath(import.meta.url));
-var CAPTURE_LIBRARY = "libmtlinsp_capture.dylib";
-function findCaptureLibrary(roots = [path9.resolve(moduleDir, "..", "..", "..", "..")], packaged = [path9.join(process.resourcesPath ?? "", "layer")]) {
+import fs11 from "node:fs";
+import path11 from "node:path";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+var moduleDir2 = path11.dirname(fileURLToPath2(import.meta.url));
+var CAPTURE_LIBRARY2 = "libmtlinsp_capture.dylib";
+function findCaptureLibrary(roots = [path11.resolve(moduleDir2, "..", "..", "..", "..")], packaged = [path11.join(process.resourcesPath ?? "", "layer")]) {
   const candidates = [];
   if (process.env.INSPECTOR_METAL_LIB) candidates.push(process.env.INSPECTOR_METAL_LIB);
   for (const root of roots) {
     for (const dir of ["build/bin", "build/bin/Release", "build/bin/Debug"]) {
-      candidates.push(path9.join(root, dir, CAPTURE_LIBRARY));
+      candidates.push(path11.join(root, dir, CAPTURE_LIBRARY2));
     }
   }
-  for (const dir of packaged) candidates.push(path9.join(dir, CAPTURE_LIBRARY));
-  return candidates.find((p) => fs9.existsSync(p)) ?? null;
+  for (const dir of packaged) candidates.push(path11.join(dir, CAPTURE_LIBRARY2));
+  return candidates.find((p) => fs11.existsSync(p)) ?? null;
 }
 function resolveExecutable(exe) {
   if (!exe.endsWith(".app")) return exe;
-  const macOS = path9.join(exe, "Contents", "MacOS");
-  const plist = path9.join(exe, "Contents", "Info.plist");
-  if (fs9.existsSync(plist)) {
+  const macOS = path11.join(exe, "Contents", "MacOS");
+  const plist = path11.join(exe, "Contents", "Info.plist");
+  if (fs11.existsSync(plist)) {
     try {
       const name = execFileSync3(
         "/usr/libexec/PlistBuddy",
         ["-c", "Print :CFBundleExecutable", plist],
         { encoding: "utf8" }
       ).trim();
-      const candidate = path9.join(macOS, name);
-      if (name && fs9.existsSync(candidate)) return candidate;
+      const candidate = path11.join(macOS, name);
+      if (name && fs11.existsSync(candidate)) return candidate;
     } catch {
     }
   }
-  const byBundleName = path9.join(macOS, path9.basename(exe, ".app"));
-  if (fs9.existsSync(byBundleName)) return byBundleName;
+  const byBundleName = path11.join(macOS, path11.basename(exe, ".app"));
+  if (fs11.existsSync(byBundleName)) return byBundleName;
   try {
-    const entries = fs9.readdirSync(macOS);
-    if (entries.length === 1) return path9.join(macOS, entries[0]);
+    const entries = fs11.readdirSync(macOS);
+    if (entries.length === 1) return path11.join(macOS, entries[0]);
   } catch {
   }
   return exe;
@@ -13290,7 +14064,7 @@ function injectionBlockedReason(exe) {
   const hasDyld = output.includes("com.apple.security.cs.allow-dyld-environment-variables");
   const hasLibrary = output.includes("com.apple.security.cs.disable-library-validation");
   if (hasDyld && hasLibrary) return null;
-  return `${path9.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
+  return `${path11.basename(exe)} is signed with the hardened runtime, so macOS drops DYLD_INSERT_LIBRARIES and the capture library can never load. Re-sign it for injection:
 
   /usr/bin/codesign --force --deep --sign - --options runtime \\
     --entitlements <(echo '<?xml version="1.0" encoding="UTF-8"?><!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd"><plist version="1.0"><dict><key>com.apple.security.cs.allow-dyld-environment-variables</key><true/><key>com.apple.security.cs.disable-library-validation</key><true/></dict></plist>') \\
@@ -13323,120 +14097,6 @@ function captureEnvironment(library, port, log, validation = false, stacktraces 
     }
   }
   return env;
-}
-
-// src/main/d3d12.ts
-import fs10 from "node:fs";
-import path10 from "node:path";
-var CAPTURE_LIBRARY2 = "dxinsp_capture.dll";
-var LAUNCHER = "dxinsp_launch.exe";
-var SHADER_TOOL = "dxinsp_shader.exe";
-function d3d12ToolDirs(roots, packaged = []) {
-  const dirs = [];
-  if (process.env.INSPECTOR_D3D12_DIR) dirs.push(process.env.INSPECTOR_D3D12_DIR);
-  for (const root of roots) {
-    const bin = path10.join(root, "build", "bin");
-    dirs.push(path10.join(bin, "Release"), path10.join(bin, "RelWithDebInfo"), path10.join(bin, "Debug"), bin);
-  }
-  dirs.push(...packaged);
-  return dirs;
-}
-function findD3D12Tools(roots, packaged = []) {
-  for (const dir of d3d12ToolDirs(roots, packaged)) {
-    const library = path10.join(dir, CAPTURE_LIBRARY2);
-    const launcher = path10.join(dir, LAUNCHER);
-    if (!fs10.existsSync(library) || !fs10.existsSync(launcher)) continue;
-    const shaderTool = path10.join(dir, SHADER_TOOL);
-    return { dir, library, launcher, shaderTool: fs10.existsSync(shaderTool) ? shaderTool : null };
-  }
-  return null;
-}
-function findD3D12ShaderTool(roots, packaged = []) {
-  for (const dir of d3d12ToolDirs(roots, packaged)) {
-    const tool = path10.join(dir, SHADER_TOOL);
-    if (fs10.existsSync(tool)) return tool;
-  }
-  return null;
-}
-function d3d12Environment(o) {
-  return {
-    DXINSP_PORT: String(o.port),
-    DXINSP_LOG: o.log ? "1" : "0",
-    ...o.logFile ? { DXINSP_LOG_FILE: o.logFile } : {},
-    DXINSP_RECORD_ALWAYS: o.recordAlways ? "1" : "0",
-    DXINSP_STACKTRACES: o.stacktraces ? "1" : "0",
-    ...o.symbolDirs ? { DXINSP_SYMBOL_PATH: o.symbolDirs } : {},
-    DXINSP_DEBUG_LAYER: o.validation ? "1" : "0",
-    ...o.validation && o.gpuValidation ? { DXINSP_GPU_VALIDATION: "1" } : {}
-  };
-}
-function wrapLaunch(tools, exe, args, cwd, follow = [], followChildren = false, extraDlls = []) {
-  return {
-    exe: tools.launcher,
-    args: [
-      "--dll",
-      tools.library,
-      ...extraDlls.flatMap((d) => ["--dll", d]),
-      ...cwd ? ["--cwd", cwd] : [],
-      ...followChildren ? ["--follow-children"] : [],
-      ...follow.flatMap((f) => ["--follow", f]),
-      "--",
-      exe,
-      ...args
-    ]
-  };
-}
-function watchLaunch(tools, o) {
-  const { image, timeoutSeconds, once, follow, followChildren, extraDlls, extraEnv, ...environment } = o;
-  const env = Object.entries({ ...d3d12Environment(environment), ...extraEnv }).flatMap(([k, v]) => ["--env", `${k}=${v}`]);
-  return {
-    exe: tools.launcher,
-    args: [
-      "--watch",
-      image,
-      "--dll",
-      tools.library,
-      ...(extraDlls ?? []).flatMap((d) => ["--dll", d]),
-      ...timeoutSeconds > 0 ? ["--timeout", String(Math.round(timeoutSeconds))] : [],
-      ...once ? ["--once"] : [],
-      ...followChildren ? ["--follow-children"] : [],
-      ...(follow ?? []).flatMap((f) => ["--follow", f]),
-      ...env
-    ]
-  };
-}
-function windowsLaunch(o) {
-  const env = { ...o.env };
-  const notes = [];
-  let exe = o.exe;
-  let args = o.args;
-  if (o.vulkan) {
-    Object.assign(env, vulkanLayerEnvironment(o.vulkan));
-    notes.push(`layer: ${o.vulkan.layerDir}`);
-  } else {
-    notes.push("Vulkan layer not found: build it (docs/BUILDING.md); only D3D12 will be captured");
-  }
-  const plugins2 = (o.plugins ?? []).filter((p) => {
-    if (p.missing.length) notes.push(`${p.plugin.manifest.name} capture library not found (${p.missing.join(", ")}): build the plugin`);
-    else if (p.inject.length && !o.d3d12) notes.push(`${p.plugin.manifest.name} capture library: not injected, since the launcher that injects it (the D3D12 tools) was not found`);
-    else return true;
-    return false;
-  });
-  for (const p of plugins2) {
-    Object.assign(env, p.env);
-    notes.push(`${p.plugin.manifest.name} capture library: ${p.inject.join(", ")} (plugin ${p.plugin.dir})`);
-  }
-  if (o.d3d12) {
-    const { tools, ...options } = o.d3d12;
-    Object.assign(env, d3d12Environment(options));
-    ({ exe, args } = wrapLaunch(tools, o.exe, o.args, o.cwd, o.follow ?? [], o.followChildren ?? false, plugins2.flatMap((p) => p.inject)));
-    notes.push(`D3D12 capture library: ${tools.library}${options.validation ? options.gpuValidation ? " (D3D12 debug layer on, GPU-based)" : " (D3D12 debug layer on)" : ""}`);
-    if (o.followChildren) notes.push("capturing every process the target starts");
-    if (o.follow?.length) notes.push(`following the target's child processes matching: ${o.follow.join(", ")}`);
-  } else {
-    notes.push("D3D12 capture library not found: build it (src/d3d12/README.md); only Vulkan will be captured");
-  }
-  return { exe, args, env, notes };
 }
 
 // src/renderer/stack_requests.ts
@@ -13719,29 +14379,29 @@ var CAPTURE_ACTIONS = /* @__PURE__ */ new Set([
 ]);
 var sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 function capturesDir() {
-  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path11.join(os7.tmpdir(), "gpu-inspector-captures");
+  return process.env.GPU_INSPECTOR_CAPTURES_DIR ?? path12.join(os8.tmpdir(), "gpu-inspector-captures");
 }
 function checkoutRoots() {
   const roots = [];
   if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  roots.push(path11.resolve(path11.dirname(fileURLToPath2(import.meta.url)), "..", ".."));
+  roots.push(path12.resolve(path12.dirname(fileURLToPath3(import.meta.url)), "..", ".."));
   return roots;
 }
 function installedLayerDirs() {
-  const home = os7.homedir();
+  const home = os8.homedir();
   if (process.platform === "win32") {
-    const local = process.env.LOCALAPPDATA ?? path11.join(home, "AppData", "Local");
+    const local = process.env.LOCALAPPDATA ?? path12.join(home, "AppData", "Local");
     const names = ["GPUInspector", "GPU Inspector", "gpu-inspector"];
-    const apps = names.map((name) => path11.join(local, "Programs", name));
+    const apps = names.map((name) => path12.join(local, "Programs", name));
     for (const programFiles of [process.env.ProgramFiles, process.env["ProgramFiles(x86)"]]) {
-      if (programFiles) apps.push(...names.map((name) => path11.join(programFiles, name)));
+      if (programFiles) apps.push(...names.map((name) => path12.join(programFiles, name)));
     }
-    return apps.map((dir) => path11.join(dir, "resources", "layer"));
+    return apps.map((dir) => path12.join(dir, "resources", "layer"));
   }
   if (process.platform === "darwin") {
     const dirs = [];
-    for (const dir of ["/Applications", path11.join(home, "Applications")]) {
-      for (const bundle of ["GPUInspector.app", "GPU Inspector.app"]) dirs.push(path11.join(dir, bundle, "Contents", "Resources", "layer"));
+    for (const dir of ["/Applications", path12.join(home, "Applications")]) {
+      for (const bundle of ["GPUInspector.app", "GPU Inspector.app"]) dirs.push(path12.join(dir, bundle, "Contents", "Resources", "layer"));
     }
     return dirs;
   }
@@ -13750,8 +14410,8 @@ function installedLayerDirs() {
 function androidLayer() {
   const candidates = [
     process.env.INSPECTOR_ANDROID_LAYER_DIR,
-    ...checkoutRoots().map((root) => path11.join(root, "build", "android")),
-    ...installedLayerDirs().map((dir) => path11.join(dir, "android"))
+    ...checkoutRoots().map((root) => path12.join(root, "build", "android")),
+    ...installedLayerDirs().map((dir) => path12.join(dir, "android"))
   ].filter((d) => !!d);
   return findAndroidLayer(candidates);
 }
@@ -14108,16 +14768,16 @@ var LiveSession = class {
     });
     let target;
     if (file) {
-      target = path11.resolve(file);
-      fs11.mkdirSync(path11.dirname(target), { recursive: true });
+      target = path12.resolve(file);
+      fs12.mkdirSync(path12.dirname(target), { recursive: true });
     } else {
       const dir = capturesDir();
-      fs11.mkdirSync(dir, { recursive: true });
+      fs12.mkdirSync(dir, { recursive: true });
       const name = captureFileName(this.name, data.frame, data.frames, data.requestLabel);
-      target = path11.join(dir, name);
-      for (let n = 2; fs11.existsSync(target); n++) target = path11.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
+      target = path12.join(dir, name);
+      for (let n = 2; fs12.existsSync(target); n++) target = path12.join(dir, name.replace(/\.gpucap$/, `_${n}.gpucap`));
     }
-    fs11.writeFileSync(target, bytes);
+    fs12.writeFileSync(target, bytes);
     return target;
   }
   /**
@@ -14201,8 +14861,8 @@ var SessionManager = class {
   _latest = null;
   /** Launches an application with the capture library in it and waits for it to connect. */
   async launch(o, waitMs) {
-    const requested = path11.resolve(o.exe);
-    if (!fs11.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
+    const requested = path12.resolve(o.exe);
+    if (!fs12.existsSync(requested)) throw new Error(`No executable at ${requested}.`);
     const args = Array.isArray(o.args) ? o.args : splitArgs(o.args ?? "");
     const taken = new Set([...this._sessions.values()].filter((s) => s.connected || s.pid !== null).map((s) => s.port));
     const port = await findFreePort(o.port ?? DEFAULT_PORT, (p) => taken.has(p));
@@ -14210,7 +14870,7 @@ var SessionManager = class {
     let spawnArgs = args;
     let env;
     const notes = [];
-    const cwd = o.cwd && fs11.existsSync(o.cwd) ? o.cwd : path11.dirname(requested);
+    const cwd = o.cwd && fs12.existsSync(o.cwd) ? o.cwd : path12.dirname(requested);
     if (process.platform === "darwin") {
       const library = findCaptureLibrary(checkoutRoots(), installedLayerDirs());
       if (!library) throw new Error("The Metal capture library (libmtlinsp_capture.dylib) was not found: build it in the GPU Inspector checkout, install GPU Inspector, or set INSPECTOR_METAL_LIB.");
@@ -14274,7 +14934,7 @@ var SessionManager = class {
       }
       if (validationNote) notes.push(validationNote);
     }
-    const session = new LiveSession(`app-${++this._counter}`, `${path11.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
+    const session = new LiveSession(`app-${++this._counter}`, `${path12.basename(requested)}${args.length ? ` ${args.join(" ")}` : ""}`, port, true);
     session.appendLog(`launching ${exe} ${spawnArgs.join(" ")}`);
     for (const note of notes) session.appendLog(note);
     this._add(session);
@@ -14295,7 +14955,7 @@ var SessionManager = class {
    */
   async waitForApp(o, waitMs) {
     if (process.platform !== "win32") throw new Error("Waiting for an application to start is a Windows and Direct3D 12 feature; on other platforms launch_app starts it with the capture library in it.");
-    const image = path11.basename(o.image);
+    const image = path12.basename(o.image);
     if (!image) throw new Error(`Pass the application's executable name ("TestVulkan.exe") or its full path as image.`);
     const d3d12 = findD3D12Tools(checkoutRoots(), installedLayerDirs());
     if (!d3d12) {
@@ -14752,6 +15412,31 @@ function argumentBufferBrief(db, entries) {
   if (entries.length > MAX_ARGUMENT_ENTRIES) out.push(`... ${entries.length - MAX_ARGUMENT_ENTRIES} more members`);
   return out;
 }
+async function addHeapReads(c2, cmd, detail) {
+  const state = isObject(detail.state) ? detail.state : null;
+  const heaps = state && Array.isArray(state.indexedHeaps) ? state.indexedHeaps : null;
+  if (!heaps?.length) return;
+  const d = c2.data;
+  const draw = drawState(d, c2.db, cmd);
+  const constants = drawConstants(d.commands, cmd, (id) => c2.db.getObject(id), draw.bindPoint === "compute", [...draw.sets.values()].map((s) => s.set), (id) => {
+    const b = d.buffer(id);
+    return b?.data ? { bytes: b.data, offset: num(b.info.offset) } : null;
+  });
+  const reads = [];
+  for (const source of stateStages(draw, c2.db)) {
+    const bytes = c2.spirv(source.object, source.blobIndex);
+    if (!bytes) continue;
+    const dis = await shaderText(bytes, "dis");
+    if (!dis.ok) continue;
+    for (const a of heapAccesses(dis.text, constants)) {
+      reads.push({ stage: source.stage, samplers: a.samplers, slot: a.slot, expression: a.expression, nonUniform: a.nonUniform || void 0, line: a.line ?? void 0 });
+    }
+  }
+  for (const heap of heaps) {
+    const mine = reads.filter((r) => r.samplers === !!heap.samplers).map(({ samplers: _, ...r }) => r);
+    heap.shaderReads = mine;
+  }
+}
 function commandDetail(c2, cmd, values) {
   const d = c2.data;
   const db = c2.db;
@@ -14974,6 +15659,7 @@ function commandTools(store) {
         const cmd = c2.data.commands[index];
         if (!cmd) throw new Error(`No command ${index}: ${c2.id} has ${c2.data.commands.length} commands (0-${c2.data.commands.length - 1}).`);
         const detail = commandDetail(c2, cmd, boolArg(args, "values", true));
+        await addHeapReads(c2, cmd, detail);
         if (cmd.stack?.length) detail.stack = stackLines(await symbolizeOnHost(cmd.stack.map((a) => c2.db.symbols.get(a) ?? { address: a, offset: 0 })));
         return jsonResult(detail);
       }
@@ -15112,433 +15798,6 @@ ${run2.output}`);
       }
     }
   ];
-}
-
-// src/main/shader_tools.ts
-import { execFile as execFile4 } from "node:child_process";
-import fs12 from "node:fs";
-import os8 from "node:os";
-import path12 from "node:path";
-import { fileURLToPath as fileURLToPath3 } from "node:url";
-
-// src/shared/hlsl_debug.ts
-var HLSL_BINDING_SHIFT = 65536;
-var HLSL_REGISTER_KINDS = ["b", "t", "s", "u"];
-var HLSL_SHIFT_ARGS = HLSL_REGISTER_KINDS.flatMap((k, i) => i ? [`-fvk-${k}-shift`, String(i * HLSL_BINDING_SHIFT), "all"] : []);
-function hlslRegisterOf(set, binding) {
-  const kind = HLSL_REGISTER_KINDS[Math.min(3, Math.floor(binding / HLSL_BINDING_SHIFT))];
-  return { kind, register: binding % HLSL_BINDING_SHIFT, space: set };
-}
-function hlslBindingName(set, binding) {
-  const r = hlslRegisterOf(set, binding);
-  return `${r.kind}${r.register}${r.space ? ` space ${r.space}` : ""}`;
-}
-
-// src/main/shader_tools.ts
-var tempCounter = 0;
-function tempBase() {
-  return path12.join(os8.tmpdir(), `vkinsp_${process.pid}_${Date.now()}_${++tempCounter}`);
-}
-var moduleDir2 = path12.dirname(fileURLToPath3(import.meta.url));
-function findTool(name) {
-  const exe = process.platform === "win32" ? `${name}.exe` : name;
-  const candidates = [];
-  if (process.env.INSPECTOR_TOOLS_DIR) candidates.push(path12.join(process.env.INSPECTOR_TOOLS_DIR, exe));
-  if (process.env.VULKAN_SDK) candidates.push(path12.join(process.env.VULKAN_SDK, "Bin", exe), path12.join(process.env.VULKAN_SDK, "bin", exe));
-  for (const c2 of candidates) if (fs12.existsSync(c2)) return c2;
-  return exe;
-}
-function isDxbc(bytes) {
-  return bytes.byteLength >= 4 && bytes[0] === 68 && bytes[1] === 88 && bytes[2] === 66 && bytes[3] === 67;
-}
-function findShaderTool() {
-  if (process.env.INSPECTOR_TOOLS_DIR) {
-    const c2 = path12.join(process.env.INSPECTOR_TOOLS_DIR, SHADER_TOOL);
-    if (fs12.existsSync(c2)) return c2;
-  }
-  const roots = [
-    path12.resolve(moduleDir2, "..", ".."),
-    path12.resolve(moduleDir2, "..", "..", ".."),
-    path12.resolve(moduleDir2, "..", "..", "..", "..")
-  ];
-  if (process.env.GPU_INSPECTOR_ROOT) roots.push(process.env.GPU_INSPECTOR_ROOT);
-  const packaged = process.resourcesPath ? [path12.join(process.resourcesPath, "layer")] : [];
-  return findD3D12ShaderTool(roots, packaged);
-}
-var NO_SHADER_TOOL = `${SHADER_TOOL} not found: build the D3D12 library (src/d3d12/README.md)`;
-function embeddedSource(entry2) {
-  if (Array.isArray(entry2) && entry2.length >= 2) return { name: String(entry2[0]), text: String(entry2[1]) };
-  if (entry2 && typeof entry2 === "object") {
-    const o = entry2;
-    const text = o.text ?? o.source ?? o.contents;
-    if (typeof text === "string") return { name: String(o.name ?? o.file ?? o.path ?? ""), text, from: typeof o.from === "string" ? o.from : void 0 };
-  }
-  return null;
-}
-var NO_HLSL_HINT = "dxc -Zi embeds the HLSL in the container; dxc -Zs keeps it out and writes it to a PDB beside the build (-Fd <dir>\\), which GPU Inspector reads when a symbol directory names that directory.";
-function compileInfo(entry2) {
-  if (!entry2 || typeof entry2 !== "object") return null;
-  const c2 = entry2.compile;
-  if (!c2 || typeof c2 !== "object") return null;
-  const o = c2;
-  const strings = (v) => Array.isArray(v) ? v.filter((x) => typeof x === "string") : [];
-  return { mainFile: String(o.mainFile ?? ""), entryPoint: String(o.entryPoint ?? ""), target: String(o.target ?? ""), defines: strings(o.defines), args: strings(o.args) };
-}
-function dxbcSources(bytes, pdbDirs = []) {
-  const tool = findShaderTool();
-  if (!tool) return Promise.resolve({ ok: false, text: NO_SHADER_TOOL });
-  return new Promise((resolve) => {
-    const tmp = `${tempBase()}.dxbc`;
-    fs12.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    const args = ["--sources", tmp];
-    for (const dir of pdbDirs) if (dir && fs12.existsSync(dir)) args.push("--pdb-dir", dir);
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      try {
-        fs12.unlinkSync(tmp);
-      } catch {
-      }
-      if (err) {
-        resolve({ ok: false, text: err.code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
-        return;
-      }
-      let parsed;
-      try {
-        parsed = JSON.parse(stdout);
-      } catch {
-        resolve({ ok: false, text: `${SHADER_TOOL} printed no source list: ${stdout.trim().split(/\r?\n/)[0] ?? ""}` });
-        return;
-      }
-      const entries = Array.isArray(parsed) ? parsed : [];
-      const files = entries.map(embeddedSource).filter((s) => s !== null);
-      if (!files.length) resolve({ ok: false, text: `${(stderr || "").trim() || "no HLSL source"}. ${NO_HLSL_HINT}` });
-      else resolve({ ok: true, sources: { files, compile: entries.map(compileInfo).find((c2) => c2 !== null) ?? null } });
-    });
-  });
-}
-async function dxbcText(bytes, mode, pdbDirs = []) {
-  if (mode !== "dis" && mode !== "hlsl") return { ok: false, text: `${mode} is not available for DXBC/DXIL: a D3D12 shader has its disassembly and its HLSL source` };
-  if (mode === "hlsl") {
-    const r = await dxbcSources(bytes, pdbDirs);
-    if (!r.ok) return { ok: false, text: r.text };
-    return { ok: true, text: r.sources.files.map((s) => `// ==== ${s.name}${s.from ? ` (from ${s.from})` : ""}
-${s.text.endsWith("\n") ? s.text : `${s.text}
-`}`).join("\n") };
-  }
-  const tool = findShaderTool();
-  if (!tool) return { ok: false, text: NO_SHADER_TOOL };
-  return new Promise((resolve) => {
-    const tmp = `${tempBase()}.dxbc`;
-    fs12.writeFileSync(tmp, Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength));
-    execFile4(tool, ["--disassemble", tmp], { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      try {
-        fs12.unlinkSync(tmp);
-      } catch {
-      }
-      if (err) resolve({ ok: false, text: err.code === "ENOENT" ? NO_SHADER_TOOL : `${SHADER_TOOL} failed: ${stderr || err.message}` });
-      else resolve({ ok: true, text: stdout });
-    });
-  });
-}
-function disassembleDxil(container) {
-  return dxbcText(container, "dis");
-}
-function assembleDxil(text) {
-  const tool = findShaderTool();
-  if (!tool) return Promise.resolve({ ok: false, error: NO_SHADER_TOOL });
-  return new Promise((resolve) => {
-    const base = tempBase();
-    const source = `${base}.ll`;
-    const out = `${base}.dxil`;
-    fs12.writeFileSync(source, text);
-    execFile4(tool, ["--assemble", source, "--out", out], { maxBuffer: 4 * 1024 * 1024 }, (err, _stdout, stderr) => {
-      let container = null;
-      if (!err) {
-        try {
-          container = new Uint8Array(fs12.readFileSync(out));
-        } catch {
-        }
-      }
-      for (const f of [source, out]) {
-        try {
-          fs12.unlinkSync(f);
-        } catch {
-        }
-      }
-      if (container) resolve({ ok: true, container });
-      else resolve({ ok: false, error: (stderr || err?.message || "no container was written").trim().split(/\r?\n/).slice(0, 3).join(" ") });
-    });
-  });
-}
-function shaderText(spirv, mode, options = {}) {
-  if (isDxbc(spirv)) return dxbcText(spirv, mode, options.pdbDirs);
-  return new Promise((resolve) => {
-    const tmp = `${tempBase()}.spv`;
-    fs12.writeFileSync(tmp, Buffer.from(spirv));
-    let tool;
-    let args;
-    if (mode === "dis") {
-      tool = findTool("spirv-dis");
-      args = ["--comment", "--no-color", tmp];
-    } else {
-      tool = findTool("spirv-cross");
-      args = [tmp];
-      if (mode === "hlsl") args.push("--hlsl", "--shader-model", "60");
-      else if (mode === "msl") args.push("--msl");
-      else args.push("--vulkan-semantics", "--version", "460");
-      if (options.entry) args.push("--entry", options.entry.name, "--stage", GLSL_STAGES[options.entry.stage] ?? "frag");
-      if (options.forceTemporary) args.push("--force-temporary");
-    }
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      try {
-        fs12.unlinkSync(tmp);
-      } catch {
-      }
-      if (err) resolve({ ok: false, text: `${path12.basename(tool)} failed: ${stderr || err.message}` });
-      else resolve({ ok: true, text: stdout });
-    });
-  });
-}
-function validateSpirv(spirv) {
-  return new Promise((resolve) => {
-    const tmp = `${tempBase()}.spv`;
-    fs12.writeFileSync(tmp, Buffer.from(spirv.buffer, spirv.byteOffset, spirv.byteLength));
-    execFile4(findTool("spirv-val"), ["--target-env", "vulkan1.3", tmp], { maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
-      try {
-        fs12.unlinkSync(tmp);
-      } catch {
-      }
-      if (!err) resolve(null);
-      else if (err.code === "ENOENT") resolve(void 0);
-      else resolve((stderr || stdout || err.message).trim().split(/\r?\n/).slice(0, 3).join(" "));
-    });
-  });
-}
-var GLSL_STAGES = {
-  vertex: "vert",
-  tess_control: "tesc",
-  tess_eval: "tese",
-  geometry: "geom",
-  fragment: "frag",
-  compute: "comp",
-  task: "task",
-  mesh: "mesh",
-  raygen: "rgen",
-  intersection: "rint",
-  any_hit: "rahit",
-  closest_hit: "rchit",
-  miss: "rmiss",
-  callable: "rcall"
-};
-var HLSL_PROFILES = {
-  vertex: "vs_6_0",
-  tess_control: "hs_6_0",
-  tess_eval: "ds_6_0",
-  geometry: "gs_6_0",
-  fragment: "ps_6_0",
-  compute: "cs_6_0",
-  task: "as_6_5",
-  mesh: "ms_6_5",
-  raygen: "lib_6_3",
-  intersection: "lib_6_3",
-  any_hit: "lib_6_3",
-  closest_hit: "lib_6_3",
-  miss: "lib_6_3",
-  callable: "lib_6_3"
-};
-function targetEnv(spirvVersion, tool) {
-  const v = spirvVersion || "1.5";
-  if (tool === "spirv-as") return `spv${v}`;
-  const glslang = { "1.0": "vulkan1.0", "1.3": "vulkan1.1", "1.4": "vulkan1.1spirv1.4", "1.5": "vulkan1.2", "1.6": "vulkan1.3" };
-  const env = glslang[v] ?? "vulkan1.2";
-  return tool === "dxc" ? env : env.replace("spirv", "spv");
-}
-function needsIncludeExtension(source) {
-  return /^[ \t]*#[ \t]*include/m.test(source) && !/GL_GOOGLE_include_directive|GL_ARB_shading_language_include/.test(source);
-}
-function compileShader(source, language, stage, entryPoint, spirvVersion, options = {}) {
-  return new Promise((resolve) => {
-    const base = tempBase();
-    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs12.existsSync(d));
-    const debugName = language === "glsl" ? options.debugFileName : void 0;
-    const dir = debugName ? fs12.mkdtempSync(`${base}_`) : null;
-    const src = dir ? path12.join(dir, debugName) : base + (language === "hlsl" ? ".hlsl" : language === "spirv-asm" ? ".spvasm" : ".glsl");
-    const out = base + ".spv";
-    fs12.writeFileSync(src, source);
-    const entry2 = entryPoint || "main";
-    let tool;
-    let args;
-    if (language === "spirv-asm") {
-      tool = findTool("spirv-as");
-      args = ["--target-env", targetEnv(spirvVersion, "spirv-as"), "-o", out, src];
-    } else if (language === "hlsl") {
-      tool = findTool("dxc");
-      args = ["-spirv", "-T", HLSL_PROFILES[stage] ?? "ps_6_0", "-E", entry2, `-fspv-target-env=${targetEnv(spirvVersion, "dxc")}`, "-Fo", out, src];
-      for (const dir2 of includeDirs) args.push("-I", dir2);
-    } else {
-      tool = findTool("glslangValidator");
-      args = [
-        "-V",
-        "-S",
-        GLSL_STAGES[stage] ?? "frag",
-        "--target-env",
-        targetEnv(spirvVersion, "glslang"),
-        "--source-entrypoint",
-        "main",
-        "-e",
-        entry2,
-        "-o",
-        out
-      ];
-      if (debugName) args.push("-g", debugName);
-      else args.push(src);
-      for (const dir2 of includeDirs) args.push(`-I${dir2}`);
-      if (needsIncludeExtension(source)) args.push("-P#extension GL_GOOGLE_include_directive : require");
-    }
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: dir ?? void 0 }, (err, stdout, stderr) => {
-      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
-      let spirv;
-      try {
-        if (fs12.existsSync(out)) spirv = new Uint8Array(fs12.readFileSync(out));
-      } catch {
-        spirv = void 0;
-      }
-      for (const f of [src, out]) {
-        try {
-          fs12.unlinkSync(f);
-        } catch {
-        }
-      }
-      if (dir) fs12.rmSync(dir, { recursive: true, force: true });
-      const name = path12.basename(tool);
-      if (err || !spirv || spirv.byteLength < 20) {
-        const reason = log || (err && "code" in err && err.code === "ENOENT" ? `${name} not found: install the Vulkan SDK or set VULKAN_SDK` : err?.message ?? `${name} produced no output`);
-        resolve({ ok: false, log: reason, tool: name });
-      } else {
-        resolve({ ok: true, spirv, log, tool: name });
-      }
-    });
-  });
-}
-var DXIL_PROFILES = {
-  vertex: "vs",
-  fragment: "ps",
-  tess_control: "hs",
-  tess_eval: "ds",
-  geometry: "gs",
-  compute: "cs",
-  task: "as",
-  mesh: "ms"
-};
-function compileDxil(source, stage, entryPoint, shaderModel = "6_0", options = {}) {
-  const prefix = DXIL_PROFILES[stage];
-  if (!prefix) return Promise.resolve({ ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" });
-  return new Promise((resolve) => {
-    const base = tempBase();
-    const includeDirs = (options.includeDirs ?? []).filter((d) => d && fs12.existsSync(d));
-    const src = `${base}.hlsl`;
-    const out = `${base}.dxil`;
-    fs12.writeFileSync(src, source);
-    const tool = findTool("dxc");
-    const args = ["-T", `${prefix}_${shaderModel.replace(/^[^0-9]*/, "").replace(".", "_") || "6_0"}`, "-E", entryPoint || "main", "-Zi", "-Qembed_debug", "-Fo", out, src];
-    for (const dir of includeDirs) args.push("-I", dir);
-    execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024 }, (err, stdout, stderr) => {
-      const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
-      let bytecode;
-      try {
-        if (fs12.existsSync(out)) bytecode = new Uint8Array(fs12.readFileSync(out));
-      } catch {
-        bytecode = void 0;
-      }
-      for (const f of [src, out]) {
-        try {
-          fs12.unlinkSync(f);
-        } catch {
-        }
-      }
-      if (err || !bytecode || !isDxbc(bytecode)) {
-        const reason = log || (err && "code" in err && err.code === "ENOENT" ? "dxc not found: install the Vulkan SDK (or the DirectX Shader Compiler) and set VULKAN_SDK or INSPECTOR_TOOLS_DIR" : err?.message ?? "dxc produced no output");
-        resolve({ ok: false, log: reason, tool: "dxc" });
-      } else {
-        resolve({ ok: true, spirv: bytecode, log, tool: "dxc" });
-      }
-    });
-  });
-}
-function relativeSourcePath(name) {
-  const parts2 = name.replace(/\\/g, "/").replace(/^[A-Za-z]:/, "").split("/").filter((p) => p && p !== "." && p !== "..");
-  return parts2.length ? parts2.join("/") : "shader.hlsl";
-}
-function spirvProfile(stage, target) {
-  const prefix = DXIL_PROFILES[stage];
-  if (!prefix) return null;
-  const m = /_(\d+)_(\d+)$/.exec(target);
-  const model = m && Number(m[1]) >= 6 ? `${m[1]}_${m[2]}` : "6_0";
-  return `${prefix}_${model}`;
-}
-async function compileHlslForDebugging(container, stage, entryPoint, options = {}) {
-  const found2 = await dxbcSources(container, options.pdbDirs ?? []);
-  if (!found2.ok) return { ok: false, log: found2.text, tool: SHADER_TOOL };
-  const { files, compile } = found2.sources;
-  const entry2 = entryPoint || compile?.entryPoint || "main";
-  const profile = spirvProfile(stage, options.target || compile?.target || "");
-  if (!profile) return { ok: false, log: `no D3D12 shader profile for the ${stage} stage`, tool: "dxc" };
-  const mainName = compile?.mainFile ?? "";
-  const same = (a, b) => relativeSourcePath(a).toLowerCase() === relativeSourcePath(b).toLowerCase();
-  const defines = new RegExp(`\\b${entry2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\\s*\\(`);
-  const main = files.find((f) => mainName && same(f.name, mainName)) ?? files.find((f) => mainName && path12.basename(relativeSourcePath(f.name)).toLowerCase() === path12.basename(relativeSourcePath(mainName)).toLowerCase()) ?? files.find((f) => defines.test(f.text)) ?? files[0];
-  const dir = fs12.mkdtempSync(`${tempBase()}_`);
-  try {
-    const written = /* @__PURE__ */ new Map();
-    for (const f of files) {
-      const rel = relativeSourcePath(f.name);
-      if (written.has(rel)) continue;
-      const p = path12.join(dir, rel);
-      fs12.mkdirSync(path12.dirname(p), { recursive: true });
-      fs12.writeFileSync(p, f.text);
-      written.set(rel, p);
-    }
-    const mainPath = written.get(relativeSourcePath(main.name));
-    const out = path12.join(dir, "debug.spv");
-    const tool = findTool("dxc");
-    const args = ["-spirv", "-T", profile, "-E", entry2, "-fspv-target-env=vulkan1.2", "-fspv-debug=line", "-fspv-debug=source", "-fspv-reflect", "-fvk-use-dx-layout", ...HLSL_SHIFT_ARGS];
-    for (const d of compile?.defines ?? []) args.push("-D", d);
-    for (const a of compile?.args ?? []) args.push(a);
-    args.push("-O0", "-I", dir);
-    for (const inc of (options.includeDirs ?? []).filter((d) => d && fs12.existsSync(d))) args.push("-I", inc);
-    args.push("-Fo", out, path12.basename(mainPath));
-    return await new Promise((resolve) => {
-      execFile4(tool, args, { maxBuffer: 64 * 1024 * 1024, cwd: path12.dirname(mainPath) }, (err, stdout, stderr) => {
-        const log = `${stdout ?? ""}${stderr ?? ""}`.trim();
-        let spirv;
-        try {
-          if (fs12.existsSync(out)) spirv = new Uint8Array(fs12.readFileSync(out));
-        } catch {
-          spirv = void 0;
-        }
-        if (err || !spirv || spirv.byteLength < 20) {
-          const reason = log || (err && "code" in err && err.code === "ENOENT" ? "dxc not found: install the Vulkan SDK (or the DirectX Shader Compiler) and set VULKAN_SDK or INSPECTOR_TOOLS_DIR" : err?.message ?? "dxc produced no output");
-          resolve({ ok: false, log: reason, tool: "dxc", source: main.text });
-        } else {
-          resolve({ ok: true, spirv, log, tool: "dxc", source: main.text });
-        }
-      });
-    });
-  } finally {
-    fs12.rmSync(dir, { recursive: true, force: true });
-  }
-}
-var DECOMPILED_FILE = "decompiled.glsl";
-async function decompileForDebugging(spirv, stage, entryPoint) {
-  const glsl = await shaderText(spirv, "glsl", { entry: { stage, name: entryPoint || "main" }, forceTemporary: true });
-  if (!glsl.ok) return { ok: false, log: glsl.text, tool: "spirv-cross" };
-  const version = spirv.byteLength >= 8 ? new DataView(spirv.buffer, spirv.byteOffset, 8).getUint32(4, true) : 0;
-  const spirvVersion = version ? `${version >> 16 & 255}.${version >> 8 & 255}` : "1.5";
-  const compiled = await compileShader(glsl.text, "glsl", stage, entryPoint, spirvVersion, { debugFileName: DECOMPILED_FILE });
-  if (!compiled.ok) {
-    const log = compiled.log.split(/\r?\n/).filter((l) => l.trim() && l.trim() !== DECOMPILED_FILE).join("\n");
-    return { ok: false, log: `the decompiled GLSL did not compile: ${log}`, tool: compiled.tool, source: glsl.text };
-  }
-  return { ok: true, spirv: compiled.spirv, log: compiled.log, tool: compiled.tool, source: glsl.text };
 }
 
 // src/renderer/mesh_output.ts
@@ -30807,7 +31066,7 @@ function debugTools(store) {
 // src/renderer/d3d12/dxil_ablate.ts
 var NAME = /%(?:"(?:[^"\\]|\\.)*"|[-a-zA-Z$._0-9]+)/g;
 var SCALAR = /* @__PURE__ */ new Set(["float", "half", "double", "i1", "i8", "i16", "i32", "i64"]);
-var BINARY = /* @__PURE__ */ new Set(["add", "fadd", "sub", "fsub", "mul", "fmul", "udiv", "sdiv", "fdiv", "urem", "srem", "frem", "shl", "lshr", "ashr", "and", "or", "xor"]);
+var BINARY2 = /* @__PURE__ */ new Set(["add", "fadd", "sub", "fsub", "mul", "fmul", "udiv", "sdiv", "fdiv", "urem", "srem", "frem", "shl", "lshr", "ashr", "and", "or", "xor"]);
 var CAST = /* @__PURE__ */ new Set(["trunc", "zext", "sext", "fptrunc", "fpext", "fptoui", "fptosi", "uitofp", "sitofp", "bitcast", "ptrtoint", "inttoptr", "addrspacecast"]);
 var FLAGS = /* @__PURE__ */ new Set(["fast", "nnan", "ninf", "nsz", "arcp", "nuw", "nsw", "exact"]);
 var TEXTURE_READS = /* @__PURE__ */ new Set([
@@ -31012,7 +31271,7 @@ var Module2 = class {
     const rest = body.slice(body.indexOf(opcode) + opcode.length).trim();
     const words2 = rest.split(/\s+/);
     let type = null;
-    if (BINARY.has(opcode)) {
+    if (BINARY2.has(opcode)) {
       type = words2.find((w) => !FLAGS.has(w)) ?? null;
     } else if (opcode === "icmp" || opcode === "fcmp") {
       type = "i1";

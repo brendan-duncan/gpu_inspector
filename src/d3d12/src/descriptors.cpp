@@ -262,7 +262,7 @@ DescriptorRecord DescriptorTracker::Get(ID3D12DescriptorHeap* heap, uint32_t ind
     return h->records[index];
 }
 
-std::vector<DescriptorRecord> DescriptorTracker::Slots(ID3D12DescriptorHeap* heap, uint32_t first, uint32_t count)
+std::vector<DescriptorRecord> DescriptorTracker::Slots(ID3D12DescriptorHeap* heap, uint32_t first, uint32_t count, std::vector<uint64_t>* writes)
 {
     std::vector<DescriptorRecord> out;
     Impl& i = impl();
@@ -275,6 +275,26 @@ std::vector<DescriptorRecord> DescriptorTracker::Slots(ID3D12DescriptorHeap* hea
         return out;
     uint32_t end = (uint32_t)std::min<uint64_t>((uint64_t)first + count, h->records.size());
     out.assign(h->records.begin() + first, h->records.begin() + end);
+    if (writes)
+        writes->assign(h->writes.begin() + first, h->writes.begin() + end);
+    return out;
+}
+
+std::vector<std::pair<uint32_t, DescriptorRecord>> DescriptorTracker::ChangedFrom(ID3D12DescriptorHeap* heap, uint32_t first, const std::vector<uint64_t>& writes)
+{
+    std::vector<std::pair<uint32_t, DescriptorRecord>> out;
+    Impl& i = impl();
+    std::shared_lock lock(i.mutex);
+    Impl::Heap* h = i.FindByObject(heap);
+    if (!h)
+        return out;
+    std::lock_guard<std::mutex> records(h->mutex);
+    for (size_t k = 0; k < writes.size() && first + k < h->writes.size(); ++k)
+    {
+        const uint32_t slot = first + (uint32_t)k;
+        if (h->writes[slot] != writes[k])
+            out.emplace_back(slot, h->records[slot]);
+    }
     return out;
 }
 

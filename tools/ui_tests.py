@@ -2221,16 +2221,34 @@ def d3d12_cases(triangle):
             expect("CreateConstantBufferView(" in commands, "the local table's descriptor is not written into the program's heap")
 
     saved_bindless = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_bindless.gpucap")
+    saved_late = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_late_descriptor.gpucap")
+
+    def d3d12_late_descriptor_replay(_work):
+        # --late-descriptor: the cube table's volatile SRV slot is rewritten with the stripes texture
+        # after the draw was recorded and before the list runs. The GPU draws the stripes; the draw's
+        # snapshot holds the checker, so the replay is only identical if the submission carried the
+        # slot as it was then (heapDescriptors, CaptureManager::IndexedHeapContents).
+        if not os.path.isfile(saved_late):
+            return ["the capture was not saved, so there is nothing to replay"]
+        out = subprocess.run([find_d3d12_replay(), saved_late, "--debug-layer"], capture_output=True, text=True, timeout=600)
+        text = out.stdout + out.stderr
+        return expect("differ" not in text and text.count("identical (") >= 2, f"the replay differs from the capture:\n{text[-2000:]}") + \
+            expect(re.search(r"^problems: 0", text, re.M) is not None, f"the replay reported problems:\n{text[-2000:]}")
 
     def d3d12_bindless_details(state, log):
         # The saved --bindless capture reopened with its cube draw selected: the details list the
         # heap the pixel shader indexes directly, with the stripes texture's slot among the written
-        # ones -- a slot no root parameter shows (renderer/d3d12/indexed_heap.ts).
+        # ones -- a slot no root parameter shows (renderer/d3d12/indexed_heap.ts) -- and the slot the
+        # shader takes, worked out from its DXIL and the draw's root constants (heap_indices.ts).
+        # The analysis disassembles the stage, which is why the delay is longer than a plain open's.
         text = capture(state).get("commandDetails") or ""
         return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") + \
             expect("Descriptor heap indexed by the shaders" in text, f"the draw's details show no directly indexed heap:\n{text[:1500]}") + \
             expect("Slot 10:" in text and "Bindless stripes texture" in text,
-                   f"the stripes texture's slot (10) is not listed with its resource:\n{text[:1500]}")
+                   f"the stripes texture's slot (10) is not listed with its resource:\n{text[:1500]}") + \
+            expect(re.search(r"Fragment, line 49: slot 10 ", text) is not None,
+                   f"the pixel shader's ResourceDescriptorHeap[flags >> 8] was not worked out to slot 10 from the root constants:\n{text[:2500]}") + \
+            expect(re.search(r"Slot 10: [^\n]*\(read by Fragment\)", text) is not None, "slot 10's row does not say the pixel shader reads it")
 
     def d3d12_export_cpp_bindless(state, log):
         # --bindless: the cube's pixel shader reads a texture through ResourceDescriptorHeap, from a
@@ -2263,7 +2281,10 @@ def d3d12_cases(triangle):
                     # The capture the case above saved, reopened on its cube draw (command 15: the
                     # submission, the list's Reset and its state commands come first).
                     Case("d3d12-bindless-details", [f"--debug-open={saved_bindless}", "--debug-command=15"],
-                         d3d12_bindless_details, delay_ms=9000)] if find_d3d12_replay() else []
+                         d3d12_bindless_details, delay_ms=9000),
+                    Case("d3d12-late-descriptor", launch + ["--args=--late-descriptor", "--validation", "--debug-capture",
+                                                            f"--debug-save={saved_late}", "--debug-save-delay=9000"],
+                         lambda state, log: check_connected(state, log), delay_ms=16000, then=d3d12_late_descriptor_replay)] if find_d3d12_replay() else []
     if not export_cases:
         print("  (no dxinsp_replay build: skipping the D3D12 Export to C++ case)")
     return export_cases + [

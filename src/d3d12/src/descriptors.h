@@ -89,8 +89,16 @@ public:
     bool Locate(D3D12_GPU_DESCRIPTOR_HANDLE handle, HeapInfo& heap, uint32_t& index);
     /** The record of a slot (kind None when never written or out of range). */
     DescriptorRecord Get(ID3D12DescriptorHeap* heap, uint32_t index);
-    /** `count` records from `first` (clamped to the heap), for a table snapshot or RequestDescriptorSet. */
-    std::vector<DescriptorRecord> Slots(ID3D12DescriptorHeap* heap, uint32_t first, uint32_t count);
+    /**
+     * `count` records from `first` (clamped to the heap), for a table snapshot or RequestDescriptorSet.
+     * `writes`, when given, gets each slot's write number beside it (ChangedFrom compares against them).
+     */
+    std::vector<DescriptorRecord> Slots(ID3D12DescriptorHeap* heap, uint32_t first, uint32_t count, std::vector<uint64_t>* writes = nullptr);
+    /**
+     * The slots from `first` whose last write is no longer the one `writes` recorded, with what they
+     * hold now: a table's slots rewritten after its snapshot, which the GPU reads at execution.
+     */
+    std::vector<std::pair<uint32_t, DescriptorRecord>> ChangedFrom(ID3D12DescriptorHeap* heap, uint32_t first, const std::vector<uint64_t>& writes);
     /** The number of slots ever written in a heap. */
     uint32_t WrittenCount(ID3D12DescriptorHeap* heap);
     /**

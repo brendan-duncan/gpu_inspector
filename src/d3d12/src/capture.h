@@ -256,11 +256,12 @@ public:
     /** A bundle ran inside a list: its recording becomes the ExecuteBundle command's children. */
     void OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle);
     /**
-     * The contents of the heaps a submission's lists let shaders index directly, as the
-     * submission's extra (`heapDescriptors`): the slots written since the capture last sent them,
-     * which is every written slot the first time. A bindless shader reads what the heap holds when
-     * the GPU runs it, which is what it holds at the submission; what the views name is read back
-     * after it. Empty when no list of the submission indexes a heap.
+     * Heap slots as they are at a submission, as its extra (`heapDescriptors`): of the heaps its
+     * lists let shaders index directly, the slots written since the capture last sent them (every
+     * written slot the first time); and of every heap, the slots a table snapshot of its lists read
+     * that were rewritten after it -- a volatile range may be, until the list runs. The GPU reads a
+     * descriptor when it runs, which is what the heap holds at the submission; what the views name
+     * is read back after it. Empty when there is nothing to send.
      */
     std::string IndexedHeapContents(UINT count, ID3D12CommandList* const* lists);
     /**
