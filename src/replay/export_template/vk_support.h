@@ -91,13 +91,21 @@ VkDeviceAddress BuildScratch(const VkAccelerationStructureBuildGeometryInfoKHR& 
  */
 void UploadInstances(VkBuffer buffer, VkDeviceSize offset, const void* data, size_t size, const VkAccelerationStructureKHR* bottoms,
     uint32_t count);
-/** One region of a trace's shader binding table as captured: its records' bytes and its layout. */
+/** A device address in a shader record's data, as the program's own buffer's: where in the region, and the address. */
+struct RecordPatch
+{
+    VkDeviceSize offset;
+    VkDeviceAddress address;
+};
+/** One region of a trace's shader binding table as captured: its records' bytes, its layout, and its record data's addresses. */
 struct BindingTableRegion
 {
     const void* data = nullptr;   // null: the region is empty
     size_t size = 0;
     VkDeviceSize stride = 0;
     VkDeviceSize regionSize = 0;
+    const RecordPatch* patches = nullptr;
+    uint32_t patchCount = 0;
 };
 /**
  * vkCmdTraceRaysKHR with a binding table built here: each region's records copied, and every record's

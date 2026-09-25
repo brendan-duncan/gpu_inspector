@@ -1635,6 +1635,7 @@ void Hook_vkCmdTraceRaysKHR(VkCommandBuffer commandBuffer, const VkStridedDevice
     };
     std::string extra;
     uint32_t captured = 0;
+    std::vector<CaptureManager::TraceTable> tables;
     for (const auto& r : regions)
     {
         if (!r.region || !r.region->deviceAddress || !r.region->size)
@@ -1649,9 +1650,17 @@ void Hook_vkCmdTraceRaysKHR(VkCommandBuffer commandBuffer, const VkStridedDevice
             continue;
         extra += captured++ ? "," : "";
         extra += std::string("{\"region\":\"") + r.name + "\",\"capture\":" + std::to_string(id) + "}";
+        // The raygen region's stride is its size (the record is the whole region).
+        tables.push_back({r.name, id, r.region->stride ? r.region->stride : size});
     }
     if (captured)
-        rec->SetExtraOnLast(",\"bindingTableData\":[" + extra + "]");
+    {
+        const std::string key = ",\"bindingTableData\":[" + extra + "]";
+        rec->SetExtraOnLast(key);
+        // Looked at again at the finish, when the tables' bytes are there: the device addresses in
+        // their shader record data (CaptureManager::ResolveRecordAddresses).
+        CaptureManager::Get().NoteTraceTables(dev, key, std::move(tables));
+    }
 }
 
 // ---------------------------------------------------------------------------------------------

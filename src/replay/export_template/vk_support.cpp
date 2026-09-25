@@ -1187,6 +1187,10 @@ void TraceRays(VkCommandBuffer cb, VkPipeline pipeline, const void* capturedHand
                 }
             }
         }
+        // The record data's device addresses: the captured process's, written over with this one's.
+        for (uint32_t k = 0; k < region.patchCount; ++k)
+            if (region.patches[k].offset + sizeof(VkDeviceAddress) <= region.size)
+                std::memcpy(bytes + region.patches[k].offset, &region.patches[k].address, sizeof(VkDeviceAddress));
     }
     vkCmdTraceRaysKHR(cb, &out[0], &out[1], &out[2], &out[3], width, height, depth);
 }

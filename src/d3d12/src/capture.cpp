@@ -634,6 +634,12 @@ struct CaptureManager::Impl
      * doing it here is what lets such a pass be timed at all (EndPassQueries).
      */
     void ResolveQueries(const std::vector<TimingEntry>& timings);
+    /**
+     * The traces' local root arguments (raytracing.h, ResolveLocalRootArguments), once the binding
+     * tables' read-backs are mapped: the extras their commands carry, and the root views' buffer
+     * ranges read back now, in a list of the capture's own, into buffer entries of their own.
+     */
+    void ResolveLocalRoots(std::vector<BufferEntry>& buffers, std::unordered_map<std::string, std::string>& lateExtras);
     uint32_t CurrentFrame();   // frame ordinal of what is being recorded now (under mutex)
     void ReleaseCaptureObjects(DeviceCapture& dc);
     /** The mapped staging chunk an entry's data is in, or null. */
@@ -862,6 +868,7 @@ CaptureManager::Impl& CaptureManager::impl()
 
 void CaptureManager::RequestCapture(const CaptureOptions& options)
 {
+    ForgetPendingTraces();
     Impl& i = impl();
     std::lock_guard lock(i.mutex);
     if (i.state == Impl::State::Capturing)
@@ -1020,6 +1027,7 @@ void CaptureManager::OnListReset(ID3D12Device* device, ID3D12GraphicsCommandList
         rec = slot.rec.get();
         _recorderCount.store(i.recorders.size(), std::memory_order_relaxed);
     }
+
     rec->SetCaptureStacks(stacks);
     if (initialState)
         rec->state().pipeline = initialState;
@@ -2551,6 +2559,111 @@ void CaptureManager::Impl::ResolveQueries(const std::vector<TimingEntry>& timing
     }
 }
 
+void CaptureManager::Impl::ResolveLocalRoots(std::vector<BufferEntry>& buffers, std::unordered_map<std::string, std::string>& lateExtras)
+{
+    auto bytesOf = [&](uint32_t id, const uint8_t*& bytes, size_t& size) {
+        if (!id || id > buffers.size())
+            return false;
+        const BufferEntry& e = buffers[id - 1];
+        if (e.failed || e.frame == UINT32_MAX)
+            return false;
+        const uint8_t* chunk = MappedChunk(e.device, e.chunk);
+        if (!chunk)
+            return false;
+        bytes = chunk + e.stagingOffset;
+        size = (size_t)e.size;
+        return true;
+    };
+    struct LateRead
+    {
+        DeviceCapture* dc;
+        ID3D12Resource* buffer;
+        UINT64 offset;
+        UINT64 size;
+        ID3D12Resource* staging;
+        UINT64 stagingOffset;
+    };
+    std::vector<LateRead> reads;
+    // A root view's range, read at the end of the frame: what the trace read, for data that does not
+    // change within it, which is what a local root argument points at (materials, per-object constants).
+    auto readBack = [&](ID3D12Resource* buffer, UINT64 offset, UINT64 size) -> uint32_t {
+        ID3D12Device* device = DeviceOf(buffer);
+        DeviceCapture* dc = device ? FindCapture(device) : nullptr;
+        ResourceInfo info;
+        if (!dc || !size || (ResourceTracker::Get().Get(buffer, info) && info.heapType == D3D12_HEAP_TYPE_READBACK))
+            return 0;
+        BufferEntry e;
+        e.id = (uint32_t)buffers.size() + 1;
+        e.bufferId = Tracker::Get().IdOf(buffer);
+        e.frame = 0;
+        e.offset = offset;
+        e.size = size;
+        e.device = device;
+        ID3D12Resource* staging = nullptr;
+        if (!AllocateStaging(*dc, D3D12_COMMAND_LIST_TYPE_DIRECT, size, e.chunk, e.stagingOffset, &staging))
+            return 0;
+        buffers.push_back(e);
+        reads.push_back({dc, buffer, offset, size, staging, e.stagingOffset});
+        return e.id;
+    };
+    lateExtras = ResolveLocalRootArguments(bytesOf, readBack);
+    if (reads.empty())
+        return;
+
+    // Every queue has finished (Finish waited): a buffer has decayed to COMMON, from which a copy
+    // promotes it, and an upload heap's is GENERIC_READ for good. Neither needs a barrier.
+    std::vector<DeviceCapture*> devices;
+    for (const LateRead& r : reads)
+        if (std::find(devices.begin(), devices.end(), r.dc) == devices.end())
+            devices.push_back(r.dc);
+    for (DeviceCapture* dc : devices)
+    {
+        ID3D12CommandQueue* queue = nullptr;
+        {
+            std::lock_guard lock(dc->mutex);
+            for (ID3D12CommandQueue* q : dc->queues)
+            {
+                if (q && q->GetDesc().Type == D3D12_COMMAND_LIST_TYPE_DIRECT)
+                {
+                    queue = q;
+                    break;
+                }
+            }
+        }
+        ScopedInternal internal;
+        ComPtr<ID3D12CommandAllocator> allocator;
+        ComPtr<ID3D12GraphicsCommandList> list;
+        if (!queue || FAILED(dc->device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(allocator.put()))) ||
+            FAILED(dc->device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, allocator.get(), nullptr, IID_PPV_ARGS(list.put()))))
+        {
+            LogAlways("capture: the buffers the traces' local root arguments name could not be read back");
+            continue;
+        }
+        list->SetName(L"GPU Inspector: local root argument read-backs");
+        for (const LateRead& r : reads)
+            if (r.dc == dc)
+                list->CopyBufferRegion(r.staging, r.stagingOffset, r.buffer, r.offset, r.size);
+        if (FAILED(list->Close()))
+            continue;
+        ID3D12CommandList* submit[] = {list.get()};
+        queue->ExecuteCommandLists(1, submit);
+        if (dc->fence && dc->event)
+        {
+            const uint64_t value = ++dc->fenceValue;
+            if (SUCCEEDED(queue->Signal(dc->fence.get(), value)) && dc->fence->GetCompletedValue() < value &&
+                SUCCEEDED(dc->fence->SetEventOnCompletion(value, dc->event)))
+                WaitForSingleObject(dc->event, 10000);
+        }
+        // Chunks made for these are mapped now, as the others were at the finish.
+        std::lock_guard lock(dc->mutex);
+        for (StagingChunk& c : dc->staging)
+        {
+            if (c.buffer && !c.mapped && FAILED(c.buffer->Map(0, nullptr, &c.mapped)))
+                c.mapped = nullptr;
+        }
+    }
+}
+
 void CaptureManager::Impl::RunAfterSubmitCopies(ID3D12Device* device, ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists)
 {
     std::vector<DeferredCopy> copies;
@@ -2982,6 +3095,8 @@ struct CaptureData
     std::vector<BufferEntry> buffers;
     std::vector<TimingEntry> timings;
     std::vector<DrawEntry> draws;
+    /** Members a trace's command carries beyond what it recorded: its local root arguments (ResolveLocalRootArguments), by its extras. */
+    std::unordered_map<std::string, std::string> lateExtras;
 };
 
 void WriteCommandEntry(JsonWriter& w, uint64_t index, uint32_t frame, int64_t slot, const char* method, const char* objectClass,
@@ -3101,7 +3216,20 @@ void SendCommands(const CaptureData& data)
             }
             int64_t slot = 0;
             for (const RecordedCommand& c : *l.commands)
+            {
+                // A trace's local root arguments were resolved at the finish, after it was recorded.
+                if (!data.lateExtras.empty() && c.method == "DispatchRays")
+                {
+                    auto late = std::find_if(data.lateExtras.begin(), data.lateExtras.end(),
+                        [&](const auto& e) { return c.extra.find(e.first) != std::string::npos; });
+                    if (late != data.lateExtras.end())
+                    {
+                        emit(s.frame, slot++, c.method.c_str(), "ID3D12GraphicsCommandList", l.listId, c.args, c.extra + late->second);
+                        continue;
+                    }
+                }
                 emit(s.frame, slot++, c.method.c_str(), "ID3D12GraphicsCommandList", l.listId, c.args, c.extra);
+            }
         }
     }
     flush();
@@ -3739,6 +3867,7 @@ void CaptureManager::Impl::Finish(CaptureManager& cm, ID3D12Device* device)
     // finished: nothing of the capture's is resolved inside the application's lists, which is what
     // lets a render pass suspended across command lists be timed at all (EndPassQueries).
     ResolveQueries(data.timings);
+    ResolveLocalRoots(data.buffers, data.lateExtras);
 
     SendCommands(data);
     SendTextures(data.textures);

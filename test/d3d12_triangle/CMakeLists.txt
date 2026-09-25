@@ -31,7 +31,9 @@ set(SHADERS
     "wave.hlsl|cs_6_0|CSMain|wave_cs.cso"
     # --ray-tracing: one DXIL library with every [shader(...)] export in it, which is what a DXR
     # state object is built from. A library has no entry point of its own, so -E is empty.
-    "raytrace.hlsl|lib_6_3||raytrace.cso")
+    "raytrace.hlsl|lib_6_3||raytrace.cso"
+    # --local-root: the same library with the tinted hit group reading its local root arguments.
+    "raytrace_local.hlsl|lib_6_3||raytrace_local.cso")
 set(CSO_OUTPUTS)
 foreach(spec ${SHADERS})
     string(REPLACE "|" ";" parts "${spec}")
@@ -50,15 +52,15 @@ foreach(spec ${SHADERS})
         # silences dxc's warning about having no -Fd to write a PDB to instead.
         COMMAND ${DXC} -T ${profile} ${entry_arg} -Zi -Qembed_debug
                 -Fo "${CMAKE_CURRENT_BINARY_DIR}/${out}" "${CMAKE_CURRENT_SOURCE_DIR}/${src}"
-        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${src}"
+        DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/${src}" "${CMAKE_CURRENT_SOURCE_DIR}/raytrace.hlsl"
         COMMENT "Compiling ${src} (${entry})"
         VERBATIM)
     list(APPEND CSO_OUTPUTS "${CMAKE_CURRENT_BINARY_DIR}/${out}")
 endforeach()
 
-add_executable(dxinsp_triangle WIN32 main.cpp cube.hlsl heavy.hlsl wave.hlsl raytrace.hlsl ${CSO_OUTPUTS})
+add_executable(dxinsp_triangle WIN32 main.cpp cube.hlsl heavy.hlsl wave.hlsl raytrace.hlsl raytrace_local.hlsl ${CSO_OUTPUTS})
 # Visual Studio would otherwise try to compile the .hlsl files with fxc itself.
-set_source_files_properties(cube.hlsl heavy.hlsl wave.hlsl raytrace.hlsl PROPERTIES VS_TOOL_OVERRIDE "None")
+set_source_files_properties(cube.hlsl heavy.hlsl wave.hlsl raytrace.hlsl raytrace_local.hlsl PROPERTIES VS_TOOL_OVERRIDE "None")
 # include/gpu_inspector.h, for --capture-at.
 target_include_directories(dxinsp_triangle PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/../../include")
 target_link_libraries(dxinsp_triangle PRIVATE d3d12 dxgi dxguid)

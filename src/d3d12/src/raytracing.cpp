@@ -16,6 +16,8 @@
 #include <atomic>
 #include <array>
 #include <cstring>
+#include <functional>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -88,10 +90,112 @@ struct StateObjectInfo
      * application's process -- which then reads as the application's own. These are never asked.
      */
     std::unordered_set<std::string> hitGroups;
+    /**
+     * The local root signature each export's records carry the arguments of, as the description's
+     * associations say (LocalRootFor): named exports, then a default association (one with no
+     * exports), then a local root signature no association names, which is a default by itself.
+     */
+    std::unordered_map<std::string, ID3D12RootSignature*> localRoots;
+    ID3D12RootSignature* defaultLocalRoot = nullptr;
+    /** A hit group's shader imports, since an association can name the shaders rather than the group. */
+    std::unordered_map<std::string, std::vector<std::string>> hitGroupImports;
 };
+
+/**
+ * Which local root signature a description associates with which export. Only what the description
+ * itself says: an association made inside a DXIL library (DXIL_SUBOBJECT_TO_EXPORTS_ASSOCIATION of a
+ * subobject declared in HLSL) names a subobject the description does not hold, and is left out.
+ */
+void CollectLocalRoots(const D3D12_STATE_OBJECT_DESC& desc, StateObjectInfo& info)
+{
+    std::vector<const D3D12_STATE_SUBOBJECT*> associated;
+    for (UINT i = 0; i < desc.NumSubobjects && desc.pSubobjects; ++i)
+    {
+        const D3D12_STATE_SUBOBJECT& s = desc.pSubobjects[i];
+        if (!s.pDesc)
+            continue;
+        if (s.Type == D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP)
+        {
+            const auto& group = *static_cast<const D3D12_HIT_GROUP_DESC*>(s.pDesc);
+            if (!group.HitGroupExport)
+                continue;
+            std::vector<std::string>& imports = info.hitGroupImports[Narrow(group.HitGroupExport)];
+            for (LPCWSTR import : {group.AnyHitShaderImport, group.ClosestHitShaderImport, group.IntersectionShaderImport})
+                if (import && *import)
+                    imports.push_back(Narrow(import));
+        }
+        else if (s.Type == D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION)
+        {
+            const auto& assoc = *static_cast<const D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION*>(s.pDesc);
+            const D3D12_STATE_SUBOBJECT* target = assoc.pSubobjectToAssociate;
+            if (!target || target->Type != D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE || !target->pDesc)
+                continue;
+            associated.push_back(target);
+            ID3D12RootSignature* root = static_cast<const D3D12_LOCAL_ROOT_SIGNATURE*>(target->pDesc)->pLocalRootSignature;
+            if (!assoc.NumExports || !assoc.pExports)
+            {
+                info.defaultLocalRoot = root;
+                continue;
+            }
+            for (UINT e = 0; e < assoc.NumExports; ++e)
+                if (assoc.pExports[e])
+                    info.localRoots[Narrow(assoc.pExports[e])] = root;
+        }
+    }
+    // A local root signature nothing associates is the default for the exports nothing else names.
+    if (!info.defaultLocalRoot)
+    {
+        for (UINT i = 0; i < desc.NumSubobjects && desc.pSubobjects; ++i)
+        {
+            const D3D12_STATE_SUBOBJECT& s = desc.pSubobjects[i];
+            if (s.Type == D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE && s.pDesc &&
+                std::find(associated.begin(), associated.end(), &s) == associated.end())
+            {
+                info.defaultLocalRoot = static_cast<const D3D12_LOCAL_ROOT_SIGNATURE*>(s.pDesc)->pLocalRootSignature;
+                break;
+            }
+        }
+    }
+}
+
+/** The local root signature an export's records carry the arguments of, or null for none. */
+ID3D12RootSignature* LocalRootFor(const StateObjectInfo& info, const std::string& exportName)
+{
+    auto it = info.localRoots.find(exportName);
+    if (it != info.localRoots.end())
+        return it->second;
+    // A hit group's record carries its shaders' local arguments, which have to agree among them.
+    auto group = info.hitGroupImports.find(exportName);
+    if (group != info.hitGroupImports.end())
+    {
+        for (const std::string& import : group->second)
+        {
+            auto named = info.localRoots.find(import);
+            if (named != info.localRoots.end())
+                return named->second;
+        }
+    }
+    return info.defaultLocalRoot;
+}
 
 std::mutex g_stateObjectMutex;
 std::unordered_map<uint64_t, StateObjectInfo> g_stateObjects;   // state object pointer -> what it exports
+
+/** A trace whose binding table was queued for read-back, kept until the finish resolves its local root arguments. */
+struct PendingTrace
+{
+    std::string key;                       // the extras NoteDispatchRays gave its command
+    ID3D12StateObject* stateObject = nullptr;
+    struct Region
+    {
+        const char* name;
+        uint32_t capture;
+        UINT64 stride;
+    };
+    std::vector<Region> regions;
+};
+std::mutex g_pendingMutex;
+std::vector<PendingTrace> g_pendingTraces;
 /** The state object a properties interface belongs to, so a GetShaderIdentifier need not QueryInterface every call. */
 std::unordered_map<uint64_t, ID3D12StateObject*> g_propertiesOwner;
 
@@ -574,7 +678,10 @@ void NoteStateObject(ID3D12StateObject* stateObject, const D3D12_STATE_OBJECT_DE
 
     std::vector<std::wstring> names;
     if (desc)
+    {
         CollectExports(*desc, names, info.hasUnlistedExports, info.hitGroups);
+        CollectLocalRoots(*desc, info);
+    }
     // What the hook needs to know before the application asks about any of them.
     {
         std::lock_guard<std::mutex> lock(g_stateObjectMutex);
@@ -846,6 +953,7 @@ std::string NoteDispatchRays(CommandRecorder* rec, const D3D12_DISPATCH_RAYS_DES
     };
     std::string extra;
     uint32_t captured = 0;
+    PendingTrace pending;
     for (const Region& r : regions)
     {
         if (!r.address || !r.size)
@@ -855,6 +963,7 @@ std::string NoteDispatchRays(CommandRecorder* rec, const D3D12_DISPATCH_RAYS_DES
             continue;
         extra += captured++ ? "," : "";
         extra += std::string("{\"region\":\"") + r.name + "\",\"capture\":" + std::to_string(id) + ",\"stride\":" + std::to_string(r.stride) + "}";
+        pending.regions.push_back({r.name, id, r.stride});
     }
     // Which state object's identifiers the table holds: without it a record's 32 bytes match nothing.
     std::string out;
@@ -866,6 +975,15 @@ std::string NoteDispatchRays(CommandRecorder* rec, const D3D12_DISPATCH_RAYS_DES
     }
     if (captured)
         out += ",\"bindingTableData\":[" + extra + "]";
+    // Remembered for the finish, when the table's bytes are there to be read: the local root
+    // arguments in its records (ResolveLocalRootArguments).
+    if (captured && BoundStateObject(rec))
+    {
+        pending.key = out;
+        pending.stateObject = BoundStateObject(rec);
+        std::lock_guard<std::mutex> lock(g_pendingMutex);
+        g_pendingTraces.push_back(std::move(pending));
+    }
     return out;
 }
 
@@ -986,6 +1104,205 @@ bool HoldsAccelerationStructure(ID3D12Resource* buffer)
         return false;
     std::lock_guard<std::mutex> lock(g_structureMutex);
     return g_structureBuffers.count(Key(buffer)) != 0;
+}
+
+void ForgetPendingTraces()
+{
+    std::lock_guard<std::mutex> lock(g_pendingMutex);
+    g_pendingTraces.clear();
+}
+
+std::unordered_map<std::string, std::string> ResolveLocalRootArguments(const CaptureBytes& bytesOf, const LateBufferRead& readBack)
+{
+    std::vector<PendingTrace> traces;
+    {
+        std::lock_guard<std::mutex> lock(g_pendingMutex);
+        traces.swap(g_pendingTraces);
+    }
+    std::unordered_map<std::string, std::string> out;
+    // A root view's range is read back once however many records name it.
+    std::map<std::tuple<ID3D12Resource*, UINT64, UINT64>, uint32_t> reads;
+    // How much of a root view to read: a constant buffer view is at most 64 KB; a raw or structured
+    // buffer view has no size in the record at all, so it reads to the end of the buffer, bounded.
+    constexpr UINT64 kCbvBytes = D3D12_REQ_CONSTANT_BUFFER_ELEMENT_COUNT * 16;
+    constexpr UINT64 kViewBytes = 16ull << 20;
+    // An unbounded table range reads this many slots past its start at most.
+    constexpr uint32_t kUnboundedSlots = 1024;
+    auto readOnce = [&](ID3D12Resource* buffer, UINT64 within, UINT64 bytesToRead) -> uint32_t {
+        if (!buffer || !bytesToRead)
+            return 0;
+        const auto key = std::make_tuple(buffer, within, bytesToRead);
+        auto known = reads.find(key);
+        if (known != reads.end())
+            return known->second;
+        return reads[key] = readBack(buffer, within, bytesToRead);
+    };
+    // What a local table's descriptor reads, when it is a buffer: nothing else binds it, so nothing
+    // else read it back. A texture's contents are not read here (its descriptor still is).
+    auto ReadDescriptorContents = [&](const DescriptorRecord& r) -> uint32_t {
+        if (r.kind == DescriptorKind::CBV && r.address)
+        {
+            ID3D12Resource* buffer = nullptr;
+            UINT64 within = 0, remaining = 0;
+            if (AddressMap::Get().Resolve(r.address, buffer, within, remaining))
+                return readOnce(buffer, within, std::min<UINT64>(remaining, r.size ? r.size : kCbvBytes));
+            return 0;
+        }
+        if ((r.kind == DescriptorKind::SRV || r.kind == DescriptorKind::UAV) && r.resource && !r.accelerationStructure)
+        {
+            D3D12_RESOURCE_DESC desc{};
+            {
+                ScopedInternal internal;
+                desc = r.resource->GetDesc();
+            }
+            if (desc.Dimension == D3D12_RESOURCE_DIMENSION_BUFFER)
+                return readOnce(r.resource, 0, std::min<UINT64>(desc.Width, kViewBytes));
+        }
+        return 0;
+    };
+
+    for (const PendingTrace& trace : traces)
+    {
+        StateObjectInfo info;
+        {
+            std::lock_guard<std::mutex> lock(g_stateObjectMutex);
+            auto it = g_stateObjects.find(Key(trace.stateObject));
+            if (it == g_stateObjects.end())
+                continue;
+            info = it->second;
+        }
+        if (!info.defaultLocalRoot && info.localRoots.empty())
+            continue;   // no export of it has local arguments: every record is its identifier alone
+        JsonWriter w(&Tracker::Get());
+        w.BeginArray();
+        uint32_t written = 0;
+        for (const PendingTrace::Region& region : trace.regions)
+        {
+            const uint8_t* bytes = nullptr;
+            size_t size = 0;
+            if (!bytesOf(region.capture, bytes, size) || !bytes || size < kIdentifierSize)
+                continue;
+            const size_t stride = region.stride ? (size_t)region.stride : size;
+            for (size_t record = 0, at = 0; at + kIdentifierSize <= size; ++record, at += stride)
+            {
+                const std::string exportName = ExportWithIdentifier(trace.stateObject, bytes + at);
+                ID3D12RootSignature* local = exportName.empty() ? nullptr : LocalRootFor(info, exportName);
+                std::shared_ptr<const RootSignatureInfo> layout = local ? RootSignatures::Get().Find(local) : nullptr;
+                if (!layout)
+                    continue;
+                // The arguments follow the identifier in parameter order, each at its own alignment:
+                // 4 bytes for root constants, 8 for a GPU address or a GPU descriptor handle.
+                size_t offset = kIdentifierSize;
+                for (size_t p = 0; p < layout->parameters.size(); ++p)
+                {
+                    const RootParameterInfo& param = layout->parameters[p];
+                    if (param.type == D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS)
+                    {
+                        offset = (offset + 3) & ~size_t(3);
+                        offset += 4 * (size_t)param.num32BitValues;
+                        continue;
+                    }
+                    offset = (offset + 7) & ~size_t(7);
+                    if (offset + 8 > stride || at + offset + 8 > size)
+                        break;
+                    uint64_t value = 0;
+                    std::memcpy(&value, bytes + at + offset, sizeof(value));
+                    w.BeginObject();
+                    w.Key("region");
+                    w.String(region.name);
+                    w.Key("record");
+                    w.Uint(record);
+                    w.Key("offset");
+                    w.Uint(offset);
+                    w.Key("parameter");
+                    w.Uint(p);
+                    if (param.type == D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE)
+                    {
+                        w.Key("kind");
+                        w.String("table");
+                        HeapInfo heap;
+                        uint32_t index = 0;
+                        if (value && DescriptorTracker::Get().Locate(D3D12_GPU_DESCRIPTOR_HANDLE{value}, heap, index))
+                        {
+                            w.Key("heap");
+                            WriteRef(w, heap.heap, "ID3D12DescriptorHeap");
+                            w.Key("index");
+                            w.Uint(index);
+                            // What the table covers, as the snapshot of a bound table would hold it,
+                            // so the replay can write the same descriptors into its own heap.
+                            uint32_t count = param.tableSlots;
+                            if (count == UINT_MAX)
+                                count = std::min<uint32_t>(kUnboundedSlots,
+                                    DescriptorTracker::Get().WrittenCount(heap.heap) > index ? DescriptorTracker::Get().WrittenCount(heap.heap) - index : 0);
+                            const std::vector<DescriptorRecord> slots = DescriptorTracker::Get().Slots(heap.heap, index, count);
+                            w.Key("descriptors");
+                            w.BeginArray();
+                            for (const DescriptorRecord& r : slots)
+                                WriteDescriptorRecord(w, r, ReadDescriptorContents(r));
+                            w.EndArray();
+                            // Each slot's range type, which is what a replay writes the descriptor as.
+                            w.Key("types");
+                            w.BeginArray();
+                            for (uint32_t k = 0; k < (uint32_t)slots.size(); ++k)
+                            {
+                                D3D12_DESCRIPTOR_RANGE_TYPE type = D3D12_DESCRIPTOR_RANGE_TYPE_SRV;
+                                for (const RootRange& range : param.ranges)
+                                {
+                                    if (k >= range.offsetInTable &&
+                                        (range.numDescriptors == UINT_MAX || k < range.offsetInTable + range.numDescriptors))
+                                    {
+                                        type = range.type;
+                                        break;
+                                    }
+                                }
+                                w.Uint((uint64_t)type);
+                            }
+                            w.EndArray();
+                        }
+                        else
+                        {
+                            w.Key("unresolved");
+                            w.String(Hex(value));
+                        }
+                    }
+                    else
+                    {
+                        w.Key("kind");
+                        w.String(param.type == D3D12_ROOT_PARAMETER_TYPE_CBV ? "cbv" : param.type == D3D12_ROOT_PARAMETER_TYPE_SRV ? "srv" : "uav");
+                        ID3D12Resource* buffer = nullptr;
+                        UINT64 within = 0, remaining = 0;
+                        if (value && AddressMap::Get().Resolve(value, buffer, within, remaining) && buffer)
+                        {
+                            w.Key("buffer");
+                            WriteRef(w, buffer, "ID3D12Resource");
+                            w.Key("bufferOffset");
+                            w.Uint(within);
+                            const UINT64 bytesToRead = std::min<UINT64>(remaining,
+                                param.type == D3D12_ROOT_PARAMETER_TYPE_CBV ? kCbvBytes : kViewBytes);
+                            const uint32_t capture = readOnce(buffer, within, bytesToRead);
+                            if (capture)
+                            {
+                                w.Key("capture");
+                                w.Uint(capture);
+                            }
+                        }
+                        else if (value)
+                        {
+                            w.Key("unresolved");
+                            w.String(Hex(value));
+                        }
+                    }
+                    w.EndObject();
+                    ++written;
+                    offset += 8;
+                }
+            }
+        }
+        w.EndArray();
+        if (written)
+            out[trace.key] = ",\"localRootArguments\":" + w.str();
+    }
+    return out;
 }
 
 void ForgetStateObject(ID3D12StateObject* stateObject)

@@ -241,6 +241,20 @@ public:
     // recorded. Returns the capture id to reference from the command's JSON, or 0 when nothing is
     // captured (no capture in progress, buffers disabled, empty range, budget exhausted).
     // `whole`: not truncated to maxBufferSize (the source of a copy, which a replay must write whole).
+    /** One region of a trace's shader binding table the capture queued the read-back of. */
+    struct TraceTable
+    {
+        const char* name;       // "raygen", "miss", "hit", "callable"
+        uint32_t capture;       // the read-back's buffer capture id
+        VkDeviceSize stride;
+    };
+    /**
+     * A trace whose tables were queued for read-back, kept until the finish, when their bytes are
+     * there to be looked at: the shader record data after each group handle can hold device
+     * addresses (GLSL buffer references, raw uint64_t), which are the captured process's
+     * (ResolveRecordAddresses). `key` is the extra the trace's command carries.
+     */
+    void NoteTraceTables(DeviceData* dev, std::string key, std::vector<TraceTable> tables);
     uint32_t QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer, VkDeviceSize offset,
         VkDeviceSize size, bool whole = false);
     // Which capture this is, counting from 1; a structure's build inputs remember the one they were
@@ -283,6 +297,25 @@ private:
     void Start(DeviceData* dev);
     void Finish(DeviceData* dev);
     void SendCommands();
+    /**
+     * The device addresses in the traces' shader record data, resolved now that the tables' read-
+     * backs are mapped: every 8-byte value of a record that falls in a buffer with a device address,
+     * as that buffer and offset, and the buffer from there read back (it is named nowhere else, so
+     * nothing else read it). Which of those values the shaders actually read as addresses is the
+     * replay's to decide, from their SPIR-V: a record's data has no layout of its own. Fills
+     * _lateExtras (`recordAddresses`, by the extras NoteTraceTables was given).
+     */
+    void ResolveRecordAddresses();
+    struct PendingTrace
+    {
+        std::string key;
+        DeviceData* dev = nullptr;
+        std::vector<TraceTable> tables;
+    };
+    std::vector<PendingTrace> _pendingTraces;                        // guarded by _mutex
+    std::unordered_map<std::string, std::string> _lateExtras;        // the finish's only
+    /** Set while ResolveRecordAddresses runs: the capture has stopped, and its copies still take staging. */
+    bool _finishCopies = false;
     void SendTextures(DeviceData* dev);
     void SendBuffers(DeviceData* dev);
     void SendPassTimings();
@@ -358,6 +391,8 @@ private:
          */
         uint32_t suspendedQuery = UINT32_MAX;
         std::atomic<bool> earlierStructuresRead{false};
+        /** The queue the capture's last submission on this device went to: where the finish's own copies go (ResolveRecordAddresses). */
+        VkQueue lastQueue = VK_NULL_HANDLE;
     };
     void CreateQueryPools(DeviceCapture& dc);
     // Maps every device's staging chunks, once the GPU is done, for SendTextures and SendBuffers.

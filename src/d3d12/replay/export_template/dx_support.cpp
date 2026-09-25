@@ -688,7 +688,7 @@ D3D12_GPU_VIRTUAL_ADDRESS BuildScratch(const D3D12_BUILD_RAYTRACING_ACCELERATION
 }
 
 D3D12_GPU_VIRTUAL_ADDRESS BindingTable(ID3D12StateObject* stateObject, const ShaderExport* exports, UINT exportCount, const void* data,
-    UINT64 size, UINT64 stride)
+    UINT64 size, UINT64 stride, const TablePatch* patches, UINT patchCount)
 {
     ID3D12StateObjectProperties* properties = nullptr;
     DX_CHECK(stateObject->QueryInterface(IID_PPV_ARGS(&properties)));
@@ -707,6 +707,9 @@ D3D12_GPU_VIRTUAL_ADDRESS BindingTable(ID3D12StateObject* stateObject, const Sha
         }
     }
     properties->Release();
+    for (UINT p = 0; p < patchCount; ++p)
+        if (patches[p].offset + sizeof(UINT64) <= table.size())
+            std::memcpy(&table[(size_t)patches[p].offset], &patches[p].value, sizeof(UINT64));
     return UploadRaytracingData(table.data(), table.size());
 }
 

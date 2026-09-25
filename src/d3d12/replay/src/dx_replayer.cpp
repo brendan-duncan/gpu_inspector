@@ -1486,6 +1486,21 @@ void DxReplayer::ApplyBufferData(const Group& group)
             for (uint32_t k = 0; k < list->count; ++k)
                 if (const JValue* id = list->items[k].Get("capture"))
                     apply(id->Uint());
+        // What a trace's local root arguments read: a root view's range, and a local table's buffer
+        // descriptors' (raytracing.h in the capture library, ResolveLocalRootArguments).
+        if (const JValue* list = c.Get("localRootArguments"); list && list->IsArray())
+        {
+            for (uint32_t k = 0; k < list->count; ++k)
+            {
+                const JValue& a = list->items[k];
+                if (const JValue* id = a.Get("capture"))
+                    apply(id->Uint());
+                const JValue* descriptors = a.Get("descriptors");
+                for (uint32_t d = 0; descriptors && descriptors->IsArray() && d < descriptors->count; ++d)
+                    if (descriptors->items[d].Get("buffer") && descriptors->items[d].Get("data"))
+                        apply(descriptors->items[d].Get("data")->Uint());
+            }
+        }
         const JValue* snapshot = c.Get("descriptors");
         const JValue* sets = snapshot ? snapshot->Get("sets") : nullptr;
         for (uint32_t s = 0; sets && sets->IsArray() && s < sets->count; ++s)

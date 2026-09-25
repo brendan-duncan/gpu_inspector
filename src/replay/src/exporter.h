@@ -185,6 +185,8 @@ public:
         const uint8_t* data = nullptr;
         size_t size = 0;
         VkStridedDeviceAddressRegionKHR region{};
+        /** Device addresses in the record data, as the replay rewrote them: offset in the region, the replay's address. */
+        std::vector<std::pair<VkDeviceSize, VkDeviceAddress>> patches;
     };
     /**
      * vkCmdTraceRaysKHR: the program rebuilds the binding table from the captured records, with its

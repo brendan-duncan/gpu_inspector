@@ -8,7 +8,7 @@
 // Usage: dxinsp_triangle [--frames N] [--width W] [--height H] [--msaa] [--bundle] [--indirect]
 //                        [--render-pass] [--suspend] [--pool] [--compute] [--async-compute] [--offscreen] [--leak]
 //                        [--debug-layer] [--stencil]
-//                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas]]
+//                        [--capture-at N] [--churn] [--evict] [--heavy] [--ray-tracing [--rebuild-blas] [--local-root]]
 //
 // The window is resizable: the swap chain's buffers, the depth buffer and the multisampled target
 // are recreated when the window size changes, which exercises the inspector's handling of object
@@ -171,7 +171,10 @@ constexpr DXGI_FORMAT kDepthFormat = DXGI_FORMAT_D32_FLOAT;
 constexpr uint32_t kHeapUav = 2 * kFrameCount;
 constexpr uint32_t kHeapRtScene = kHeapUav + 1;
 constexpr uint32_t kHeapRtTarget = kHeapRtScene + 1;
-constexpr uint32_t kHeapSize = kHeapRtTarget + 1;
+// --local-root: the CBV the tinted hit group's local descriptor table points at. Nothing binds this
+// slot through a root table, so only the binding table record names it.
+constexpr uint32_t kHeapRtLocal = kHeapRtTarget + 1;
+constexpr uint32_t kHeapSize = kHeapRtLocal + 1;
 
 // --ray-tracing: the traced image, and the two instances of the one triangle.
 constexpr uint32_t kTraceSize = 256;
@@ -262,6 +265,12 @@ struct App
     // level at all, which is what a replay needs to fill it: with the default (built once, before
     // any capture) the replay has the buffer but nothing ever wrote it, and every ray misses.
     bool rebuildBlas = false;
+    // --local-root (with --ray-tracing): the tinted hit group gets a local root signature -- a root
+    // constant, a root CBV and a table of one CBV -- whose arguments its binding table record holds
+    // after the identifier. Those are a GPU address and a GPU descriptor handle of this process,
+    // which is what a replay has to translate, and the buffers they name are bound nowhere else, so
+    // the capture has to read them back from the record alone.
+    bool localRoot = false;
     DXGI_FORMAT depthFormat = kDepthFormat;
     bool debugLayer = false;   // the application enables the D3D12 debug layer itself
     bool resized = false;      // the swap chain must be resized before the next frame
@@ -337,6 +346,10 @@ struct App
         D3D12_GPU_VIRTUAL_ADDRESS tableAddress = 0;
         ComPtr<ID3D12Resource> target;          // the 256x256 image the rays write
         bool built = false;                     // the bottom level is built once, before the first frame
+        // --local-root
+        ComPtr<ID3D12RootSignature> localRootSignature;
+        ComPtr<ID3D12Resource> localTint;       // the root CBV's buffer
+        ComPtr<ID3D12Resource> localTable;      // the buffer the table's CBV views
     } rt;
 
     // --------------------------------------------------------------------------------- window
@@ -1159,10 +1172,62 @@ struct App
         rsd.Desc_1_1.NumParameters = 1;
         rsd.Desc_1_1.pParameters = &param;
         rt.rootSignature = MakeRootSignature(rsd, L"Ray tracing root signature");
+        if (localRoot)
+            CreateLocalRoot();
 
         CreateStateObject();
         CreateRayTracingResources();
         WriteBindingTable();
+    }
+
+    /**
+     * --local-root: the tinted hit group's local root signature and what its arguments point at. The
+     * two buffers hold colors the hit shader adds together, so a record whose address or handle the
+     * replay got wrong shows as a wrong color rather than as nothing.
+     */
+    void CreateLocalRoot()
+    {
+        D3D12_ROOT_PARAMETER1 params[3]{};
+        params[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_32BIT_CONSTANTS;
+        params[0].Constants.ShaderRegister = 0;
+        params[0].Constants.RegisterSpace = 1;
+        params[0].Constants.Num32BitValues = 1;
+        params[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
+        params[1].Descriptor.ShaderRegister = 1;
+        params[1].Descriptor.RegisterSpace = 1;
+        D3D12_DESCRIPTOR_RANGE1 range{};
+        range.RangeType = D3D12_DESCRIPTOR_RANGE_TYPE_CBV;
+        range.NumDescriptors = 1;
+        range.BaseShaderRegister = 2;
+        range.RegisterSpace = 1;
+        params[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_DESCRIPTOR_TABLE;
+        params[2].DescriptorTable.NumDescriptorRanges = 1;
+        params[2].DescriptorTable.pDescriptorRanges = &range;
+        D3D12_VERSIONED_ROOT_SIGNATURE_DESC rsd{};
+        rsd.Version = D3D_ROOT_SIGNATURE_VERSION_1_1;
+        rsd.Desc_1_1.NumParameters = 3;
+        rsd.Desc_1_1.pParameters = params;
+        rsd.Desc_1_1.Flags = D3D12_ROOT_SIGNATURE_FLAG_LOCAL_ROOT_SIGNATURE;
+        rt.localRootSignature = MakeRootSignature(rsd, L"Ray tracing local root signature");
+
+        auto colorBuffer = [&](const float (&color)[4], const wchar_t* name) {
+            ComPtr<ID3D12Resource> buffer = CreateBuffer(D3D12_HEAP_TYPE_UPLOAD, 256, D3D12_RESOURCE_STATE_GENERIC_READ,
+                D3D12_RESOURCE_FLAG_NONE, name);
+            void* mapped = nullptr;
+            CHECK(buffer->Map(0, nullptr, &mapped));
+            memset(mapped, 0, 256);
+            memcpy(mapped, color, sizeof(color));
+            buffer->Unmap(0, nullptr);
+            return buffer;
+        };
+        const float tint[4] = {0.2f, 0.9f, 0.4f, 1.0f};
+        const float tableColor[4] = {0.8f, 0.1f, 0.6f, 1.0f};
+        rt.localTint = colorBuffer(tint, L"RT local root CBV");
+        rt.localTable = colorBuffer(tableColor, L"RT local table CBV");
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbv{};
+        cbv.BufferLocation = rt.localTable->GetGPUVirtualAddress();
+        cbv.SizeInBytes = 256;
+        device->CreateConstantBufferView(&cbv, SrvCpuHandle(kHeapRtLocal));
     }
 
     /**
@@ -1173,7 +1238,7 @@ struct App
      */
     void CreateStateObject()
     {
-        static std::vector<char> library = ReadFile(ExeDir() + "raytrace.cso");
+        static std::vector<char> library = ReadFile(ExeDir() + (localRoot ? "raytrace_local.cso" : "raytrace.cso"));
 
         D3D12_DXIL_LIBRARY_DESC lib{};
         lib.DXILLibrary = {library.data(), library.size()};
@@ -1195,7 +1260,10 @@ struct App
 
         D3D12_GLOBAL_ROOT_SIGNATURE globalRoot{rt.rootSignature.Get()};
 
-        D3D12_STATE_SUBOBJECT subobjects[] = {
+        // --local-root: the local root signature, and an association putting it on the tinted hit
+        // group only, so the table's other records stay an identifier alone.
+        D3D12_LOCAL_ROOT_SIGNATURE localRootDesc{rt.localRootSignature.Get()};
+        D3D12_STATE_SUBOBJECT subobjects[8] = {
             {D3D12_STATE_SUBOBJECT_TYPE_DXIL_LIBRARY, &lib},
             {D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroups[0]},
             {D3D12_STATE_SUBOBJECT_TYPE_HIT_GROUP, &hitGroups[1]},
@@ -1203,9 +1271,21 @@ struct App
             {D3D12_STATE_SUBOBJECT_TYPE_RAYTRACING_PIPELINE_CONFIG, &pipelineConfig},
             {D3D12_STATE_SUBOBJECT_TYPE_GLOBAL_ROOT_SIGNATURE, &globalRoot},
         };
+        UINT count = 6;
+        LPCWSTR tintedExports[] = {L"HitGroupTinted"};
+        D3D12_SUBOBJECT_TO_EXPORTS_ASSOCIATION association{};
+        if (localRoot)
+        {
+            subobjects[count] = {D3D12_STATE_SUBOBJECT_TYPE_LOCAL_ROOT_SIGNATURE, &localRootDesc};
+            association.pSubobjectToAssociate = &subobjects[count];
+            association.NumExports = 1;
+            association.pExports = tintedExports;
+            ++count;
+            subobjects[count++] = {D3D12_STATE_SUBOBJECT_TYPE_SUBOBJECT_TO_EXPORTS_ASSOCIATION, &association};
+        }
         D3D12_STATE_OBJECT_DESC desc{};
         desc.Type = D3D12_STATE_OBJECT_TYPE_RAYTRACING_PIPELINE;
-        desc.NumSubobjects = _countof(subobjects);
+        desc.NumSubobjects = count;
         desc.pSubobjects = subobjects;
         CHECK(rt.device5->CreateStateObject(&desc, IID_PPV_ARGS(&rt.stateObject)));
         rt.stateObject->SetName(L"Ray tracing state object");
@@ -1323,6 +1403,18 @@ struct App
         put(kMissOffset, L"Miss");
         put(kHitOffset, L"HitGroup");
         put(kHitOffset + kHitRecordSize, L"HitGroupTinted");
+        if (localRoot)
+        {
+            // The tinted record's local root arguments, after its identifier, each at its own
+            // alignment: the constant at 32, the root CBV's address at 40, the table's handle at 48.
+            uint8_t* record = mapped + kHitOffset + kHitRecordSize;
+            const float scale = 0.75f;
+            const D3D12_GPU_VIRTUAL_ADDRESS tint = rt.localTint->GetGPUVirtualAddress();
+            const D3D12_GPU_DESCRIPTOR_HANDLE table = SrvGpuHandle(kHeapRtLocal);
+            memcpy(record + 32, &scale, sizeof(scale));
+            memcpy(record + 40, &tint, sizeof(tint));
+            memcpy(record + 48, &table.ptr, sizeof(table.ptr));
+        }
         rt.bindingTable->Unmap(0, nullptr);
     }
 
@@ -1794,6 +1886,11 @@ int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int)
         {
             app.rayTracing = true;
             app.rebuildBlas = true;
+        }
+        else if (!strcmp(argv[i], "--local-root"))
+        {
+            app.rayTracing = true;
+            app.localRoot = true;
         }
         else if (!strcmp(argv[i], "--debug-layer"))
             app.debugLayer = true;

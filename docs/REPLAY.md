@@ -892,10 +892,31 @@ frame.
 **Shader identifiers.** A binding table record begins with the 32 bytes the captured runtime gave
 for an export, and this runtime gives different ones for the same state object. So the table is
 rebuilt the same way: captured identifier, to the export it named (the capture kept that list), to
-this runtime's identifier for that name. What follows the identifier is the local root signature's
-arguments and is copied as it was — constants survive, and a descriptor handle or a GPU address
-among them does not, because nothing in the capture says which a record's bytes are. A record whose
-identifier no export gave out is reported and left alone.
+this runtime's identifier for that name. A record whose identifier no export gave out is reported
+and left alone.
+
+**Local root arguments.** What follows the identifier is the arguments of the local root signature
+the state object associates with that export: root constants, and root views and descriptor tables
+as the captured process's GPU addresses and GPU descriptor handles. Which bytes are which is in
+the capture after all -- the state object's associations name the local root signature, and its
+parameters give the layout -- but the numbers can only be turned into objects where the capture
+library can see them. So the library does it at the end of the frame, once the table's read-back
+is there (`ResolveLocalRootArguments`, src/d3d12/src/raytracing.cpp): a table to its heap, slot and
+the descriptors the table covers, a view to its buffer and offset. What they name is bound nowhere
+else, so nothing else read it back: the library reads each root view's range and each buffer a
+table's descriptors view, then and there. The command carries the result as `localRootArguments`,
+and the replay writes its own heap slot and buffer address in each place, the descriptors into its
+heap and the read-backs into its buffers. Export to C++ does the same through `BindingTable`'s
+patches.
+
+Limits: what was read back is the end of the frame's contents, which is right for what local
+arguments point at (materials, per-object constants) and wrong for a buffer the frame writes before
+the trace reads it; a texture a local table's descriptor views is not read back (its descriptor
+is); and an association made inside a DXIL library, rather than in the state object's description,
+is not seen, so its records are copied as they were.
+`test/d3d12_triangle --local-root` gives the tinted hit group a root constant, a root CBV and a
+table of one CBV, all three read in its color: identical, and with the rewrite left out of the
+exported program 2,636 texels differ.
 
 A buffer holding an acceleration structure is **created** in
 `D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE` rather than moved into it: a barrier into
@@ -1158,9 +1179,28 @@ driver rejects a build whose geometry address is not one of its buffers.
 captured: every record begins with an opaque handle the captured driver gave for a shader group,
 and that handle names nothing here. So the replay builds a table of its own, copies each region's
 bytes into it, and rewrites every record's handle with this driver's handle for the group the
-captured handle named — matched through the handle blob the layer keeps on the pipeline. The bytes
-after the handle are the application's own shader record data and are copied unchanged. A record
+captured handle named — matched through the handle blob the layer keeps on the pipeline. A record
 whose handle this pipeline never gave out is reported as a problem and left as it was.
+
+**Shader record data.** The bytes after the handle are the application's own, and can hold device
+addresses (a GLSL `buffer_reference`, a raw `uint64_t`), which are the captured process's. Unlike
+D3D12's local root signature, nothing in the API gives the record a layout, so the work is split.
+At the end of the frame, once the table's read-back has landed, the layer looks at every 8-byte
+value of every record and keeps those that fall in a buffer with a device address, as that buffer
+and offset, and reads the buffer back from there (`ResolveRecordAddresses`,
+src/vulkan/src/capture.cpp): it is named nowhere else, so nothing else read it. The command
+carries the result as `recordAddresses`. The replay then keeps only the values the group's shaders
+actually read as 64-bit values, from the `ShaderRecordBufferKHR` block of their SPIR-V (a buffer
+reference, a 64-bit integer or a `uvec2` member), so that a constant which happens to look like an
+address is left alone, and writes its own buffer's address in their place. Export to C++ does the
+same through `BindingTableRegion`'s patches (`RecordPatch`).
+
+Limits: what was read back is the end of the frame's contents, at most 16 MB from the address on;
+a buffer reference stored inside another buffer, rather than in the record, is not followed; and
+an array member of the record block is not looked into.
+`test/triangle --shader-record` puts a tint buffer's address in the hit record: replay and export
+identical, validation clean; with the patch left out of the exported program 8,192 of 65,536
+traced texels differ.
 
 What a frame computes into an image is compared too, not only what it draws into a target: every
 image the capture read back that a shader could have written (STORAGE usage) is read back again at

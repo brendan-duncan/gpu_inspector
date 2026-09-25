@@ -23,6 +23,9 @@
 - `test/d3d12_triangle --async-compute` runs its compute dispatch on a compute queue of its own.
 - Export to C++ writes a Vulkan frame's acceleration structure builds and ray traces, so the exported program reproduces a ray traced image too.
 - Export to C++ writes a Direct3D 12 frame's state objects, acceleration structure builds and `DispatchRays` too.
+- Direct3D 12 ray tracing replay and export translate the descriptor tables and root views in binding table records.
+- Vulkan ray tracing replay and export translate the device addresses in shader record data.
+- `test/d3d12_triangle --local-root` and `test/triangle --shader-record` put arguments in a hit group's record.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
 - Direct3D 12 passes are timed in the frame of recording before the capture as well, so an engine that builds a frame's command lists during the frame before it (Unity does) has that frame measured rather than reported without timings.
@@ -42,6 +45,7 @@
 
 ### Fixed
 - A Direct3D 12 capture of an application with async compute no longer trips the debug layer by writing one staging buffer from two queues.
+- A Direct3D 12 state object with a subobject-to-exports association replays; the replay read the association's target under the wrong name.
 
 ## v0.22.1
 

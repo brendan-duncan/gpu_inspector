@@ -150,6 +150,7 @@ differently or misbehave on purpose.
 | Mode | What it does |
 |---|---|
 | `--ray-tracing` | Builds both acceleration structures every frame and traces into a storage image |
+| `--shader-record` | Ray tracing with the hit record holding a tint buffer's device address, read through a buffer reference (implies `--ray-tracing`) |
 | `--descriptor-buffer` | Binds its set through `VK_EXT_descriptor_buffer` instead of a descriptor set |
 | `--compile-hitch` | Builds a pipeline inside every frame, so the CPU timeline has a compile in it |
 | `--hitch-every <n>` | Stalls 100 ms inside every nth frame, in its own code, for **Capture on hitch** |
@@ -196,6 +197,7 @@ differently or misbehave on purpose.
 | `--suspend` | A render pass suspended across two command lists, submitted together (implies `--render-pass`) |
 | `--pool` | Records each frame into one of a pool of lists reset as soon as they run, so the captured frame's list is adopted |
 | `--async-compute` | The compute dispatch on a compute queue of its own, beside the render pass, for the Timeline's lane per queue (implies `--compute`) |
+| `--local-root` | Ray tracing with a local root signature on one hit group, whose arguments the binding table record holds (implies `--ray-tracing`) |
 | `--debug-layer` | Turns the D3D12 debug layer on from the application |
 | `--msaa`, `--stencil`, `--leak`, `--offscreen`, `--heavy`, `--churn`, `--capture-at <frame>` | As above |
 | `--evict` | A 32 MB buffer evicted every 120th frame and made resident 60 frames later, for the residency marks |

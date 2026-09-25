@@ -230,6 +230,10 @@ struct App
     // again, as most engines do, so a capture holds no build of it and the layer has to read its
     // inputs back when the capture begins (CaptureManager::ReadBackEarlierStructures).
     bool staticBlas = false;
+    // --shader-record (implies --ray-tracing): the hit group's shader record carries the device
+    // address of a tint buffer no descriptor set binds, read through a buffer reference
+    // (rt_record.rchit), so a capture's binding table holds an address the replay must translate.
+    bool shaderRecord = false;
     struct DeviceBuffer
     {
         VkBuffer buffer = VK_NULL_HANDLE;
@@ -247,7 +251,7 @@ struct App
         PFN_vkCreateRayTracingPipelinesKHR createPipelines;
         PFN_vkGetRayTracingShaderGroupHandlesKHR groupHandles;
         PFN_vkCmdTraceRaysKHR trace;
-        DeviceBuffer vertices, instances, blasMemory, tlasMemory, scratch, sbt;
+        DeviceBuffer vertices, instances, blasMemory, tlasMemory, scratch, sbt, tint;
         VkAccelerationStructureKHR blas = VK_NULL_HANDLE;
         VkAccelerationStructureKHR tlas = VK_NULL_HANDLE;
         VkImage image = VK_NULL_HANDLE;
@@ -1341,7 +1345,7 @@ struct App
 
         // Ray generation, miss and closest hit, in three groups.
         const VkShaderStageFlagBits kinds[3] = {VK_SHADER_STAGE_RAYGEN_BIT_KHR, VK_SHADER_STAGE_MISS_BIT_KHR, VK_SHADER_STAGE_CLOSEST_HIT_BIT_KHR};
-        const char* files[3] = {"rt.rgen.spv", "rt.rmiss.spv", "rt.rchit.spv"};
+        const char* files[3] = {"rt.rgen.spv", "rt.rmiss.spv", shaderRecord ? "rt_record.rchit.spv" : "rt.rchit.spv"};
         VkPipelineShaderStageCreateInfo stages[3]{};
         for (int i = 0; i < 3; ++i)
         {
@@ -1381,12 +1385,21 @@ struct App
         const uint32_t handle = props.shaderGroupHandleSize;
         // Each region starts at a multiple of shaderGroupBaseAlignment, so the records are that far apart.
         const uint32_t align = std::max(props.shaderGroupHandleAlignment, props.shaderGroupBaseAlignment);
-        const VkDeviceSize stride = (handle + align - 1) / align * align;
+        // --shader-record: after its handle, the hit record holds the tint buffer's address.
+        const VkDeviceSize recordData = shaderRecord ? sizeof(VkDeviceAddress) : 0;
+        const VkDeviceSize stride = (handle + recordData + align - 1) / align * align;
         std::vector<uint8_t> handles(3 * handle);
         CHECK(rt.groupHandles(device, rt.pipeline, 0, 3, handles.size(), handles.data()));
         rt.sbt = CreateDeviceBuffer(3 * stride, VK_BUFFER_USAGE_SHADER_BINDING_TABLE_BIT_KHR, true, "RT shader binding table");
         for (int i = 0; i < 3; ++i)
             memcpy(static_cast<uint8_t*>(rt.sbt.mapped) + i * stride, handles.data() + i * handle, handle);
+        if (shaderRecord)
+        {
+            rt.tint = CreateDeviceBuffer(16, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT, true, "RT hit record tint");
+            const float tint[4] = {1.0f, 0.5f, 0.25f, 1.0f};
+            memcpy(rt.tint.mapped, tint, sizeof(tint));
+            memcpy(static_cast<uint8_t*>(rt.sbt.mapped) + 2 * stride + handle, &rt.tint.address, sizeof(rt.tint.address));
+        }
         rt.raygen = {rt.sbt.address, stride, stride};
         rt.miss = {rt.sbt.address + stride, stride, stride};
         rt.hit = {rt.sbt.address + 2 * stride, stride, stride};
@@ -1478,7 +1491,7 @@ struct App
         vkFreeMemory(device, rt.imageMemory, nullptr);
         rt.destroyAS(device, rt.tlas, nullptr);
         rt.destroyAS(device, rt.blas, nullptr);
-        for (DeviceBuffer* b : {&rt.vertices, &rt.instances, &rt.blasMemory, &rt.tlasMemory, &rt.scratch, &rt.sbt})
+        for (DeviceBuffer* b : {&rt.vertices, &rt.instances, &rt.blasMemory, &rt.tlasMemory, &rt.scratch, &rt.sbt, &rt.tint})
             DestroyDeviceBuffer(*b);
     }
 
@@ -2952,6 +2965,8 @@ int RunApp(int argc, char** argv)
             app.rayTracing = true;
         else if (!strcmp(argv[i], "--static-blas"))
             app.staticBlas = true;
+        else if (!strcmp(argv[i], "--shader-record"))
+            app.shaderRecord = app.rayTracing = true;
         else if (!strcmp(argv[i], "--second-device"))
             app.side = App::Side::Device;
         else if (!strcmp(argv[i], "--second-queue"))

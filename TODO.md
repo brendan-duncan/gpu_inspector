@@ -648,6 +648,16 @@ application with injected state. Route (a) is the general one and is the prerequ
       because the bottom level is unbuilt in the replay. Checked for false positives on the
       triangle and Unity captures, which have no storage read-backs and are unchanged.
 - [ ] Ray tracing, the rest:
+  - [x] Device addresses in a trace's shader record data (`ResolveRecordAddresses` in the layer,
+    `Replayer::RecordAddressOffsets` in the replay, `RecordPatch` in the export). The layer
+    resolves every 8-byte record value that falls in a buffer at the end of the frame and reads
+    that buffer back; the replay translates only those its group's shaders read as a 64-bit
+    member of their `ShaderRecordBufferKHR` block. `vkinsp_triangle --shader-record` (new)
+    replays and exports identical, validation clean; with the patch left out of the exported
+    program 8,192 of 65,536 traced texels differ. UI case `export-cpp-shader-record`. Found on the
+    way: the finish's own copies could not take staging, since the capture has stopped by then
+    (`_finishCopies`). Left: a reference stored inside another buffer is not followed, nor an
+    array member of the record block.
   - [x] **A replayed trace found no geometry** — solved, and the fault was not in the replay.
     `test/triangle --ray-tracing` never put a barrier between the top level's build and the
     trace that reads it. On this driver the race resolved in the application's favor often
@@ -1678,9 +1688,31 @@ library does not read back yet.
   - [x] A bottom level built before the capture is filled by the replay: the capture library reads
     back what its last build read when the capture starts, and `dxinsp_replay` builds it before
     the frame (`DxReplayer::BuildEarlierStructures`). The Vulkan side does the same.
-  - A binding table record's local root arguments are copied as they were, so a descriptor handle or
-    a GPU address among them points at the captured process's memory. Nothing in the capture says
-    which of a record's bytes are which.
+  - [x] A binding table record's local root arguments (`ResolveLocalRootArguments` in the capture
+    library, `LocalRootValue` in the replay, `BindingTable`'s patches in the export). The entry said
+    nothing in the capture says which bytes are which, and that was wrong: the state object's
+    associations name each export's local root signature, whose parameters are the layout. What
+    the capture lacked was the translation and the contents -- a GPU address or descriptor handle
+    means nothing to a replay, and what one names is bound nowhere else, so never read back. The
+    library resolves both at the end of the frame, when the table's read-back has landed: a table
+    to its heap and slot with the descriptors it covers, a view to its buffer and offset, and reads
+    each view's range and each buffer a table's descriptors view. `d3d12_triangle --local-root`
+    (new) replays and exports identical with the debug layer on the replay's side; with the rewrite
+    left out of the exported program 2,636 texels differ. UI case `d3d12-export-cpp-local-root`.
+    Found on the way: the replay read an association's subobject as `subobject` where the library
+    writes `index`, so no state object with an association replayed at all.
+    Left: a texture a local table views is not read back; an association made inside a DXIL
+    library is not seen; what was read back is the end of the frame's contents.
+  - A ray tracing capture taken under the debug layer (`DXINSP_DEBUG_LAYER=1`, the launch's
+    Validation option) reads its build inputs and binding tables back as zeros, most of the time:
+    `d3d12_triangle --ray-tracing` 0 of 5 without a log file, 4 of 4 with `DXINSP_LOG_FILE` set,
+    which slows it enough to hide it -- a race. Seen with the library from before the local root
+    work too. What the log showed: the ray tracing calls arrive on a second command list pointer
+    (the debug layer wraps ID3D12GraphicsCommandList4 as an object of its own, not even the same
+    COM identity), which gets a recorder of its own -- adopted in one run, reset in another. Tried
+    and reverted, neither changing it: looking a missing recorder up through the base interface,
+    and aliasing the pointers QueryInterface hands out. The replay and the exported program are
+    unaffected; only a capture taken with the debug layer on is.
   - An opacity micromap array build and `ExecuteIndirect` over a trace.
   - [x] Exporting it to C++ (`DxReplayer::ExportStateObject`, `ExportDispatchRays`, the ray tracing
     helpers in `export_template/dx_support.*`): state objects as their subobject arrays, builds as

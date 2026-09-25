@@ -13,7 +13,7 @@ if(NOT GLSLC)
 endif()
 
 set(OUT_DIR "${CMAKE_BINARY_DIR}/bin")
-set(SHADERS cube.vert cube.frag heavy.frag wave.comp rt.rgen rt.rmiss rt.rchit)
+set(SHADERS cube.vert cube.frag heavy.frag wave.comp rt.rgen rt.rmiss rt.rchit rt_record.rchit)
 set(SPV_FILES)
 find_package(Python3 REQUIRED COMPONENTS Interpreter)
 foreach(s ${SHADERS})
@@ -29,7 +29,7 @@ foreach(s ${SHADERS})
     endif()
     # Ray tracing stages need SPIR-V 1.4 (--ray-tracing).
     set(env)
-    if(s MATCHES "^rt\\.")
+    if(s MATCHES "^rt[._]")
         set(env --target-env=vulkan1.2)
     endif()
     add_custom_command(

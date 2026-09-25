@@ -13,6 +13,14 @@
 RaytracingAccelerationStructure scene : register(t0);
 RWTexture2D<float4> target : register(u0);
 
+#ifdef LOCAL_ROOT
+// --local-root (raytrace_local.hlsl): the tinted hit group's local root signature, in space 1 so it
+// cannot collide with the global one: [0] a root constant, [1] a root CBV, [2] a table of one CBV.
+cbuffer LocalScale : register(b0, space1) { float localScale; };
+cbuffer LocalTint : register(b1, space1) { float4 localTint; };
+cbuffer LocalTable : register(b2, space1) { float4 localTableColor; };
+#endif
+
 struct Payload {
     float3 color;
 };
@@ -51,5 +59,10 @@ void ClosestHit(inout Payload payload, in BuiltInTriangleIntersectionAttributes 
 [shader("closesthit")]
 void ClosestHitTinted(inout Payload payload, in BuiltInTriangleIntersectionAttributes attributes) {
     float2 b = attributes.barycentrics;
+#ifdef LOCAL_ROOT
+    // Every term from a local root argument: a wrong address or handle in the record shows here.
+    payload.color = localTint.rgb * localScale + localTableColor.rgb * (1.0 - b.x - b.y);
+#else
     payload.color = float3(0.9, 0.5 * (1.0 - b.x - b.y), 0.2);
+#endif
 }

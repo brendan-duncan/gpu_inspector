@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <functional>
 #include <cstring>
+#include <map>
 
 namespace vkinsp
 {
@@ -247,6 +248,8 @@ void CaptureManager::OnSubmit(DeviceData* dev, VkQueue queue, const std::string&
     sub.args = std::move(args);
     sub.result = result;
     sub.frame = FrameOf(dev);
+    if (DeviceCapture* dc = CaptureFor(dev))
+        dc->lastQueue = queue;
     ReadBackEarlierStructures(dev, queue, sub.frame);
     for (VkCommandBuffer cb : commandBuffers)
     {
@@ -430,8 +433,12 @@ void CaptureManager::Finish(DeviceData* dev)
     if (devices.size() > 1)
         Log("capture: %zu devices took part", devices.size());
 
-    SendCommands();
+    // The read-backs are mapped before the commands go: a trace's command carries what its tables'
+    // bytes say (ResolveRecordAddresses), and the copies that makes are mapped in turn.
     MapStaging();
+    ResolveRecordAddresses();
+    MapStaging();
+    SendCommands();
     SendTextures(dev);
     SendBuffers(dev);
     SendPassTimings();
@@ -476,6 +483,8 @@ void CaptureManager::Finish(DeviceData* dev)
     _textures.clear();
     _buffers.clear();
     _passTimings.clear();
+    _pendingTraces.clear();
+    _lateExtras.clear();
     _state = State::Idle;
     Log("capture sent");
 }
@@ -605,7 +614,19 @@ void CaptureManager::SendCommands()
             int64_t slot = 0;
             for (auto& c : *cb.commands)
             {
-                emit(s.frame, kVkCommandNames[(int)c.id], "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra, slot++);
+                // A trace's record addresses were resolved at the finish, after it was recorded.
+                const char* name = kVkCommandNames[(int)c.id];
+                if (!_lateExtras.empty() && !std::strcmp(name, "vkCmdTraceRaysKHR"))
+                {
+                    auto late = std::find_if(_lateExtras.begin(), _lateExtras.end(),
+                        [&](const auto& e) { return c.extra.find(e.first) != std::string::npos; });
+                    if (late != _lateExtras.end())
+                    {
+                        emit(s.frame, name, "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra + late->second, slot++);
+                        continue;
+                    }
+                }
+                emit(s.frame, name, "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra, slot++);
             }
         }
     }
@@ -1587,8 +1608,11 @@ bool CaptureManager::AllocateStaging(DeviceData* dev, VkDeviceSize size, uint32_
 {
     const VkDeviceSize kChunk = 64ull << 20;
     const VkDeviceSize align = 256;
-    // Chunks are the device's own: a command buffer can only copy into buffers of its device.
+    // Chunks are the device's own: a command buffer can only copy into buffers of its device. The
+    // finish's own copies come after the capture stopped, from a device that took part.
     DeviceCapture* dc = CaptureFor(dev);
+    if (!dc && _finishCopies && dev)
+        dc = FindCapture(dev->device);
     if (!dc)
         return false;
     std::lock_guard lock(_mutex);
@@ -2066,6 +2090,118 @@ VkResult CaptureManager::SubmitReadBack(DeviceData* dev, VkQueue queue, const st
     d.DestroyFence(dev->device, fence, nullptr);
     d.FreeCommandBuffers(dev->device, pool, 1, &cb);
     return res;
+}
+
+void CaptureManager::NoteTraceTables(DeviceData* dev, std::string key, std::vector<TraceTable> tables)
+{
+    if (!dev || tables.empty())
+        return;
+    std::lock_guard lock(_mutex);
+    _pendingTraces.push_back({std::move(key), dev, std::move(tables)});
+}
+
+void CaptureManager::ResolveRecordAddresses()
+{
+    std::vector<PendingTrace> traces;
+    {
+        std::lock_guard lock(_mutex);
+        traces.swap(_pendingTraces);
+    }
+    if (traces.empty() || !_options.captureBuffers)
+        return;
+    _finishCopies = true;
+    struct Reset
+    {
+        bool& flag;
+        ~Reset() { flag = false; }
+    } reset{_finishCopies};
+    ResourceRegistry& reg = ResourceRegistry::Get();
+    Tracker& t = Tracker::Get();
+    // A buffer an address points into is read from there to its end, bounded: an address says where
+    // the data starts and nothing about how much of it a shader reads.
+    constexpr VkDeviceSize kMaxRead = 16ull << 20;
+    std::map<std::pair<VkBuffer, VkDeviceSize>, uint32_t> reads;
+    std::unordered_map<DeviceData*, std::vector<PendingBufferCopy>> copies;
+    for (const PendingTrace& trace : traces)
+    {
+        std::string list;
+        uint32_t count = 0;
+        for (const TraceTable& table : trace.tables)
+        {
+            const uint8_t* bytes = nullptr;
+            VkDeviceSize size = 0;
+            {
+                std::lock_guard lock(_mutex);
+                if (!table.capture || table.capture > _buffers.size())
+                    continue;
+                const BufferCapture& bc = _buffers[table.capture - 1];
+                if (!bc.recorded || bc.failed)
+                    continue;
+                const StagingChunk* chunk = nullptr;
+                for (auto& [device, dc] : _devices)
+                    if (device == bc.device && bc.stagingIndex < dc->staging.size())
+                        chunk = &dc->staging[bc.stagingIndex];
+                if (!chunk || !chunk->mapped)
+                    continue;
+                bytes = static_cast<const uint8_t*>(chunk->mapped) + bc.stagingOffset;
+                size = bc.size;
+            }
+            const VkDeviceSize stride = table.stride ? table.stride : size;
+            for (VkDeviceSize at = 0, record = 0; at < size; at += stride, ++record)
+            {
+                for (VkDeviceSize offset = 0; offset + 8 <= stride && at + offset + 8 <= size; offset += 8)
+                {
+                    uint64_t value = 0;
+                    std::memcpy(&value, bytes + at + offset, sizeof(value));
+                    VkBuffer buffer = VK_NULL_HANDLE;
+                    VkDeviceSize within = 0, remaining = 0;
+                    if (!value || !reg.ResolveAddress(value, buffer, within, remaining))
+                        continue;
+                    auto known = reads.find({buffer, within});
+                    uint32_t capture = known != reads.end() ? known->second : 0;
+                    if (known == reads.end())
+                    {
+                        PendingBufferCopy copy;
+                        std::vector<PendingBufferCopy>& mine = copies[trace.dev];
+                        capture = PrepareBufferCopy(trace.dev, buffer, within, std::min(remaining, kMaxRead), true, &mine, copy);
+                        if (copy.staging)
+                            mine.push_back(copy);
+                        reads[{buffer, within}] = capture;
+                    }
+                    list += count++ ? "," : "";
+                    list += std::string("{\"region\":\"") + table.name + "\",\"record\":" + std::to_string(record) + ",\"offset\":" +
+                        std::to_string(offset) + ",\"buffer\":" + std::to_string(t.Resolve(HT_VkBuffer, (uint64_t)(uintptr_t)buffer)) +
+                        ",\"bufferOffset\":" + std::to_string(within) + (capture ? ",\"capture\":" + std::to_string(capture) : std::string()) + "}";
+                }
+            }
+        }
+        if (count)
+            _lateExtras[trace.key] = ",\"recordAddresses\":[" + list + "]";
+    }
+    // The copies, now: the frame has finished (Finish waited), so what they read is what the traces read,
+    // for data the frame does not change after them.
+    for (auto& [dev, list] : copies)
+    {
+        if (list.empty())
+            continue;
+        DeviceCapture* dc = FindCapture(dev->device);
+        const VkResult res = dc && dc->lastQueue ? SubmitReadBack(dev, dc->lastQueue, [&](VkCommandBuffer cb) { RecordBufferCopies(dev, cb, list); })
+                                                 : VK_ERROR_INITIALIZATION_FAILED;
+        std::lock_guard lock(_mutex);
+        for (const PendingBufferCopy& p : list)
+        {
+            if (p.captureId == 0 || p.captureId > _buffers.size())
+                continue;
+            BufferCapture& bc = _buffers[p.captureId - 1];
+            bc.recorded = true;
+            bc.frame = 0;
+            if (res != VK_SUCCESS)
+            {
+                bc.failed = true;
+                bc.note = "read-back of a buffer a shader record's address names failed";
+            }
+        }
+    }
 }
 
 void CaptureManager::ReadBackEarlierStructures(DeviceData* dev, VkQueue queue, uint32_t frame)

@@ -21,12 +21,16 @@
 //   the table is rebuilt the same way: captured identifier -> the export it named (the capture
 //   kept that list) -> this runtime's identifier for that name.
 //
+//   Local root arguments. What follows a record's identifier is the arguments of the local root
+//   signature its export is associated with, and the GPU addresses and descriptor handles among
+//   them are the captured process's. The capture library resolved each to a buffer and offset or
+//   a heap and slot at the end of the frame, and read back what they name
+//   (`localRootArguments`, ResolveLocalRootArguments in src/d3d12/src/raytracing.cpp); the
+//   replay writes its own in their place. Root constants are copied as they were.
+//
 // What is left out, and why: an opacity micromap array (nothing in the capture describes its
-// input layout well enough to rebuild), a build whose source structure was written before the
-// capture began (there is nothing to copy from), and local root arguments in a binding table
-// record that hold GPU addresses — the record's bytes are copied as they were, and a descriptor
-// handle or an address among them will point at the captured process's memory. A record's
-// identifier is always fixed; only what follows it is copied blind.
+// input layout well enough to rebuild), and a build whose source structure was written before the
+// capture began (there is nothing to copy from).
 #include "dx_replayer.h"
 
 #include "dx_decode.h"
@@ -413,7 +417,9 @@ ID3D12StateObject* DxReplayer::CreateStateObject(uint64_t id, const JValue& obje
             // The capture writes the associated subobject as its index in this array, which is the
             // only way a pointer into the description can be written down at all.
             const JValue* which = s.Get("pSubobjectToAssociate");
+            // The capture library writes {"index", "Type"} (serialize.cpp, WriteSubobjectPointer).
             const uint64_t index = which && which->IsNumber() ? which->Uint()
+                : which && which->Get("index")                ? which->Get("index")->Uint()
                 : which && which->Get("subobject")            ? which->Get("subobject")->Uint()
                                                               : UINT64_MAX;
             if (index >= subobjects->count)
@@ -756,13 +762,13 @@ D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapInstancesFrom(const JValue* list, UIN
 // The shader binding table
 
 /**
- * One region of a trace's binding table, rebuilt with this runtime's shader identifiers, in a
- * buffer of the replay's own. Returns 0 when the region has no contents in the capture.
+ * One region of a trace's binding table, rebuilt with this runtime's shader identifiers and its own
+ * local root arguments, in a buffer of the replay's own. Returns 0 when the region has no contents
+ * in the capture.
  *
- * Only the identifier at the head of each record is rewritten. What follows it is the local root
- * signature's arguments, which the replay copies as they were: constants survive, and a descriptor
- * handle or a GPU address among them does not. Nothing in the capture says which a record's bytes
- * are, so guessing would be worse than copying.
+ * The identifier at the head of each record is rewritten, and so is each local root argument the
+ * capture resolved (`localRootArguments`): a descriptor table's handle into the replay's heap, a
+ * root view's address into the replay's buffer. Root constants are copied as they were.
  */
 D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapBindingTable(const JValue& command, const char* region, UINT64 stride,
     UINT64 size, uint64_t stateObjectId)
@@ -823,7 +829,72 @@ D3D12_GPU_VIRTUAL_ADDRESS DxReplayer::RemapBindingTable(const JValue& command, c
     {
         Problem(std::string("a trace's ") + region + " table has " + std::to_string(unresolved) + " record(s) whose shader identifier no export of the state object gave out; those rays run nothing");
     }
+    // The local root arguments after the identifiers that are GPU addresses or descriptor handles:
+    // the captured process's, resolved by the capture library to objects, and this process's here.
+    uint32_t missing = 0;
+    const JValue* arguments = command.Get("localRootArguments");
+    for (uint32_t i = 0; arguments && arguments->IsArray() && i < arguments->count; ++i)
+    {
+        const JValue& a = arguments->items[i];
+        if (Str(a.Get("region")) != region)
+            continue;
+        const uint64_t at = (a.Get("record") ? a.Get("record")->Uint() : 0) * walk + (a.Get("offset") ? a.Get("offset")->Uint() : 0);
+        if (at + sizeof(uint64_t) > table.size())
+            continue;
+        const uint64_t value = LocalRootValue(a);
+        if (!value)
+        {
+            ++missing;
+            continue;
+        }
+        std::memcpy(table.data() + at, &value, sizeof(value));
+    }
+    if (missing)
+    {
+        Problem(std::string("a trace's ") + region + " table has " + std::to_string(missing) +
+            " local root argument(s) naming a buffer or a descriptor heap the capture could not resolve or the replay does not have; they are replayed as captured");
+    }
     return UploadTransient(table.data(), table.size(), region);
+}
+
+uint64_t DxReplayer::LocalRootValue(const JValue& argument)
+{
+    const std::string kind = Str(argument.Get("kind"));
+    if (kind == "table")
+    {
+        auto heap = _heaps.find(IdOf(argument.Get("heap")));
+        if (heap == _heaps.end() || !heap->second.gpu.ptr)
+            return 0;
+        const uint64_t index = argument.Get("index") ? argument.Get("index")->Uint() : 0;
+        return heap->second.gpu.ptr + index * heap->second.increment;
+    }
+    Resource* r = ResourceOf(IdOf(argument.Get("buffer")));
+    if (!r || !r->resource || !r->IsBuffer())
+        return 0;
+    return r->resource->GetGPUVirtualAddress() + (argument.Get("bufferOffset") ? argument.Get("bufferOffset")->Uint() : 0);
+}
+
+void DxReplayer::WriteLocalRootDescriptors(const JValue& command)
+{
+    const JValue* arguments = command.Get("localRootArguments");
+    for (uint32_t i = 0; arguments && arguments->IsArray() && i < arguments->count; ++i)
+    {
+        const JValue& a = arguments->items[i];
+        const JValue* descriptors = a.Get("descriptors");
+        const JValue* types = a.Get("types");
+        if (Str(a.Get("kind")) != "table" || !descriptors || !descriptors->IsArray())
+            continue;
+        const uint64_t heapId = IdOf(a.Get("heap"));
+        const uint32_t index = a.Get("index") ? (uint32_t)a.Get("index")->Uint() : 0;
+        for (uint32_t k = 0; k < descriptors->count; ++k)
+        {
+            const JValue& record = descriptors->items[k];
+            if (record.IsNull())
+                continue;
+            const auto type = (D3D12_DESCRIPTOR_RANGE_TYPE)(types && types->IsArray() && k < types->count ? types->items[k].Uint() : 0);
+            WriteDescriptor(heapId, index + k, type, record);
+        }
+    }
 }
 
 /** A buffer of the replay's own holding these bytes, alive until the replay ends. */
@@ -996,6 +1067,9 @@ bool DxReplayer::IssueRaytracingCommand(const std::string& method, const JValue&
             leftOut = "it reads memory the replay has no buffer for";
             return false;
         }
+        // A local table's descriptors: the slots only the binding table names, which no bound
+        // table's snapshot wrote.
+        WriteLocalRootDescriptors(command);
         // Whose identifiers the table holds. The capture names it on the command; a capture taken
         // before that did not, and the last SetPipelineState1 is the next best thing.
         uint64_t stateObjectId = IdOf(command.Get("stateObject"));
@@ -1165,8 +1239,32 @@ void DxReplayer::ExportDispatchRays(uint32_t index, const JValue& command, const
             records(name, size, data, bytes, stride);
             if (!data || !bytes)
                 return;
+            // Its local root arguments that are addresses or handles, spelled as the program's own.
+            std::string items;
+            size_t count = 0;
+            const JValue* arguments = command.Get("localRootArguments");
+            for (uint32_t i = 0; arguments && arguments->IsArray() && i < arguments->count; ++i)
+            {
+                const JValue& a = arguments->items[i];
+                if (Str(a.Get("region")) != name)
+                    continue;
+                const uint64_t value = LocalRootValue(a);
+                if (!value)
+                    continue;
+                const uint64_t at = (a.Get("record") ? a.Get("record")->Uint() : 0) * (stride ? stride : bytes) +
+                    (a.Get("offset") ? a.Get("offset")->Uint() : 0);
+                const std::string expr = Str(a.Get("kind")) == "table" ? _x->GpuHandle(D3D12_GPU_DESCRIPTOR_HANDLE{value}) + ".ptr" : s.Address(value);
+                items += std::string(count++ ? ", " : "") + "{" + std::to_string(at) + ", " + expr + "}";
+            }
+            std::string patches = ", nullptr, 0";
+            if (count)
+            {
+                const std::string list = s.Local("localRootArguments");
+                s.Line("const TablePatch " + list + "[] = {" + items + "};");
+                patches = ", " + list + ", " + std::to_string(count);
+            }
             s.Line(rays + "." + member + ".StartAddress = BindingTable(" + s.Object(stateObject) + ", " + table + ", " + std::to_string(exports.size()) +
-                ", " + s.Data(data, bytes) + ", " + std::to_string(bytes) + ", " + std::to_string(stride) + ");");
+                ", " + s.Data(data, bytes) + ", " + std::to_string(bytes) + ", " + std::to_string(stride) + patches + ");");
         };
         region("RayGeneration", "RayGenerationShaderRecord", issued.RayGenerationShaderRecord.StartAddress, issued.RayGenerationShaderRecord.SizeInBytes,
             issued.RayGenerationShaderRecord.SizeInBytes);

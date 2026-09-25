@@ -970,9 +970,18 @@ void Exporter::TraceRays(uint32_t index, VkPipeline pipeline, const uint8_t* cap
         for (int r = 0; r < 4; ++r)
         {
             const TraceRegion& t = regions[r];
+            // The record data's device addresses, spelled as the program's own buffers' (SourceWriter::address).
+            std::string patches = "nullptr, 0";
+            if (!t.patches.empty())
+            {
+                std::string list;
+                for (size_t k = 0; k < t.patches.size(); ++k)
+                    list += (k ? ", " : "") + std::string("{") + std::to_string(t.patches[k].first) + ", " + w.Address(t.patches[k].second) + "}";
+                patches = EmitArrayLocal(w, "RecordPatch", "recordAddresses", list) + ", " + std::to_string(t.patches.size());
+            }
             items += (r ? ", " : "");
             items += t.data && t.size ? "{" + DataExpr(t.data, t.size) + ", " + std::to_string(t.size) + ", " + std::to_string(t.region.stride) + ", " +
-                    std::to_string(t.region.size) + "}"
+                    std::to_string(t.region.size) + ", " + patches + "}"
                                       : std::string("{}");
         }
         const std::string table = EmitArrayLocal(w, "BindingTableRegion", "tableRegions", items);

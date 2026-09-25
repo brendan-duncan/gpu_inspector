@@ -28,6 +28,10 @@
 
 #include "common.h"
 
+#include <functional>
+#include <string>
+#include <unordered_map>
+
 #include <string>
 #include <vector>
 
@@ -121,6 +125,25 @@ void NoteAccelerationStructureCopy(D3D12_GPU_VIRTUAL_ADDRESS dest, D3D12_GPU_VIR
  * command (`bindingTableData`), or "" when none of them could be resolved.
  */
 std::string NoteDispatchRays(CommandRecorder* rec, const D3D12_DISPATCH_RAYS_DESC& desc);
+
+/**
+ * The local root arguments of the traces the capture read the binding tables of, resolved now that
+ * the read-backs have landed. A record is an identifier followed by the arguments of the local root
+ * signature its export is associated with -- root constants, root views (GPU addresses) and
+ * descriptor tables (GPU descriptor handles) -- and the last two are the captured process's numbers,
+ * which a replay cannot use and cannot even find the objects of. So each is resolved here, where
+ * the address map and the descriptor tracker can: a table to its heap, its first slot and the
+ * descriptors in the slots it covers, a view to its buffer and offset with that buffer's range read
+ * back (`readBack`, which the caller runs after this returns, at the end of the frame).
+ *
+ * `bytesOf` gives a capture id's read-back bytes. Returns, per trace, the extra members its command
+ * carries (`localRootArguments`), keyed by the extras NoteDispatchRays gave it.
+ */
+using CaptureBytes = std::function<bool(uint32_t capture, const uint8_t*& data, size_t& size)>;
+using LateBufferRead = std::function<uint32_t(ID3D12Resource* buffer, UINT64 offset, UINT64 size)>;
+std::unordered_map<std::string, std::string> ResolveLocalRootArguments(const CaptureBytes& bytesOf, const LateBufferRead& readBack);
+/** Drops the traces remembered for ResolveLocalRootArguments: a capture begins, or one was abandoned. */
+void ForgetPendingTraces();
 
 /** The state object a list last set with SetPipelineState1, so a trace knows whose identifiers to match. */
 void NoteBoundStateObject(CommandRecorder* rec, ID3D12StateObject* stateObject);

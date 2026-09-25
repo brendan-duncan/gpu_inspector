@@ -1102,6 +1102,16 @@ private:
      * when it left it out. With an `exportIndex` other than UINT32_MAX the exporter is shown it.
      */
     bool TraceRays(const JValue& command, const JValue& args, VkCommandBuffer cb, uint32_t exportIndex = UINT32_MAX);
+    /**
+     * Where a hit, miss, raygen or callable group's shaders read a device address from their shader
+     * record: the offsets, from the start of the record's data (after the handle), of every 64-bit
+     * member of their ShaderRecordBufferKHR blocks -- a buffer reference, a uint64_t, a uvec2. The
+     * layer reports the values in a record that fall in a buffer (`recordAddresses`); only those
+     * the shaders read as 64-bit values are translated, since record data has no layout of its own
+     * and a constant can happen to look like an address.
+     */
+    const std::vector<uint32_t>& RecordAddressOffsets(uint64_t pipelineId, uint32_t group);
+    std::map<std::pair<uint64_t, uint32_t>, std::vector<uint32_t>> _recordLayouts;
     bool EnsureBindingTable(VkDeviceSize size);
     /**
      * Rewrites the bottom-level references in a top level's instance buffer to this process's.

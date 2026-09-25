@@ -1994,6 +1994,14 @@ void Replayer::ApplyBufferData(const CommandGroup& group)
         // contents the layer read back for them are listed apart from bufferData because each entry
         // also says which buffer and offset it came from (src/vulkan/src/hooks.cpp). Without this the
         // replay builds a structure out of whatever those buffers happen to hold, and every ray misses.
+        // What a trace's shader record addresses point at, read back at the end of the frame
+        // (src/vulkan/src/capture.cpp, ResolveRecordAddresses): bound nowhere else.
+        if (const JValue* list = c.Get("recordAddresses"); list && list->IsArray())
+        {
+            for (uint32_t k = 0; k < list->count; ++k)
+                if (const JValue* capture = list->items[k].Get("capture"))
+                    apply(capture->Uint());
+        }
         if (const JValue* list = c.Get("buildData"); list && list->IsArray())
         {
             for (uint32_t k = 0; k < list->count; ++k)
@@ -2675,6 +2683,9 @@ bool Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     std::vector<Placed> placed;
     VkDeviceSize total = 0;
     uint32_t rewritten = 0, unmatched = 0;
+    // Shader record data: the device addresses rewritten to the replay's, and those whose buffer it lacks.
+    uint32_t rewrittenAddresses = 0, unmappedAddresses = 0;
+    std::map<std::string, std::vector<std::pair<VkDeviceSize, VkDeviceAddress>>> recordPatches;
     for (uint32_t i = 0; i < regions->count; ++i)
     {
         const JValue& e = regions->items[i];
@@ -2720,6 +2731,30 @@ bool Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
             }
             memcpy(&p.bytes[at], &replayHandles[(size_t)group * handleSize], handleSize);
             ++rewritten;
+            // The record's device addresses, where its group's shaders read one.
+            const JValue* addresses = command.Get("recordAddresses");
+            const uint64_t record = at / (size_t)stride;
+            for (uint32_t k = 0; addresses && addresses->IsArray() && k < addresses->count; ++k)
+            {
+                const JValue& e = addresses->items[k];
+                if (Str(e.Get("region")) != name || (e.Get("record") ? e.Get("record")->Uint() : 0) != record)
+                    continue;
+                const uint64_t offset = e.Get("offset") ? e.Get("offset")->Uint() : 0;
+                if (offset < handleSize || at + offset + 8 > p.bytes.size())
+                    continue;
+                const std::vector<uint32_t>& read = RecordAddressOffsets(_boundRayTracingPipeline, group);
+                    continue;   // a value that looks like an address where no shader reads one
+                const VkDeviceAddress here = RemapAddress(e.Get("buffer") ? e.Get("buffer")->Uint() : 0,
+                    e.Get("bufferOffset") ? e.Get("bufferOffset")->Uint() : 0);
+                if (!here)
+                {
+                    ++unmappedAddresses;
+                    continue;
+                }
+                memcpy(&p.bytes[at + offset], &here, sizeof(here));
+                recordPatches[name].emplace_back(at + offset, here);
+                ++rewrittenAddresses;
+            }
         }
         p.at = (total + align - 1) & ~(align - 1);
         total = p.at + p.bytes.size();
@@ -2734,6 +2769,12 @@ bool Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
     {
         Problem("the shader binding table has " + std::to_string(unmatched) + " record(s) whose handle this pipeline never gave out; they are replayed as captured");
     }
+    if (unmappedAddresses)
+    {
+        Problem("the shader binding table's record data has " + std::to_string(unmappedAddresses) +
+            " device address(es) into buffers the replay does not have; they are replayed as captured");
+    }
+    (void)rewrittenAddresses;
     if (!EnsureBindingTable(total))
     {
         Problem("left out: the shader binding table could not be allocated");
@@ -2802,6 +2843,10 @@ bool Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
                     out[r].data = data;
                     out[r].size = size;
                     out[r].region = *layouts[r];
+                    // The record data's addresses, which the program writes as its own buffers'.
+                    auto patches = recordPatches.find(names[r]);
+                    if (patches != recordPatches.end())
+                        out[r].patches = patches->second;
                 }
             }
         }
@@ -2809,6 +2854,157 @@ bool Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
             a.depth);
     }
     return true;
+}
+
+namespace
+{
+
+/**
+ * The offsets, from the start of a shader record's data, of the 64-bit members of a SPIR-V module's
+ * ShaderRecordBufferKHR blocks: buffer references (pointers in PhysicalStorageBuffer), 64-bit
+ * integers and two-component 32-bit integer vectors, the three ways a shader reads a device address.
+ * Nested structs are walked through their members' offsets; arrays are not.
+ */
+std::vector<uint32_t> ShaderRecordAddressOffsets(const uint8_t* code, size_t size)
+{
+    constexpr uint32_t kOpTypeInt = 21, kOpTypeVector = 23, kOpTypeStruct = 30, kOpTypePointer = 32, kOpVariable = 59,
+                       kOpMemberDecorate = 72;
+    constexpr uint32_t kDecorationOffset = 35;
+    constexpr uint32_t kShaderRecordBuffer = 5343, kPhysicalStorageBuffer = 5349;
+    std::vector<uint32_t> out;
+    if (!code || size < 20 || size % 4)
+        return out;
+    std::vector<uint32_t> words(size / 4);
+    std::memcpy(words.data(), code, size);   // a blob need not be aligned
+    struct Type
+    {
+        uint32_t op = 0;
+        uint32_t width = 0;        // OpTypeInt
+        uint32_t element = 0;      // OpTypeVector's component, OpTypePointer's pointee
+        uint32_t count = 0;        // OpTypeVector
+        uint32_t storage = 0;      // OpTypePointer
+        std::vector<uint32_t> members;
+    };
+    std::unordered_map<uint32_t, Type> types;
+    std::unordered_map<uint32_t, std::unordered_map<uint32_t, uint32_t>> offsets;   // struct -> member -> offset
+    std::vector<uint32_t> recordTypes;                                               // pointer types of record variables
+    for (size_t at = 5; at < words.size();)
+    {
+        const uint32_t op = words[at] & 0xFFFF, n = words[at] >> 16;
+        if (!n || at + n > words.size())
+            break;
+        const uint32_t* w = &words[at];
+        if (op == kOpTypeInt && n >= 3)
+            types[w[1]] = {op, w[2]};
+        else if (op == kOpTypeVector && n >= 4)
+            types[w[1]] = {op, 0, w[2], w[3]};
+        else if (op == kOpTypeStruct && n >= 2)
+        {
+            Type t{op};
+            t.members.assign(w + 2, w + n);
+            types[w[1]] = t;
+        }
+        else if (op == kOpTypePointer && n >= 4)
+            types[w[1]] = {op, 0, w[3], 0, w[2]};
+        else if (op == kOpVariable && n >= 4 && w[3] == kShaderRecordBuffer)
+            recordTypes.push_back(w[1]);
+        else if (op == kOpMemberDecorate && n >= 5 && w[3] == kDecorationOffset)
+            offsets[w[1]][w[2]] = w[4];
+        at += n;
+    }
+    std::function<void(uint32_t, uint32_t, int)> walk = [&](uint32_t typeId, uint32_t base, int depth) {
+        auto it = types.find(typeId);
+        if (it == types.end() || depth > 8)
+            return;
+        const Type& t = it->second;
+        if ((t.op == kOpTypeInt && t.width == 64) || (t.op == kOpTypePointer && t.storage == kPhysicalStorageBuffer))
+        {
+            out.push_back(base);
+            return;
+        }
+        if (t.op == kOpTypeVector && t.count == 2)
+        {
+            auto component = types.find(t.element);
+            if (component != types.end() && component->second.op == kOpTypeInt && component->second.width == 32)
+                out.push_back(base);
+            return;
+        }
+        if (t.op == kOpTypeStruct)
+        {
+            for (uint32_t m = 0; m < t.members.size(); ++m)
+            {
+                auto o = offsets[typeId].find(m);
+                if (o != offsets[typeId].end())
+                    walk(t.members[m], base + o->second, depth + 1);
+            }
+        }
+    };
+    for (uint32_t pointerType : recordTypes)
+    {
+        auto pointer = types.find(pointerType);
+        if (pointer != types.end())
+            walk(pointer->second.element, 0, 0);
+    }
+    return out;
+}
+
+/** A ray tracing stage as the layer names its blob ("closest_hit:main#2", src/vulkan/src/hooks.cpp). */
+const char* RayTracingStageName(std::string_view stage)
+{
+    if (stage.find("RAYGEN") != std::string_view::npos)
+        return "raygen";
+    if (stage.find("ANY_HIT") != std::string_view::npos)
+        return "any_hit";
+    if (stage.find("CLOSEST_HIT") != std::string_view::npos)
+        return "closest_hit";
+    if (stage.find("MISS") != std::string_view::npos)
+        return "miss";
+    if (stage.find("INTERSECTION") != std::string_view::npos)
+        return "intersection";
+    if (stage.find("CALLABLE") != std::string_view::npos)
+        return "callable";
+    return nullptr;
+}
+
+} // namespace
+
+const std::vector<uint32_t>& Replayer::RecordAddressOffsets(uint64_t pipelineId, uint32_t group)
+{
+    auto known = _recordLayouts.find({pipelineId, group});
+    if (known != _recordLayouts.end())
+        return known->second;
+    std::vector<uint32_t>& out = _recordLayouts[{pipelineId, group}];
+    const JValue* object = _capture->Object(pipelineId);
+    const JValue* args = object ? object->Get("args") : nullptr;
+    const JValue* infos = args ? args->Get("pCreateInfos") : nullptr;
+    const uint32_t index = object && object->Get("index") ? (uint32_t)object->Get("index")->Uint() : 0;
+    const JValue* info = infos && infos->IsArray() && index < infos->count ? &infos->items[index] : nullptr;
+    const JValue* groups = info ? info->Get("pGroups") : nullptr;
+    const JValue* stages = info ? info->Get("pStages") : nullptr;
+    if (!groups || !groups->IsArray() || group >= groups->count || !stages || !stages->IsArray())
+        return out;
+    // Every shader of the group reads the same record, so their layouts are taken together.
+    for (const char* member : {"generalShader", "closestHitShader", "anyHitShader", "intersectionShader"})
+    {
+        const JValue* value = groups->items[group].Get(member);
+        if (!value || !value->IsNumber() || value->Uint() >= stages->count)
+            continue;   // VK_SHADER_UNUSED_KHR, or not a number at all
+        const JValue& stage = stages->items[value->Uint()];
+        const char* stageName = RayTracingStageName(Str(stage.Get("stage")));
+        if (!stageName)
+            continue;
+        // "closest_hit:main#2": the stage's index tells apart the stages sharing a kind and an entry point.
+        const std::string blob =
+            std::string(stageName) + ":" + std::string(Str(stage.Get("pName"))) + "#" + std::to_string(value->Uint());
+        const uint8_t* code = nullptr;
+        size_t size = 0;
+        if (!_capture->Blob(*object, blob, code, size))
+            continue;
+        for (uint32_t offset : ShaderRecordAddressOffsets(code, size))
+            if (std::find(out.begin(), out.end(), offset) == out.end())
+                out.push_back(offset);
+    }
+    return out;
 }
 
 /** The replay's own shader binding table memory, host visible so the records can be written into it. */

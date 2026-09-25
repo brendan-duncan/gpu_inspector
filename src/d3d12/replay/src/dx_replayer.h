@@ -322,6 +322,14 @@ private:
     D3D12_GPU_VIRTUAL_ADDRESS RemapInstances(const vkreplay::JValue& command, UINT count, InstanceSource* source = nullptr);
     /** The same, from a list of read-backs ({field, capture}): a command's buildData or a structure's captureInputs. */
     D3D12_GPU_VIRTUAL_ADDRESS RemapInstancesFrom(const vkreplay::JValue* list, UINT count, InstanceSource* source = nullptr);
+    /**
+     * A local root argument's value in this process (ResolveLocalRootArguments in the capture
+     * library resolved it): a descriptor table's handle into the replay's heap, or a root view's
+     * address in the replay's buffer. 0 when the capture could not resolve it or the replay lacks it.
+     */
+    uint64_t LocalRootValue(const vkreplay::JValue& argument);
+    /** A trace's local descriptor tables' descriptors, written into the replay's heaps before it runs. */
+    void WriteLocalRootDescriptors(const vkreplay::JValue& command);
     /** Export to C++: a state object's description as the replay made it, into CreateObjects. */
     void ExportStateObject(uint64_t id, const std::string& name, const D3D12_STATE_OBJECT_DESC& desc);
     /** Export to C++: DispatchRays with its binding table rebuilt by the program (BindingTable in dx_support). */

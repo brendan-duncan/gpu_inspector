@@ -1620,6 +1620,7 @@ def triangle_cases(triangle):
             os.remove(exported)
 
     exported_cpp = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_export_cpp")
+    saved_shader_record = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_shader_record.gpucap")
 
     def remove_exported_cpp():
         shutil.rmtree(exported_cpp, ignore_errors=True)
@@ -1671,6 +1672,23 @@ def triangle_cases(triangle):
             expect("vkCmdTraceRaysKHR: left out" not in commands and "vkCmdBuildAccelerationStructuresKHR: left out" not in commands,
                    "a build or the trace is still left out of the source") + \
             expect("is not compared" not in commands, "a traced image is still skipped by the exported comparison")
+
+    def triangle_export_cpp_shader_record(state, log):
+        # --shader-record: the hit group's shader record holds the device address of a tint buffer no
+        # descriptor set binds, read through a buffer reference. The layer reads the buffer back at the
+        # end of the frame (recordAddresses), and the export writes the program's own address over the
+        # captured one in the record (RecordPatch), spelled from its own buffer (BufferAddress).
+        projects = [os.path.join(exported_cpp, d) for d in os.listdir(exported_cpp)] if os.path.isdir(exported_cpp) else []
+        project = projects[0] if projects else ""
+        commands = ""
+        if project and os.path.isfile(os.path.join(project, "frame_commands.cpp")):
+            with open(os.path.join(project, "frame_commands.cpp"), encoding="utf-8") as f:
+                commands = f.read()
+        patches = re.search(r"RecordPatch recordAddresses\w*\[\] = \{[^;]*BufferAddress\(", commands)
+        return check_connected(state, log) + \
+            expect(len(projects) == 1, f"one project folder in {exported_cpp}: {projects}") + \
+            expect("TraceRays(" in commands, "the trace is not in the source") + \
+            expect(patches is not None, "the hit record's tint address is not rewritten with the program's own buffer's (RecordPatch)")
 
     def triangle_report_export(state, log):
         # Reports open in tabs beside the capture's, and each exports to a standalone HTML file
@@ -1742,6 +1760,10 @@ def triangle_cases(triangle):
         cases.append(Case("export-cpp-ray-tracing", launch + ["--args=--ray-tracing --static-blas", "--debug-capture",
                                                               f"--debug-export-cpp={exported_cpp}"],
                           triangle_export_cpp_ray_tracing, delay_ms=20000, before=remove_exported_cpp))
+        cases.append(Case("export-cpp-shader-record", launch + ["--args=--shader-record", "--debug-capture",
+                                                                f"--debug-export-cpp={exported_cpp}",
+                                                                f"--debug-save={saved_shader_record}", "--debug-save-delay=9000"],
+                          triangle_export_cpp_shader_record, delay_ms=20000, before=remove_exported_cpp))
         cases.append(Case("overdraw", launch + ["--debug-capture", "--debug-view=overdraw",
                                                 "--debug-mouse=340,560", "--debug-settle=8000"],
                           triangle_overdraw, delay_ms=20000))
@@ -2178,10 +2200,34 @@ def d3d12_cases(triangle):
             expect("DispatchRays: left out" not in commands and "BuildRaytracingAccelerationStructure: left out" not in commands,
                    "a build or the trace is still left out of the source")
 
+    def d3d12_export_cpp_local_root(state, log):
+        # --local-root: the tinted hit group's record carries a root constant, a root CBV's GPU address
+        # and a local table's GPU descriptor handle after its identifier, and the buffers both name
+        # are bound nowhere else. The capture library resolves them at the finish and reads the
+        # buffers back (ResolveLocalRootArguments); the export rewrites the address and the handle
+        # with the program's own (TablePatch) and writes the table's descriptor into its heap.
+        projects = [os.path.join(exported_cpp, d) for d in os.listdir(exported_cpp)] if os.path.isdir(exported_cpp) else []
+        project = projects[0] if projects else ""
+        commands = ""
+        if project and os.path.isfile(os.path.join(project, "frame_commands.cpp")):
+            with open(os.path.join(project, "frame_commands.cpp"), encoding="utf-8") as f:
+                commands = f.read()
+        patches = re.search(r"const TablePatch \w+\[\] = \{(.*)\};", commands)
+        return check_connected(state, log) + \
+            expect(len(projects) == 1, f"one project folder in {exported_cpp}: {projects}") + \
+            expect(bool(patches), "the hit group table's local root arguments are not rewritten (no TablePatch)") + \
+            expect(bool(patches) and "GetGPUVirtualAddress()" in patches.group(1) and "GpuHandle(" in patches.group(1),
+                   f"the rewrites are not a buffer address and a descriptor handle: {patches.group(1) if patches else None}") + \
+            expect("CreateConstantBufferView(" in commands, "the local table's descriptor is not written into the program's heap")
+
     export_cases = [Case("d3d12-export-cpp", launch + ["--args=--bundle", "--record-always", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
                          d3d12_export_cpp, delay_ms=20000, before=remove_exported_cpp),
                     Case("d3d12-export-cpp-ray-tracing", launch + ["--args=--ray-tracing", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
-                         d3d12_export_cpp_ray_tracing, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
+                         d3d12_export_cpp_ray_tracing, delay_ms=20000, before=remove_exported_cpp),
+                    # Without --validation: a ray tracing capture taken under the debug layer reads its
+                    # binding tables back as zeros more often than not (TODO.md, Direct3D 12).
+                    Case("d3d12-export-cpp-local-root", launch + ["--args=--local-root", "--debug-capture", f"--debug-export-cpp={exported_cpp}"],
+                         d3d12_export_cpp_local_root, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
     if not export_cases:
         print("  (no dxinsp_replay build: skipping the D3D12 Export to C++ case)")
     return export_cases + [

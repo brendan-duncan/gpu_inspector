@@ -100,13 +100,20 @@ struct ShaderExport
     const void* capturedIdentifier;   // D3D12_SHADER_IDENTIFIER_SIZE_IN_BYTES
     const wchar_t* name;
 };
+/** Eight bytes of a binding table region to overwrite: a local root argument's GPU address or GPU descriptor handle. */
+struct TablePatch
+{
+    UINT64 offset;
+    UINT64 value;
+};
 /**
  * One region of a binding table as captured, with every record's identifier replaced by this
- * runtime's identifier for the export the captured one named: its address. What follows the
- * identifier in a record (the local root arguments) is copied as it was.
+ * runtime's identifier for the export the captured one named, and each local root argument that is
+ * a GPU address or a GPU descriptor handle replaced by this program's (`patches`): its address.
+ * Root constants are copied as they were.
  */
 D3D12_GPU_VIRTUAL_ADDRESS BindingTable(ID3D12StateObject* stateObject, const ShaderExport* exports, UINT exportCount, const void* data,
-    UINT64 size, UINT64 stride);
+    UINT64 size, UINT64 stride, const TablePatch* patches = nullptr, UINT patchCount = 0);
 /** Compares the submission's read-backs with the capture's copies. */
 void CompleteReadbacks();
 /** Prints every comparison and writes the images to `directory`; the process exit code: 0 all identical, 1 otherwise. */
