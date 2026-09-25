@@ -34380,9 +34380,10 @@ function overdrawBrief(o) {
     skippedDraws: o.skippedDraws || void 0,
     pixelsByCount: Object.keys(histogram).length ? histogram : void 0,
     note: o.note,
-    // A multiview pass: every view's counts together, or the one view this is.
+    // A multiview or layered pass: every view's (layer's) counts together, or the one this is.
     views: o.views,
-    view: o.view
+    view: o.view,
+    layered: o.layered || void 0
   };
 }
 function passMeasurements(c2, p, i, gpuMs) {
@@ -34862,7 +34863,7 @@ function captureTools(store) {
         capture: CAPTURE_PARAM,
         pass: { type: "integer", minimum: 0, description: "A render pass: its heatmap and the counts at `texels`." },
         depthTested: { type: "boolean", description: "With pass: the fragments that passed depth and stencil (default true), or every rasterized fragment." },
-        view: { type: "integer", minimum: 0, description: "With pass, in a multiview pass (an XR frame's eyes): which view's heatmap (default 0). The pass list's figures are of every view together." },
+        view: { type: "integer", minimum: 0, description: "With pass, in a multiview pass (an XR frame's eyes) or a pass layered through gl_Layer (cube maps, shadow cascades): which view's or layer's heatmap (default 0). The pass list's figures are of every view or layer together." },
         image: { type: "boolean", description: "With pass: return the PNG (default true)." },
         maxSize: { type: "integer", minimum: 16, maximum: 2048, description: "Longest side of the returned image in pixels (default 512)." },
         texels: { type: "array", items: { type: "array", items: { type: "integer" }, minItems: 2, maxItems: 2 }, description: "With pass: [x, y] pixels to read the count of (up to 64)." },
@@ -34923,7 +34924,7 @@ function captureTools(store) {
         const views = ofKind.map((m) => m.info.view).filter((v) => v !== void 0);
         const view = optionalInt(args, "view");
         const o = ofKind.find((m) => (m.info.view ?? 0) === (view ?? views[0] ?? 0));
-        if (!o && view !== void 0 && ofKind.length) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no view ${view}: ${views.length ? `its views are ${views.join(", ")}` : "it is not a multiview pass"}.`);
+        if (!o && view !== void 0 && ofKind.length) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no view ${view}: ${views.length ? `its ${ofKind[0].info.layered ? "layers" : "views"} are ${views.join(", ")}` : "it is not a multiview or layered pass"}.`);
         if (!o) throw new Error(`Pass ${passArg} (${c2.passName(passArg)}) has no overdraw measurement.`);
         const requested = Array.isArray(args.texels) ? args.texels.slice(0, 64) : [];
         const texels = requested.map((pt) => {

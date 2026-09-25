@@ -338,9 +338,19 @@ application with injected state. Route (a) is the general one and is the prerequ
       in the pixel history's single-view pass the validation layer reported the pass's bindings as
       unbound, which the history now makes again after each pipeline it binds. The `multiview` UI
       case covers the app's side: a measurement per view, the tab drawing view 0's heat on layer 0.
-- [ ] Pixel history in a pass layered through `gl_Layer` (not multiview), past its first layer: the
-      queries and the one-pixel scissor would meet every layer's fragments, so the draw needs its
-      output limited to the followed layer, which no test capture here has to check against.
+- [x] Pixel history in a pass layered through `gl_Layer` (not multiview), past its first layer
+      (`RenderSingleLayer`, `src/replay/src/layer_patch.cpp`): every pipeline bound, and the last
+      pre-rasterization shader object, is a copy whose last pre-rasterization stage moves
+      `gl_Position` outside the clip volume for vertices of another layer, so the queries and the
+      one-pixel scissor meet the followed layer's fragments only. `test/triangle --layered` (the cube
+      as two instances, one per layer) checks it in a render pass, in dynamic rendering, with shader
+      objects and with `--alpha-test --occluded`: both layers exact, no validation messages, and a
+      pixel covered only in the other layer shows the draw with no fragments. Mesh shaders are not
+      edited (noted).
+- [x] Overdraw of every layer of a pass layered through `gl_Layer`: the count target, the depth
+      copy and the counting framebuffer have the framebuffer's layers, and each layer is a
+      measurement of its own (`"layered": true`). On `test/triangle --layered` the layers add up to
+      the draw's occlusion count (68,095 + 68,098 = 136,193).
 - [x] Pixel history in the app and the MCP server: the pixel clicked in a capture's render target
       tab, beside the image, and `get_pixel_history`. Both replay the capture with
       `vkinsp_replay --pixel-data`.

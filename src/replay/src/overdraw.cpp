@@ -351,6 +351,11 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
     return pipeline;
 }
 
+uint32_t Replayer::AttachmentLayers(const PassState& pass)
+{
+    return pass.viewMask ? ViewLayers(pass.viewMask) : std::max(1u, pass.framebufferLayers);
+}
+
 void Replayer::PrepareOverdraw(VkCommandBuffer cb, PassState& pass)
 {
     if (!pass.extent.width || !pass.extent.height)
@@ -359,8 +364,8 @@ void Replayer::PrepareOverdraw(VkCommandBuffer cb, PassState& pass)
     if (pass.depthFormat == VK_FORMAT_UNDEFINED || !pass.depthImage)
         return;
     auto sit = _images.find(pass.depthImage);
-    // A multiview pass tests each view against the depth of its own layer.
-    const uint32_t layers = ViewLayers(pass.viewMask);
+    // A multiview or layered pass tests each layer against the depth of its own.
+    const uint32_t layers = AttachmentLayers(pass);
     pass.overdrawDepth = sit == _images.end() ? TransientImage{} : CreateTransientImage(pass.depthFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
         VK_SAMPLE_COUNT_1_BIT, layers);
     if (!pass.overdrawDepth.image)
@@ -637,7 +642,7 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
         const VkImageAspectFlags aspects = depth && depthFormat != VK_FORMAT_UNDEFINED ? vkinsp::FormatAspects(depthFormat) : 0;
         VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
         info.renderArea = {{0, 0}, pass.extent};
-        info.layerCount = 1;
+        info.layerCount = _reissueViewMask ? 1 : _reissueLayers;
         info.viewMask = _reissueViewMask;
         info.colorAttachmentCount = 1;
         info.pColorAttachments = &attachment;
@@ -736,9 +741,10 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
     }
     // Shader objects draw only in dynamic rendering; a pass without them keeps the render pass.
     const bool shaderObjects = PassUsesShaderObjects(group, endIndex) && _fns.CmdBeginRendering;
-    // A multiview pass: a layer of the count target per view, measured apart. The capture's count
-    // is of every view together, so no view's measurement carries it.
-    const uint32_t layers = ViewLayers(pass.viewMask);
+    // A multiview pass: a layer of the count target per view, measured apart; a layered pass (gl_Layer)
+    // the same, a layer per framebuffer layer. The capture's count is of every layer together, so no
+    // layer's measurement carries it.
+    const uint32_t layers = AttachmentLayers(pass);
     for (int mode = 0; mode < 2; ++mode)
     {
         const bool tested = mode == 0;
@@ -750,7 +756,7 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         result.depthTested = tested;
         result.width = pass.extent.width;
         result.height = pass.extent.height;
-        result.capturedFragments = pass.viewMask ? -1 : measured;
+        result.capturedFragments = layers > 1 ? -1 : measured;
         if (tested && depthFormat == VK_FORMAT_UNDEFINED)
             result.note = "the pass has no depth attachment";
 
@@ -776,7 +782,7 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         fbInfo.pAttachments = views;
         fbInfo.width = pass.extent.width;
         fbInfo.height = pass.extent.height;
-        fbInfo.layers = 1;
+        fbInfo.layers = pass.viewMask ? 1 : layers;   // multiview: the view mask picks the layers
         VkFramebuffer fb = VK_NULL_HANDLE;
         if (rp && _fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS)
         {
@@ -788,8 +794,10 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
             _transientFramebuffers.push_back(fb);
 
         _reissueViewMask = pass.viewMask;
+        _reissueLayers = layers;
         ReissuePass(cb, group, pass, endIndex, tested, depthFormat, rp, fb, count.view, depthFormat != VK_FORMAT_UNDEFINED ? pass.overdrawDepth.view : VK_NULL_HANDLE);
         _reissueViewMask = 0;
+        _reissueLayers = 1;
         result.draws = _overdrawDraws;
         result.skippedDraws = _overdrawSkippedDraws;
 
@@ -812,8 +820,11 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
             if (pass.viewMask && !(pass.viewMask & (1u << layer)))
                 continue;
             OverdrawResult view = result;
-            if (pass.viewMask)
+            if (layers > 1)
+            {
                 view.view = (int32_t)layer;
+                view.layered = !pass.viewMask;
+            }
             p.results.push_back({_report->overdraw.size(), layer});
             _report->overdraw.push_back(std::move(view));
         }

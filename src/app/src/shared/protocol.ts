@@ -444,9 +444,14 @@ export interface OverdrawMeasurement {
   /** Vulkan (vkinsp_replay): the fragment shader invocations the capture's pipeline statistics measured for the pass. */
   capturedFragments?: number;
   note?: string;
-  /** A multiview pass is measured per view: which one this is (the layer of its attachments). Absent in a single-view pass. */
+  /**
+   * A pass with several layers is measured per layer: which one this is. The layer of its attachments a
+   * multiview pass renders a view into, or one a layered pass draws into through gl_Layer. Absent with one layer.
+   */
   view?: number;
-  /** A multiview pass's views taken together (mergeViews in renderer/overdraw.ts): how many, their counts summed and their pixels stacked. */
+  /** The layers are a layered framebuffer's (gl_Layer), not a multiview pass's views. */
+  layered?: boolean;
+  /** A multiview or layered pass's layers taken together (mergeViews in renderer/overdraw.ts): how many, their counts summed and their pixels stacked. */
   views?: number;
 }
 

@@ -37,6 +37,7 @@
 #include "gpucap.h"
 #include "vk_decode.gen.h"
 #include "count_patch.h"
+#include "layer_patch.h"
 #include "xfb_patch.h"
 
 namespace vkreplay
@@ -410,8 +411,13 @@ struct OverdrawResult
     /** The count of every pixel, row by row. */
     std::vector<uint16_t> counts;
     std::string note;
-    /** A multiview pass has a measurement per view: its index (the attachments' layer); -1 in a single-view pass. */
+    /**
+     * A pass with several layers has a measurement per layer: the attachments' layer it is of, which
+     * is a multiview pass's view or a layer a layered pass draws into through gl_Layer; -1 with one.
+     */
     int32_t view = -1;
+    /** The layers are a layered framebuffer's (gl_Layer) rather than a multiview pass's views. */
+    bool layered = false;
 };
 
 /**
@@ -673,6 +679,8 @@ private:
         bool overdraw = false;
         /** Multiview: the views the pass renders, each the attachments' layer of its index; 0 without. */
         uint32_t viewMask = 0;
+        /** A layered framebuffer's layers (gl_Layer picks one per primitive), or dynamic rendering's layerCount. */
+        uint32_t framebufferLayers = 1;
         // Pixel history: what each attachment starts from, and the copies the pass is replayed into.
         uint64_t renderPass = 0;                 // 0 for dynamic rendering
         std::vector<VkFormat> formats;
@@ -905,8 +913,8 @@ private:
     bool _historyFragmentRound = false;
     /** The event each draw of the fragment round belongs to, keyed as the events were recorded. */
     std::map<std::tuple<uint32_t, uint64_t, uint32_t, uint32_t>, size_t> _historyEventIndex;
-    std::map<std::tuple<uint64_t, VkFormat, uint32_t>, VkPipeline> _historyFragmentPipelines;
-    std::map<std::tuple<uint64_t, VkFormat, uint32_t>, VkPipeline> _historyFragmentIdPipelines;
+    std::map<std::tuple<uint64_t, VkFormat, uint64_t>, VkPipeline> _historyFragmentPipelines;
+    std::map<std::tuple<uint64_t, VkFormat, uint64_t>, VkPipeline> _historyFragmentIdPipelines;
     std::map<std::pair<VkFormat, uint32_t>, VkRenderPass> _historyFragmentRenderPasses;
     /**
      * A multiview pass is followed in the one view the pixel is in: the pass replayed with that view
@@ -917,11 +925,26 @@ private:
      */
     uint32_t _historyView = 0;
     uint64_t _historyViewRenderPass = 0;
-    /** A captured pipeline copied, unchanged but for the single view it renders (_historyView). */
+    /**
+     * A pass layered through gl_Layer is followed in its one layer the same way: every pipeline bound is
+     * a copy whose last pre-rasterization stage clips the primitives aimed at any other layer
+     * (layer_patch.h). -1 in any other pass.
+     */
+    int32_t _historyLayer = -1;
+    /** What the history's pipeline copies are made for: the single view and the single layer; 0 for neither. */
+    uint64_t HistoryFollowKey() const { return (uint64_t)_historyView | ((uint64_t)(uint32_t)(_historyLayer + 1) << 32); }
+    /** A captured pipeline copied, unchanged but for the single view or layer it renders. */
     VkPipeline ViewPipeline(uint64_t pipelineId);
     /** Makes a copy render the single view: the single-view render pass, or its view mask in dynamic rendering. */
     void RenderSingleView(PipelineCopy& p);
-    std::map<std::pair<uint64_t, uint32_t>, VkPipeline> _historyViewPipelines;
+    /** Makes a copy draw into the followed layer only (_historyLayer); false when its stage could not be edited. */
+    bool RenderSingleLayer(uint64_t pipelineId, PipelineCopy& p);
+    /** A code object's pre-rasterization stage edited for the followed layer, by object, stage payload and layer. */
+    const LayerPatch& LayerCode(uint64_t objectId, const std::string& blobName, const std::string& entryPoint);
+    std::map<std::tuple<uint64_t, std::string, int32_t>, LayerPatch> _layerPatches;
+    /** Shader objects edited for the followed layer, by captured shader object and layer. */
+    std::map<std::pair<uint64_t, int32_t>, VkShaderEXT> _layerShaders;
+    std::map<std::pair<uint64_t, uint64_t>, VkPipeline> _historyViewPipelines;
 
     /** The fragment shader of the primitive-id pass (util.h, kPrimitiveIdFragmentSpirv). */
     VkShaderModule PrimitiveIdModule();
@@ -1326,12 +1349,17 @@ private:
 
     // Overdraw
     std::unordered_map<uint64_t, VkExtent2D> _framebufferExtents;
+    std::unordered_map<uint64_t, uint32_t> _framebufferLayers;
     VkShaderModule _countModule = VK_NULL_HANDLE;
     VkShaderModule _backFaceModule = VK_NULL_HANDLE;
     /** Copies by pipeline, depth tested, depth format, mode, whether they draw in dynamic rendering, and the view mask. */
     std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool, uint32_t>, VkPipeline> _overdrawPipelines;
     /** The views the pass being reissued renders into (overdraw of a multiview pass), 0 for one. */
     uint32_t _reissueViewMask = 0;
+    /** The layers of the framebuffer the pass is reissued into (overdraw of a layered pass), without a view mask. */
+    uint32_t _reissueLayers = 1;
+    /** The layers a pass's attachments are measured in: a multiview pass's views, or a layered framebuffer's layers. */
+    static uint32_t AttachmentLayers(const PassState& pass);
     /** The pass being reissued is in dynamic rendering (it holds shader-object draws), so pipeline copies are made for it. */
     bool _reissueRendering = false;
     /** Shader objects are bound to the graphics stages in place of a pipeline. */
@@ -1451,7 +1479,7 @@ private:
     uint32_t _hwRound = 0;
 
     // Pixel history
-    std::map<std::tuple<uint64_t, int, uint32_t>, VkPipeline> _historyPipelines;
+    std::map<std::tuple<uint64_t, int, uint64_t>, VkPipeline> _historyPipelines;
     std::map<std::pair<uint64_t, uint32_t>, VkRenderPass> _historyRenderPasses;
     std::map<uint64_t, ScissorInfo> _pipelineScissors;
     size_t _historyPasses = 0;
@@ -1465,7 +1493,7 @@ private:
     std::map<uint64_t, bool> _historyEarlyTests;
     /** The primitive-id render passes by depth format, and the pipelines that draw into them. */
     std::map<std::pair<VkFormat, uint32_t>, VkRenderPass> _historyIdRenderPasses;
-    std::map<std::tuple<uint64_t, VkFormat, uint32_t>, VkPipeline> _historyIdPipelines;
+    std::map<std::tuple<uint64_t, VkFormat, uint64_t>, VkPipeline> _historyIdPipelines;
     VkShaderModule _primitiveIdModule = VK_NULL_HANDLE;
     /** The geometryShader feature is enabled, without which gl_PrimitiveID cannot be read. */
     bool _primitiveIdAvailable = false;

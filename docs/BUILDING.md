@@ -154,6 +154,7 @@ differently or misbehave on purpose.
 | `--descriptor-buffer` | Binds its set through `VK_EXT_descriptor_buffer` instead of a descriptor set |
 | `--multiview` | Renders both views of a two-layer target in one pass (view mask 0b11), as an XR application draws its eyes, and blits them side by side |
 | `--dynamic-rendering` | Runs the main pass in dynamic rendering with the cube's pipeline; with `--multiview`, its view mask there |
+| `--layered` | Renders the same two-layer target through a layered framebuffer instead: the cube as two instances, each writing its layer through `gl_Layer` (`VK_EXT_shader_viewport_index_layer`), as single-pass cube maps and shadow cascades do |
 | `--alpha-test` | Draws the cube with a fragment shader that discards the checker's dark squares |
 | `--device-local-descriptors` | `--descriptor-buffer`, with the descriptor buffer in device-local memory the host never maps, filled by a copy |
 | `--compile-hitch` | Builds a pipeline inside every frame, so the CPU timeline has a compile in it |

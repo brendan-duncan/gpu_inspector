@@ -1470,6 +1470,7 @@ void Replayer::CreateObject(const JValue& o)
             if (_exporter)
                 _exporter->Create(type, id, handle, "vkCreateFramebuffer", *a.pCreateInfo);
             _framebufferExtents[id] = {a.pCreateInfo->width, a.pCreateInfo->height};
+            _framebufferLayers[id] = std::max(1u, a.pCreateInfo->layers);
             std::vector<uint64_t> views;
             if (const JValue* list = args->Get("pCreateInfo")->Get("pAttachments"); list && list->IsArray())
                 for (uint32_t i = 0; i < list->count; ++i)
@@ -3847,6 +3848,8 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                                 pass.views.push_back(IdOf(&list->items[v]));
             if (auto eit = _framebufferExtents.find(fb); eit != _framebufferExtents.end())
                 pass.extent = eit->second;
+            if (auto lit = _framebufferLayers.find(fb); lit != _framebufferLayers.end())
+                pass.framebufferLayers = lit->second;
             pass.renderPass = rp;
             auto rit = _renderPasses.find(rp);
             _passViews = rit != _renderPasses.end() ? rit->second.views : 1;
@@ -3916,6 +3919,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
                 VkRenderingInfo info = *a.pRenderingInfo;
                 _passViews = ViewCount(info.viewMask);
                 pass.viewMask = info.viewMask;
+                pass.framebufferLayers = std::max(1u, info.layerCount);
                 std::vector<VkRenderingAttachmentInfo> colors(info.pColorAttachments, info.pColorAttachments + info.colorAttachmentCount);
                 VkRenderingAttachmentInfo depth{}, stencil{};
                 const JValue* ri = args->Get("pRenderingInfo");

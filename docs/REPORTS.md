@@ -446,7 +446,7 @@ more than one fragment on the pixel. The first 16 fragments of a draw are measur
   be running.
 
 Current limits of the Vulkan replay: a draw lists at most its first 16 fragments at the pixel; a pass layered through `gl_Layer` is
-followed in its first layer only (a multiview pass, an XR frame's eyes, in every view); and a multisampled depth target cannot be read (a multisampled color target is,
+followed in any layer, and a multiview pass (an XR frame's eyes) in any view, except for a mesh shader's draws; and a multisampled depth target cannot be read (a multisampled color target is,
 through the resolve of the pixel's samples). The full list is in
 [Capture replay](REPLAY.md#pixel-history). What a Metal capture reports instead — layered passes,
 indirect command buffers, and writes from outside a render pass — is in

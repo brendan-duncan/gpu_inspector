@@ -28,9 +28,11 @@
 // the variant that measures the shader, because the hardware never runs it on a fragment they
 // killed; the event says so, since it changes what the shaded count means.
 //
-// Not followed yet: layered passes past their first layer; every fragment of a draw separately (the
-// primitive is the winning fragment's, and the value is the pixel after the whole draw); and a
-// multisampled depth target, which cannot be resolved to be read.
+// A pass layered through gl_Layer is followed in the pixel's layer with every pipeline bound copied
+// so that its last pre-rasterization stage clips the primitives aimed at another layer
+// (layer_patch.h): the queries and the one-pixel scissor then meet that layer's fragments only.
+//
+// Not followed yet: a multisampled depth target, which cannot be resolved to be read.
 #include "replayer.h"
 
 #include <algorithm>
@@ -162,12 +164,13 @@ bool Replayer::HistoryEarlyFragmentTests(uint64_t pipelineId)
 
 VkPipeline Replayer::ViewPipeline(uint64_t pipelineId)
 {
-    const auto key = std::make_pair(pipelineId, _historyView);
+    const auto key = std::make_pair(pipelineId, HistoryFollowKey());
     if (auto it = _historyViewPipelines.find(key); it != _historyViewPipelines.end())
         return it->second;
     _historyViewPipelines[key] = VK_NULL_HANDLE;   // a copy that cannot be made is not tried again
     VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, "pixel history view", [&](PipelineCopy& p) {
         RenderSingleView(p);
+        RenderSingleLayer(pipelineId, p);
         return true;
     });
     _historyViewPipelines[key] = pipeline;
@@ -197,9 +200,73 @@ void Replayer::RenderSingleView(PipelineCopy& p)
     }
 }
 
+const LayerPatch& Replayer::LayerCode(uint64_t objectId, const std::string& blobName, const std::string& entryPoint)
+{
+    const auto key = std::make_tuple(objectId, blobName, _historyLayer);
+    auto it = _layerPatches.find(key);
+    if (it == _layerPatches.end())
+    {
+        LayerPatch patch;
+        std::vector<uint32_t> code;
+        if (StageCode(objectId, blobName, code))
+        {
+            patch = PatchForLayer(code.data(), code.size(), entryPoint, (uint32_t)_historyLayer);
+        }
+        else
+        {
+            patch.needed = true;
+            patch.error = "its SPIR-V was not captured";
+        }
+        if (patch.needed && !patch.error.empty())
+            _report->history.notes.push_back("object " + std::to_string(objectId) + "'s " + blobName +
+                " is counted in every layer, not only layer " + std::to_string(_historyLayer) + ": " + patch.error);
+        it = _layerPatches.emplace(key, std::move(patch)).first;
+    }
+    return it->second;
+}
+
+bool Replayer::RenderSingleLayer(uint64_t pipelineId, PipelineCopy& p)
+{
+    if (_historyLayer < 0)
+        return true;
+    // The last stage before rasterization decides the layer: its vertices are the ones moved.
+    auto last = p.stages.end();
+    for (VkShaderStageFlagBits stage : {VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, VK_SHADER_STAGE_VERTEX_BIT})
+    {
+        last = std::find_if(p.stages.begin(), p.stages.end(), [&](const VkPipelineShaderStageCreateInfo& s) { return s.stage == stage; });
+        if (last != p.stages.end())
+            break;
+    }
+    if (last == p.stages.end())
+    {
+        const std::string why = "a mesh shader pipeline's draws are counted in every layer, not only the followed one";
+        auto& notes = _report->history.notes;
+        if (std::find(notes.begin(), notes.end(), why) == notes.end())
+            notes.push_back(why);
+        return false;
+    }
+    const std::string entry = last->pName ? last->pName : "main";
+    const LayerPatch& patch = LayerCode(pipelineId, std::string(StageName(last->stage)) + ":" + entry, entry);
+    if (!patch.needed)
+        return true;
+    if (!patch.error.empty())
+        return false;
+    VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+    m.codeSize = patch.words.size() * 4;
+    m.pCode = patch.words.data();
+    VkShaderModule module = VK_NULL_HANDLE;
+    if (_fns.CreateShaderModule(_device, &m, nullptr, &module) != VK_SUCCESS || !module)
+        return false;
+    p.temporary.push_back(module);
+    // Its entry point and specialization stay the application's.
+    last->module = module;
+    last->pNext = nullptr;
+    return true;
+}
+
 VkPipeline Replayer::HistoryPipeline(uint64_t pipelineId, int variant)
 {
-    const auto key = std::make_tuple(pipelineId, variant, _historyView);
+    const auto key = std::make_tuple(pipelineId, variant, HistoryFollowKey());
     auto it = _historyPipelines.find(key);
     if (it != _historyPipelines.end())
         return it->second;
@@ -250,6 +317,7 @@ VkPipeline Replayer::HistoryPipeline(uint64_t pipelineId, int variant)
         if (!p.HasDynamic(VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT))
             p.AddDynamic(VK_DYNAMIC_STATE_SCISSOR);
         RenderSingleView(p);
+        RenderSingleLayer(pipelineId, p);
         return true;
     });
     _historyPipelines[key] = pipeline;
@@ -316,7 +384,7 @@ VkRenderPass Replayer::HistoryIdRenderPass(VkFormat depthFormat)
 
 VkPipeline Replayer::HistoryIdPipeline(uint64_t pipelineId, VkFormat depthFormat)
 {
-    const auto key = std::make_tuple(pipelineId, depthFormat, _historyView);
+    const auto key = std::make_tuple(pipelineId, depthFormat, HistoryFollowKey());
     auto it = _historyIdPipelines.find(key);
     if (it != _historyIdPipelines.end())
         return it->second;
@@ -360,6 +428,7 @@ VkPipeline Replayer::HistoryIdPipeline(uint64_t pipelineId, VkFormat depthFormat
         p.info.pNext = StripPNext(p.info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO});
         p.info.renderPass = rp;
         p.info.subpass = 0;
+        RenderSingleLayer(pipelineId, p);
         return true;
     });
     _historyIdPipelines[key] = pipeline;
@@ -448,7 +517,7 @@ VkRenderPass Replayer::HistoryFragmentRenderPass(VkFormat format)
 VkPipeline Replayer::HistoryFragmentPipeline(uint64_t pipelineId, VkFormat format, bool idPass)
 {
     auto& cache = idPass ? _historyFragmentIdPipelines : _historyFragmentPipelines;
-    const auto key = std::make_tuple(pipelineId, format, _historyView);
+    const auto key = std::make_tuple(pipelineId, format, HistoryFollowKey());
     auto it = cache.find(key);
     if (it != cache.end())
         return it->second;
@@ -501,6 +570,7 @@ VkPipeline Replayer::HistoryFragmentPipeline(uint64_t pipelineId, VkFormat forma
         p.info.pNext = StripPNext(p.info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO});
         p.info.renderPass = rp;
         p.info.subpass = 0;
+        RenderSingleLayer(pipelineId, p);
         return true;
     });
     cache[key] = pipeline;
@@ -718,14 +788,16 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
     auto note = [&](const std::string& why) { out.notes.push_back(where + ": " + why); };
     const ViewRecord& targetView = _views.find(pass.views[target])->second;
     // A layer past the view's first: a multiview pass renders it as the view of its index, which is
-    // followed in a pass of that view alone (RecordHistory); a pass layered through gl_Layer is not.
+    // followed in a pass of that view alone; a pass layered through gl_Layer draws into all its
+    // layers at once, and is followed with every primitive aimed elsewhere clipped (RecordHistory).
     const uint32_t layer = req.layer - targetView.range.baseArrayLayer;
-    if (layer && !pass.viewMask)
-        return note("only the first layer of a layered pass is followed, unless the pass is multiview");
     if (pass.viewMask && !(pass.viewMask & (1u << layer)))
         return note("the multiview pass renders no view into layer " + std::to_string(req.layer));
+    if (!pass.viewMask && layer >= pass.framebufferLayers)
+        return note("the pass's framebuffer has no layer " + std::to_string(req.layer) + " of the image");
     pass.historyLayer = layer;
-    pass.historyLayers = layer + 1;
+    // Multiview: the layers up to the followed view. Layered: every layer, as the framebuffer has.
+    pass.historyLayers = pass.viewMask ? layer + 1 : pass.framebufferLayers;
     if (!pass.extent.width || req.x >= pass.extent.width || req.y >= pass.extent.height)
         return note("the pixel is outside the pass's framebuffer");
     if (pass.formats.size() != pass.views.size())
@@ -942,9 +1014,11 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
     const JValue* commands = _capture->Commands();
     const bool dynamic = pass.renderPass == 0;
     const std::string where = "command buffer " + std::to_string(pass.commandBuffer) + ", pass " + std::to_string(pass.index);
-    // A multiview pass is followed in the view the pixel is in, alone (see _historyView).
+    // A multiview pass is followed in the view the pixel is in, alone (see _historyView); a layered
+    // one in the layer it is in (_historyLayer).
     _historyView = pass.viewMask ? 1u << pass.historyLayer : 0;
     _historyViewRenderPass = pass.renderPass;
+    _historyLayer = !pass.viewMask && pass.framebufferLayers > 1 ? (int32_t)pass.historyLayer : -1;
     struct ViewReset
     {
         Replayer& r;
@@ -952,10 +1026,14 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         {
             r._historyView = 0;
             r._historyViewRenderPass = 0;
+            r._historyLayer = -1;
         }
     } viewReset{*this};
+    const bool following = _historyView || _historyLayer >= 0;
     const uint32_t layer = pass.historyLayer;
     const uint32_t layers = pass.historyLayers;
+    // The framebuffers' layers: a view mask picks them in a multiview pass, gl_Layer in a layered one.
+    const uint32_t framebufferLayers = _historyView ? 1 : layers;
 
     VkRenderPass rp = VK_NULL_HANDLE;
     VkFramebuffer fb = VK_NULL_HANDLE;
@@ -973,7 +1051,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             info.pAttachments = views.data();
             info.width = pass.extent.width;
             info.height = pass.extent.height;
-            info.layers = 1;
+            info.layers = framebufferLayers;
             if (_fns.CreateFramebuffer(_device, &info, nullptr, &fb) == VK_SUCCESS)
                 _transientFramebuffers.push_back(fb);
         }
@@ -991,6 +1069,8 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
     uint64_t fragmentShader = 0;
     uint64_t layoutShader = 0;   // any of them: the replay's fragment shaders are made with its layouts
     ShaderObjectSets sets;
+    // The pre-rasterization shader objects bound, by stage (vertex, tessellation evaluation, geometry).
+    uint64_t preRaster[3]{};
     bool scissorSet = false;
     VkRect2D scissor{};
     std::vector<uint32_t> dynamicCommands;
@@ -1027,7 +1107,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         VkRenderingAttachmentInfo stencil = attachment(pass.dynamicStencil, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
         info.renderArea = {{0, 0}, pass.extent};
-        info.layerCount = 1;
+        info.layerCount = framebufferLayers;
         info.viewMask = _historyView;
         info.colorAttachmentCount = (uint32_t)colors.size();
         info.pColorAttachments = colors.data();
@@ -1057,6 +1137,33 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         _ctx.unresolved = unresolved;
         _arena.Reset();
     };
+    // The last pre-rasterization shader object bound, edited to draw into the followed layer alone.
+    auto bindLayerShader = [&]() {
+        static const VkShaderStageFlagBits stages[3] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+            VK_SHADER_STAGE_GEOMETRY_BIT};
+        int k = preRaster[2] ? 2 : preRaster[1] ? 1 : preRaster[0] ? 0 : -1;
+        if (k < 0 || !_fns.CmdBindShadersEXT)
+            return;
+        const auto key = std::make_pair(preRaster[k], _historyLayer);
+        auto it = _layerShaders.find(key);
+        if (it == _layerShaders.end())
+        {
+            VkShaderEXT made = VK_NULL_HANDLE;
+            VkShaderCreateInfoEXT info{};
+            std::string error;
+            if (ShaderObjectInfo(preRaster[k], info, error))
+            {
+                const std::string entry = info.pName ? info.pName : "main";
+                _arena.Reset();
+                const LayerPatch& patch = LayerCode(preRaster[k], std::string(StageName(stages[k])) + ":" + entry, entry);
+                if (patch.needed && patch.error.empty())
+                    made = ShaderObjectWithCode(preRaster[k], patch.words.data(), patch.words.size(), error);
+            }
+            it = _layerShaders.emplace(key, made).first;
+        }
+        if (it->second)
+            _fns.CmdBindShadersEXT(cb, 1, &stages[k], &it->second);
+    };
     // Bindings and dynamic state, issued between passes where they stay in effect.
     auto state = [&](uint32_t index) {
         const JValue& c = commands->items[index];
@@ -1078,8 +1185,17 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                     layoutShader = id;
                 if (stage == "VK_SHADER_STAGE_FRAGMENT_BIT")
                     fragmentShader = id;
+                else if (stage == "VK_SHADER_STAGE_VERTEX_BIT")
+                    preRaster[0] = id;
+                else if (stage == "VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT")
+                    preRaster[1] = id;
+                else if (stage == "VK_SHADER_STAGE_GEOMETRY_BIT")
+                    preRaster[2] = id;
             }
             issue(index);
+            // One layer of a layered pass: the last stage before rasterization in its edit for it.
+            if (_historyLayer >= 0)
+                bindLayerShader();
             return;
         }
         if (!args || !IsStateCommand(m))
@@ -1090,8 +1206,8 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             {
                 pipeline = IdOf(args->Get("pipeline"));
                 shaderObjects = false;
-                // One view of a multiview pass: the pipeline's copy made for it.
-                if (_historyView)
+                // One view of a multiview pass, or one layer of a layered one: the pipeline's copy made for it.
+                if (following)
                 {
                     if (VkPipeline view = ViewPipeline(pipeline))
                         _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, view);
@@ -1149,9 +1265,9 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         return place;
     };
 
-    // The draw's own pipeline, as the pass binds it: in one view of a multiview pass, its copy for that view.
+    // The draw's own pipeline, as the pass binds it: in one view or layer, its copy for that view or layer.
     auto ownPipeline = [&]() {
-        return _historyView ? ViewPipeline(pipeline) : (VkPipeline)(uintptr_t)Handle(pipeline);
+        return following ? ViewPipeline(pipeline) : (VkPipeline)(uintptr_t)Handle(pipeline);
     };
     // The dynamic state set so far, again, after a pipeline was bound: only what it takes dynamically
     // (the copy's own list, or the captured pipeline's), since it may not set what the pipeline holds.
@@ -1215,7 +1331,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             info.pAttachments = views.data();
             info.width = pass.extent.width;
             info.height = pass.extent.height;
-            info.layers = 1;
+            info.layers = framebufferLayers;
             if (_fns.CreateFramebuffer(_device, &info, nullptr, &pending.idFramebuffer) != VK_SUCCESS)
             {
                 pending.idFramebuffer = VK_NULL_HANDLE;
@@ -1264,7 +1380,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             const VkImageAspectFlags aspects = depthFormat != VK_FORMAT_UNDEFINED ? vkinsp::FormatAspects(depthFormat) : 0;
             VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
             info.renderArea = pixel;   // the clear and the rasterization are the one pixel
-            info.layerCount = 1;
+            info.layerCount = framebufferLayers;
             info.viewMask = _historyView;
             info.colorAttachmentCount = 1;
             info.pColorAttachments = &color;
@@ -1358,7 +1474,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 counter.clearValue.depthStencil = {1.0f, 0};
                 VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
                 info.renderArea = pixel;   // the clears and the rasterization are the one pixel
-                info.layerCount = 1;
+                info.layerCount = framebufferLayers;
                 info.viewMask = _historyView;
                 info.colorAttachmentCount = 1;
                 info.pColorAttachments = &out;
@@ -1422,7 +1538,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             info.pAttachments = views.data();
             info.width = pass.extent.width;
             info.height = pass.extent.height;
-            info.layers = 1;
+            info.layers = framebufferLayers;
             if (_fns.CreateFramebuffer(_device, &info, nullptr, &out) != VK_SUCCESS)
             {
                 out = VK_NULL_HANDLE;

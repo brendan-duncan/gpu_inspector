@@ -215,6 +215,14 @@ pass.
   test/triangle `--multiview` in a render pass (67,698 + 67,723 = 135,421) and with
   `--dynamic-rendering` (64,973 + 64,969 = 129,942), and with `--alpha-test --occluded` there, whose
   discards and fully rejected second draw leave 41,309 + 41,295 = 82,604 + 0.
+- **Layered passes.** A pass whose framebuffer has several layers, drawn into through `gl_Layer`
+  (single-pass cube maps and shadow cascades), is counted in every layer the same way: the count
+  target and the depth copy have the framebuffer's layers, the counting framebuffer (or
+  `layerCount` in dynamic rendering) has them too, and each layer is a measurement of its own with
+  its `view` index and `"layered": true`. test/triangle `--layered` checks it: 68,095 + 68,098 =
+  136,193, the draw's occlusion count, in a render pass; its layers also split as expected in
+  dynamic rendering, with shader objects and with `--alpha-test --occluded`, with no validation
+  messages.
 - **Two counts per pass:**
   - **Fragments passing depth and stencil**, in draw order. The pipelines keep their tests, against
     a copy of the depth the pass started from: its contents when the pass loads depth, its clear
@@ -443,8 +451,22 @@ the pass's descriptor sets, buffers and push constants again after each pipeline
 validation layer reports what was bound before a multiview pass began as unbound in it, although
 the draws find it.
 
+**Layered passes.** A pixel in any layer of a pass layered through `gl_Layer` is followed in that
+layer. Its draws land in every layer at once, so every pipeline bound is copied with its last
+pre-rasterization stage (geometry, else tessellation evaluation, else vertex) edited
+(`layer_patch.cpp`): where it finishes a vertex, `gl_Position` moves outside the clip volume unless
+the vertex's `gl_Layer` is the followed one, so a primitive aimed at another layer is clipped whole.
+A shader that writes no layer draws into layer 0, and is clipped entirely when another layer is
+followed. Shader objects get the same edit on their last pre-rasterization stage. The attachments'
+copies have every layer of the framebuffer. On test/triangle `--layered`, in a render pass, in
+dynamic rendering, with shader objects and with `--alpha-test --occluded`, a pixel in either layer
+comes out at exactly the value the capture read back for that layer, with no validation messages,
+and a pixel only the other layer's cube covers shows the draw with no fragments. A shader whose
+code could not be edited is noted, and its draws are counted in every layer.
+
 Limits:
-- A pass layered through `gl_Layer` rather than multiview is followed in its first layer only.
+- A mesh shader pipeline's draws in a layered pass are counted in every layer, not only the
+  followed one.
 - A multisampled *depth* target cannot be resolved to be read, so a pixel of one is not followed;
   a multisampled color target is, through the resolve of its samples.
 - A dispatch or a trace is reported by what it had bound, not by what it wrote (see above).
@@ -1213,6 +1235,7 @@ Every capture replayed so far, with its result:
 | test/triangle `--shader-object` (linked vertex and fragment shader objects, all state dynamic, dynamic rendering) | identical, no validation messages |
 | test/triangle `--mixed` (the cube drawn with shader objects, then again with its pipeline, in one pass) | identical, no validation messages |
 | test/triangle `--multiview` (both views of a two-layer target in one pass, blitted side by side), with and without `--dynamic-rendering` | both layers identical, no validation messages |
+| test/triangle `--layered` (the same two-layer target through a layered framebuffer, the cube as two instances writing `gl_Layer`), with `--dynamic-rendering` and with `--shader-object` | both layers identical, no validation messages |
 | test/triangle `--dynamic-rendering` (the main pass in dynamic rendering, drawn with the cube's pipeline) | identical, no validation messages |
 | test/triangle `--second-device` / `--second-queue` (a 256x256 target cleared each frame on a second VkDevice, or on a second queue) | all 3 targets identical, no validation messages: the second device's objects replay on the one device |
 | test/triangle `--push-template` (the cube's uniform buffer and texture pushed through a descriptor update template) | identical, no validation messages: pushed again as plain writes from the snapshot |

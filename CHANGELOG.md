@@ -10,6 +10,9 @@
 - Vulkan overdraw measures every view of a multiview pass, with a heatmap per view and `get_overdraw`'s `view`.
 - Vulkan pixel history follows a pixel in any view of a multiview pass, such as an XR frame's right eye.
 - `test/triangle --multiview` renders both views of a two-layer target in one pass, and `--dynamic-rendering` runs its main pass in dynamic rendering.
+- Vulkan overdraw measures every layer of a pass layered through `gl_Layer`, with a heatmap per layer.
+- Vulkan pixel history follows a pixel in any layer of a pass layered through `gl_Layer`, such as a cube map face.
+- `test/triangle --layered` renders the two-layer target through a layered framebuffer and `gl_Layer`.
 
 ### Fixed
 - Vulkan pixel history no longer crashes the replay on a multiview pass.
