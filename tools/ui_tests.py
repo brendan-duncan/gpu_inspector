@@ -2222,6 +2222,16 @@ def d3d12_cases(triangle):
 
     saved_bindless = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_bindless.gpucap")
 
+    def d3d12_bindless_details(state, log):
+        # The saved --bindless capture reopened with its cube draw selected: the details list the
+        # heap the pixel shader indexes directly, with the stripes texture's slot among the written
+        # ones -- a slot no root parameter shows (renderer/d3d12/indexed_heap.ts).
+        text = capture(state).get("commandDetails") or ""
+        return expect(session(state).get("state") == "file", f"session state is {session(state).get('state')!r}") + \
+            expect("Descriptor heap indexed by the shaders" in text, f"the draw's details show no directly indexed heap:\n{text[:1500]}") + \
+            expect("Slot 10:" in text and "Bindless stripes texture" in text,
+                   f"the stripes texture's slot (10) is not listed with its resource:\n{text[:1500]}")
+
     def d3d12_export_cpp_bindless(state, log):
         # --bindless: the cube's pixel shader reads a texture through ResourceDescriptorHeap, from a
         # heap slot no root table covers. The capture library sends the directly indexed heap's
@@ -2249,7 +2259,11 @@ def d3d12_cases(triangle):
                          d3d12_export_cpp_local_root, delay_ms=20000, before=remove_exported_cpp),
                     Case("d3d12-export-cpp-bindless", launch + ["--args=--bindless", "--validation", "--debug-capture", f"--debug-export-cpp={exported_cpp}",
                                                                 f"--debug-save={saved_bindless}", "--debug-save-delay=9000"],
-                         d3d12_export_cpp_bindless, delay_ms=20000, before=remove_exported_cpp)] if find_d3d12_replay() else []
+                         d3d12_export_cpp_bindless, delay_ms=20000, before=remove_exported_cpp),
+                    # The capture the case above saved, reopened on its cube draw (command 15: the
+                    # submission, the list's Reset and its state commands come first).
+                    Case("d3d12-bindless-details", [f"--debug-open={saved_bindless}", "--debug-command=15"],
+                         d3d12_bindless_details, delay_ms=9000)] if find_d3d12_replay() else []
     if not export_cases:
         print("  (no dxinsp_replay build: skipping the D3D12 Export to C++ case)")
     return export_cases + [

@@ -241,6 +241,12 @@ export interface CaptureCommand {
    * pipeline's group handles is what says which shader a record runs.
    */
   bindingTableData?: ArgObject[];
+  /**
+   * D3D12 ExecuteCommandLists: the slots of the heaps its lists' shaders index directly (shader
+   * model 6.6) written since the capture last sent them, `type` a D3D12_DESCRIPTOR_RANGE_TYPE
+   * (src/d3d12/README.md, "Directly indexed heaps"; renderer/d3d12/indexed_heap.ts).
+   */
+  heapDescriptors?: { heap: HandleRef; slots: { slot: number; type: number; descriptor: CaptureDescriptor | null }[] }[];
   /** Set on commands the UI inlined from a secondary command buffer: that buffer's object id. */
   secondary?: number;
   /** vkCmdBindDescriptorSets / vkCmdPushDescriptorSet: what the bound sets contained. */

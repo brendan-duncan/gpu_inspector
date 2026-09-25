@@ -583,6 +583,9 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 /* Command details: descriptor sets, buffer contents, shader info */
 .capture-info .collapsible_body { padding-left: 14px; }
 .descriptor-set-head { padding: 2px 0 4px 0; }
+/* A directly indexed heap's slot filter (capture_command_info.ts, _renderIndexedHeap). */
+.indexed-heap-tools { padding: 2px 0 4px 0; }
+.indexed-heap-search { width: 220px; }
 .descriptor-binding > .title_bar { font-weight: normal; background: var(--bg-tertiary); }
 .shader-info { font-size: 9.5pt; padding: 4px; }
 .shader-info ul, .buffer-root, .buffer-struct, .buffer-array ul, .vertex-attributes { margin: 2px 0 2px 0; padding-left: 18px; }

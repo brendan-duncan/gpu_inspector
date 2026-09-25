@@ -21,6 +21,8 @@ Follow the rendering-bugs method of the `gpu-capture-analysis` skill.
    - **Viewport and scissor.**
    - **Decoded uniforms and push constants:** matrices, colors, alpha, counts.
    - **Bound images:** `read_texture` on their texture numbers.
+   - **Bindless (Direct3D 12):** `indexedHeaps` lists every written slot of a heap the shaders index
+     directly; the root constants usually hold the indices they use.
 5. **Check the geometry** with `read_vertices`: bounds, NaNs, indices within the vertex data.
 6. **Check the shaders** with `get_shader`: `source` or `glsl`, and `reflection` to confirm the
    bindings the shader expects are the ones bound.

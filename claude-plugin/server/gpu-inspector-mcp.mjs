@@ -10940,6 +10940,94 @@ function recentCaptureFiles() {
   return Array.isArray(recent) ? recent.filter((p) => typeof p === "string" && !!p) : [];
 }
 
+// src/renderer/d3d12/indexed_heap.ts
+var RANGE_TYPES = ["D3D12_DESCRIPTOR_RANGE_TYPE_SRV", "D3D12_DESCRIPTOR_RANGE_TYPE_UAV", "D3D12_DESCRIPTOR_RANGE_TYPE_CBV", "D3D12_DESCRIPTOR_RANGE_TYPE_SAMPLER"];
+var GRAPHICS_ROOT = "SetGraphicsRootSignature";
+var COMPUTE_ROOT = "SetComputeRootSignature";
+function indexedHeapsAt(commands, cmd, objectOf, compute) {
+  let root = null;
+  let heaps = null;
+  const list = cmd.object?.__id;
+  for (let i = cmd.index - 1; i >= 0 && (root === null || heaps === null); i--) {
+    const c2 = commands[i];
+    if (!c2 || c2.object?.__id !== list) break;
+    if (c2.secondary && c2.secondary !== cmd.secondary) continue;
+    if (c2.method === "Reset" && !c2.secondary) break;
+    if (root === null && c2.method === (compute ? COMPUTE_ROOT : GRAPHICS_ROOT)) root = refId(c2.args?.pRootSignature);
+    if (heaps === null && c2.method === "SetDescriptorHeaps") {
+      const refs = c2.args?.ppDescriptorHeaps;
+      heaps = (Array.isArray(refs) ? refs : []).map((r) => refId(r)).filter((id) => id !== null);
+    }
+  }
+  if (root === null || !heaps?.length) return [];
+  const flags = rootSignatureFlags(objectOf(root)?.args ?? null);
+  const resources = flags.includes("CBV_SRV_UAV_HEAP_DIRECTLY_INDEXED");
+  const samplers = flags.includes("SAMPLER_HEAP_DIRECTLY_INDEXED");
+  if (!resources && !samplers) return [];
+  const submission = submissionOf(commands, cmd);
+  const contents = heapContents(commands, submission);
+  const out = [];
+  for (const heap of heaps) {
+    const isSamplers = heapIsSamplers(objectOf(heap)?.args ?? null);
+    if (isSamplers ? !samplers : !resources) continue;
+    const slots = contents.get(heap);
+    out.push({
+      heap,
+      samplers: isSamplers,
+      slots: slots ? [...slots.values()].sort((a, b) => a.slot - b.slot) : [],
+      submission,
+      captured: !!slots
+    });
+  }
+  return out;
+}
+function submissionOf(commands, cmd) {
+  for (let i = cmd.index - 1; i >= 0; i--) {
+    const c2 = commands[i];
+    if (c2 && !c2.secondary && c2.method === "ExecuteCommandLists") return i;
+  }
+  return -1;
+}
+var cache3 = /* @__PURE__ */ new WeakMap();
+function heapContents(commands, submission) {
+  let bySubmission = cache3.get(commands);
+  if (!bySubmission) cache3.set(commands, bySubmission = /* @__PURE__ */ new Map());
+  const known = bySubmission.get(submission);
+  if (known) return known;
+  const heaps = /* @__PURE__ */ new Map();
+  for (let i = 0; i <= submission && i < commands.length; i++) {
+    const c2 = commands[i];
+    const sent = c2?.heapDescriptors;
+    if (!c2 || c2.method !== "ExecuteCommandLists" || !Array.isArray(sent)) continue;
+    for (const entry2 of sent) {
+      if (!isObject(entry2)) continue;
+      const heap = refId(entry2.heap);
+      if (heap === null) continue;
+      let slots = heaps.get(heap);
+      if (!slots) heaps.set(heap, slots = /* @__PURE__ */ new Map());
+      for (const s of Array.isArray(entry2.slots) ? entry2.slots : []) {
+        if (!isObject(s) || !isObject(s.descriptor)) continue;
+        const slot = num(s.slot);
+        slots.set(slot, { slot, type: RANGE_TYPES[num(s.type)] ?? `type ${num(s.type)}`, descriptor: s.descriptor, sentBy: i });
+      }
+    }
+  }
+  bySubmission.set(submission, heaps);
+  return heaps;
+}
+function rootSignatureFlags(args) {
+  const desc = isObject(args?.pDesc) ? args.pDesc : null;
+  for (const version of ["Desc_1_2", "Desc_1_1", "Desc_1_0"]) {
+    const d = desc?.[version];
+    if (isObject(d)) return JSON.stringify(d.Flags ?? "");
+  }
+  return "";
+}
+function heapIsSamplers(args) {
+  const desc = isObject(args?.pDesc) ? args.pDesc : null;
+  return JSON.stringify(desc?.Type ?? "").includes("SAMPLER");
+}
+
 // src/renderer/utils/base64.ts
 var _uint8Proto = Uint8Array.prototype;
 var _uint8Ctor = Uint8Array;
@@ -14424,6 +14512,7 @@ var StateReader = class {
       bindPoint: state.bindPoint,
       pipeline: this.pipeline(),
       descriptorSets: state.sets.size ? this.sets([...state.sets.values()].sort((a, b) => a.set.set - b.set.set)) : void 0,
+      indexedHeaps: this.c.data.api === "d3d12" ? this.indexedHeaps(cmd) : void 0,
       vertexBuffers: graphics && state.vertexBuffers.size ? this.vertexBuffers([...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding)) : void 0,
       indexBuffer: graphics && state.indexBuffer ? this.indexBuffer(state.indexBuffer, cmd) : void 0,
       stageBuffers: stageBuffers.length ? this.stageBuffers(stageBuffers) : void 0,
@@ -14462,6 +14551,27 @@ var StateReader = class {
       fixedFunction: fixedFunctionState(p),
       shaderGroups: metal ? void 0 : rayTracingGroups(p)
     };
+  }
+  /**
+   * D3D12: the heaps the draw's shaders index directly (shader model 6.6), with every written slot
+   * as of its submission -- which slots a shader reads depends on its indices, so all are candidates.
+   */
+  indexedHeaps(cmd) {
+    const db = this.c.db;
+    const heaps = indexedHeapsAt(this.c.data.commands, cmd, (id) => db.getObject(id), this.state.bindPoint === "compute");
+    if (!heaps.length) return void 0;
+    return heaps.map((h) => {
+      const shown = h.slots.slice(0, 32);
+      return {
+        heap: refText(db, h.heap),
+        samplers: h.samplers || void 0,
+        asOfSubmission: h.submission,
+        captured: h.captured,
+        writtenSlots: h.slots.length,
+        slots: shown.map((s) => ({ slot: s.slot, type: s.type, ...this.descriptor(s.descriptor, null) })),
+        more: h.slots.length > shown.length ? h.slots.length - shown.length : void 0
+      };
+    });
   }
   sets(bound) {
     const db = this.c.db;
@@ -30478,9 +30588,9 @@ function coveredPixel(state, mesh, raster = rasterStateOf(state)) {
 var MAX_TRACE = 400;
 var MAX_VALUES_PER_LINE = 24;
 function meshOutputs(c2) {
-  const cache3 = /* @__PURE__ */ new Map();
+  const cache4 = /* @__PURE__ */ new Map();
   return async (command) => {
-    const hit = cache3.get(command);
+    const hit = cache4.get(command);
     if (hit) return hit;
     const tool = findReplayTool(checkoutRoots(), installedLayerDirs());
     if (!tool) throw new Error(`a fragment's inputs come from replaying the draw's vertex shader, and ${NO_REPLAY_TOOL}`);
@@ -30488,7 +30598,7 @@ function meshOutputs(c2) {
     if (!run2.data) throw new Error(`the replay could not capture the draw's vertex outputs: ${run2.error ?? "no data"}`);
     const m = parseMeshFile(run2.data).draws.find((d) => d.command === command);
     if (!m) throw new Error("the replay did not reach the draw");
-    cache3.set(command, m);
+    cache4.set(command, m);
     return m;
   };
 }

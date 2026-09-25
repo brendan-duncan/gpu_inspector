@@ -966,8 +966,13 @@ vendor's driver is listed at the end so nobody spends time on it.
     follow its submission rather than going nowhere. `d3d12_triangle --bindless` (new) replays and
     exports identical, debug layer clean; without the slot writes 33,419 texels differ and the
     replay reported no problem at all. UI case `d3d12-export-cpp-bindless`. Left: a heap slot
-    rewritten between draws of one submission (the item above), and the UI shows a bindless draw's
-    heap nowhere yet -- the draw state lists its root tables only.
+    rewritten between draws of one submission (the item above).
+  - [x] A bindless draw's heap in the command details and in `get_command` (`indexedHeapsAt` in
+    `renderer/d3d12/indexed_heap.ts`): every slot written by the draw's submission, folded from
+    the submissions' `heapDescriptors`, with a filter; unit test `d3d12_indexed_heap.test.js`, UI
+    case `d3d12-bindless-details` (the dump gained `commandDetails`, the pane's text). Left: which
+    slots a shader actually reads -- a constant index could be found in the DXIL, and a computed
+    one only by instrumenting the shader.
 - [x] In-app HUD and live pause, both on all three backends. The HUD draws the application's frame
       time over its own window (`src/vulkan/src/hud_text.h` holds the font and the layout, with no
       graphics API in it, so the three libraries only differ in how they put flat rectangles on the

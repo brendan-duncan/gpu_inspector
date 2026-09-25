@@ -12,6 +12,7 @@ import { Div } from "./widget/div.js";
 import { Select } from "./widget/select.js";
 import { Span } from "./widget/span.js";
 import { TextArea } from "./widget/text_area.js";
+import { TextInput } from "./widget/text_input.js";
 import { Widget } from "./widget/widget.js";
 import { objectLink, renderArgs } from "./args_view.js";
 import { renderIndexData, renderTypedData, type Radix } from "./buffer_data_view.js";
@@ -47,6 +48,7 @@ import {
   boundStructure, shaderGroupViewOf, tableRegionsOf, vulkanGroupName,
 } from "./ray_tracing_view.js";
 import { d3d12TableRecords, traceStateObjectId } from "./d3d12/raytracing.js";
+import { indexedHeapsAt, type IndexedHeap } from "./d3d12/indexed_heap.js";
 import { structuresOfCommand } from "./acceleration_view.js";
 import { tableRecords } from "./binding_table.js";
 import type { SessionContext } from "./session_panel.js";
@@ -157,6 +159,7 @@ export class CommandInfoView {
   private _radix: Radix = 10;
   /** The command being shown (for "Affected by": what wrote a buffer before it). */
   private _current: CaptureCommand | null = null;
+  private _container: Div | null = null;
 
   constructor(panel: CaptureHost) {
     this.panel = panel;
@@ -168,6 +171,11 @@ export class CommandInfoView {
 
   private _link = (o: VulkanObject): void => this.panel.window.showObject(o.id);
 
+  /** The details as shown, as text: what the UI tests read (--debug-dump, `commandDetails`). */
+  text(): string {
+    return this._current && this._container ? this._container.element.innerText : "";
+  }
+
   // ---------------------------------------------------------------------------------------
   // Entry point
 
@@ -177,6 +185,7 @@ export class CommandInfoView {
     this._thumbs.clear();
     this._thumbRequested.clear();
     this._current = cmd;
+    this._container = container;
     const token = ++this._token;
     const db = this.db;
     const method = cmd.method;
@@ -271,6 +280,7 @@ export class CommandInfoView {
       }
       this._renderShaders(container, state, token);
       this._renderDescriptorSets(container, state, [...state.sets.values()].sort((a, b) => a.set.set - b.set.set), token);
+      if (this.panel.data.api === "d3d12") this._renderIndexedHeaps(container, state, cmd);
       if (graphics) {
         if (cmdSets.DRAW.has(method)) {
           const row = new Div(container, { class: "capture-mesh-row" });
@@ -735,37 +745,7 @@ export class CommandInfoView {
       const d = binding.descriptors[k];
       const index = count > 1 ? `[${k}]` : "";
       const register = d3d12 ? `  ${this._registerText(binding, k)}` : "";
-      let resourceText = "(not written)";
-      let sizeText = "";
-      if (d) {
-        if (d.buffer !== undefined) {
-          const buf = db.getObject(refId(d.buffer));
-          resourceText = buf ? buf.name : "(destroyed buffer)";
-          sizeText = `  ${formatBytes(num(d.range))}`;
-        } else if (d.resource !== undefined) {
-          // D3D12: a texture SRV / UAV names its resource outright (there is no view object).
-          const image = db.getObject(refId(d.resource));
-          resourceText = image ? image.name : "(destroyed resource)";
-        } else if (d.samplerDesc !== undefined && d.samplerDesc) {
-          resourceText = `${fmt(d.samplerDesc.Filter)} ${fmt(d.samplerDesc.AddressU)}`.trim();
-        } else if (d.imageView !== undefined) {
-          const view = db.getObject(refId(d.imageView));
-          const image = db.getObject(refId(view?.descriptor?.image));
-          resourceText = image ? image.name : view ? view.name : "(destroyed view)";
-          if (d.sampler !== undefined) {
-            const sampler = db.getObject(refId(d.sampler));
-            resourceText += ` + ${sampler ? sampler.name : "(no sampler)"}`;
-          }
-        } else if (d.sampler !== undefined) {
-          const sampler = db.getObject(refId(d.sampler));
-          resourceText = sampler ? sampler.name : "(destroyed sampler)";
-        } else if (d.bufferView !== undefined) {
-          const bv = db.getObject(refId(d.bufferView));
-          resourceText = bv ? bv.name : "(destroyed buffer view)";
-        } else if (d.accelerationStructure !== undefined) {
-          resourceText = boundStructure(d.accelerationStructure, db).label;
-        }
-      }
+      const { resourceText, sizeText } = this._descriptorText(d);
       const isBuffer = !!d && d.buffer !== undefined;
       const grp = new collapsible(container, {
         label: `${d3d12 ? "Range" : "Binding"} ${binding.binding}${index}: ${fmt(binding.type)}${register}  ${resourceText}${sizeText}${shaderText}`,
@@ -781,6 +761,117 @@ export class CommandInfoView {
       else this._renderImageBinding(grp, d);
     }
     if (shown < count) new Div(container, { text: `... ${count - shown} more descriptors in ${d3d12 ? "range" : "binding"} ${binding.binding}`, class: "text-muted capture-note" });
+  }
+
+  /** A descriptor in a line: what it names, and a buffer's range. */
+  private _descriptorText(d: CaptureDescriptor | null | undefined): { resourceText: string; sizeText: string } {
+    const db = this.db;
+    let resourceText = "(not written)";
+    let sizeText = "";
+    if (d) {
+      if (d.buffer !== undefined) {
+        const buf = db.getObject(refId(d.buffer));
+        resourceText = buf ? buf.name : "(destroyed buffer)";
+        sizeText = `  ${formatBytes(num(d.range))}`;
+      } else if (d.resource !== undefined) {
+        // D3D12: a texture SRV / UAV names its resource outright (there is no view object).
+        const image = db.getObject(refId(d.resource));
+        resourceText = image ? image.name : "(destroyed resource)";
+      } else if (d.samplerDesc !== undefined && d.samplerDesc) {
+        resourceText = `${fmt(d.samplerDesc.Filter)} ${fmt(d.samplerDesc.AddressU)}`.trim();
+      } else if (d.imageView !== undefined) {
+        const view = db.getObject(refId(d.imageView));
+        const image = db.getObject(refId(view?.descriptor?.image));
+        resourceText = image ? image.name : view ? view.name : "(destroyed view)";
+        if (d.sampler !== undefined) {
+          const sampler = db.getObject(refId(d.sampler));
+          resourceText += ` + ${sampler ? sampler.name : "(no sampler)"}`;
+        }
+      } else if (d.sampler !== undefined) {
+        const sampler = db.getObject(refId(d.sampler));
+        resourceText = sampler ? sampler.name : "(destroyed sampler)";
+      } else if (d.bufferView !== undefined) {
+        const bv = db.getObject(refId(d.bufferView));
+        resourceText = bv ? bv.name : "(destroyed buffer view)";
+      } else if (d.accelerationStructure !== undefined) {
+        resourceText = boundStructure(d.accelerationStructure, db).label;
+      }
+    }
+    return { resourceText, sizeText };
+  }
+
+  /**
+   * D3D12: the heaps a draw's shaders index directly (shader model 6.6). No root table says which
+   * slots such a shader reads, so every written slot is listed, as the heap held it when the draw's
+   * list was submitted (d3d12/indexed_heap.ts), with a filter: a bindless heap can hold tens of
+   * thousands of them.
+   */
+  private _renderIndexedHeaps(container: Widget, state: DrawState, cmd: CaptureCommand): void {
+    const data = this.panel.data;
+    const heaps = indexedHeapsAt(data.commands, cmd, (id) => this.db.getObject(id), state.bindPoint === "compute");
+    for (const heap of heaps) this._renderIndexedHeap(container, state, heap);
+  }
+
+  private _renderIndexedHeap(container: Widget, state: DrawState, heap: IndexedHeap): void {
+    const db = this.db;
+    const heapObj = db.getObject(heap.heap);
+    const kind = heap.samplers ? "Sampler heap" : "Descriptor heap";
+    const count = heap.slots.length;
+    const grp = new collapsible(container, {
+      label: `${kind} indexed by the shaders: ${heapObj?.name ?? `heap ${heap.heap}`}  (${count} written slot${count === 1 ? "" : "s"})`,
+      collapsed: false,
+    });
+    const head = new Div(grp.body, { class: "font-md text-muted descriptor-set-head" });
+    if (heapObj) {
+      new Span(head, { text: "Heap: " });
+      objectLink(head, heapObj, this._link);
+    }
+    if (heap.submission >= 0) new Span(head, { text: `  as submitted by #${heap.submission} ExecuteCommandLists`, class: "text-muted" });
+    new Div(grp.body, {
+      text: `The root signature lets the shaders take any slot of this heap themselves (${heap.samplers ? "SamplerDescriptorHeap" : "ResourceDescriptorHeap"}[i]), so every slot written by then is listed; which ones a shader reads depends on its indices.`,
+      class: "text-muted font-sm capture-note",
+    });
+    if (!heap.captured) {
+      new Div(grp.body, { text: "The capture holds none of this heap's contents (it was taken by a capture library that did not read directly indexed heaps).", class: "text-muted" });
+      return;
+    }
+    const tools = new Div(grp.body, { class: "indexed-heap-tools" });
+    const search = new TextInput(tools, { placeholder: "Filter by slot or name", class: "indexed-heap-search" });
+    const rows = new Div(grp.body);
+    // A heap of a real engine has far more slots than anyone reads through: the first matches are
+    // shown, and the filter narrows the rest.
+    const kMaxRows = 64;
+    const render = (): void => {
+      rows.removeAllChildren();
+      const filter = (search.element as HTMLInputElement).value.trim().toLowerCase();
+      let shown = 0;
+      let matched = 0;
+      for (const s of heap.slots) {
+        const { resourceText, sizeText } = this._descriptorText(s.descriptor);
+        if (filter && !String(s.slot).startsWith(filter) && !resourceText.toLowerCase().includes(filter)) continue;
+        ++matched;
+        if (shown >= kMaxRows) continue;
+        ++shown;
+        const d = s.descriptor;
+        const isBuffer = d.buffer !== undefined;
+        const row = new collapsible(rows, {
+          label: `Slot ${s.slot}: ${fmt(s.type)}  ${resourceText}${sizeText}`,
+          collapsed: true,
+          class: "descriptor-binding",
+        });
+        if (isBuffer) {
+          const set: CaptureDescriptorSet = { set: -1, descriptorSet: heapObj ? { __id: heap.heap, __class: "ID3D12DescriptorHeap" } : null, bindings: [] };
+          const binding: CaptureDescriptorBinding = { binding: s.slot, type: s.type, descriptors: [d] };
+          this._renderBufferBinding(row.body, state, set, binding, d, null);
+        } else {
+          this._renderImageBinding(row, d);
+        }
+      }
+      if (matched > shown) new Div(rows, { text: `... ${matched - shown} more; filter to narrow the list`, class: "text-muted capture-note" });
+      else if (!matched) new Div(rows, { text: filter ? "No written slot matches." : "No slot of this heap was written.", class: "text-muted" });
+    };
+    search.element.oninput = render;
+    render();
   }
 
   private _renderBufferBinding(body: Widget, state: DrawState, set: CaptureDescriptorSet, binding: CaptureDescriptorBinding, d: CaptureDescriptor, res: ShaderResource | null, element = 0): void {

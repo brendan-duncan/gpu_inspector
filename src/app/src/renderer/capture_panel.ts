@@ -2078,6 +2078,8 @@ export class CaptureView implements CaptureHost {
       passCounters: [...d.passTimings.values()].filter((t) => t.counters && Object.keys(t.counters).length).length,
       passDepthRejection: [...d.passTimings.values()].filter((t) => typeof t.counters?.fragmentsPassed === "number").length,
       findings: (this._analysis?.findings ?? []).map((f) => ({ rule: f.rule, severity: f.severity, count: f.count, command: f.commandIndex ?? null })),
+      // The selected command's details pane as text (--debug-command), for a case that checks what it shows.
+      commandDetails: this.info.text(),
       renderGraph: d.commands.length ? (() => {
         const g = this.renderGraph();
         return {

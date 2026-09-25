@@ -3,6 +3,7 @@
 // the validation messages.
 import { backendFor, type DetailSection, type DetailValue } from "../renderer/backend.js";
 import { isAction, type BoundIndexBuffer, type BoundStageBuffer, type BoundVertexBuffer } from "../renderer/command_sets.js";
+import { indexedHeapsAt } from "../renderer/d3d12/indexed_heap.js";
 import { bindingState, drawState, emptyDrawState, findPass, pushConstantOf, vertexLayout, type BoundSet, type DrawState, type VertexLayout } from "../renderer/draw_state.js";
 import { argumentBufferEntries, isArgumentBufferType, type ArgumentEntry } from "../renderer/metal/argument_buffer.js";
 import { metalBufferResource, metalStages } from "../renderer/metal/reflection.js";
@@ -130,6 +131,7 @@ class StateReader {
       bindPoint: state.bindPoint,
       pipeline: this.pipeline(),
       descriptorSets: state.sets.size ? this.sets([...state.sets.values()].sort((a, b) => a.set.set - b.set.set)) : undefined,
+      indexedHeaps: this.c.data.api === "d3d12" ? this.indexedHeaps(cmd) : undefined,
       vertexBuffers: graphics && state.vertexBuffers.size ? this.vertexBuffers([...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding)) : undefined,
       indexBuffer: graphics && state.indexBuffer ? this.indexBuffer(state.indexBuffer, cmd) : undefined,
       stageBuffers: stageBuffers.length ? this.stageBuffers(stageBuffers) : undefined,
@@ -169,6 +171,25 @@ class StateReader {
       fixedFunction: fixedFunctionState(p),
       shaderGroups: metal ? undefined : rayTracingGroups(p),
     };
+  }
+
+  /**
+   * D3D12: the heaps the draw's shaders index directly (shader model 6.6), with every written slot
+   * as of its submission -- which slots a shader reads depends on its indices, so all are candidates.
+   */
+  private indexedHeaps(cmd: CaptureCommand): unknown[] | undefined {
+    const db = this.c.db;
+    const heaps = indexedHeapsAt(this.c.data.commands, cmd, (id) => db.getObject(id), this.state.bindPoint === "compute");
+    if (!heaps.length) return undefined;
+    return heaps.map((h) => {
+      const shown = h.slots.slice(0, 32);
+      return {
+        heap: refText(db, h.heap), samplers: h.samplers || undefined, asOfSubmission: h.submission,
+        captured: h.captured, writtenSlots: h.slots.length,
+        slots: shown.map((s) => ({ slot: s.slot, type: s.type, ...this.descriptor(s.descriptor, null) })),
+        more: h.slots.length > shown.length ? h.slots.length - shown.length : undefined,
+      };
+    });
   }
 
   sets(bound: BoundSet[]): unknown[] {

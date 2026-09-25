@@ -27,6 +27,7 @@
 - Vulkan ray tracing replay and export translate the device addresses in shader record data.
 - Direct3D 12 replay and export write the descriptors shaders index straight out of the heap (shader model 6.6).
 - `test/d3d12_triangle --bindless` samples a texture through `ResourceDescriptorHeap`.
+- A Direct3D 12 draw's details and `get_command` list the heap its shaders index directly, as of its submission.
 - `test/d3d12_triangle --local-root` and `test/triangle --shader-record` put arguments in a hit group's record.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
 - `test/d3d12_triangle --suspend` splits its render pass across two command lists.
