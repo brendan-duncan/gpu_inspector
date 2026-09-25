@@ -426,8 +426,19 @@ The query counts are samples: a multisampled pass counts up to its sample count 
 They are also tested against the depth and stencil from before the draw, since the copies do not
 write depth. So two triangles of one draw that both pass count twice.
 
+**Multiview.** A pixel in any view of a multiview pass (an XR frame's eyes) is followed in that view
+alone. The pass is replayed with its view mask narrowed to the one view, through a single-view copy
+of its render pass (or `viewMask` in dynamic rendering), and every pipeline bound meanwhile is a copy
+made for it (`ViewPipeline`), as are the variants, the primitive-id pass and the per-fragment runs.
+The shaders then see the view's own index, and the queries and the one-pixel scissor meet that
+view's fragments only; views never read one another's layers, so nothing the followed view sees
+changes. The attachments' copies hold the layer of that view. On two XR frames captured on an Adreno
+740, pixels in both eyes come out at exactly the values the capture read back for their layers, with
+as many fragments as each eye's overdraw counted there, and no validation messages. Before this, any
+pixel history of such a frame crashed the replay.
+
 Limits:
-- Only the first layer of a layered framebuffer is followed.
+- A pass layered through `gl_Layer` rather than multiview is followed in its first layer only.
 - Per-fragment detail is partial: a draw is one event, which names the primitive of the fragment
   that won the pixel but not every fragment of the draw with its own value.
 - A multisampled *depth* target cannot be resolved to be read, so a pixel of one is not followed;

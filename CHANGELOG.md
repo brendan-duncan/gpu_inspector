@@ -8,8 +8,10 @@
 - Vulkan overdraw and draw overlays count only the fragments a shader keeps, so alpha-tested geometry no longer counts as opaque.
 - `test/triangle --alpha-test` draws the cube with a fragment shader that discards.
 - Vulkan overdraw measures every view of a multiview pass, with a heatmap per view and `get_overdraw`'s `view`.
+- Vulkan pixel history follows a pixel in any view of a multiview pass, such as an XR frame's right eye.
 
 ### Fixed
+- Vulkan pixel history no longer crashes the replay on a multiview pass.
 - Vulkan pixel history binds a draw's own pipeline again after following it fragment by fragment.
 - Vulkan pixel history no longer sets dynamic state the bound pipeline holds statically.
 - Shader measuring no longer re-sets depth and stencil writes a draw's pipeline holds statically.

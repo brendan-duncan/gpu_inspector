@@ -34,7 +34,6 @@
 #include "replayer.h"
 
 #include <algorithm>
-#include <cstdio>
 #include <cstring>
 #include <string>
 
@@ -161,9 +160,46 @@ bool Replayer::HistoryEarlyFragmentTests(uint64_t pipelineId)
     return early;
 }
 
+VkPipeline Replayer::ViewPipeline(uint64_t pipelineId)
+{
+    const auto key = std::make_pair(pipelineId, _historyView);
+    if (auto it = _historyViewPipelines.find(key); it != _historyViewPipelines.end())
+        return it->second;
+    _historyViewPipelines[key] = VK_NULL_HANDLE;   // a copy that cannot be made is not tried again
+    VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, "pixel history view", [&](PipelineCopy& p) {
+        RenderSingleView(p);
+        return true;
+    });
+    _historyViewPipelines[key] = pipeline;
+    return pipeline;
+}
+
+void Replayer::RenderSingleView(PipelineCopy& p)
+{
+    if (!_historyView)
+        return;
+    if (_historyViewRenderPass)
+    {
+        p.info.renderPass = HistoryRenderPass(_historyViewRenderPass);
+        return;
+    }
+    // Dynamic rendering: the formats the pipeline was made for, with the one view.
+    for (auto* in = static_cast<const VkBaseInStructure*>(p.info.pNext); in; in = in->pNext)
+    {
+        if (in->sType != VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO)
+            continue;
+        auto* rendering = _arena.Make<VkPipelineRenderingCreateInfo>();
+        *rendering = *reinterpret_cast<const VkPipelineRenderingCreateInfo*>(in);
+        rendering->viewMask = _historyView;
+        rendering->pNext = StripPNext(p.info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO});
+        p.info.pNext = rendering;
+        return;
+    }
+}
+
 VkPipeline Replayer::HistoryPipeline(uint64_t pipelineId, int variant)
 {
-    const auto key = std::make_pair(pipelineId, variant);
+    const auto key = std::make_tuple(pipelineId, variant, _historyView);
     auto it = _historyPipelines.find(key);
     if (it != _historyPipelines.end())
         return it->second;
@@ -213,6 +249,7 @@ VkPipeline Replayer::HistoryPipeline(uint64_t pipelineId, int variant)
         // The one-pixel scissor.
         if (!p.HasDynamic(VK_DYNAMIC_STATE_SCISSOR_WITH_COUNT))
             p.AddDynamic(VK_DYNAMIC_STATE_SCISSOR);
+        RenderSingleView(p);
         return true;
     });
     _historyPipelines[key] = pipeline;
@@ -229,10 +266,11 @@ VkPipeline Replayer::HistoryPipeline(uint64_t pipelineId, int variant)
 
 VkRenderPass Replayer::HistoryIdRenderPass(VkFormat depthFormat)
 {
-    auto it = _historyIdRenderPasses.find(depthFormat);
+    const auto key = std::make_pair(depthFormat, _historyView);
+    auto it = _historyIdRenderPasses.find(key);
     if (it != _historyIdRenderPasses.end())
         return it->second;
-    _historyIdRenderPasses[depthFormat] = VK_NULL_HANDLE;
+    _historyIdRenderPasses[key] = VK_NULL_HANDLE;
     VkAttachmentDescription attachments[2]{};
     attachments[0].format = kPrimitiveIdFormat;
     attachments[0].samples = VK_SAMPLE_COUNT_1_BIT;
@@ -262,17 +300,23 @@ VkRenderPass Replayer::HistoryIdRenderPass(VkFormat depthFormat)
     info.pAttachments = attachments;
     info.subpassCount = 1;
     info.pSubpasses = &subpass;
+    // The followed view of a multiview pass, into its layer.
+    VkRenderPassMultiviewCreateInfo multiview{VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO};
+    multiview.subpassCount = 1;
+    multiview.pViewMasks = &_historyView;
+    if (_historyView)
+        info.pNext = &multiview;
     VkRenderPass rp = VK_NULL_HANDLE;
     if (_fns.CreateRenderPass(_device, &info, nullptr, &rp) != VK_SUCCESS || !rp)
         return VK_NULL_HANDLE;
     Track("VkRenderPass", (uint64_t)rp);
-    _historyIdRenderPasses[depthFormat] = rp;
+    _historyIdRenderPasses[key] = rp;
     return rp;
 }
 
 VkPipeline Replayer::HistoryIdPipeline(uint64_t pipelineId, VkFormat depthFormat)
 {
-    const auto key = std::make_pair(pipelineId, depthFormat);
+    const auto key = std::make_tuple(pipelineId, depthFormat, _historyView);
     auto it = _historyIdPipelines.find(key);
     if (it != _historyIdPipelines.end())
         return it->second;
@@ -354,10 +398,11 @@ VkFormat Replayer::HistoryFragmentDepthFormat()
 
 VkRenderPass Replayer::HistoryFragmentRenderPass(VkFormat format)
 {
-    auto it = _historyFragmentRenderPasses.find(format);
+    const auto key = std::make_pair(format, _historyView);
+    auto it = _historyFragmentRenderPasses.find(key);
     if (it != _historyFragmentRenderPasses.end())
         return it->second;
-    _historyFragmentRenderPasses[format] = VK_NULL_HANDLE;
+    _historyFragmentRenderPasses[key] = VK_NULL_HANDLE;
     const VkFormat dsFormat = HistoryFragmentDepthFormat();
     if (dsFormat == VK_FORMAT_UNDEFINED)
         return VK_NULL_HANDLE;
@@ -387,18 +432,23 @@ VkRenderPass Replayer::HistoryFragmentRenderPass(VkFormat format)
     info.pAttachments = attachments;
     info.subpassCount = 1;
     info.pSubpasses = &subpass;
+    VkRenderPassMultiviewCreateInfo multiview{VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO};
+    multiview.subpassCount = 1;
+    multiview.pViewMasks = &_historyView;
+    if (_historyView)
+        info.pNext = &multiview;
     VkRenderPass rp = VK_NULL_HANDLE;
     if (_fns.CreateRenderPass(_device, &info, nullptr, &rp) != VK_SUCCESS || !rp)
         return VK_NULL_HANDLE;
     Track("VkRenderPass", (uint64_t)rp);
-    _historyFragmentRenderPasses[format] = rp;
+    _historyFragmentRenderPasses[key] = rp;
     return rp;
 }
 
 VkPipeline Replayer::HistoryFragmentPipeline(uint64_t pipelineId, VkFormat format, bool idPass)
 {
     auto& cache = idPass ? _historyFragmentIdPipelines : _historyFragmentPipelines;
-    const auto key = std::make_pair(pipelineId, format);
+    const auto key = std::make_tuple(pipelineId, format, _historyView);
     auto it = cache.find(key);
     if (it != cache.end())
         return it->second;
@@ -466,10 +516,11 @@ bool Replayer::PrepareHistoryFragments(PendingHistory& pending, const PassState&
         return false;
     pending.fragColor = CreateTransientImage(pending.fragFormat, pass.extent,
         VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-        VK_SAMPLE_COUNT_1_BIT);
+        VK_SAMPLE_COUNT_1_BIT, pass.historyLayers);
     if (!pending.fragColor.image)
         return false;
-    pending.fragDepth = CreateTransientImage(dsFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_SAMPLE_COUNT_1_BIT);
+    pending.fragDepth = CreateTransientImage(dsFormat, pass.extent, VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT, VK_SAMPLE_COUNT_1_BIT,
+        pass.historyLayers);
     if (!pending.fragDepth.image)
         return false;
     if (!CreateStaging((VkDeviceSize)pending.targetTexel * slots, pending.fragValues))
@@ -482,10 +533,11 @@ bool Replayer::PrepareHistoryFragments(PendingHistory& pending, const PassState&
 
 VkRenderPass Replayer::HistoryRenderPass(uint64_t renderPassId)
 {
-    auto it = _historyRenderPasses.find(renderPassId);
+    const auto key = std::make_pair(renderPassId, _historyView);
+    auto it = _historyRenderPasses.find(key);
     if (it != _historyRenderPasses.end())
         return it->second;
-    _historyRenderPasses[renderPassId] = VK_NULL_HANDLE;
+    _historyRenderPasses[key] = VK_NULL_HANDLE;
     const JValue* object = _capture->Object(renderPassId);
     const JValue* args = object ? object->Get("args") : nullptr;
     if (!args)
@@ -510,6 +562,21 @@ VkRenderPass Replayer::HistoryRenderPass(uint64_t renderPassId)
                 att.initialLayout = att.finalLayout = AttachmentLayout(att.format);
             }
             info.pAttachments = attachments.data();
+            // Following one view of a multiview pass: every subpass renders that view alone, and
+            // what relates views to each other goes (a view offset or a correlation names others).
+            std::vector<uint32_t> masks;
+            for (auto* s = (VkBaseOutStructure*)const_cast<void*>(info.pNext); s && _historyView; s = s->pNext)
+            {
+                if (s->sType != VK_STRUCTURE_TYPE_RENDER_PASS_MULTIVIEW_CREATE_INFO)
+                    continue;
+                auto* mv = (VkRenderPassMultiviewCreateInfo*)s;
+                masks.assign(mv->subpassCount, _historyView);
+                mv->pViewMasks = masks.data();
+                mv->dependencyCount = 0;
+                mv->pViewOffsets = nullptr;
+                mv->correlationMaskCount = 0;
+                mv->pCorrelationMasks = nullptr;
+            }
             _fns.CreateRenderPass(_device, &info, nullptr, &rp);
         }
     }
@@ -528,6 +595,20 @@ VkRenderPass Replayer::HistoryRenderPass(uint64_t renderPassId)
                 att.initialLayout = att.finalLayout = AttachmentLayout(att.format);
             }
             info.pAttachments = attachments.data();
+            std::vector<VkSubpassDescription2> subpasses(info.pSubpasses, info.pSubpasses + info.subpassCount);
+            std::vector<VkSubpassDependency2> dependencies(info.pDependencies, info.pDependencies + info.dependencyCount);
+            if (_historyView)
+            {
+                for (VkSubpassDescription2& s : subpasses)
+                    if (s.viewMask)
+                        s.viewMask = _historyView;
+                for (VkSubpassDependency2& d : dependencies)
+                    d.viewOffset = 0;
+                info.pSubpasses = subpasses.data();
+                info.pDependencies = dependencies.data();
+                info.correlatedViewMaskCount = 0;
+                info.pCorrelatedViewMasks = nullptr;
+            }
             _fns.CreateRenderPass2(_device, &info, nullptr, &rp);
         }
     }
@@ -536,7 +617,7 @@ VkRenderPass Replayer::HistoryRenderPass(uint64_t renderPassId)
     _arena.Reset();
     if (rp)
         Track("VkRenderPass", (uint64_t)rp);
-    _historyRenderPasses[renderPassId] = rp;
+    _historyRenderPasses[key] = rp;
     return rp;
 }
 
@@ -574,7 +655,8 @@ uint32_t Replayer::CopyHistoryPixel(VkCommandBuffer cb, const PassState& pass, P
     auto copy = [&](int attachment, VkDeviceSize offset) {
         const VkFormat format = pass.formats[attachment];
         const VkImage image = pass.shadows[attachment].image;
-        const VkImageSubresourceRange range{vkinsp::FormatAspects(format), 0, 1, 0, 1};
+        const uint32_t layer = pass.historyLayer;
+        const VkImageSubresourceRange range{vkinsp::FormatAspects(format), 0, 1, layer, 1};
         const VkImageLayout current = layout != VK_IMAGE_LAYOUT_UNDEFINED ? layout : AttachmentLayout(format);
         Barrier(cb, image, range, current, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkImage source = image;
@@ -589,7 +671,7 @@ uint32_t Replayer::CopyHistoryPixel(VkCommandBuffer cb, const PassState& pass, P
             // From UNDEFINED: the one texel it holds is overwritten, so its contents are worth nothing.
             Barrier(cb, pending.resolve.image, one, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             VkImageResolve r{};
-            r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+            r.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
             r.srcOffset = at;
             r.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
             r.extent = {1, 1, 1};
@@ -601,7 +683,8 @@ uint32_t Replayer::CopyHistoryPixel(VkCommandBuffer cb, const PassState& pass, P
         }
         VkBufferImageCopy c{};
         c.bufferOffset = offset;
-        c.imageSubresource = {IsDepthFormat(format) ? (VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT : (VkImageAspectFlags)VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        c.imageSubresource = {IsDepthFormat(format) ? (VkImageAspectFlags)VK_IMAGE_ASPECT_DEPTH_BIT : (VkImageAspectFlags)VK_IMAGE_ASPECT_COLOR_BIT, 0,
+            resolving ? 0 : layer, 1};
         c.imageOffset = at;
         c.imageExtent = {1, 1, 1};
         _fns.CmdCopyImageToBuffer(cb, source, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pending.staging.buffer, 1, &c);
@@ -634,8 +717,15 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
     const std::string where = "command buffer " + std::to_string(pass.commandBuffer) + ", pass " + std::to_string(pass.index);
     auto note = [&](const std::string& why) { out.notes.push_back(where + ": " + why); };
     const ViewRecord& targetView = _views.find(pass.views[target])->second;
-    if (req.layer != targetView.range.baseArrayLayer)
-        return note("only the first layer of a layered pass is followed");
+    // A layer past the view's first: a multiview pass renders it as the view of its index, which is
+    // followed in a pass of that view alone (RecordHistory); a pass layered through gl_Layer is not.
+    const uint32_t layer = req.layer - targetView.range.baseArrayLayer;
+    if (layer && !pass.viewMask)
+        return note("only the first layer of a layered pass is followed, unless the pass is multiview");
+    if (pass.viewMask && !(pass.viewMask & (1u << layer)))
+        return note("the multiview pass renders no view into layer " + std::to_string(req.layer));
+    pass.historyLayer = layer;
+    pass.historyLayers = layer + 1;
     if (!pass.extent.width || req.x >= pass.extent.width || req.y >= pass.extent.height)
         return note("the pixel is outside the pass's framebuffer");
     if (pass.formats.size() != pass.views.size())
@@ -663,21 +753,23 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
             depthAttachment = (int)a;
         const VkImageUsageFlags usage = (depth ? VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT : VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT) |
             VK_IMAGE_USAGE_INPUT_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
-        pass.shadows[a] = CreateTransientImage(format, pass.extent, usage, image.samples);
+        pass.shadows[a] = CreateTransientImage(format, pass.extent, usage, image.samples, pass.historyLayers);
         if (!pass.shadows[a].image)
             return note("no memory for copies of the pass's attachments");
         const VkImageAspectFlags aspects = vkinsp::FormatAspects(format);
-        const VkImageSubresourceRange full{aspects, 0, 1, 0, 1};
+        // Every layer up to the followed one, of which only that one is rendered and read.
+        const VkImageSubresourceRange full{aspects, 0, 1, 0, pass.historyLayers};
         Barrier(cb, pass.shadows[a].image, full, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
         const VkAttachmentLoadOp load = a < pass.loadOps.size() ? pass.loadOps[a] : VK_ATTACHMENT_LOAD_OP_LOAD;
         const VkImageLayout before = a < pass.startLayouts.size() ? pass.startLayouts[a] : VK_IMAGE_LAYOUT_UNDEFINED;
         if (load != VK_ATTACHMENT_LOAD_OP_CLEAR && before != VK_IMAGE_LAYOUT_UNDEFINED)
         {
-            const VkImageSubresourceRange srcRange{aspects, view.range.baseMipLevel, 1, view.range.baseArrayLayer, 1};
+            const uint32_t from = view.range.baseArrayLayer + pass.historyLayer;
+            const VkImageSubresourceRange srcRange{aspects, view.range.baseMipLevel, 1, from, 1};
             Barrier(cb, image.image, srcRange, before, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             VkImageCopy copy{};
-            copy.srcSubresource = {aspects, view.range.baseMipLevel, view.range.baseArrayLayer, 1};
-            copy.dstSubresource = {aspects, 0, 0, 1};
+            copy.srcSubresource = {aspects, view.range.baseMipLevel, from, 1};
+            copy.dstSubresource = {aspects, 0, pass.historyLayer, 1};
             copy.extent = {std::min(pass.extent.width, std::max(1u, image.extent.width >> view.range.baseMipLevel)),
                 std::min(pass.extent.height, std::max(1u, image.extent.height >> view.range.baseMipLevel)), 1};
             _fns.CmdCopyImage(cb, image.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pass.shadows[a].image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
@@ -755,14 +847,14 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
             {
                 pending.idTarget = CreateTransientImage(kPrimitiveIdFormat, pass.extent,
                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-                    VK_SAMPLE_COUNT_1_BIT);
+                    VK_SAMPLE_COUNT_1_BIT, pass.historyLayers);
                 if (pending.idTarget.image)
-                    Barrier(cb, pending.idTarget.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
+                    Barrier(cb, pending.idTarget.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, pass.historyLayers}, VK_IMAGE_LAYOUT_UNDEFINED,
                         VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             }
-            Barrier(cb, pending.fragColor.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
+            Barrier(cb, pending.fragColor.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, pass.historyLayers}, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
-            Barrier(cb, pending.fragDepth.image, {vkinsp::FormatAspects(HistoryFragmentDepthFormat()), 0, 1, 0, 1},
+            Barrier(cb, pending.fragDepth.image, {vkinsp::FormatAspects(HistoryFragmentDepthFormat()), 0, 1, 0, pass.historyLayers},
                 VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         }
     }
@@ -775,12 +867,12 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
     {
         pending.idTarget = CreateTransientImage(kPrimitiveIdFormat, pass.extent,
             VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
-            VK_SAMPLE_COUNT_1_BIT);
+            VK_SAMPLE_COUNT_1_BIT, pass.historyLayers);
         if (pending.idTarget.image && CreateStaging((VkDeviceSize)draws * 4, pending.ids))
         {
             pending.idSlots = draws;
             pending.idDepth = depthAttachment;
-            Barrier(cb, pending.idTarget.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
+            Barrier(cb, pending.idTarget.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, pass.historyLayers}, VK_IMAGE_LAYOUT_UNDEFINED,
                 VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
             // The depth the id pass tests against and writes: a copy of the pass's, so the draw's
             // own depth writes decide which of its fragments the pixel keeps.
@@ -789,9 +881,9 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
                 const VkFormat depthFormat = pass.formats[depthAttachment];
                 pending.idDepthCopy = CreateTransientImage(depthFormat, pass.extent,
                     VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
-                    VK_SAMPLE_COUNT_1_BIT);
+                    VK_SAMPLE_COUNT_1_BIT, pass.historyLayers);
                 if (pending.idDepthCopy.image)
-                    Barrier(cb, pending.idDepthCopy.image, {vkinsp::FormatAspects(depthFormat), 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED,
+                    Barrier(cb, pending.idDepthCopy.image, {vkinsp::FormatAspects(depthFormat), 0, 1, 0, pass.historyLayers}, VK_IMAGE_LAYOUT_UNDEFINED,
                         VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
                 else
                     pending.idDepth = -1;   // without the copy the pass would write the events' own depth
@@ -832,7 +924,7 @@ void Replayer::PrepareHistory(VkCommandBuffer cb, PassState& pass, std::vector<P
     }
     for (size_t a = 0; a < pass.shadows.size(); ++a)
     {
-        Barrier(cb, pass.shadows[a].image, {vkinsp::FormatAspects(pass.formats[a]), 0, 1, 0, 1}, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+        Barrier(cb, pass.shadows[a].image, {vkinsp::FormatAspects(pass.formats[a]), 0, 1, 0, pass.historyLayers}, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
             AttachmentLayout(pass.formats[a]));
     }
     pass.history = true;
@@ -850,6 +942,20 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
     const JValue* commands = _capture->Commands();
     const bool dynamic = pass.renderPass == 0;
     const std::string where = "command buffer " + std::to_string(pass.commandBuffer) + ", pass " + std::to_string(pass.index);
+    // A multiview pass is followed in the view the pixel is in, alone (see _historyView).
+    _historyView = pass.viewMask ? 1u << pass.historyLayer : 0;
+    _historyViewRenderPass = pass.renderPass;
+    struct ViewReset
+    {
+        Replayer& r;
+        ~ViewReset()
+        {
+            r._historyView = 0;
+            r._historyViewRenderPass = 0;
+        }
+    } viewReset{*this};
+    const uint32_t layer = pass.historyLayer;
+    const uint32_t layers = pass.historyLayers;
 
     VkRenderPass rp = VK_NULL_HANDLE;
     VkFramebuffer fb = VK_NULL_HANDLE;
@@ -920,6 +1026,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
         info.renderArea = {{0, 0}, pass.extent};
         info.layerCount = 1;
+        info.viewMask = _historyView;
         info.colorAttachmentCount = (uint32_t)colors.size();
         info.pColorAttachments = colors.data();
         if (pass.dynamicDepth >= 0)
@@ -981,7 +1088,19 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             {
                 pipeline = IdOf(args->Get("pipeline"));
                 shaderObjects = false;
+                // One view of a multiview pass: the pipeline's copy made for it.
+                if (_historyView)
+                {
+                    if (VkPipeline view = ViewPipeline(pipeline))
+                        _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, view);
+                    return;
+                }
             }
+        }
+        else if (StartsWith(m, "vkCmdPushConstants"))
+        {
+            // Pushed again after every pipeline the history binds, with the dynamic state.
+            dynamicCommands.push_back(index);
         }
         else if (StartsWith(m, "vkCmdSet"))
         {
@@ -1023,6 +1142,10 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         return place;
     };
 
+    // The draw's own pipeline, as the pass binds it: in one view of a multiview pass, its copy for that view.
+    auto ownPipeline = [&]() {
+        return _historyView ? ViewPipeline(pipeline) : (VkPipeline)(uintptr_t)Handle(pipeline);
+    };
     // The dynamic state set so far, again, after a pipeline was bound: only what it takes dynamically
     // (the copy's own list, or the captured pipeline's), since it may not set what the pipeline holds.
     auto issueDynamic = [&](VkPipeline copy) {
@@ -1032,6 +1155,14 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             if (state.empty() || TakesDynamic(copy, pipeline, state))
                 issue(d);
         }
+    };
+    // One view of a multiview pass: the draw's own pipeline bound again inside the pass instance,
+    // since the one bound before the single-view pass began is not what the draw is checked against.
+    auto bindOwnInPass = [&]() {
+        if (!_historyView || !pipeline || shaderObjects)
+            return;
+        _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ownPipeline());
+        issueDynamic(VK_NULL_HANDLE);
     };
     // A shader-object draw has no pipeline to copy: its fragment stage is bound to `fragment` and its
     // dynamic state set again with the edit over it (shader_objects.cpp), then both put back.
@@ -1085,13 +1216,13 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         if (pending.idDepth >= 0 && pending.idDepthCopy.image)
         {
             const VkImageAspectFlags aspects = vkinsp::FormatAspects(pass.formats[pending.idDepth]);
-            const VkImageSubresourceRange range{aspects, 0, 1, 0, 1};
+            const VkImageSubresourceRange range{aspects, 0, 1, 0, layers};
             Barrier(cb, pass.shadows[pending.idDepth].image, range, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
             Barrier(cb, pending.idDepthCopy.image, range, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
             VkImageCopy region{};
-            region.srcSubresource = {aspects, 0, 0, 1};
+            region.srcSubresource = {aspects, 0, layer, 1};
             region.dstSubresource = region.srcSubresource;
             region.extent = {pass.extent.width, pass.extent.height, 1};
             _fns.CmdCopyImage(cb, pass.shadows[pending.idDepth].image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1121,6 +1252,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
             info.renderArea = pixel;   // the clear and the rasterization are the one pixel
             info.layerCount = 1;
+            info.viewMask = _historyView;
             info.colorAttachmentCount = 1;
             info.pColorAttachments = &color;
             info.pDepthAttachment = (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) ? &depth : nullptr;
@@ -1154,14 +1286,14 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 _fns.CmdSetScissor(cb, 0, 1, &pixel);
             issue(index);
             _fns.CmdEndRenderPass(cb);
-            _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)Handle(pipeline));
+            _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ownPipeline());
             issueDynamic(VK_NULL_HANDLE);
         }
-        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
         Barrier(cb, pending.idTarget.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkBufferImageCopy c{};
         c.bufferOffset = (VkDeviceSize)slot * 4;
-        c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+        c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
         c.imageOffset = {pixel.offset.x, pixel.offset.y, 0};
         c.imageExtent = {1, 1, 1};
         _fns.CmdCopyImageToBuffer(cb, pending.idTarget.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, pending.ids.buffer, 1, &c);
@@ -1169,7 +1301,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         // The event's own pass writes the depth this one copied: ordered, or the two overlap.
         if (pending.idDepth >= 0)
         {
-            const VkImageSubresourceRange depth{vkinsp::FormatAspects(pass.formats[pending.idDepth]), 0, 1, 0, 1};
+            const VkImageSubresourceRange depth{vkinsp::FormatAspects(pass.formats[pending.idDepth]), 0, 1, 0, layers};
             Barrier(cb, pass.shadows[pending.idDepth].image, depth, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
                 VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
         }
@@ -1183,7 +1315,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         if (!_fns.CmdBeginRendering)
             return;
         const VkRect2D pixel{{(int32_t)_options.history.x, (int32_t)_options.history.y}, {1, 1}};
-        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
         const VkImageAspectFlags aspects = vkinsp::FormatAspects(HistoryFragmentDepthFormat());
         ShaderObjectEdit edit;
         edit.colorAttachments = 1;
@@ -1214,6 +1346,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
                 info.renderArea = pixel;   // the clears and the rasterization are the one pixel
                 info.layerCount = 1;
+                info.viewMask = _historyView;
                 info.colorAttachmentCount = 1;
                 info.pColorAttachments = &out;
                 info.pDepthAttachment = (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) ? &counter : nullptr;
@@ -1227,7 +1360,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 Barrier(cb, target.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 VkBufferImageCopy c{};
                 c.bufferOffset = run == 0 ? (VkDeviceSize)slot * pending.targetTexel : (VkDeviceSize)slot * 4;
-                c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
                 c.imageOffset = {pixel.offset.x, pixel.offset.y, 0};
                 c.imageExtent = {1, 1, 1};
                 _fns.CmdCopyImageToBuffer(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1290,7 +1423,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         if (idPipeline && !framebufferOf(idPass, pending.idTarget, pending.fragIdFramebuffer))
             idPipeline = VK_NULL_HANDLE;
         const VkRect2D pixel{{(int32_t)_options.history.x, (int32_t)_options.history.y}, {1, 1}};
-        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, layers};
         for (uint64_t f = 0; f < count && pending.nextFrag < pending.fragSlots; ++f)
         {
             const uint32_t slot = pending.nextFrag++;
@@ -1323,7 +1456,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 Barrier(cb, target.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
                 VkBufferImageCopy c{};
                 c.bufferOffset = run == 0 ? (VkDeviceSize)slot * pending.targetTexel : (VkDeviceSize)slot * 4;
-                c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, layer, 1};
                 c.imageOffset = {pixel.offset.x, pixel.offset.y, 0};
                 c.imageExtent = {1, 1, 1};
                 _fns.CmdCopyImageToBuffer(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
@@ -1337,7 +1470,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             pending.fragmentEntries.push_back(fe);
         }
         // The draw's own pipeline again, for the draw itself.
-        _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)Handle(pipeline));
+        _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ownPipeline());
         issueDynamic(VK_NULL_HANDLE);
     };
 
@@ -1368,6 +1501,8 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                     measureFragments(index, place, it->second);
             }
             beginPass();
+            if (draw)
+                bindOwnInPass();
             issue(index);
             endPass();
             return;
@@ -1392,6 +1527,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         beginPass();
         if (draw)
         {
+            bindOwnInPass();
             if (place.inside && shaderObjects && pending.queries && pending.nextQuery + kVariantCount <= pending.queryCount)
             {
                 // What HistoryPipeline makes of a pipeline's draw, variant for variant.
@@ -1444,7 +1580,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                     entry.issued |= 1u << v;
                 }
                 // The draw's own pipeline and dynamic state again.
-                _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)Handle(pipeline));
+                _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, ownPipeline());
                 issueDynamic(VK_NULL_HANDLE);
             }
         }

@@ -684,6 +684,9 @@ private:
         int dynamicStencil = -1;
         std::vector<TransientImage> shadows;
         int historyAttachment = -1;
+        /** The layer of the attachments the pixel is followed in (a multiview pass's view), and how many its copies need. */
+        uint32_t historyLayer = 0;
+        uint32_t historyLayers = 1;
         int historyDepthAttachment = -1;
         bool history = false;
         size_t historyPending = 0;
@@ -902,9 +905,23 @@ private:
     bool _historyFragmentRound = false;
     /** The event each draw of the fragment round belongs to, keyed as the events were recorded. */
     std::map<std::tuple<uint32_t, uint64_t, uint32_t, uint32_t>, size_t> _historyEventIndex;
-    std::map<std::pair<uint64_t, VkFormat>, VkPipeline> _historyFragmentPipelines;
-    std::map<std::pair<uint64_t, VkFormat>, VkPipeline> _historyFragmentIdPipelines;
-    std::map<VkFormat, VkRenderPass> _historyFragmentRenderPasses;
+    std::map<std::tuple<uint64_t, VkFormat, uint32_t>, VkPipeline> _historyFragmentPipelines;
+    std::map<std::tuple<uint64_t, VkFormat, uint32_t>, VkPipeline> _historyFragmentIdPipelines;
+    std::map<std::pair<VkFormat, uint32_t>, VkRenderPass> _historyFragmentRenderPasses;
+    /**
+     * A multiview pass is followed in the one view the pixel is in: the pass replayed with that view
+     * alone (its view mask this one bit), so the shaders see that view's index and the queries and
+     * the one-pixel scissor meet only its fragments. Every pipeline bound meanwhile is a copy made
+     * for it (ViewPipeline), and the history's own passes render that view too. 0 in any other pass;
+     * the caches are keyed by it. `_historyViewRenderPass` is the captured render pass, 0 for dynamic rendering.
+     */
+    uint32_t _historyView = 0;
+    uint64_t _historyViewRenderPass = 0;
+    /** A captured pipeline copied, unchanged but for the single view it renders (_historyView). */
+    VkPipeline ViewPipeline(uint64_t pipelineId);
+    /** Makes a copy render the single view: the single-view render pass, or its view mask in dynamic rendering. */
+    void RenderSingleView(PipelineCopy& p);
+    std::map<std::pair<uint64_t, uint32_t>, VkPipeline> _historyViewPipelines;
 
     /** The fragment shader of the primitive-id pass (util.h, kPrimitiveIdFragmentSpirv). */
     VkShaderModule PrimitiveIdModule();
@@ -1434,8 +1451,8 @@ private:
     uint32_t _hwRound = 0;
 
     // Pixel history
-    std::map<std::pair<uint64_t, int>, VkPipeline> _historyPipelines;
-    std::map<uint64_t, VkRenderPass> _historyRenderPasses;
+    std::map<std::tuple<uint64_t, int, uint32_t>, VkPipeline> _historyPipelines;
+    std::map<std::pair<uint64_t, uint32_t>, VkRenderPass> _historyRenderPasses;
     std::map<uint64_t, ScissorInfo> _pipelineScissors;
     size_t _historyPasses = 0;
     /** Writes to the followed image outside a render pass, for the note when nothing touched it. */
@@ -1447,8 +1464,8 @@ private:
     /** Whether a pipeline's fragment shader declares EarlyFragmentTests, read from its SPIR-V once. */
     std::map<uint64_t, bool> _historyEarlyTests;
     /** The primitive-id render passes by depth format, and the pipelines that draw into them. */
-    std::map<VkFormat, VkRenderPass> _historyIdRenderPasses;
-    std::map<std::pair<uint64_t, VkFormat>, VkPipeline> _historyIdPipelines;
+    std::map<std::pair<VkFormat, uint32_t>, VkRenderPass> _historyIdRenderPasses;
+    std::map<std::tuple<uint64_t, VkFormat, uint32_t>, VkPipeline> _historyIdPipelines;
     VkShaderModule _primitiveIdModule = VK_NULL_HANDLE;
     /** The geometryShader feature is enabled, without which gl_PrimitiveID cannot be read. */
     bool _primitiveIdAvailable = false;

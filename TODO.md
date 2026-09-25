@@ -314,16 +314,22 @@ application with injected state. Route (a) is the general one and is the prerequ
       with the draw's own depth writes, so the primitive it leaves is the winner. Seen on
       `--no-cull`: the draw reported primitive 7 while the pixel held primitive 5's color; both say
       5 now.
-- [ ] Pixel history in a layered pass past its first layer. What it needs, none of which is written:
-      the shadow copies of the attachments as arrays rather than single-layer images (so
-      `CreateTransientImage` takes a layer count and the views become 2D_ARRAY), the framebuffer
-      given those layers, the initial copy and `CopyHistoryPixel` addressing the followed layer
-      rather than layer 0, and the primitive-id and fragment targets layered too -- a draw writing
-      through `gl_Layer` or a multiview mask misses a single-layer target of ours. A multiview pass
-      also needs its view mask kept, since `gl_ViewIndex` is what its shaders index by. Not done
-      because nothing here renders to a layered pass: neither `test/triangle` nor any capture on
-      this machine has one, and this is not code to write without a frame to check it against.
-      The pass is still found and the note says the layer was not followed.
+- [x] Pixel history in every view of a multiview pass (`RecordHistory`, `src/replay/src/history.cpp`):
+      the pass is replayed with its view mask narrowed to the view the pixel is in
+      (`_historyView`), through a single-view copy of its render pass (or `viewMask` in dynamic
+      rendering), with every pipeline bound meanwhile a copy made for it (`ViewPipeline`), and the
+      variants, the primitive-id pass and the per-fragment runs made for that view too. The shaders
+      see the view's own index, and the queries and the one-pixel scissor meet only its fragments.
+      The attachments' copies hold the followed layer, and their pixel is read from it. Two fixes
+      the multiview frames needed: the history pushes the pass's push constants again after every
+      pipeline it binds, as it sets the dynamic state again, and binds the draw's own pipeline
+      inside the pass instance before the draw. On the two XR frames from an Adreno 740, pixels in
+      both eyes come out at exactly the values the capture read back for their layers, with the
+      fragments each eye's overdraw counted there, and no validation messages; the replay used to
+      crash on any pixel history of these frames.
+- [ ] Pixel history in a pass layered through `gl_Layer` (not multiview), past its first layer: the
+      queries and the one-pixel scissor would meet every layer's fragments, so the draw needs its
+      output limited to the followed layer, which no test capture here has to check against.
 - [x] Pixel history in the app and the MCP server: the pixel clicked in a capture's render target
       tab, beside the image, and `get_pixel_history`. Both replay the capture with
       `vkinsp_replay --pixel-data`.
