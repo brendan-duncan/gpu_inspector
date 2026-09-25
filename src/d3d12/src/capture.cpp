@@ -1936,11 +1936,14 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
         std::lock_guard lock(i.mutex);
         if (!i.TakesContents() || !i.options.captureBuffers)
             return 0;
+        // The same range read for a list recorded meanwhile is the same read-back, until the list
+        // that took it has run: after that it holds a moment the frame has moved past -- the next
+        // page frame of a WebGPU simulation reads the buffer the last one wrote -- and the range is
+        // read again.
         auto it = i.bufferIds.find({buffer, offset, size});
-        if (it != i.bufferIds.end())
+        if (it != i.bufferIds.end() && it->second && it->second <= i.buffers.size() && i.buffers[it->second - 1].frame == UINT32_MAX)
         {
-            if (it->second && it->second <= i.buffers.size())
-                ShareEntry(i.buffers[it->second - 1], rec->list());
+            ShareEntry(i.buffers[it->second - 1], rec->list());
             return it->second;
         }
     }
@@ -2098,9 +2101,11 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
             return 0;
         std::unordered_map<ID3D12Resource*, uint32_t>& ids = initial ? i.initialIds : i.textureIds;
         auto it = ids.find(texture);
-        if (it != ids.end())
+        // As for a buffer: shared until the list that read it has run, then read again. What the
+        // frame found is taken once whatever ran.
+        if (it != ids.end() && (initial || (it->second && it->second <= i.textures.size() && i.textures[it->second - 1].frame == UINT32_MAX)))
         {
-            if (!initial && it->second && it->second <= i.textures.size())
+            if (!initial)
                 ShareEntry(i.textures[it->second - 1], rec->list());
             return it->second;
         }

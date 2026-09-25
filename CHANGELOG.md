@@ -31,6 +31,7 @@
 - They also say which of its slots the shaders take, worked out from the DXIL and the draw's constants.
 - `test/d3d12_triangle --late-descriptor` rewrites a volatile descriptor after recording the draw that reads it.
 - `test/d3d12_triangle --keep-depth` keeps its depth buffer from frame to frame.
+- The replays report each buffer the capture cut at Max KB, with the size the frame bound.
 - The Direct3D 12 replay names its objects as the application did, so debug-layer messages name them too.
 - `test/d3d12_triangle --local-root` and `test/triangle --shader-record` put arguments in a hit group's record.
 - `test/d3d12_triangle --pool` records each frame into a pool of lists reset as soon as they run.
@@ -51,6 +52,9 @@
 - The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ### Fixed
+- Launching a WebGPU page in Chrome captures the page's Direct3D 12 again, not the browser's Direct3D 11 compositing.
+- A Direct3D 12 replay makes the resources a capture opened with `OpenSharedHandle`, so a WebGPU page's canvas replays.
+- A multi-frame Direct3D 12 capture takes each frame's own buffer and texture read-backs rather than the first frame's.
 - A Direct3D 12 capture takes what the frame found in the textures it reads before writing, so the Unity URP sample's frames replay identical.
 - A Direct3D 12 capture sends a volatile descriptor the application rewrote after the draw was recorded, so the replay draws what the GPU did.
 - Present latency on the frame meter no longer drops to nothing whenever the display's statistics skip a report.

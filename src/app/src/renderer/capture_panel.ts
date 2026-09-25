@@ -570,6 +570,11 @@ export class CapturePanel {
    * and "stacks". Only the ones the host offers — asking for overdraw on a platform whose capture
    * bar has no such checkbox does nothing, the way ticking it by hand could not.
    */
+  /** The largest buffer read-back, in KB (the Max KB field), for the debug capture. */
+  setMaxBufferKb(kb: number): void {
+    this._bufferSizeInput.value = String(Math.max(1, Math.floor(kb)));
+  }
+
   setExtraCaptureOptions(on: string[]): void {
     for (const name of on) {
       if (name === "overdraw" && this._overdrawCheck) this._overdrawCheck.checked = true;

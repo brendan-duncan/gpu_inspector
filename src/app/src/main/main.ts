@@ -66,7 +66,7 @@ let mainWin: BrowserWindow | null = null;
 //               --launch-android=<package> --device=<serial> [--activity=<name>] [--api=vulkan|gles]
 //               --wait-for-app (the Vulkan implicit layer) | --wait-for-d3d12=<image> (Windows)
 //               [--debug-select=<VkType>] [--debug-capture[=<frames>]] [--record-always]
-//               [--debug-capture-without=textures,buffers,images,profile]
+//               [--debug-capture-without=textures,buffers,images,profile] [--debug-capture-max-kb=<n>]
 //               [--debug-capture-with=overdraw,draws,stacks] [--debug-capture-delay=<ms>]
 //               [--debug-relaunch] [--debug-multi] [--debug-detach] [--debug-theme=<name>] [--debug-mouse=x,y[;x,y...]]
 //               [--debug-drag=x,y;x,y[;x,y...]] [--debug-settle=<ms>]
@@ -249,9 +249,15 @@ function loadedPlugins(): Plugin[] {
   return plugins;
 }
 
-/** What the plugins put into a process launched for session `s`: their libraries and settings. */
+/**
+ * What the plugins put into a process launched for session `s`: their libraries and settings. None
+ * for a browser: what its launch is for is the page's WebGPU device (Direct3D 12 on Windows, Vulkan on
+ * Linux), and the browser's own compositing presents through Direct3D 11, whose plugin then connects
+ * first and takes the session with a capture of the compositor.
+ */
 function launchPlugins(s: Session): PluginLaunch[] {
   const c = s.config;
+  if (c?.target === "browser") return [];
   return pluginLaunches(loadedPlugins(), { port: s.port, log: c?.log ?? true, recordAlways: c?.recordAlways ?? false, stacktraces: c?.stacktraces ?? false });
 }
 
@@ -1257,6 +1263,7 @@ ipcMain.handle("inspector:getConfig", (e): AppConfig => {
       captureStacks: cliFlag("debug-capture-stacks"),
       captureWithout: cliOption("debug-capture-without"),
       captureWith: cliOption("debug-capture-with"),
+      captureMaxKb: cliOption("debug-capture-max-kb") ? Number(cliOption("debug-capture-max-kb")) : null,
       captureDelayMs: cliOption("debug-capture-delay") ? Number(cliOption("debug-capture-delay")) : null,
       expandStacks: cliFlag("debug-expand-stacks"),
       selectCommand: cliOption("debug-command") ? Number(cliOption("debug-command")) : null,

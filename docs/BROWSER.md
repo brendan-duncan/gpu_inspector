@@ -105,6 +105,11 @@ Three of those are load-bearing, and each fails in its own way when it is missin
   into it first it takes the session's port from the process that actually renders (the library
   refuses a port another process already serves). `!--use-gl=disabled` is what leaves it alone.
 
+A browser launch also leaves the [plugins](PLUGINS.md) out. The browser composites through
+Direct3D 11, and the Direct3D 11 plugin, which goes into every other Windows launch, would connect
+from the compositor before Dawn made its device and take the session: the capture was of the
+browser drawing the page into its window, not of the page.
+
 Following tracks the target's whole process tree rather than the one process the launcher started,
 which is what makes Firefox work at all: Firefox starts its browser from a first process that exits
 straight away, so the GPU process is a grandchild.
@@ -159,6 +164,24 @@ and:
 The capture holds **everything the GPU process did**, which in a fresh single-tab profile is the
 page plus the browser's own compositing — a handful of extra passes at the end, drawing the page
 into the window. Keeping that profile to one tab is the easiest way to keep a capture readable.
+
+**Capture several frames.** Dawn submits one page frame as more than one `ExecuteCommandLists` --
+the page's command buffers, then a blit of the result -- and each is a "frame" here. A one-frame
+capture of the shadow-mapping sample holds only that blit, with the scene arriving as a sampled
+texture; **Frames** 4 holds the shadow pass, the scene and the blit, twice.
+
+**Raise Max KB for a replay.** A buffer read-back is cut at Max KB (128 by default), and a WebGPU
+simulation keeps its state in buffers much larger than that -- the particles sample's is 2.4 MB, the
+A-buffer's 34 MB. The replay starts the rest as its own buffer holds it and says so, naming the
+buffer and the size it needed.
+
+Replaying the [WebGPU samples](https://webgpu.github.io/webgpu-samples/) this way, 4 frames and
+Max KB 8192, on an RTX 4080: rotatingCube, texturedCube, fractalCube, renderBundles (20,019
+commands), shadowMapping, deferredRendering, computeBoids, particles, imageBlur, gameOfLife,
+skinnedMesh, cubemap and occlusionQuery replay with every target identical, with and without the
+debug layer, which reports nothing. The A-buffer sample differs in 2 texels in some replays and
+none in others: it resolves fragments its shaders appended with atomics, whose order varies from
+run to run.
 
 ## Reading a WebGPU capture
 

@@ -693,6 +693,10 @@ void DxReplayer::CreateObject(const JValue& o)
             _swapBuffers.insert(id);
             comment = "a swap chain's buffer, as an ordinary render target of its format and size";
         }
+        else if (cmd == "OpenSharedHandle")
+        {
+            comment = "a resource another device or process shared, as one of the replay's own of its description";
+        }
         else if (cmd == "CreatePlacedResource")
         {
             // The heap it was placed in says what kind of memory it had.
@@ -1458,6 +1462,14 @@ void DxReplayer::ApplyBufferData(const Group& group)
         if (offset >= r->desc.Width)
             return;
         size = (size_t)std::min<uint64_t>(size, r->desc.Width - offset);
+        // A read-back cut at the capture's Max KB: the rest of the range is not in the capture,
+        // and a shader that reads it reads whatever the replay's buffer holds -- a simulation over
+        // a large particle buffer then differs everywhere, with nothing else to say why.
+        if (const JValue* originalSize = info->Get("originalSize"); originalSize && originalSize->Uint() > size && _truncatedBuffers.insert(bufferId).second)
+        {
+            const uint64_t original = originalSize->Uint();
+            Problem("buffer " + std::to_string(bufferId) + ": the capture read back " + std::to_string(size) + " of the " + std::to_string(original) + " bytes the frame binds (the capture's Max KB); the rest starts as the replay's own buffer holds it, so what reads it may differ -- capture with a larger Max KB");
+        }
         const D3D12_RESOURCE_STATES state = StateOf(*r, 0);
         bool ok = false;
         if (r->heapType == D3D12_HEAP_TYPE_UPLOAD)

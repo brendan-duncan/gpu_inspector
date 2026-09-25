@@ -1966,6 +1966,12 @@ bool Replayer::UploadCapturedBuffer(uint64_t dataId)
     VkDeviceSize offset = info->Get("offset")->Uint();
     if (offset + size > bit->second.size)
         size = (size_t)(bit->second.size - offset);
+    // A read-back cut at the capture's Max KB: the rest of the range is not in the capture.
+    if (const JValue* originalSize = info->Get("originalSize"); originalSize && originalSize->Uint() > size && _truncatedBuffers.insert(bit->first).second)
+    {
+        const uint64_t original = originalSize->Uint();
+        Problem("buffer " + std::to_string(bit->first) + ": the capture read back " + std::to_string(size) + " of the " + std::to_string(original) + " bytes the frame binds (the capture's Max KB); the rest starts as the replay's own buffer holds it, so what reads it may differ -- capture with a larger Max KB");
+    }
     UploadToBuffer(bit->second.buffer, offset, data, size);
     if (_exporter)
         _exporter->UploadBuffer(bit->first, bit->second.buffer, offset, data, size);
@@ -2743,6 +2749,7 @@ bool Replayer::TraceRays(const JValue& command, const JValue& args, VkCommandBuf
                 if (offset < handleSize || at + offset + 8 > p.bytes.size())
                     continue;
                 const std::vector<uint32_t>& read = RecordAddressOffsets(_boundRayTracingPipeline, group);
+                if (std::find(read.begin(), read.end(), (uint32_t)(offset - handleSize)) == read.end())
                     continue;   // a value that looks like an address where no shader reads one
                 const VkDeviceAddress here = RemapAddress(e.Get("buffer") ? e.Get("buffer")->Uint() : 0,
                     e.Get("bufferOffset") ? e.Get("bufferOffset")->Uint() : 0);

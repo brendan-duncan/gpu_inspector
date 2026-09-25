@@ -956,6 +956,22 @@ vendor's driver is listed at the end so nobody spends time on it.
       not on `MTLRenderCommandEncoder` in the macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
 - [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, and the analyses
       `vkinsp_replay` serves (overlays, mesh output, per-draw timing).
+  - [x] A second real application: Chrome running the WebGPU samples through Dawn. Four faults,
+    all fixed. The Direct3D 11 plugin went into browser launches and connected from Chrome's
+    compositor first, so the session captured the browser drawing the page into its window, not the
+    page (`launchPlugins` gives a browser none). The canvas Dawn renders into is opened with
+    `OpenSharedHandle`, which the library tracked without a description, so the replay could not
+    make the page's render target (the hook now records `pDesc`). A buffer or texture read-back was
+    shared by every later list reading the same range, even after the list that took it had run:
+    in a 4-frame capture the second page frame of the boids and deferred-rendering samples was
+    given the first one's buffers (read-backs are now shared only until their list runs). And a
+    buffer cut at Max KB was replayed silently from 128 KB of a 2.4 MB particle buffer: both
+    replays now report each cut buffer (`originalSize`), and `--debug-capture-max-kb` sets it for
+    a debug capture. Thirteen samples replay identical (docs/BROWSER.md lists them); the A-buffer
+    varies by 2 texels from run to run, which is its atomics. Dawn submits a page frame in parts,
+    so a capture wants several frames. Left: a browser case in the UI tests, which needs Chrome and
+    the network; and whether a buffer a shader writes should be read whole regardless of Max KB,
+    which is what a replay needs and what the setting exists to bound.
   - [x] What the frame found in the textures it reads before writing (kind `initial`,
     `CaptureManager::BeforeExecuteCommandLists`, `CommandRecorder::NoteRead`). The Unity URP sample
     did not replay: of one frame 12 of 14 targets differed, of another the back-buffer depth. The

@@ -550,6 +550,8 @@ private:
     std::unordered_map<uint64_t, const vkreplay::JValue*> _rootSignatures;   // id -> its pDesc JSON
     std::unordered_map<uint64_t, std::vector<InitialState>> _initial;
     std::unordered_map<uint64_t, const vkreplay::JValue*> _bufferData;
+    /** Buffers whose read-back the capture cut short (`originalSize`), reported once each. */
+    std::unordered_set<uint64_t> _truncatedBuffers;
     bool _deviceLost = false;
     // What the exported program shows in its window: the swap chain buffer the frame wrote last, else its last color target.
     std::unordered_set<uint64_t> _swapBuffers;

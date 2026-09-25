@@ -992,6 +992,11 @@ Limits:
 - What the frame reads with no command naming it is not in the capture: a buffer reached through
   a GPU address inside another buffer. Multisampled textures are not uploaded, and multisampled
   depth is not compared.
+- A buffer read-back cut at the capture's **Max KB** leaves the rest of the range as the replay's
+  own buffer holds it, and the replay reports each such buffer with the size the frame bound; a
+  simulation over a large buffer (a WebGPU page's particles) needs the setting raised to replay.
+- A resource another device or process shared (`OpenSharedHandle`: a browser's canvas, which Dawn
+  renders a page into) is made as one of the replay's own, from the description the capture keeps.
 - Descriptors are right as of each submission, which is when the GPU reads them: a table's
   snapshot is taken at the draw, and a volatile slot the application rewrites before submitting is
   sent again with the submission (`test/d3d12_triangle --late-descriptor`). Two draws of one

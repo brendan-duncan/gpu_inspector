@@ -635,6 +635,8 @@ export class InspectorWindow extends Window {
     // --debug-capture-with=<list>: and the options that are off by default.
     const with_ = (this._debug?.captureWith ?? "").split(",").map((p) => p.trim()).filter(Boolean);
     if (with_.length) panel.capturePanel.setExtraCaptureOptions(with_);
+    // --debug-capture-max-kb=<n>: buffer read-backs cut at n KB rather than the field's default.
+    if (this._debug?.captureMaxKb) panel.capturePanel.setMaxBufferKb(this._debug.captureMaxKb);
     panel.capturePanel.capture(this._debug?.captureFrames, undefined, this._debug?.captureStacks || undefined);
     // --debug-command=<index>: select a command once the capture has arrived.
     const selectCommand = this._debug?.selectCommand;

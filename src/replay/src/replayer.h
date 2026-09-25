@@ -1097,6 +1097,8 @@ private:
     void BuildEarlierStructures();
     /** Uploads one of the capture's buffer read-backs to the buffer it came from; false when it holds none. */
     bool UploadCapturedBuffer(uint64_t dataId);
+    /** Buffers whose read-back the capture cut short (`originalSize`), reported once each. */
+    std::unordered_set<uint64_t> _truncatedBuffers;
     /**
      * Replays one vkCmdTraceRaysKHR, rebuilding its binding table with this driver's handles; false
      * when it left it out. With an `exportIndex` other than UINT32_MAX the exporter is shown it.

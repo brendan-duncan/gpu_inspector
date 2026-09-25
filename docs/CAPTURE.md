@@ -21,7 +21,7 @@ The bar above it controls what is recorded:
 | **Profile passes** | Write GPU timestamps around every render pass: pass durations, the pass timeline and the Frame Bound card |
 | **Measure draws** | Direct3D 12: a timestamp pair, a pipeline statistics query and an occlusion query around every draw and dispatch, so the Shader Flame Graph can split a pass's time between its draws. Costs GPU and CPU time in the captured frame ([Direct3D 12](D3D12.md#measuring-draws-overlays-and-meshes)) |
 | **Stack traces** | Record the call stack of every command in the frame. Costs CPU time in the application while capturing |
-| **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated |
+| **Max KB** | Bytes captured per bound buffer range. Longer ranges are truncated, and a [replay](REPLAY.md) of the frame then says which buffers it could not start as the frame did |
 | **Timing Capture** | Not a frame capture: records *every* frame's time and where its CPU went, for as long as you leave it running, and reports the hitches with what caused each. See [a hitch, rather than a slow frame](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) |
 | **Capture on hitch** | With Timing Capture: the first frame over the run's hitch threshold takes a frame capture of the next frame, with the options above, in a tab named after the hitch. Once per tick. See [Capture on hitch](PROFILING.md#step-1c-a-hitch-rather-than-a-slow-frame) |
 | **Sample stacks** | With Timing Capture (Windows, macOS and Linux): every thread's call stack sampled 250 times a second, and whether it was running or blocked there, so the report says what each thread was doing in a hitch. Each sample stops a running thread for a few microseconds |

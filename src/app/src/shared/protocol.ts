@@ -1248,6 +1248,8 @@ export interface AppConfig {
      * kept out of the application's CPU timeline.
      */
     captureWith: string | null;
+    /** --debug-capture-max-kb=<n>: the capture bar's Max KB for the debug capture (buffer read-backs are cut there). */
+    captureMaxKb: number | null;
     /** Open the Stack trace section of selected commands and objects (symbolizes at once). */
     expandStacks: boolean;
     /** Start a session waiting for an application the implicit layer brings (--wait-for-app). */

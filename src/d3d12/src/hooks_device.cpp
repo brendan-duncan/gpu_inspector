@@ -551,14 +551,22 @@ HRESULT STDMETHODCALLTYPE Hook_OpenSharedHandle(ID3D12Device14* This, HANDLE NTH
     if (ID3D12Resource* resource = QueryAs<ID3D12Resource>(object))
     {
         D3D12_HEAP_TYPE heapType = D3D12_HEAP_TYPE_DEFAULT;
+        D3D12_RESOURCE_DESC desc{};
         {
             ScopedInternal internal;
             D3D12_HEAP_PROPERTIES props{};
             D3D12_HEAP_FLAGS flags = D3D12_HEAP_FLAG_NONE;
             if (SUCCEEDED(resource->GetHeapProperties(&props, &flags)))
                 heapType = props.Type;
+            desc = resource->GetDesc();
         }
-        OnResourceCreated(This, resource, "OpenSharedHandle", Args().ptr("NTHandle", NTHandle).str(), heapType, D3D12_RESOURCE_STATE_COMMON, nullptr, 0);
+        // The description it was made with, which a replay makes a resource of its own from: what
+        // another device or process shared is not there to open (a browser's canvas, which Dawn
+        // renders a WebGPU page into, is one).
+        Args a;
+        a.ptr("NTHandle", NTHandle);
+        Write(a.key("pDesc"), desc);
+        OnResourceCreated(This, resource, "OpenSharedHandle", a.str(), heapType, D3D12_RESOURCE_STATE_COMMON, nullptr, 0);
     }
     else if (ID3D12Heap* heap = QueryAs<ID3D12Heap>(object))
     {
