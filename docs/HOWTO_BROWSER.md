@@ -34,11 +34,11 @@ Then capture from the **Capture** tab as usual.
 
 ## What a WebGPU capture looks like
 
-Smaller than you expect, and that is the point of it. A capture of the samples' rotating-cube page
-is 15 commands: one `ExecuteCommandLists`, one command list holding a `Reset`, a
-`SetDescriptorHeaps`, a `BeginRenderPass`, the viewport and scissor, the pipeline, topology, root
-signature and root constants, one `DrawInstanced`, `EndRenderPass` and `Close`. That is the whole
-frame the page draws — Dawn produced it from a handful of WebGPU calls.
+Smaller than you expect, and that is the point of it. A frame of the samples' rotating-cube page
+is two `ExecuteCommandLists`. The first is the page's: a render pass with its pipeline, root
+signature, descriptor table, vertex buffer and one 36-vertex `DrawInstanced`, the cube. The second
+is Dawn's blit of the result into the canvas: one 3-vertex `DrawInstanced` with root constants and
+no vertex buffer. That is the whole frame — Dawn produced it from a handful of WebGPU calls.
 
 Things worth recognising in it:
 
@@ -50,9 +50,9 @@ Things worth recognising in it:
 - **The browser's own compositing is in the process too.** A capture may hold the page's frame, the
   compositor's, or both, depending on when it lands. The passes' render targets say which is which.
 
-**To replay or export a WebGPU frame**, capture a few frames rather than one (**Frames** 4 in the
-capture bar): Dawn submits a page frame in more than one part, the page's work and then a blit of
-the result, and a one-frame capture may hold only the blit. And raise **Max KB**: a simulation's
+**A captured frame is a whole page frame**, even though Dawn submits it in several parts (the
+page's work, then a blit of the result into the canvas): frames end where Dawn waits for the
+compositor to hand the canvas back. **To replay or export a WebGPU frame**, raise **Max KB**: a simulation's
 buffers are larger than the 128 KB a buffer read-back is cut at, and a replay of a frame whose
 buffers were cut says so rather than drawing something else. Taken that way the WebGPU samples replay
 identical ([Web pages and WebGPU](BROWSER.md#capturing-a-frame) has the list).

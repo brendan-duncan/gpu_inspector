@@ -70,7 +70,10 @@ export interface CaptureFileManifest {
   refreshSource?: string;
   /** The display's own refresh period when a source reported one (0 otherwise). */
   displayRefreshMs?: number;
-  /** How the layer ended frames: "present", "wait" (vkWaitForFences) or "submit"; missing in older files. */
+  /**
+   * How the layer ended frames: "present", "wait" (vkWaitForFences), "sharedWait" (a D3D12 wait on
+   * a fence another device shared) or "submit"; missing in older files.
+   */
   frameBoundary?: string;
   objects: CaptureFileObject[];
   commands: CaptureCommand[];

@@ -29,6 +29,14 @@ void HookRootSignature(ID3D12RootSignature* signature);
 void HookPipelineState(ID3D12PipelineState* pipeline);
 void HookStateObject(ID3D12StateObject* stateObject);
 void HookFence(ID3D12Fence* fence);
+/**
+ * A fence opened from a handle another device or process shared (OpenSharedHandle), marked on the
+ * fence itself so a later object at the same address is not taken for it. A queue waiting on one
+ * is taking a resource back from whoever shared it: Dawn in Chrome, a WebGPU canvas from the
+ * compositor, once per page frame.
+ */
+void MarkOpenedSharedFence(ID3D12Fence* fence);
+bool IsOpenedSharedFence(ID3D12Fence* fence);
 void HookQueryHeap(ID3D12QueryHeap* heap);
 void HookCommandSignature(ID3D12CommandSignature* signature);
 void HookPipelineLibrary(ID3D12PipelineLibrary* library);

@@ -231,6 +231,17 @@ HRESULT STDMETHODCALLTYPE Hook_Signal(ID3D12CommandQueue* This, ID3D12Fence* pFe
 HRESULT STDMETHODCALLTYPE Hook_Wait(ID3D12CommandQueue* This, ID3D12Fence* pFence, UINT64 Value)
 {
     auto orig = Orig<PFN_ID3D12CommandQueue_Wait>(This, slot::ID3D12CommandQueue_Wait);
+    // A wait for a resource another device shared back may start the next frame of a device that
+    // never presents (Dawn's, taking a WebGPU canvas back from Chrome's compositor). Before the
+    // wait is forwarded, so a capture finishing there waits for the frame's own work and not for
+    // the other device.
+    if (!Internal() && IsOpenedSharedFence(pFence) && Cap().OnSharedFenceWait(This))
+    {
+        ID3D12Device* device = DeviceOf(This);
+        OnFrameNoPresent(device, "sharedWait");
+        ValidationLog::Get().Poll(Cap().FrameCounter());
+        ShaderEditor::Get().OnPresent();
+    }
     HRESULT hr = orig(This, pFence, Value);
     if (!Internal())
         Log("queue %p Wait(fence %p, %llu) -> %s", (void*)This, (void*)pFence, (unsigned long long)Value, HrText(hr).c_str());

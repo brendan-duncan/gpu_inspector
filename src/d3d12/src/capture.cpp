@@ -500,22 +500,27 @@ struct RecorderSlot
 
 // How a device's frames are delimited, decided per device over its lifetime (a process can hold
 // several D3D12 devices: a game and a background copy device, or, in Chrome's GPU process, Dawn's
-// WebGPU device beside the compositor's). A device that presents ends its frames at the present;
-// one that goes a long run of submissions without ever presenting ends them at every
-// ExecuteCommandLists, the way the Vulkan layer falls back for an OpenXR application that never
-// presents. DXINSP_FRAME_BOUNDARY forces one or the other.
+// WebGPU device beside the compositor's). A device that presents ends its frames at the present.
+// One that never presents but waits on a fence another device shared ends them at that wait: Dawn
+// in Chrome takes a WebGPU canvas back from the compositor that way once per page frame, and then
+// submits the frame in several parts (a Unity page, five), which a boundary at every submission
+// split into frames of one part each. One that does neither for a long run of submissions ends
+// them at every ExecuteCommandLists, the way the Vulkan layer falls back for an OpenXR application
+// that never presents. DXINSP_FRAME_BOUNDARY forces present or submit.
 struct DeviceFrame
 {
     enum class Boundary
     {
         Auto,
         Present,
+        SharedWait,
         Submit
     };
     Boundary boundary = Boundary::Auto;
     bool presentSeen = false;
     uint64_t frameIndex = 0;             // this device's own frame count (its presents, or its submit boundaries)
     uint32_t submitsWithoutPresent = 0;
+    uint32_t submitsSinceBoundary = 0;   // an empty frame is not ended (two canvases, two waits)
     ID3D12CommandQueue* lastQueue = nullptr;   // not AddRef'd; the queue a substitute boundary ran on
 };
 
@@ -2989,6 +2994,9 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
         if (df.boundary == DeviceFrame::Boundary::Present)
             return false;   // this device presents; presents delimit it
         df.lastQueue = queue;
+        ++df.submitsSinceBoundary;
+        if (df.boundary == DeviceFrame::Boundary::SharedWait && override != BoundaryOverride::Submit)
+            return false;   // its waits on a shared fence delimit it (OnSharedFenceWait)
         const uint32_t n = ++df.submitsWithoutPresent;
         if (df.boundary == DeviceFrame::Boundary::Auto)
         {
@@ -2999,6 +3007,37 @@ bool CaptureManager::OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count
             }
         }
         boundary = df.boundary == DeviceFrame::Boundary::Submit;
+        if (boundary)
+            df.submitsSinceBoundary = 0;
+    }
+    if (boundary)
+        EndFrame(device, queue, nullptr, false);
+    return boundary;
+}
+
+bool CaptureManager::OnSharedFenceWait(ID3D12CommandQueue* queue)
+{
+    Impl& i = impl();
+    ID3D12Device* device = queue ? DeviceOf(queue) : nullptr;
+    if (!device || i.Override() != BoundaryOverride::Auto)
+        return false;
+    bool boundary = false;
+    {
+        std::lock_guard lock(i.frameMutex);
+        DeviceFrame& df = i.FrameFor(device);
+        if (df.boundary == DeviceFrame::Boundary::Present)
+            return false;
+        // Settled at the first such wait, and taken over from a device already delimited by its
+        // submissions (Dawn submits a page's uploads for a long while before it draws a frame).
+        if (df.boundary != DeviceFrame::Boundary::SharedWait)
+        {
+            df.boundary = DeviceFrame::Boundary::SharedWait;
+            Log("device %p waits on a shared fence: its frames end at those waits", (void*)device);
+        }
+        boundary = df.submitsSinceBoundary > 0;
+        df.submitsSinceBoundary = 0;
+        if (boundary)
+            df.lastQueue = queue;
     }
     if (boundary)
         EndFrame(device, queue, nullptr, false);

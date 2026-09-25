@@ -29,7 +29,7 @@ void OnDeviceReleased(ID3D12Device* device);
 /** `calledAtQpc`: QueryPerformanceCounter just before the Present call, for the present latency. */
 void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT syncInterval, UINT flags, HRESULT result, LONGLONG calledAtQpc);
 /** The same for a device that never presents, whose frames end at a submit (see the capture manager's OnExecuteCommandLists). */
-void OnFrameNoPresent(ID3D12Device* device);
+void OnFrameNoPresent(ID3D12Device* device, const char* boundary = "submit");
 /** The CPU time inside ExecuteCommandLists, for FrameStats.submitMs. */
 void AddSubmitTime(ID3D12Device* device, double milliseconds);
 

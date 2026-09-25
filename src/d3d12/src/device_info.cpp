@@ -904,13 +904,14 @@ void OnFramePresented(ID3D12Device* device, IDXGISwapChain* swapChain, UINT sync
     }
 }
 
-void OnFrameNoPresent(ID3D12Device* device)
+void OnFrameNoPresent(ID3D12Device* device, const char* boundary)
 {
     // A device that never presents (Dawn in Chrome): its frame time is the wall-clock interval
-    // between the submit boundaries, with no display period and no present mode.
+    // between its boundaries ("submit", or "sharedWait" for waits on a shared fence), with no
+    // display period and no present mode.
     const Clock::time_point now = Clock::now();
     std::unique_lock<std::mutex> lock(g_mutex);
-    const bool reported = EmitBoundary(RecordOf(device), now, "submit", 0, std::string());
+    const bool reported = EmitBoundary(RecordOf(device), now, boundary, 0, std::string());
     lock.unlock();
     if (reported)
     {

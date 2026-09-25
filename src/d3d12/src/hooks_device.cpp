@@ -577,6 +577,7 @@ HRESULT STDMETHODCALLTYPE Hook_OpenSharedHandle(ID3D12Device14* This, HANDLE NTH
     else if (ID3D12Fence* fence = QueryAs<ID3D12Fence>(object))
     {
         HookFence(fence);
+        MarkOpenedSharedFence(fence);
         Tracker::Get().Track(fence, "ID3D12Fence", "OpenSharedHandle", This, Args().ptr("NTHandle", NTHandle).str());
         Log("OpenSharedHandle -> ID3D12Fence %p", (void*)fence);
     }
@@ -1631,6 +1632,23 @@ void HookFence(ID3D12Fence* fence)
         {slot::ID3D12Fence1_SetEventOnCompletion, (void*)&Hook_SetEventOnCompletion},
     });
     // clang-format on
+}
+
+// {42de35db-dca7-46b5-b4ff-0ff015444c5a}: the mark MarkOpenedSharedFence puts on a fence.
+static constexpr GUID kOpenedSharedFence = {0x42de35db, 0xdca7, 0x46b5, {0xb4, 0xff, 0x0f, 0xf0, 0x15, 0x44, 0x4c, 0x5a}};
+
+void MarkOpenedSharedFence(ID3D12Fence* fence)
+{
+    const uint8_t mark = 1;
+    ScopedInternal internal;
+    fence->SetPrivateData(kOpenedSharedFence, sizeof(mark), &mark);
+}
+
+bool IsOpenedSharedFence(ID3D12Fence* fence)
+{
+    uint8_t mark = 0;
+    UINT size = sizeof(mark);
+    return fence && SUCCEEDED(fence->GetPrivateData(kOpenedSharedFence, &size, &mark)) && mark;
 }
 
 void HookQueryHeap(ID3D12QueryHeap* heap)

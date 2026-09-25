@@ -153,15 +153,18 @@ Capturing is the [ordinary capture workflow](CAPTURE.md), with one difference th
 everywhere in the result: **a browser's renderer does not present.**
 
 Dawn and wgpu render into textures that the browser's *compositor* presents, so the captured
-device never calls `Present`, and frames cannot be delimited by it. The inspector falls back — as
-it does for an OpenXR application — to ending a frame at `ExecuteCommandLists` once the device has
-gone a while submitting without a present. The Capture panel then shows **`frameBoundary: submit`**,
-and:
+device never calls `Present`, and frames cannot be delimited by it. On Windows, Chrome's Dawn
+starts each page frame by waiting for the compositor to hand the canvas back, on a fence the
+compositor shared with it, and the inspector ends a frame at that wait: a captured frame is one
+page frame, however many `ExecuteCommandLists` the page's work took. The session shows **Frames
+end where the device waits for a shared texture back** (`frameBoundary: sharedWait`). A renderer
+that has no such wait falls back — as an OpenXR application does — to ending a frame at every
+`ExecuteCommandLists` (`frameBoundary: submit`). Either way:
 
 - There is no display refresh, no vsync rate and no dropped-frame count: those come from the swap
   chain, and this device has none.
-- A "frame" is the browser's submission rhythm, which usually is one page frame, but a page that
-  submits several times per `requestAnimationFrame` may capture as more than one.
+- With the submit fallback, a "frame" is one submission, and a page that submits several times
+  per `requestAnimationFrame` captures as more than one.
 - If the compositor's own presents are visible on a hooked device and steal the framing, set
   `DXINSP_FRAME_BOUNDARY=submit` for the launch so presents are ignored outright.
 
@@ -169,10 +172,9 @@ The capture holds **everything the GPU process did**, which in a fresh single-ta
 page plus the browser's own compositing — a handful of extra passes at the end, drawing the page
 into the window. Keeping that profile to one tab is the easiest way to keep a capture readable.
 
-**Capture several frames.** Dawn submits one page frame as more than one `ExecuteCommandLists` --
-the page's command buffers, then a blit of the result -- and each is a "frame" here. A one-frame
-capture of the shadow-mapping sample holds only that blit, with the scene arriving as a sampled
-texture; **Frames** 4 holds the shadow pass, the scene and the blit, twice.
+**One frame is the whole page frame.** Dawn submits a page frame as more than one
+`ExecuteCommandLists` -- the page's command buffers, then a blit of the result -- and all of them
+are in it: a Unity page's frame is five submissions, 60 render passes and over 800 draws.
 
 **Raise Max KB for a replay.** A buffer read-back is cut at Max KB (128 by default), and a WebGPU
 simulation keeps its state in buffers much larger than that -- the particles sample's is 2.4 MB, the

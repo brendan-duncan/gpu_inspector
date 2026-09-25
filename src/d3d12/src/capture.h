@@ -269,6 +269,15 @@ public:
      * frame timing). See "Frame boundary" in the README.
      */
     bool OnExecuteCommandLists(ID3D12CommandQueue* queue, UINT count, ID3D12CommandList* const* lists, double cpuMs);
+    /**
+     * Before a queue waits on a fence opened from another device's or process's handle
+     * (IsOpenedSharedFence): for a device that never presents, the start of its next frame, so the
+     * submissions since the last such wait are ended as one frame. Chrome's Dawn waits this way
+     * once per page frame, for the compositor to hand the canvas back, and submits the page's
+     * frame in several parts after it. Returns true when a frame ended here, as
+     * OnExecuteCommandLists does.
+     */
+    bool OnSharedFenceWait(ID3D12CommandQueue* queue);
     /** A bundle ran inside a list: its recording becomes the ExecuteBundle command's children. */
     void OnExecuteBundle(CommandRecorder* rec, ID3D12GraphicsCommandList* bundle);
     /**

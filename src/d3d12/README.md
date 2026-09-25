@@ -229,9 +229,22 @@ so that device's `IDXGISwapChain::Present` is never seen — the same shape as a
 application, where the runtime composites and the layer falls back to a submission boundary
 (`src/vulkan/src/layer.cpp`, `OnSubmitForFrames`). The boundary is therefore decided **per device**
 over its lifetime (`capture.cpp`, `DeviceFrame`): a device that presents is delimited by its
-presents; one that goes `kSubmitsWithoutPresent` (60, the layer's threshold) submissions without
-ever presenting is delimited by every `ExecuteCommandLists` from then on, with `frameBoundary:
-"submit"` and no refresh period. `DXINSP_FRAME_BOUNDARY=submit` forces the submit boundary for
+presents; one that never presents but has a queue `Wait` on a fence it opened from a shared handle
+is delimited by those waits (`frameBoundary: "sharedWait"`, `CaptureManager::OnSharedFenceWait`);
+one that does neither for `kSubmitsWithoutPresent` (60, the layer's threshold) submissions is
+delimited by every `ExecuteCommandLists` from then on, with `frameBoundary: "submit"`. Neither has
+a refresh period.
+
+The shared-fence wait is Dawn's frame in Chrome. At the start of every page frame the GPU process
+opens the compositor's fence (`OpenSharedHandle`) and has Dawn's queue wait on it before touching
+the canvas again; the page's work then follows as several `ExecuteCommandLists` (a Unity page
+submits five: its compute, its UI, its scene, the blit into the canvas, and an empty one). Ended at
+every submission, a one-frame capture held one of those parts, most often only the blit. The
+boundary runs before the wait is forwarded, so a capture finishing there waits for the frame's own
+work and not for the compositor, and a wait with no submission since the last one ends nothing (a
+page with two canvases waits twice). Fences opened from a handle are marked with private data
+(`MarkOpenedSharedFence`) rather than kept in a set, so an unrelated fence created at a released
+one's address is not taken for it. `DXINSP_FRAME_BOUNDARY=submit` forces the submit boundary for
 every device and ignores presents for framing — for the case where the compositor presents on a
 hooked D3D12 device but the work to capture is Dawn's, which does not — and `=present` keeps the
 present-only behavior. A queued "capture frame N" counts the boundaries a device actually has, so
