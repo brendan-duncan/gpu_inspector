@@ -245,7 +245,8 @@ struct AblationResult
 {
     uint32_t command = 0;
     std::string stage;
-    uint64_t pipeline = 0;
+    uint64_t pipeline = 0;      // or, for a command bound with shader objects, the stage's shader object
+    bool shaderObject = false;  // which `pipeline` is
     uint32_t frame = 0;
     uint64_t commandBuffer = 0;
     uint32_t passIndex = 0;
@@ -841,6 +842,16 @@ private:
     const JValue* PipelineState(uint64_t pipelineId, std::string_view member, std::string_view part) const;
     /** Whether a captured graphics pipeline, or a library it links, declares a dynamic state ("VK_DYNAMIC_STATE_SCISSOR"). */
     bool PipelineDynamic(uint64_t pipelineId, std::string_view state) const;
+    /** The dynamic state a vkCmdSet* command sets ("vkCmdSetCullModeEXT": "VK_DYNAMIC_STATE_CULL_MODE"); empty for one that sets none. */
+    static std::string DynamicStateOf(std::string_view method);
+    /**
+     * Whether a pipeline the replay made takes that state dynamically (a copy's own list), or else the
+     * captured pipeline does. Setting a state the bound pipeline holds statically is not allowed, and a
+     * pass's shader-object draws set every one.
+     */
+    bool TakesDynamic(VkPipeline copy, uint64_t pipelineId, const std::string& state) const;
+    /** The dynamic states of each pipeline copy, as it was created. */
+    std::unordered_map<VkPipeline, std::vector<VkDynamicState>> _copyDynamic;
     /** The fragment shader that writes 1.0 (overdraw counts, and coverage without discards). */
     VkShaderModule CountModule();
     /** The fragment shader of the back-face overlay (util.h, kBackFaceFragmentSpirv). */
@@ -928,13 +939,73 @@ private:
     void ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTested, VkFormat depthFormat, bool insidePass);
     /**
      * Issues a pass's state and commands again, secondaries inline, into a render pass and framebuffer of the
-     * replay's own; or, with no render pass, into dynamic rendering to `color` (which shader objects need).
+     * replay's own; or, with no render pass, into dynamic rendering to `color` and `depth` (which shader objects need).
      */
     void ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-        VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color = VK_NULL_HANDLE);
+        VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color = VK_NULL_HANDLE,
+        VkImageView depth = VK_NULL_HANDLE);
     /** Whether a draw's vertex stage is a shader object (vkCmdBindShadersEXT) rather than a pipeline's. */
     bool DrawUsesShaderObjects(const CommandGroup& group, uint32_t target) const;
     void CompleteOverdraw(std::vector<PendingOverdraw>& pending);
+
+    // Shader objects (shader_objects.cpp): the analyses' copies of a draw bound with vkCmdBindShadersEXT.
+    /** What of the dynamic state the application set decides how an edit is set over it. */
+    struct ShaderObjectSets
+    {
+        uint32_t viewports = 1;          // the last vkCmdSetViewportWithCount's count
+        bool colorWriteEnable = false;   // set at all, so its feature is enabled and it may be set again
+        bool logicOpEnable = false;
+        bool alphaToOne = false;
+    };
+    static void NoteShaderObjectSet(ShaderObjectSets& sets, const std::string& method, const JValue& args);
+    /**
+     * What an analysis changes of a shader-object draw. Its state is all dynamic, so what a pipeline copy
+     * bakes in is set right before the draw instead; a member left at its default keeps what the
+     * application set.
+     */
+    struct ShaderObjectEdit
+    {
+        uint32_t colorAttachments = 0;   // the attachments the blending and writes below are set for; 0 leaves them
+        bool blendAdd = false;           // ONE + ONE, else blending off
+        VkColorComponentFlags writeMask = 0;
+        bool singleSample = false;       // one sample, every sample bit, no alpha to coverage or to one
+        bool depthTest = true;           // false: the depth test and the depth bounds test off
+        bool depthWrite = true;
+        bool stencilTest = true;
+        bool stencilWrite = true;
+        /** The fragment round's counter: every fragment increments the stencil, and only the one at the reference passes. */
+        bool stencilCounter = false;
+        bool cullNone = false;
+        bool wireframe = false;
+        /** A scissor for every viewport the application set. */
+        const VkRect2D* scissor = nullptr;
+    };
+    void ApplyShaderObjectEdit(VkCommandBuffer cb, const ShaderObjectEdit& edit, const ShaderObjectSets& sets);
+    /** The replay's own fragment shaders: counting, back faces, and gl_PrimitiveID. */
+    enum class ReplacementShader
+    {
+        Count,
+        BackFace,
+        PrimitiveId
+    };
+    /**
+     * One of the replay's fragment shaders as a shader object that may be bound beside `layoutFrom`, a
+     * captured shader object: every graphics shader object bound together must have been made with the
+     * same descriptor set layouts and push constant ranges, so it is made with that one's.
+     */
+    VkShaderEXT ReplacementFragment(ReplacementShader shader, uint64_t layoutFrom);
+    void BindFragmentShader(VkCommandBuffer cb, VkShaderEXT shader);
+    /** A captured shader object's create info, decoded into the arena (reset it once done); false with `error` when it cannot be. */
+    bool ShaderObjectInfo(uint64_t shaderId, VkShaderCreateInfoEXT& info, std::string& error);
+    /** A captured shader object made again, unlinked, with other code; null (and `error`) when it cannot be. */
+    VkShaderEXT ShaderObjectWithCode(uint64_t shaderId, const uint32_t* words, size_t count, std::string& error);
+    /** Whether a graphics stage is bound to a shader object anywhere in the group up to `endIndex`. */
+    bool PassUsesShaderObjects(const CommandGroup& group, uint32_t endIndex) const;
+    /** The overdraw and overlay counting edit of a shader-object draw, bound and set before it; false when it cannot be drawn. */
+    bool ReissueShaderObjectDraw(VkCommandBuffer cb, ReissueMode mode, bool depthTested, VkFormat depthFormat);
+    std::map<std::pair<ReplacementShader, uint64_t>, VkShaderEXT> _replacementShaders;
+    /** A graphics shader object the reissued commands bound, whose layouts a replacement fragment shader is made with. */
+    uint64_t _reissueLayoutShader = 0;
 
     // Draw-call overlays (overlay.cpp): one draw of a pass issued on its own into a mask.
     /** Whether one of `commands` is in the pass beginning at `beginIndex` (its secondaries included). */
@@ -971,6 +1042,8 @@ private:
     {
         uint64_t graphicsPipeline = 0;
         uint64_t computePipeline = 0;
+        /** Shader objects bound in place of a pipeline, by stage bit; a stage bound to none is left out. */
+        std::map<uint32_t, uint64_t> shaders;
         /** The commands that set the depth write enable and the stencil write mask, restored after an ablation changes them. */
         std::vector<uint32_t> depthWriteCommands;
         std::vector<uint32_t> stencilWriteCommands;
@@ -985,6 +1058,8 @@ private:
     void IssueAblation(VkCommandBuffer cb, uint32_t index, const std::string& method, const JValue& args, uint32_t frame, uint64_t commandBuffer,
         uint32_t passIndex, const StreamState& stream);
     VkPipeline AblationPipeline(uint64_t pipelineId, size_t target, int variant, bool compute);
+    /** A variant of a shader object's code, made as its own shader object; cached like the pipeline copies. */
+    VkShaderEXT AblationShader(uint64_t shaderId, size_t target, int variant);
     void CompleteAblation(bool submitted);
     void DestroyAblation();
 
@@ -1209,7 +1284,18 @@ private:
     std::unordered_map<uint64_t, VkExtent2D> _framebufferExtents;
     VkShaderModule _countModule = VK_NULL_HANDLE;
     VkShaderModule _backFaceModule = VK_NULL_HANDLE;
-    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode>, VkPipeline> _overdrawPipelines;
+    /** Copies by pipeline, depth tested, depth format, mode, and whether they draw in dynamic rendering. */
+    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool>, VkPipeline> _overdrawPipelines;
+    /** The pass being reissued is in dynamic rendering (it holds shader-object draws), so pipeline copies are made for it. */
+    bool _reissueRendering = false;
+    /** Shader objects are bound to the graphics stages in place of a pipeline. */
+    bool _reissueShaders = false;
+    /** The reissued vkCmdSet* commands, in order: set again before a shader-object draw once a pipeline copy has undone them. */
+    std::vector<uint32_t> _reissueSetCommands;
+    ShaderObjectSets _reissueSets;
+    bool _reissueStateStale = false;
+    /** The pipeline copy the reissued commands bound last, whose static state they must not set. */
+    VkPipeline _reissueCopy = VK_NULL_HANDLE;
     std::map<VkFormat, VkRenderPass> _overdrawRenderPasses;
     std::vector<TransientImage> _transientImages;
     std::vector<VkFramebuffer> _transientFramebuffers;
@@ -1293,6 +1379,7 @@ private:
     std::unordered_map<uint32_t, size_t> _ablationTargets;
     /** Copies by captured pipeline, target and variant (-1 the baseline), kept between frames. */
     std::map<std::tuple<uint64_t, size_t, int>, VkPipeline> _ablationPipelines;
+    std::map<std::tuple<uint64_t, size_t, int>, VkShaderEXT> _ablationShaders;
     /** Whether a captured pipeline sets its depth write enable and stencil write mask dynamically. */
     std::unordered_map<uint64_t, std::pair<bool, bool>> _ablationDynamic;
     /** The submission's ablations: the report's entry, and which pipeline of each round was issued. */
@@ -1336,6 +1423,8 @@ private:
     VkShaderModule _primitiveIdModule = VK_NULL_HANDLE;
     /** The geometryShader feature is enabled, without which gl_PrimitiveID cannot be read. */
     bool _primitiveIdAvailable = false;
+    /** It was enabled by the replay rather than the capture. */
+    bool _geometryShaderAdded = false;
 };
 
 } // namespace vkreplay

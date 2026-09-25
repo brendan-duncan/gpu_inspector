@@ -94,6 +94,7 @@ add_executable(vkinsp_replay
     src/hw_counters.cpp
     src/nvperf.cpp
     src/pipeline_copy.cpp
+    src/shader_objects.cpp
     src/source_writer.h
     src/source_writer.cpp
     src/exporter.h

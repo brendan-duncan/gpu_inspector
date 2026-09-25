@@ -4,7 +4,7 @@
 // a program key (src/renderer/shader_cache.ts).
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -19,12 +19,15 @@ buildSync({
       export { drawState, dynamicValue } from "./draw_state.ts";
       export { pipelineUses, programStages, shaderProgram } from "./shader_cache.ts";
       export { rasterStateOf } from "./shader_debug_setup.ts";
+      export { buildFrameCostTree } from "./frame_cost_tree.ts";
+      export { analyzeSpirv } from "./vulkan/spirv_analysis.ts";
     `,
     resolveDir: join(here, "..", "src", "renderer"), loader: "ts",
   },
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
 });
-const { CaptureData, drawState, dynamicValue, pipelineUses, programStages, shaderProgram, rasterStateOf } = await import(pathToFileURL(out).href);
+const { CaptureData, drawState, dynamicValue, pipelineUses, programStages, shaderProgram, rasterStateOf, buildFrameCostTree, analyzeSpirv } =
+  await import(pathToFileURL(out).href);
 
 const ref = (id, cls) => ({ __id: id, __class: cls });
 const shaderObject = (id, stage, name) => ({
@@ -107,4 +110,27 @@ test("dynamic state counts for shader objects, and for a pipeline only where it 
   assert.equal(dynamicValue(baked, "cullMode", "VK_CULL_MODE_NONE"), "VK_CULL_MODE_NONE");
   const declared = { ...baked, pipeline: { ...objects.get(10), descriptor: { ...objects.get(10).descriptor, pDynamicState: { pDynamicStates: ["VK_DYNAMIC_STATE_CULL_MODE"] } } } };
   assert.equal(dynamicValue(declared, "cullMode", "VK_CULL_MODE_NONE"), "VK_CULL_MODE_BACK_BIT");
+});
+
+test("a shader-object draw's stage in the flame graph names its program, so it can be measured by ablation", () => {
+  // vectors/ablation/heavy.frag.spv stands in for the fragment shader object's code.
+  const spirv = new Uint8Array(readFileSync(join(here, "vectors", "ablation", "heavy.frag.spv")));
+  const pass = new CaptureData();
+  pass.commands = [
+    ["vkCmdBeginRendering", { pRenderingInfo: { renderArea: { offset: { x: 0, y: 0 }, extent: { width: 64, height: 64 } }, layerCount: 1 } }],
+    ["vkCmdBindShadersEXT", { stageCount: 2, pStages: ["VK_SHADER_STAGE_VERTEX_BIT", "VK_SHADER_STAGE_FRAGMENT_BIT"], pShaders: [ref(20, "VkShaderEXT"), ref(21, "VkShaderEXT")] }],
+    ["vkCmdDraw", { vertexCount: 36, instanceCount: 1 }],
+    ["vkCmdEndRendering", {}],
+  ].map(([method, args], index) => ({ index, frame: 0, slot: index, method, object: cb, args: { commandBuffer: cb, ...args } }));
+  const [key] = [...pipelineUses(pass).keys()];
+  assert.ok(key < 0, "shader objects are keyed by program");
+  const models = new Map([[key, [{ stage: "fragment", entryPoint: "main", objectId: 21, analysis: analyzeSpirv(spirv), workgroupSize: null, spirv }]]]);
+  const tree = buildFrameCostTree({ data: pass, db, models, perDraw: true, estimateFragments: true });
+  const stages = [];
+  const walk = (n) => { if (n.kind === "stage") stages.push(n); n.children.forEach(walk); };
+  walk(tree.root);
+  assert.equal(stages.length, 1);
+  assert.equal(stages[0].pipelineId, key, "the key the measurement is asked for and kept under");
+  assert.equal(stages[0].objectId, 21);
+  assert.equal(stages[0].command.index, 2);
 });

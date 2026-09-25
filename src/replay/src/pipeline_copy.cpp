@@ -5,6 +5,7 @@
 #include "replayer.h"
 
 #include <algorithm>
+#include <cctype>
 #include <string>
 
 #include "util.h"
@@ -85,6 +86,51 @@ bool Replayer::PipelineDynamic(uint64_t pipelineId, std::string_view state) cons
             if (Str(&states->items[k]) == state)
                 return true;
     }
+    return false;
+}
+
+std::string Replayer::DynamicStateOf(std::string_view method)
+{
+    if (!StartsWith(method, "vkCmdSet"))
+        return "";
+    // The command's name in capitals, then the state that name has, with or without the vendor's
+    // suffix: a state promoted to core keeps the extension's command but not its suffix.
+    std::string_view name = method.substr(8);
+    for (std::string_view suffix : {"EXT", "KHR", "NV"})
+    {
+        if (name.size() > suffix.size() && name.substr(name.size() - suffix.size()) == suffix)
+        {
+            name.remove_suffix(suffix.size());
+            break;
+        }
+    }
+    std::string base = "VK_DYNAMIC_STATE_";
+    for (size_t i = 0; i < name.size(); ++i)
+    {
+        if (i && std::isupper((unsigned char)name[i]) && !std::isupper((unsigned char)name[i - 1]))
+            base += '_';
+        base += (char)std::toupper((unsigned char)name[i]);
+    }
+    for (const char* suffix : {"", "_EXT", "_KHR", "_NV"})
+    {
+        const std::string candidate = base + suffix;
+        for (size_t e = 0; e < kEnumCount_VkDynamicState; ++e)
+            if (candidate == kEnum_VkDynamicState[e].name)
+                return candidate;
+    }
+    return "";
+}
+
+bool Replayer::TakesDynamic(VkPipeline copy, uint64_t pipelineId, const std::string& state) const
+{
+    if (!copy)
+        return PipelineDynamic(pipelineId, state);
+    auto it = _copyDynamic.find(copy);
+    if (it == _copyDynamic.end())
+        return false;
+    for (VkDynamicState d : it->second)
+        if (EnumName(kEnum_VkDynamicState, kEnumCount_VkDynamicState, d) == state)
+            return true;
     return false;
 }
 
@@ -379,6 +425,7 @@ VkPipeline Replayer::CopyGraphicsPipeline(uint64_t pipelineId, const std::string
         else
         {
             Track("VkPipeline", (uint64_t)pipeline);
+            _copyDynamic[pipeline] = p.dynamic;
         }
     }
     for (VkShaderModule m : temporary)

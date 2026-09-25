@@ -129,6 +129,12 @@ bool Replayer::DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group,
         Barrier(cb, depth.image, full, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL);
     }
 
+    // Shader objects draw only in dynamic rendering; a pass without them keeps the render pass.
+    if (PassUsesShaderObjects(group, endIndex) && _fns.CmdBeginRendering)
+    {
+        Barrier(cb, count.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+        rp = VK_NULL_HANDLE;
+    }
     VkImageView views[2] = {count.view, depth.view};
     VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
     fbInfo.renderPass = rp;
@@ -138,16 +144,17 @@ bool Replayer::DrawOverlayVariant(VkCommandBuffer cb, const CommandGroup& group,
     fbInfo.height = pass.extent.height;
     fbInfo.layers = 1;
     VkFramebuffer fb = VK_NULL_HANDLE;
-    if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS)
+    if (rp && _fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS)
         return false;
-    _transientFramebuffers.push_back(fb);
+    if (fb)
+        _transientFramebuffers.push_back(fb);
 
     _overlayTarget = target;
     _overlayOnlyTarget = !depthTested;  // without the tests, the other draws change nothing
     _overlayTargetMode = mode;
     _overlayIssued = false;
     _overlayDrawn = false;
-    ReissuePass(cb, group, pass, endIndex, depthTested, depthFormat, rp, fb);
+    ReissuePass(cb, group, pass, endIndex, depthTested, depthFormat, rp, fb, count.view, depth.view);
     const bool drawn = _overlayIssued && _overlayDrawn;
     _overlayTarget = UINT32_MAX;
     _overlayOnlyTarget = false;

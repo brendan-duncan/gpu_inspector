@@ -741,7 +741,8 @@ bool WriteAblationData(const ReplayReport& report, const std::string& path)
     {
         const AblationResult& a = report.ablations[i];
         json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(a.command) + ",\"stage\":" + JsonString(a.stage) +
-            ",\"pipeline\":" + std::to_string(a.pipeline) + ",\"frame\":" + std::to_string(a.frame) + ",\"commandBuffer\":" +
+            ",\"pipeline\":" + std::to_string(a.pipeline) + (a.shaderObject ? ",\"shaderObject\":true" : "") +
+            ",\"frame\":" + std::to_string(a.frame) + ",\"commandBuffer\":" +
             std::to_string(a.commandBuffer) + ",\"passIndex\":" + std::to_string(a.passIndex) + ",\"rounds\":" + std::to_string(a.rounds) + ",\"repeat\":" + std::to_string(a.repeat) +
             ",\"baseline\":" + timing(a.baseline) + ",\"variants\":[";
         for (size_t v = 0; v < a.variants.size(); ++v)
@@ -764,7 +765,8 @@ void PrintAblations(const ReplayReport& report)
     std::printf("ablations: %zu\n", report.ablations.size());
     for (const AblationResult& a : report.ablations)
     {
-        std::printf("  [%u] %s stage, pipeline %llu: ", a.command, a.stage.c_str(), (unsigned long long)a.pipeline);
+        std::printf("  [%u] %s stage, %s %llu: ", a.command, a.stage.c_str(), a.shaderObject ? "shader object" : "pipeline",
+            (unsigned long long)a.pipeline);
         if (!a.baseline.measured)
         {
             std::printf("not measured: %s\n", a.note.c_str());

@@ -9,7 +9,7 @@ import { drawStatsSummary, parseDrawStats } from "../renderer/draw_stats.js";
 import { drawState, vertexLayout } from "../renderer/draw_state.js";
 import { buildFrameCostTree, type FlameNode, type StageModel } from "../renderer/frame_cost_tree.js";
 import { metalStages } from "../renderer/metal/reflection.js";
-import { pipelineStages, pipelineUses, programStages, shaderProgram } from "../renderer/shader_cache.js";
+import { pipelineStages, pipelineUses, programStages, shaderProgram, shaderProgramKey } from "../renderer/shader_cache.js";
 import { layoutText, parseLayout } from "../renderer/vulkan/buffer_layout.js";
 import { SEVERITY_RANK, analyzeSpirvCached, weighCost, type CostVec } from "../renderer/vulkan/spirv_analysis.js";
 import { describeDebugInfo, hasEmbeddedSource } from "../renderer/vulkan/spirv_debug.js";
@@ -907,7 +907,8 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
       name: "measure_shader_cost",
       description: "Measure what the functions and source lines of a Vulkan draw's (or dispatch's) shader cost, by ablation, where " +
         "analyze_shaders and the flame graph only model it. The capture is replayed on this machine's GPU with the draw issued " +
-        "again, right before it runs, with variants of one stage of its pipeline: each has one function or one source line " +
+        "again, right before it runs, with variants of one stage of its pipeline (or of the shader object bound for that stage): " +
+        "each has one function or one source line " +
         "made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. " +
         "Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the " +
         "stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work " +
@@ -957,17 +958,20 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const isDispatch = sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} is ${cmd.method}, not a draw or a dispatch.`);
         const state = drawState(c.data, c.db, cmd);
-        if (!state.pipeline && state.shaders.length) throw new Error(`Command ${command} runs shader objects (${state.shaders.map((o) => refText(c.db, o.id)).join(", ")}), and measuring a shader replays the draw with copies of its pipeline, which shader objects have none of. get_shader_flame_graph still weighs their stages by the cost model.`);
-        if (!state.pipeline) throw new Error(`No pipeline is bound at command ${command}.`);
-        const stages = models.get(state.pipeline.id) ?? [];
+        if (!state.pipeline && !state.shaders.length) throw new Error(`No pipeline or shader object is bound at command ${command}.`);
+        // The program the draw runs: its pipeline, or the shader objects bound in its place (the
+        // replay makes the measured stage's shader object again with each variant's code).
+        const program = state.pipeline ? state.pipeline.id : shaderProgramKey(c.data, state.shaders.map((o) => o.id));
+        const programName = state.pipeline ? refText(c.db, state.pipeline.id) : state.shaders.map((o) => refText(c.db, o.id)).join(" + ");
+        const stages = models.get(program) ?? [];
         const wanted = stage ?? (isDispatch ? "compute" : stages.some((s) => s.stage === "fragment") ? "fragment" : "vertex");
         const model = stages.find((s) => s.stage === wanted);
-        if (!model) throw new Error(`${refText(c.db, state.pipeline.id)} has no ${wanted} stage (it has ${stages.map((s) => s.stage).join(", ") || "none the capture holds"}).`);
+        if (!model) throw new Error(`${programName} has no ${wanted} stage (it has ${stages.map((s) => s.stage).join(", ") || "none the capture holds"}).`);
         const bytes = spirv.get(`${model.objectId}|${model.stage}`);
-        if (!bytes || !model.analysis) throw new Error(`The capture has no analyzable SPIR-V for the ${wanted} stage of ${refText(c.db, state.pipeline.id)}.`);
+        if (!bytes || !model.analysis) throw new Error(`The capture has no analyzable SPIR-V for the ${wanted} stage of ${programName}.`);
         const drawMs = c.data.drawStats?.find((d) => d.command === command && d.timed)?.ms ?? null;
         const measured = await measureStageByAblation((analysis) => replayServers.run(tool, c.path, analysis), {
-          command, pipeline: state.pipeline.id, stage: model.stage, entryPoint: model.entryPoint, spirv: bytes, drawMs,
+          command, pipeline: program, stage: model.stage, entryPoint: model.entryPoint, spirv: bytes, drawMs,
           rounds: intArg(args, "rounds", 5, 1, 32), functions: intArg(args, "functions", 16, 0, 64), lines: intArg(args, "lines", 32, 0, 128),
           textures: intArg(args, "textures", 16, 0, 64),
         });
@@ -997,7 +1001,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         const lineParts = measured.parts.filter((p) => p.kind === "line").sort(byMs("ownMs")).slice(0, top);
         const textureParts = measured.parts.filter((p) => p.kind === "texture").sort(byMs("savedMs")).slice(0, top);
         return jsonResult({
-          capture: c.id, command, method: cmd.method, pipeline: refText(c.db, state.pipeline.id), stage: model.stage, entryPoint: model.entryPoint,
+          capture: c.id, command, method: cmd.method, pipeline: state.pipeline ? programName : undefined, shaderObjects: state.pipeline ? undefined : programName, stage: model.stage, entryPoint: model.entryPoint,
           shader: refText(c.db, model.objectId), device: measured.device, rounds: measured.rounds, drawsPerTimedSpan: measured.repeat,
           meaning: ABLATION_MEANING,
           drawMs: round(measured.baselineMs), noiseMs: round(measured.noiseMs),

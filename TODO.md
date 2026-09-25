@@ -612,9 +612,26 @@ application with injected state. Route (a) is the general one and is the prerequ
       debugger, frame statistics and `get_command` all see them. The replay's VS Out issues such a
       draw in dynamic rendering with a feedback copy of its vertex shader object (triangle
       `--shader-object`).
-- [ ] Shader objects, the rest: the replay's overdraw, draw-call overlays, pixel history and
-      per-stage ablation (**Measure shader**, `measure_shader_cost`) copy pipelines, so draws with
-      shader objects are left out of them.
+- [x] Shader objects, the rest: the replay's overdraw, draw-call overlays, pixel history and
+      per-stage ablation (**Measure shader**, `measure_shader_cost`) measure draws with shader
+      objects (`src/replay/src/shader_objects.cpp`). The copy of such a draw is its own shader
+      objects with the fragment stage bound to one of the replay's (made with the draw's set layouts
+      and push constant ranges, which bound shader objects must share), and what a pipeline copy
+      bakes in set as dynamic state right before the draw (`ShaderObjectEdit`). A pass holding one
+      is reissued in dynamic rendering, with the pipeline copies beside it made for that; a
+      `vkCmdSet*` of state the bound pipeline holds statically is not issued, and the application's
+      dynamic state is set again before the next shader-object draw. Ablation makes the stage's
+      shader object again with each variant's code; the app keys the measurement by the program key.
+      Three fixes on the way: pixel history put the draw's own pipeline back after its fragment
+      round (the pipeline-only `--no-cull --occluded` pixel had 6 render pass errors), the replay
+      binds the geometry stage to none where it turned `geometryShader` on for the primitive id, and
+      ablation restores only the write state it set dynamically. `test/triangle --mixed` draws the
+      cube with shader objects and again with its pipeline in one pass. Checked with the validation
+      layer on `--shader-object`, `--shader-object --no-cull --occluded` and `--mixed --no-cull`:
+      no messages, the tested overdraw equal to each capture's measured fragment invocations (72,894
+      on `--mixed`), both faces' fragments in the pixel history, and `fbm` saving 99% of the
+      `--heavy` shader object's 0.086 ms. The old and new replay agree on five pipeline-only
+      triangles, the Unity frames and the XR frame.
 - [x] Push descriptors with templates in descriptor snapshots (`DescriptorTracker::FromTemplate`),
       replayed as plain pushes from the snapshot (`Replayer::IssueCommand`, triangle `--push-template`).
 - [x] Ray tracing pipelines: every stage's code (payloads named with their index in pStages), shader

@@ -32305,7 +32305,7 @@ function buildFrameCostTree(o) {
         n.objectId = s.model.objectId;
         n.stage = s.model.stage;
         n.entryPoint = s.model.entryPoint;
-        if (bucket.pipelineId > 0) n.pipelineId = bucket.pipelineId;
+        n.pipelineId = bucket.pipelineId;
         n.command = bucket.items[0].command;
         if (root2) {
           const tree = functionTree(root2, byId, s.invocations, /* @__PURE__ */ new Set(), 0);
@@ -33494,7 +33494,7 @@ function resourceTools(store) {
     },
     {
       name: "measure_shader_cost",
-      description: "Measure what the functions and source lines of a Vulkan draw's (or dispatch's) shader cost, by ablation, where analyze_shaders and the flame graph only model it. The capture is replayed on this machine's GPU with the draw issued again, right before it runs, with variants of one stage of its pipeline: each has one function or one source line made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work that only feeds it, so shares add up to more than the stage. The measurement is kept with the open capture, and get_shader_flame_graph then sizes that stage's functions and lines by it. Takes seconds; needs vkinsp_replay built.",
+      description: "Measure what the functions and source lines of a Vulkan draw's (or dispatch's) shader cost, by ablation, where analyze_shaders and the flame graph only model it. The capture is replayed on this machine's GPU with the draw issued again, right before it runs, with variants of one stage of its pipeline (or of the shader object bound for that stage): each has one function or one source line made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work that only feeds it, so shares add up to more than the stage. The measurement is kept with the open capture, and get_shader_flame_graph then sizes that stage's functions and lines by it. Takes seconds; needs vkinsp_replay built.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch (a command index). Default: the costliest stage of the frame in the flame graph." },
@@ -33538,18 +33538,19 @@ function resourceTools(store) {
         const isDispatch = sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} is ${cmd.method}, not a draw or a dispatch.`);
         const state = drawState(c2.data, c2.db, cmd);
-        if (!state.pipeline && state.shaders.length) throw new Error(`Command ${command} runs shader objects (${state.shaders.map((o) => refText(c2.db, o.id)).join(", ")}), and measuring a shader replays the draw with copies of its pipeline, which shader objects have none of. get_shader_flame_graph still weighs their stages by the cost model.`);
-        if (!state.pipeline) throw new Error(`No pipeline is bound at command ${command}.`);
-        const stages = models.get(state.pipeline.id) ?? [];
+        if (!state.pipeline && !state.shaders.length) throw new Error(`No pipeline or shader object is bound at command ${command}.`);
+        const program = state.pipeline ? state.pipeline.id : shaderProgramKey(c2.data, state.shaders.map((o) => o.id));
+        const programName = state.pipeline ? refText(c2.db, state.pipeline.id) : state.shaders.map((o) => refText(c2.db, o.id)).join(" + ");
+        const stages = models.get(program) ?? [];
         const wanted = stage ?? (isDispatch ? "compute" : stages.some((s) => s.stage === "fragment") ? "fragment" : "vertex");
         const model = stages.find((s) => s.stage === wanted);
-        if (!model) throw new Error(`${refText(c2.db, state.pipeline.id)} has no ${wanted} stage (it has ${stages.map((s) => s.stage).join(", ") || "none the capture holds"}).`);
+        if (!model) throw new Error(`${programName} has no ${wanted} stage (it has ${stages.map((s) => s.stage).join(", ") || "none the capture holds"}).`);
         const bytes = spirv.get(`${model.objectId}|${model.stage}`);
-        if (!bytes || !model.analysis) throw new Error(`The capture has no analyzable SPIR-V for the ${wanted} stage of ${refText(c2.db, state.pipeline.id)}.`);
+        if (!bytes || !model.analysis) throw new Error(`The capture has no analyzable SPIR-V for the ${wanted} stage of ${programName}.`);
         const drawMs = c2.data.drawStats?.find((d) => d.command === command && d.timed)?.ms ?? null;
         const measured = await measureStageByAblation((analysis) => replayServers.run(tool, c2.path, analysis), {
           command,
-          pipeline: state.pipeline.id,
+          pipeline: program,
           stage: model.stage,
           entryPoint: model.entryPoint,
           spirv: bytes,
@@ -33589,7 +33590,8 @@ function resourceTools(store) {
           capture: c2.id,
           command,
           method: cmd.method,
-          pipeline: refText(c2.db, state.pipeline.id),
+          pipeline: state.pipeline ? programName : void 0,
+          shaderObjects: state.pipeline ? void 0 : programName,
           stage: model.stage,
           entryPoint: model.entryPoint,
           shader: refText(c2.db, model.objectId),

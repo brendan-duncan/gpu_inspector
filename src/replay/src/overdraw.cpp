@@ -152,13 +152,22 @@ VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat)
 
 VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode)
 {
-    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode);
+    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode, _reissueRendering);
     auto it = _overdrawPipelines.find(key);
     if (it != _overdrawPipelines.end())
         return it->second;
     _overdrawPipelines[key] = VK_NULL_HANDLE;  // a copy that cannot be made is not tried again
     const bool hasDepth = depthFormat != VK_FORMAT_UNDEFINED;
     const JValue* object = _capture->Object(pipelineId);
+    // A pass that holds shader-object draws is reissued in dynamic rendering, with the same attachments.
+    const VkFormat countFormat = VK_FORMAT_R16_SFLOAT;
+    VkPipelineRenderingCreateInfo rendering{VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO};
+    rendering.colorAttachmentCount = 1;
+    rendering.pColorAttachmentFormats = &countFormat;
+    if (hasDepth && (vkinsp::FormatAspects(depthFormat) & VK_IMAGE_ASPECT_DEPTH_BIT))
+        rendering.depthAttachmentFormat = depthFormat;
+    if (hasDepth && (vkinsp::FormatAspects(depthFormat) & VK_IMAGE_ASPECT_STENCIL_BIT))
+        rendering.stencilAttachmentFormat = depthFormat;
     VkPipeline pipeline = CopyGraphicsPipeline(pipelineId, mode == ReissueMode::Count ? "overdraw" : mode == ReissueMode::Xfb ? "mesh"
                                                                                                                               : "overlay",
         [&](PipelineCopy& p) {
@@ -287,7 +296,16 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
                     VK_DYNAMIC_STATE_STENCIL_TEST_ENABLE, VK_DYNAMIC_STATE_STENCIL_OP, VK_DYNAMIC_STATE_DEPTH_BOUNDS_TEST_ENABLE});
             }
             p.info.pNext = StripPNext(p.info.pNext, {VK_STRUCTURE_TYPE_PIPELINE_RENDERING_CREATE_INFO});
-            p.info.renderPass = OverdrawRenderPass(hasDepth ? depthFormat : VK_FORMAT_UNDEFINED);
+            if (_reissueRendering)
+            {
+                rendering.pNext = p.info.pNext;
+                p.info.pNext = &rendering;
+                p.info.renderPass = VK_NULL_HANDLE;
+            }
+            else
+            {
+                p.info.renderPass = OverdrawRenderPass(hasDepth ? depthFormat : VK_FORMAT_UNDEFINED);
+            }
             p.info.subpass = 0;
             return true;
         });
@@ -341,8 +359,10 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         return;
     if (args && m == "vkCmdBindShadersEXT")
     {
-        // Shader objects in place of a pipeline. Only the mesh output draws with them, with its own
-        // copy of the vertex shader at the target draw; every other reissued draw is left out.
+        // Shader objects in place of a pipeline: bound as the application bound them, and each draw
+        // then binds its fragment stage to the counting shader and sets the state a pipeline copy
+        // would have changed (ReissueShaderObjectDraw). The mesh output binds its own copy of the
+        // vertex shader at the target draw instead.
         const JValue* stages = args->Get("pStages");
         const JValue* shaders = args->Get("pShaders");
         bool graphics = false;
@@ -353,6 +373,8 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
                 continue;
             graphics = true;
             const uint64_t id = shaders && shaders->IsArray() && k < shaders->count ? IdOf(&shaders->items[k]) : 0;
+            if (id)
+                _reissueLayoutShader = id;
             if (stage == "VK_SHADER_STAGE_VERTEX_BIT")
                 _overlayVertexShader = id;
             else if (stage.find("TESSELLATION") != std::string::npos || stage == "VK_SHADER_STAGE_GEOMETRY_BIT")
@@ -361,7 +383,17 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         if (graphics)
         {
             _overlayPipeline = 0;
-            _overdrawDrawable = false;
+            _reissueShaders = true;
+            _overdrawDrawable = _reissueRendering;
+        }
+        if (ReplayFn fn = FindReplayCommand(m); fn && _reissueRendering)
+        {
+            const size_t problems = _ctx.problems.size();
+            const size_t unresolved = _ctx.unresolved;
+            IssueCommand(fn, c, *args, cb);
+            _ctx.problems.resize(problems);
+            _ctx.unresolved = unresolved;
+            _arena.Reset();
         }
         return;
     }
@@ -378,6 +410,10 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     {
         if (Str(args->Get("pipelineBindPoint")) != "VK_PIPELINE_BIND_POINT_GRAPHICS")
             return;
+        // A pipeline unbinds the shader objects, and a copy's static state undoes dynamic state
+        // a later shader-object draw needs.
+        _reissueShaders = false;
+        _reissueStateStale = true;
         if (overlay)
         {
             // The draw the overlay is for gets its own copy when it comes; the rest draw depth only, or not at all.
@@ -388,6 +424,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
                 return;
             VkPipeline pipeline = OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, ReissueMode::DepthOnly);
             _overdrawDrawable = pipeline != VK_NULL_HANDLE;
+            _reissueCopy = pipeline;
             if (pipeline)
                 _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
             return;
@@ -396,6 +433,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         _overlayVertexShader = 0;
         _overlayShaderGeometry = false;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
+        _reissueCopy = pipeline;
         if (pipeline)
             _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         if (_options.trace)
@@ -433,10 +471,19 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         }
         _overlayDrawn = _overdrawDrawable;
     }
+    else if (target && !_overlayPipeline && _reissueShaders)
+    {
+        // Shader objects: bound and set for the overlay's mode like any other reissued draw, below.
+        _overdrawDrawable = _reissueRendering && _overlayTargetMode != ReissueMode::Xfb;
+        _overlayIssued = true;  // drawn or not, nothing after it matters
+        _overlayDrawnPipeline = _overlayVertexShader;
+        _overlayDrawn = _overdrawDrawable;
+    }
     else if (target)
     {
         VkPipeline pipeline = _overlayPipeline ? OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, _overlayTargetMode) : VK_NULL_HANDLE;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
+        _reissueCopy = pipeline;
         if (pipeline)
             _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
         _overlayIssued = true;  // drawn or not, nothing after it matters
@@ -454,10 +501,28 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     {
         return;
     }
+    // A shader-object draw is edited here, right before it: the overlay's other draws move only the
+    // depth and stencil, and the mesh output's target has bound its own shaders already.
+    if (draw && _overdrawDrawable && !_overlayPipeline && _reissueShaders && !feedback)
+    {
+        const ReissueMode mode = target ? _overlayTargetMode : overlay ? ReissueMode::DepthOnly : ReissueMode::Count;
+        _overdrawDrawable = ReissueShaderObjectDraw(cb, mode, depthTested, depthFormat);
+        if (target)
+            _overlayDrawn = _overdrawDrawable;
+    }
     if (draw && !_overdrawDrawable)
     {
         ++_overdrawSkippedDraws;
         return;
+    }
+    if (StartsWith(m, "vkCmdSet"))
+    {
+        _reissueSetCommands.push_back(index);
+        NoteShaderObjectSet(_reissueSets, m, *args);
+        // What the bound copy holds statically is not set; a later shader-object draw sets it again.
+        if (!_reissueShaders && _reissueCopy)
+            if (const std::string state = DynamicStateOf(m); !state.empty() && !TakesDynamic(_reissueCopy, 0, state))
+                return;
     }
     ReplayFn fn = FindReplayCommand(m);
     if (!fn)
@@ -487,9 +552,17 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
 }
 
 void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, bool depthTested,
-    VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color)
+    VkFormat depthFormat, VkRenderPass renderPass, VkFramebuffer framebuffer, VkImageView color, VkImageView depth)
 {
     const JValue* commands = _capture->Commands();
+    const bool dynamicRendering = !renderPass;
+    _reissueRendering = dynamicRendering;
+    _reissueShaders = false;
+    _reissueSetCommands.clear();
+    _reissueLayoutShader = 0;
+    _reissueCopy = VK_NULL_HANDLE;
+    _reissueSets = ShaderObjectSets{};
+    _reissueStateStale = false;
     // The state the pass inherited from the command buffer, then the pass's own commands.
     _overdrawDrawable = false;
     _overdrawDraws = 0;
@@ -502,7 +575,6 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
         if (!commands->items[i].Get("secondary"))
             ReissueCommand(cb, i, depthTested, depthFormat, false);
     VkClearValue clear{};
-    const bool dynamicRendering = !renderPass;
     if (dynamicRendering)
     {
         VkRenderingAttachmentInfo attachment{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -511,11 +583,20 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
         attachment.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
         attachment.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
         attachment.clearValue = clear;
+        // The depth the draws are tested against, loaded and stored as OverdrawRenderPass does.
+        VkRenderingAttachmentInfo depthStencil{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+        depthStencil.imageView = depth;
+        depthStencil.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+        depthStencil.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+        depthStencil.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+        const VkImageAspectFlags aspects = depth && depthFormat != VK_FORMAT_UNDEFINED ? vkinsp::FormatAspects(depthFormat) : 0;
         VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
         info.renderArea = {{0, 0}, pass.extent};
         info.layerCount = 1;
         info.colorAttachmentCount = 1;
         info.pColorAttachments = &attachment;
+        info.pDepthAttachment = (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) ? &depthStencil : nullptr;
+        info.pStencilAttachment = (aspects & VK_IMAGE_ASPECT_STENCIL_BIT) ? &depthStencil : nullptr;
         _fns.CmdBeginRendering(cb, &info);
     }
     else
@@ -541,6 +622,8 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
             {
                 const uint64_t id = IdOf(&list->items[s]);
                 _overdrawDrawable = false;  // a secondary starts without a pipeline
+                _reissueShaders = false;
+                _reissueCopy = VK_NULL_HANDLE;
                 _overlayPipeline = 0;
                 _overlayVertexShader = 0;
                 _overlayShaderGeometry = false;
@@ -604,6 +687,8 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
                 measured = (int64_t)counters->Get("fragmentInvocations")->Uint();
         }
     }
+    // Shader objects draw only in dynamic rendering; a pass without them keeps the render pass.
+    const bool shaderObjects = PassUsesShaderObjects(group, endIndex) && _fns.CmdBeginRendering;
     for (int mode = 0; mode < 2; ++mode)
     {
         const bool tested = mode == 0;
@@ -627,6 +712,12 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
             _report->overdraw.push_back(std::move(result));
             continue;
         }
+        if (shaderObjects)
+        {
+            // The count target is cleared by the pass's begin, from whatever it held.
+            Barrier(cb, count.image, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1}, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            rp = VK_NULL_HANDLE;
+        }
         VkImageView views[2] = {count.view, pass.overdrawDepth.view};
         VkFramebufferCreateInfo fbInfo{VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO};
         fbInfo.renderPass = rp;
@@ -636,15 +727,16 @@ void Replayer::RecordOverdraw(VkCommandBuffer cb, const CommandGroup& group, con
         fbInfo.height = pass.extent.height;
         fbInfo.layers = 1;
         VkFramebuffer fb = VK_NULL_HANDLE;
-        if (_fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS)
+        if (rp && _fns.CreateFramebuffer(_device, &fbInfo, nullptr, &fb) != VK_SUCCESS)
         {
             result.note = "the count target's framebuffer could not be created";
             _report->overdraw.push_back(std::move(result));
             continue;
         }
-        _transientFramebuffers.push_back(fb);
+        if (fb)
+            _transientFramebuffers.push_back(fb);
 
-        ReissuePass(cb, group, pass, endIndex, tested, depthFormat, rp, fb);
+        ReissuePass(cb, group, pass, endIndex, tested, depthFormat, rp, fb, count.view, depthFormat != VK_FORMAT_UNDEFINED ? pass.overdrawDepth.view : VK_NULL_HANDLE);
         result.draws = _overdrawDraws;
         result.skippedDraws = _overdrawSkippedDraws;
 

@@ -880,6 +880,11 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
 
     uint32_t subpass = 0;
     uint64_t pipeline = 0;
+    // Shader objects bound in place of a pipeline (pipeline is then 0), and the fragment one of them.
+    bool shaderObjects = false;
+    uint64_t fragmentShader = 0;
+    uint64_t layoutShader = 0;   // any of them: the replay's fragment shaders are made with its layouts
+    ShaderObjectSets sets;
     bool scissorSet = false;
     VkRect2D scissor{};
     std::vector<uint32_t> dynamicCommands;
@@ -948,16 +953,40 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         const JValue& c = commands->items[index];
         const std::string m = Str(c.Get("method"));
         const JValue* args = c.Get("args");
+        if (args && m == "vkCmdBindShadersEXT")
+        {
+            const JValue* stages = args->Get("pStages");
+            const JValue* shaders = args->Get("pShaders");
+            for (uint32_t k = 0; stages && k < stages->count; ++k)
+            {
+                const std::string stage = Str(&stages->items[k]);
+                if (stage == "VK_SHADER_STAGE_COMPUTE_BIT")
+                    continue;
+                shaderObjects = true;
+                pipeline = 0;
+                const uint64_t id = shaders && shaders->IsArray() && k < shaders->count ? IdOf(&shaders->items[k]) : 0;
+                if (id)
+                    layoutShader = id;
+                if (stage == "VK_SHADER_STAGE_FRAGMENT_BIT")
+                    fragmentShader = id;
+            }
+            issue(index);
+            return;
+        }
         if (!args || !IsStateCommand(m))
             return;
         if (m == "vkCmdBindPipeline")
         {
             if (Str(args->Get("pipelineBindPoint")) == "VK_PIPELINE_BIND_POINT_GRAPHICS")
+            {
                 pipeline = IdOf(args->Get("pipeline"));
+                shaderObjects = false;
+            }
         }
         else if (StartsWith(m, "vkCmdSet"))
         {
             dynamicCommands.push_back(index);
+            NoteShaderObjectSet(sets, m, *args);
             if (StartsWith(m, "vkCmdSetScissor"))
             {
                 if (const JValue* list = args->Get("pScissors"); list && list->IsArray() && list->count)
@@ -979,7 +1008,10 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
     };
     auto placeOf = [&](uint64_t pipelineId) {
         ScissorPlace place;
-        const ScissorInfo info = pipelineId ? PipelineScissor(pipelineId) : ScissorInfo{};
+        // Shader objects set their scissors dynamically, with a count.
+        ScissorInfo info = pipelineId ? PipelineScissor(pipelineId) : ScissorInfo{};
+        if (shaderObjects)
+            info.withCount = true;
         place.rect = scissorSet ? scissor : VkRect2D{{0, 0}, pass.extent};
         if (!info.dynamic && info.hasRect)
             place.rect = info.rect;
@@ -991,18 +1023,44 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         return place;
     };
 
+    // The dynamic state set so far, again, after a pipeline was bound: only what it takes dynamically
+    // (the copy's own list, or the captured pipeline's), since it may not set what the pipeline holds.
+    auto issueDynamic = [&](VkPipeline copy) {
+        for (uint32_t d : dynamicCommands)
+        {
+            const std::string state = DynamicStateOf(Str(commands->items[d].Get("method")));
+            if (state.empty() || TakesDynamic(copy, pipeline, state))
+                issue(d);
+        }
+    };
+    // A shader-object draw has no pipeline to copy: its fragment stage is bound to `fragment` and its
+    // dynamic state set again with the edit over it (shader_objects.cpp), then both put back.
+    auto editShaders = [&](VkShaderEXT fragment, const ShaderObjectEdit& edit) {
+        BindFragmentShader(cb, fragment);
+        for (uint32_t d : dynamicCommands)
+            issue(d);
+        ApplyShaderObjectEdit(cb, edit, sets);
+    };
+    auto restoreShaders = [&]() {
+        BindFragmentShader(cb, (VkShaderEXT)(uintptr_t)Handle(fragmentShader));
+        for (uint32_t d : dynamicCommands)
+            issue(d);
+    };
+
     // The draw once more into the primitive-id target, in a render pass of the replay's own, with
     // the depth and stencil this event starts from: what stays in the pixel is the primitive of the
     // fragment that won it. Runs before the event's own pass instance, which writes that depth.
     auto measurePrimitive = [&](uint32_t index, const ScissorPlace& place, PendingHistory::Entry& entry) {
-        if (!pipeline || !pending.idTarget.image || pending.nextId >= pending.idSlots)
+        if ((!pipeline && !shaderObjects) || !pending.idTarget.image || pending.nextId >= pending.idSlots)
             return;
         const VkFormat depthFormat = pending.idDepth >= 0 ? pass.formats[pending.idDepth] : VK_FORMAT_UNDEFINED;
-        VkRenderPass rp = HistoryIdRenderPass(depthFormat);
-        VkPipeline idPipeline = HistoryIdPipeline(pipeline, depthFormat);
-        if (!rp || !idPipeline)
+        // Shader objects draw in dynamic rendering, into the same images.
+        VkShaderEXT idShader = shaderObjects && _fns.CmdBeginRendering ? ReplacementFragment(ReplacementShader::PrimitiveId, layoutShader) : VK_NULL_HANDLE;
+        VkRenderPass rp = shaderObjects ? VK_NULL_HANDLE : HistoryIdRenderPass(depthFormat);
+        VkPipeline idPipeline = shaderObjects ? VK_NULL_HANDLE : HistoryIdPipeline(pipeline, depthFormat);
+        if (shaderObjects ? !idShader : !rp || !idPipeline)
             return;
-        if (!pending.idFramebuffer)
+        if (!shaderObjects && !pending.idFramebuffer)
         {
             std::vector<VkImageView> views{pending.idTarget.view};
             if (pending.idDepth >= 0)
@@ -1045,22 +1103,60 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         }
         // 0 for "no fragment of this draw wrote it": the shader writes the index plus one.
         VkClearValue clear{};
-        VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
-        begin.renderPass = rp;
-        begin.framebuffer = pending.idFramebuffer;
-        begin.renderArea = pixel;   // the clear and the rasterization are the one pixel
-        begin.clearValueCount = 1;
-        begin.pClearValues = &clear;
-        _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
-        _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, idPipeline);
-        for (uint32_t d : dynamicCommands)
-            issue(d);
-        if (place.withCount)
-            _fns.CmdSetScissorWithCount(cb, 1, &pixel);
+        if (shaderObjects)
+        {
+            // What HistoryIdRenderPass and HistoryIdPipeline make of a pipeline's draw.
+            VkRenderingAttachmentInfo color{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            color.imageView = pending.idTarget.view;
+            color.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+            color.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+            color.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            color.clearValue = clear;
+            VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+            depth.imageView = pending.idDepthCopy.view;
+            depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+            depth.loadOp = VK_ATTACHMENT_LOAD_OP_LOAD;
+            depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+            const VkImageAspectFlags aspects = depthFormat != VK_FORMAT_UNDEFINED ? vkinsp::FormatAspects(depthFormat) : 0;
+            VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
+            info.renderArea = pixel;   // the clear and the rasterization are the one pixel
+            info.layerCount = 1;
+            info.colorAttachmentCount = 1;
+            info.pColorAttachments = &color;
+            info.pDepthAttachment = (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) ? &depth : nullptr;
+            info.pStencilAttachment = (aspects & VK_IMAGE_ASPECT_STENCIL_BIT) ? &depth : nullptr;
+            _fns.CmdBeginRendering(cb, &info);
+            ShaderObjectEdit edit;
+            edit.colorAttachments = 1;
+            edit.writeMask = VK_COLOR_COMPONENT_R_BIT;
+            edit.singleSample = true;
+            edit.depthTest = edit.depthWrite = edit.stencilTest = edit.stencilWrite = depthFormat != VK_FORMAT_UNDEFINED;
+            edit.scissor = &pixel;
+            editShaders(idShader, edit);
+            issue(index);
+            _fns.CmdEndRendering(cb);
+            restoreShaders();
+        }
         else
-            _fns.CmdSetScissor(cb, 0, 1, &pixel);
-        issue(index);
-        _fns.CmdEndRenderPass(cb);
+        {
+            VkRenderPassBeginInfo begin{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+            begin.renderPass = rp;
+            begin.framebuffer = pending.idFramebuffer;
+            begin.renderArea = pixel;   // the clear and the rasterization are the one pixel
+            begin.clearValueCount = 1;
+            begin.pClearValues = &clear;
+            _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
+            _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, idPipeline);
+            issueDynamic(idPipeline);
+            if (place.withCount)
+                _fns.CmdSetScissorWithCount(cb, 1, &pixel);
+            else
+                _fns.CmdSetScissor(cb, 0, 1, &pixel);
+            issue(index);
+            _fns.CmdEndRenderPass(cb);
+            _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)Handle(pipeline));
+            issueDynamic(VK_NULL_HANDLE);
+        }
         const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
         Barrier(cb, pending.idTarget.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
         VkBufferImageCopy c{};
@@ -1080,11 +1176,78 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         entry.idSlot = (int32_t)slot;
     };
 
+    // measureFragments for a shader-object draw: the same two runs per fragment, in dynamic
+    // rendering, with the state HistoryFragmentPipeline bakes into a pipeline's copy set instead.
+    auto measureShaderFragments = [&](uint32_t index, uint64_t count, size_t eventIndex) {
+        const VkShaderEXT idShader = pending.idTarget.image ? ReplacementFragment(ReplacementShader::PrimitiveId, layoutShader) : VK_NULL_HANDLE;
+        if (!_fns.CmdBeginRendering)
+            return;
+        const VkRect2D pixel{{(int32_t)_options.history.x, (int32_t)_options.history.y}, {1, 1}};
+        const VkImageSubresourceRange color{VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
+        const VkImageAspectFlags aspects = vkinsp::FormatAspects(HistoryFragmentDepthFormat());
+        ShaderObjectEdit edit;
+        edit.colorAttachments = 1;
+        edit.writeMask = VK_COLOR_COMPONENT_R_BIT | VK_COLOR_COMPONENT_G_BIT | VK_COLOR_COMPONENT_B_BIT | VK_COLOR_COMPONENT_A_BIT;
+        edit.singleSample = true;
+        edit.depthTest = edit.depthWrite = false;
+        edit.stencilCounter = true;
+        edit.scissor = &pixel;
+        for (uint64_t f = 0; f < count && pending.nextFrag < pending.fragSlots; ++f)
+        {
+            const uint32_t slot = pending.nextFrag++;
+            for (int run = 0; run < 2; ++run)
+            {
+                if (run == 1 && !idShader)
+                    continue;
+                const TransientImage& target = run == 0 ? pending.fragColor : pending.idTarget;
+                VkRenderingAttachmentInfo out{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+                out.imageView = target.view;
+                out.imageLayout = VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL;
+                out.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                out.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
+                VkRenderingAttachmentInfo counter{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
+                counter.imageView = pending.fragDepth.view;
+                counter.imageLayout = VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL;
+                counter.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
+                counter.storeOp = VK_ATTACHMENT_STORE_OP_DONT_CARE;
+                counter.clearValue.depthStencil = {1.0f, 0};
+                VkRenderingInfo info{VK_STRUCTURE_TYPE_RENDERING_INFO};
+                info.renderArea = pixel;   // the clears and the rasterization are the one pixel
+                info.layerCount = 1;
+                info.colorAttachmentCount = 1;
+                info.pColorAttachments = &out;
+                info.pDepthAttachment = (aspects & VK_IMAGE_ASPECT_DEPTH_BIT) ? &counter : nullptr;
+                info.pStencilAttachment = (aspects & VK_IMAGE_ASPECT_STENCIL_BIT) ? &counter : nullptr;
+                _fns.CmdBeginRendering(cb, &info);
+                // The draw's own fragment shader for the value, the primitive-id one for the primitive.
+                editShaders(run == 0 ? (VkShaderEXT)(uintptr_t)Handle(fragmentShader) : idShader, edit);
+                _fns.CmdSetStencilReference(cb, VK_STENCIL_FACE_FRONT_AND_BACK, (uint32_t)f);
+                issue(index);
+                _fns.CmdEndRendering(cb);
+                Barrier(cb, target.image, color, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL);
+                VkBufferImageCopy c{};
+                c.bufferOffset = run == 0 ? (VkDeviceSize)slot * pending.targetTexel : (VkDeviceSize)slot * 4;
+                c.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+                c.imageOffset = {pixel.offset.x, pixel.offset.y, 0};
+                c.imageExtent = {1, 1, 1};
+                _fns.CmdCopyImageToBuffer(cb, target.image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                    run == 0 ? pending.fragValues.buffer : pending.fragIds.buffer, 1, &c);
+                Barrier(cb, target.image, color, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL);
+            }
+            PendingHistory::FragmentEntry fe;
+            fe.event = eventIndex;
+            fe.index = (uint32_t)f;
+            fe.slot = slot;
+            pending.fragmentEntries.push_back(fe);
+        }
+        restoreShaders();
+    };
+
     // The draw once per fragment, into the images of the fragment round: the stencil counts its
     // fragments and lets through the one whose index is the reference, so each run says what one
     // fragment computed and which primitive it came from.
     auto measureFragments = [&](uint32_t index, const ScissorPlace& place, size_t eventIndex) {
-        if (!pipeline || !pending.fragColor.image || !pending.fragDepth.image)
+        if ((!pipeline && !shaderObjects) || !pending.fragColor.image || !pending.fragDepth.image)
             return;
         PixelEvent& e = out.events[eventIndex];
         // The fragments the draw rasterized: `facing` is `covered` with its own culling applied,
@@ -1094,6 +1257,8 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         const uint64_t count = std::min<uint64_t>(rasterized, kMaxHistoryFragments);
         if (count < 2)
             return;
+        if (shaderObjects)
+            return measureShaderFragments(index, count, eventIndex);
         VkRenderPass valuePass = HistoryFragmentRenderPass(pending.fragFormat);
         VkPipeline valuePipeline = HistoryFragmentPipeline(pipeline, pending.fragFormat, false);
         if (!valuePass || !valuePipeline)
@@ -1147,8 +1312,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 begin.pClearValues = clears;
                 _fns.CmdBeginRenderPass(cb, &begin, VK_SUBPASS_CONTENTS_INLINE);
                 _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copy);
-                for (uint32_t d : dynamicCommands)
-                    issue(d);
+                issueDynamic(copy);
                 if (place.withCount)
                     _fns.CmdSetScissorWithCount(cb, 1, &pixel);
                 else
@@ -1172,6 +1336,9 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
             fe.slot = slot;
             pending.fragmentEntries.push_back(fe);
         }
+        // The draw's own pipeline again, for the draw itself.
+        _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)Handle(pipeline));
+        issueDynamic(VK_NULL_HANDLE);
     };
 
     auto event = [&](uint32_t index) {
@@ -1217,7 +1384,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         if (draw)
         {
             e.pipeline = pipeline;
-            e.earlyTests = pipeline && HistoryEarlyFragmentTests(pipeline);
+            e.earlyTests = shaderObjects ? HistoryEarlyFragmentTests(fragmentShader) : pipeline && HistoryEarlyFragmentTests(pipeline);
             e.scissored = !place.inside;
             if (place.inside)
                 measurePrimitive(index, place, entry);
@@ -1225,7 +1392,36 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
         beginPass();
         if (draw)
         {
-            if (place.inside && pipeline && pending.queries && pending.nextQuery + kVariantCount <= pending.queryCount)
+            if (place.inside && shaderObjects && pending.queries && pending.nextQuery + kVariantCount <= pending.queryCount)
+            {
+                // What HistoryPipeline makes of a pipeline's draw, variant for variant.
+                entry.queryBase = (int32_t)pending.nextQuery;
+                pending.nextQuery += kVariantCount;
+                const VkRect2D pixel{{(int32_t)_options.history.x, (int32_t)_options.history.y}, {1, 1}};
+                const VkShaderEXT own = (VkShaderEXT)(uintptr_t)Handle(fragmentShader);
+                for (int v = 0; v < kVariantCount; ++v)
+                {
+                    const bool counting = v == kCovered || v == kFacing;
+                    const VkShaderEXT fragment = counting ? ReplacementFragment(ReplacementShader::Count, layoutShader) : own;
+                    if (counting && !fragment)
+                        continue;
+                    ShaderObjectEdit edit;
+                    edit.colorAttachments = (uint32_t)pass.dynamicColorSlots.size();
+                    edit.writeMask = 0;
+                    edit.depthWrite = edit.stencilWrite = false;
+                    edit.depthTest = v == kDepthOnly || v == kAllTests || (e.earlyTests && v == kShaded);
+                    edit.stencilTest = v == kStencilOnly || v == kAllTests || (e.earlyTests && v == kShaded);
+                    edit.cullNone = v == kCovered;
+                    edit.scissor = &pixel;
+                    editShaders(fragment, edit);
+                    _fns.CmdBeginQuery(cb, pending.queries, (uint32_t)entry.queryBase + v, 0);
+                    issue(index);
+                    _fns.CmdEndQuery(cb, pending.queries, (uint32_t)entry.queryBase + v);
+                    entry.issued |= 1u << v;
+                }
+                restoreShaders();
+            }
+            else if (place.inside && pipeline && pending.queries && pending.nextQuery + kVariantCount <= pending.queryCount)
             {
                 entry.queryBase = (int32_t)pending.nextQuery;
                 pending.nextQuery += kVariantCount;
@@ -1237,8 +1433,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                         continue;
                     // Binding a pipeline with a state static undoes that state's dynamic value: set again.
                     _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, copy);
-                    for (uint32_t d : dynamicCommands)
-                        issue(d);
+                    issueDynamic(copy);
                     if (place.withCount)
                         _fns.CmdSetScissorWithCount(cb, 1, &pixel);
                     else
@@ -1250,8 +1445,7 @@ void Replayer::RecordHistory(VkCommandBuffer cb, const CommandGroup& group, Pass
                 }
                 // The draw's own pipeline and dynamic state again.
                 _fns.CmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, (VkPipeline)(uintptr_t)Handle(pipeline));
-                for (uint32_t d : dynamicCommands)
-                    issue(d);
+                issueDynamic(VK_NULL_HANDLE);
             }
         }
         issue(index);

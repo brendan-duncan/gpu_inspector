@@ -28,6 +28,10 @@ namespace vkreplay
 // draw itself. Then the draw's own pipeline and the dynamic write state it had are put back, and the
 // draw runs as captured.
 //
+// A draw or a dispatch bound with shader objects has no pipeline to copy: the stage's shader object is
+// made again with each variant's code and bound in its place (the baseline is the draw's own), and the
+// depth and stencil writes, which are dynamic state for every such draw, are turned off the same way.
+//
 // A time is not what the draw costs alone (the GPU pipelines work, so a timestamp also sees what came
 // just before), but that is the same for every pipeline of a round, which is why the baseline is
 // issued in each round and a variant's cost is the difference of medians.
@@ -53,6 +57,25 @@ VkShaderStageFlagBits StageBit(const std::string& stage)
     return VkShaderStageFlagBits(0);
 }
 
+/** The stage bit a VkShaderStageFlagBits name means ("VK_SHADER_STAGE_VERTEX_BIT"). */
+uint32_t StageBitOfName(const std::string& name)
+{
+    static const std::pair<const char*, uint32_t> kStages[] = {
+        {"VK_SHADER_STAGE_VERTEX_BIT", VK_SHADER_STAGE_VERTEX_BIT},
+        {"VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT", VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT},
+        {"VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT", VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT},
+        {"VK_SHADER_STAGE_GEOMETRY_BIT", VK_SHADER_STAGE_GEOMETRY_BIT},
+        {"VK_SHADER_STAGE_FRAGMENT_BIT", VK_SHADER_STAGE_FRAGMENT_BIT},
+        {"VK_SHADER_STAGE_COMPUTE_BIT", VK_SHADER_STAGE_COMPUTE_BIT},
+        {"VK_SHADER_STAGE_TASK_BIT_EXT", VK_SHADER_STAGE_TASK_BIT_EXT},
+        {"VK_SHADER_STAGE_MESH_BIT_EXT", VK_SHADER_STAGE_MESH_BIT_EXT},
+    };
+    for (const auto& [n, bit] : kStages)
+        if (name == n)
+            return bit;
+    return 0;
+}
+
 double Median(std::vector<double> v)
 {
     if (v.empty())
@@ -67,11 +90,40 @@ void Replayer::NoteStreamCommand(StreamState& stream, const std::string& method,
 {
     if (method == "vkCmdBindPipeline")
     {
+        // A pipeline unbinds the shader objects of its bind point's stages.
         const std::string point = Str(args.Get("pipelineBindPoint"));
         if (point == "VK_PIPELINE_BIND_POINT_GRAPHICS")
+        {
             stream.graphicsPipeline = IdOf(args.Get("pipeline"));
+            for (auto it = stream.shaders.begin(); it != stream.shaders.end();)
+                it = it->first != VK_SHADER_STAGE_COMPUTE_BIT ? stream.shaders.erase(it) : std::next(it);
+        }
         else if (point == "VK_PIPELINE_BIND_POINT_COMPUTE")
+        {
             stream.computePipeline = IdOf(args.Get("pipeline"));
+            stream.shaders.erase(VK_SHADER_STAGE_COMPUTE_BIT);
+        }
+    }
+    else if (method == "vkCmdBindShadersEXT")
+    {
+        // And shader objects the pipeline of theirs.
+        const JValue* stages = args.Get("pStages");
+        const JValue* shaders = args.Get("pShaders");
+        for (uint32_t k = 0; stages && k < stages->count; ++k)
+        {
+            const uint32_t bit = StageBitOfName(Str(&stages->items[k]));
+            const uint64_t id = shaders && shaders->IsArray() && k < shaders->count ? IdOf(&shaders->items[k]) : 0;
+            if (!bit)
+                continue;
+            if (bit == VK_SHADER_STAGE_COMPUTE_BIT)
+                stream.computePipeline = 0;
+            else
+                stream.graphicsPipeline = 0;
+            if (id)
+                stream.shaders[bit] = id;
+            else
+                stream.shaders.erase(bit);
+        }
     }
     else if (method == "vkCmdSetDepthWriteEnable" || method == "vkCmdSetDepthWriteEnableEXT")
     {
@@ -219,6 +271,19 @@ VkPipeline Replayer::AblationPipeline(uint64_t pipelineId, size_t target, int va
     return pipeline;
 }
 
+VkShaderEXT Replayer::AblationShader(uint64_t shaderId, size_t target, int variant)
+{
+    const auto key = std::make_tuple(shaderId, target, variant);
+    if (auto it = _ablationShaders.find(key); it != _ablationShaders.end())
+        return it->second;
+    _ablationShaders[key] = VK_NULL_HANDLE;   // a variant that cannot be made is not tried again
+    const auto& words = _options.ablation.targets[target].variants[(size_t)variant].words;
+    std::string error;
+    VkShaderEXT shader = words.empty() ? VK_NULL_HANDLE : ShaderObjectWithCode(shaderId, words.data(), words.size(), error);
+    _ablationShaders[key] = shader;
+    return shader;
+}
+
 void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::string& method, const JValue& args, uint32_t frame,
     uint64_t commandBuffer, uint32_t passIndex, const StreamState& stream)
 {
@@ -240,6 +305,12 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
         result.variants.push_back({v.name});
     const bool compute = StartsWith(method, "vkCmdDispatch");
     result.pipeline = compute ? stream.computePipeline : stream.graphicsPipeline;
+    // Without a pipeline, the stage's shader object, which is what the variants stand in for.
+    const VkShaderStageFlagBits stageBit = StageBit(target.stage);
+    uint64_t shaderObject = 0;
+    if (!result.pipeline)
+        if (auto it = stream.shaders.find(stageBit); it != stream.shaders.end())
+            shaderObject = it->second;
     auto fail = [&](std::string why) {
         result.note = std::move(why);
         _report->ablations.push_back(std::move(result));
@@ -248,35 +319,65 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
         return fail("the replay's queue writes no timestamps");
     if (!StartsWith(method, "vkCmdDraw") && !compute)
         return fail(method + " is not a draw or a dispatch");
-    if (!result.pipeline)
-        return fail("no pipeline is bound at the command");
     if (!StageBit(target.stage))
         return fail("the " + target.stage + " stage cannot be measured");
+    if (!result.pipeline && !shaderObject)
+        return fail(stream.shaders.empty() ? "no pipeline is bound at the command" : "no shader object is bound to the " + target.stage + " stage at the command");
     if (!compute && _passViews > 1)
         return fail("draws in multiview passes are not measured yet (each timestamp takes one query per view)");
-
-    // Pipelines: [0] the baseline, then one per variant.
+    // What each issue binds: [0] the baseline, then one per variant. A copy of the pipeline, or the
+    // stage's shader object made with the variant's code (the baseline is the draw's own).
     const size_t count = target.variants.size() + 1;
     std::vector<VkPipeline> pipelines(count, VK_NULL_HANDLE);
-    pipelines[0] = AblationPipeline(result.pipeline, t, -1, compute);
-    if (!pipelines[0])
-        return fail("the pipeline could not be copied (the capture has no code for its " + target.stage + " stage, or the copy was refused)");
-    for (size_t v = 1; v < count; ++v)
-    {
-        pipelines[v] = AblationPipeline(result.pipeline, t, (int)v - 1, compute);
-        if (!pipelines[v])
-            result.variants[v - 1].note = "the variant's pipeline could not be created";
-    }
+    std::vector<VkShaderEXT> shaders(count, VK_NULL_HANDLE);
     const VkPipelineBindPoint point = compute ? VK_PIPELINE_BIND_POINT_COMPUTE : VK_PIPELINE_BIND_POINT_GRAPHICS;
-    const auto dynamic = _ablationDynamic.count(result.pipeline) ? _ablationDynamic[result.pipeline] : std::make_pair(false, false);
-    if (!compute && dynamic.first)
+    bool depthDynamic = false;
+    bool stencilDynamic = false;
+    if (shaderObject)
+    {
+        result.pipeline = shaderObject;
+        result.shaderObject = true;
+        shaders[0] = (VkShaderEXT)(uintptr_t)Handle(shaderObject);
+        if (!shaders[0] || !_fns.CmdBindShadersEXT)
+            return fail("the " + target.stage + " stage's shader object was not made by the replay");
+        for (size_t v = 1; v < count; ++v)
+        {
+            shaders[v] = AblationShader(shaderObject, t, (int)v - 1);
+            if (!shaders[v])
+                result.variants[v - 1].note = "the variant's shader object could not be created";
+        }
+        // Every piece of a shader-object draw's state is dynamic.
+        depthDynamic = stencilDynamic = !compute;
+    }
+    else
+    {
+        pipelines[0] = AblationPipeline(result.pipeline, t, -1, compute);
+        if (!pipelines[0])
+            return fail("the pipeline could not be copied (the capture has no code for its " + target.stage + " stage, or the copy was refused)");
+        for (size_t v = 1; v < count; ++v)
+        {
+            pipelines[v] = AblationPipeline(result.pipeline, t, (int)v - 1, compute);
+            if (!pipelines[v])
+                result.variants[v - 1].note = "the variant's pipeline could not be created";
+        }
+        const auto dynamic = _ablationDynamic.count(result.pipeline) ? _ablationDynamic[result.pipeline] : std::make_pair(false, false);
+        depthDynamic = !compute && dynamic.first;
+        stencilDynamic = !compute && dynamic.second;
+    }
+    const auto bind = [&](size_t v) {
+        if (shaderObject)
+            _fns.CmdBindShadersEXT(cb, 1, &stageBit, &shaders[v]);
+        else
+            _fns.CmdBindPipeline(cb, point, pipelines[v]);
+    };
+    if (depthDynamic)
     {
         if (_fns.CmdSetDepthWriteEnable)
             _fns.CmdSetDepthWriteEnable(cb, VK_FALSE);
         else if (_fns.CmdSetDepthWriteEnableEXT)
             _fns.CmdSetDepthWriteEnableEXT(cb, VK_FALSE);
     }
-    if (!compute && dynamic.second)
+    if (stencilDynamic)
         _fns.CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
 
     ReplayFn fn = FindReplayCommand(method);
@@ -292,10 +393,10 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
         for (size_t k = 0; k < count; ++k)
         {
             const size_t v = (k + r) % count;
-            if (!pipelines[v])
+            if (!pipelines[v] && !shaders[v])
                 continue;
             const uint32_t query = pending.base + (uint32_t)((r * count + v) * 2);
-            _fns.CmdBindPipeline(cb, point, pipelines[v]);
+            bind(v);
             // Once untimed: what a driver does at the first draw after a bind stays out of the span.
             fn(_ctx, args, cb);
             _arena.Reset();
@@ -312,10 +413,17 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
     _ctx.problems.resize(problems);
     _ctx.unresolved = unresolved;
 
-    // The command buffer's own state again: its pipeline, and the write state it set.
-    _fns.CmdBindPipeline(cb, point, (VkPipeline)Handle(result.pipeline));
+    // The command buffer's own state again: its pipeline or shader object, and the write state it set.
+    if (shaderObject)
+        bind(0);
+    else
+        _fns.CmdBindPipeline(cb, point, (VkPipeline)Handle(result.pipeline));
+    // Only what the issues set dynamically: a state the pipeline holds statically must not be set
+    // after it is bound, and the application's last setting of it was for an earlier pipeline.
     for (const std::vector<uint32_t>* list : {&stream.depthWriteCommands, &stream.stencilWriteCommands})
     {
+        if (list == &stream.depthWriteCommands ? !depthDynamic : !stencilDynamic)
+            continue;
         for (uint32_t i : *list)
         {
             const JValue& c = _capture->Commands()->items[i];

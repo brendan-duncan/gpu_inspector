@@ -393,6 +393,9 @@ bool Replayer::CreateDevice()
         // is SPIR-V's Geometry capability, which needs this feature even with no geometry stage.
         if (wantPrimitiveId && supported.geometryShader)
         {
+            // With the feature on, a shader-object draw must have its geometry stage bound, which an
+            // application that left the feature off never does (IssueCommand binds it to none).
+            _geometryShaderAdded = !ours->geometryShader;
             ours->geometryShader = VK_TRUE;
             _primitiveIdAvailable = true;
         }
@@ -491,6 +494,7 @@ bool Replayer::CreateDevice()
         // Nothing that needed a feature can be used now.
         _drawCountersAvailable = _drawSamplesAvailable = _wireframeAvailable = _xfbAvailable = false;
         _nvperfReady = _perfQueryAvailable = false;
+        _primitiveIdAvailable = _geometryShaderAdded = false;
         r = _fns.CreateDevice(_physical, &info, nullptr, &_device);
     }
     if (r != VK_SUCCESS)
@@ -3111,6 +3115,19 @@ void Replayer::IssueCommand(ReplayFn fn, const JValue& command, const JValue& ar
     if (!StartsWith(m, "vkCmdPushDescriptorSetWithTemplate"))
     {
         fn(_ctx, args, cb);
+        // The geometryShader feature the replay turned on: shader objects bound for drawing must
+        // bind that stage too, and the application's binds never name it.
+        if (_geometryShaderAdded && m == "vkCmdBindShadersEXT")
+        {
+            const JValue* stages = args.Get("pStages");
+            bool graphics = false;
+            for (uint32_t k = 0; stages && k < stages->count; ++k)
+                graphics = graphics || Str(&stages->items[k]) != "VK_SHADER_STAGE_COMPUTE_BIT";
+            const VkShaderStageFlagBits geometry = VK_SHADER_STAGE_GEOMETRY_BIT;
+            const VkShaderEXT none = VK_NULL_HANDLE;
+            if (graphics)
+                _fns.CmdBindShadersEXT(cb, 1, &geometry, &none);
+        }
         if (exporter)
         {
             exporter->Command(index, m, args, _exportCtx);

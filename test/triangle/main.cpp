@@ -213,6 +213,9 @@ struct App
     // (VK_EXT_shader_object) and every piece of state set dynamically, instead of its pipeline.
     bool shaderObject = false;
     VkShaderEXT shaders[2]{};
+    // --mixed: --shader-object, and the cube drawn a second time where it already is (as --occluded)
+    // with its pipeline, made for dynamic rendering: one pass holding both kinds of draw.
+    bool mixed = false;
     // --suspend: the cube's pass is dynamic rendering split across two command buffers, suspended
     // at the end of the frame's buffer and resumed in a second one submitted right after it
     // (VK_RENDERING_SUSPENDING_BIT / VK_RENDERING_RESUMING_BIT). Nothing may be recorded between
@@ -2085,7 +2088,7 @@ struct App
         dynamicTargets.colorAttachmentCount = 1;
         dynamicTargets.pColorAttachmentFormats = &colorFormat;
         dynamicTargets.depthAttachmentFormat = depthFormat;
-        if (suspend)
+        if (suspend || mixed)
         {
             gpci.pNext = &dynamicTargets;
             gpci.renderPass = VK_NULL_HANDLE;
@@ -2593,7 +2596,14 @@ struct App
         float tint = 0.5f + 0.5f * sinf(t);
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
         vkCmdDrawIndexed(cb, insideOut ? 18 : 36, 1, 0, 0, 0);
-        if (occluded)
+        if (mixed)
+        {
+            // The pipeline in place of the shader objects: the bindings and push constants carry over.
+            vkCmdBindPipeline(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            vkCmdSetViewport(cb, 0, 1, &viewport);
+            vkCmdSetScissor(cb, 0, 1, &scissor);
+        }
+        if (occluded || mixed)
             vkCmdDrawIndexed(cb, 36, 1, 0, 0, 0);
     }
 
@@ -2957,6 +2967,8 @@ int RunApp(int argc, char** argv)
             app.pipelineLibrary = true;
         else if (!strcmp(argv[i], "--shader-object"))
             app.shaderObject = true;
+        else if (!strcmp(argv[i], "--mixed"))
+            app.shaderObject = app.mixed = true;
         else if (!strcmp(argv[i], "--suspend"))
             app.suspend = true;
         else if (!strcmp(argv[i], "--stencil"))

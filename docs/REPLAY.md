@@ -232,6 +232,31 @@ it in the library holding that part (`PipelineState`, `PipelineDynamic`). Checke
 test/triangle `--pipeline-library` with the validation layer: overdraw, a draw overlay, VS Out,
 pixel history and ablation, no messages.
 
+A draw bound with shader objects (`VK_EXT_shader_object`) has no pipeline to copy
+(`shader_objects.cpp`):
+
+- **The copy** is the draw's own shader objects with the fragment stage bound to one of the
+  replay's shaders. That shader is made with the draw's descriptor set layouts and push constant
+  ranges, since every shader object bound together must share them.
+- **What a pipeline copy bakes in** is set as dynamic state right before the draw, over what the
+  application set: blending, color writes, one sample, the tests, culling, the polygon mode, and a
+  scissor for every viewport.
+- **Dynamic rendering.** Shader objects draw only in dynamic rendering, so a pass of the replay's
+  own that holds one begins with `vkCmdBeginRendering`. The pipeline copies drawn beside it are made
+  for dynamic rendering too.
+- **Mixed passes.** A pipeline copy holds statically some state the application left dynamic. So
+  the application's dynamic state is set again before the next shader-object draw, and a
+  `vkCmdSet*` for a state the bound pipeline holds statically is not issued.
+- **The geometry stage.** Pixel history turns on the `geometryShader` feature for `gl_PrimitiveID`.
+  With it on, a shader-object draw must bind the geometry stage, so the replay binds it to none
+  after each of the application's binds.
+
+Pixel history does the same for its six variants, the primitive-id pass and the per-fragment runs.
+Checked on test/triangle `--shader-object` and `--mixed` (a shader-object draw and a pipeline draw
+in one pass) with the validation layer: overdraw, draw overlays, VS Out, pixel history and
+ablation, no messages. The tested overdraw count matches the fragment shader invocations each
+capture measured.
+
 ## Draw-call overlays
 
 `--overlay <command>` shows where one draw landed, the way RenderDoc's texture viewer overlays do
@@ -313,8 +338,6 @@ Limits:
 - In a multiview pass the draw runs in a single-view pass, so a shader that reads `gl_ViewIndex`
   gives the first view's vertices.
 - A GPU without `VK_EXT_transform_feedback` (most mobile GPUs, MoltenVK) cannot capture VS Out.
-- Overdraw, draw-call overlays, pixel history and ablation copy pipelines, so they leave draws with
-  shader objects out.
 
 ## Pixel history
 
@@ -462,14 +485,15 @@ each target draw, inside its pass and command buffer, it issues the draw again w
 variant:
 
 - Each variant runs in a copy of the pipeline that writes no depth or stencil, so nothing after it
-  changes.
+  changes. For a draw bound with shader objects, the variant is the stage's shader object made
+  again with its code, and the depth and stencil writes are turned off as dynamic state.
 - After each bind comes one untimed draw.
 - Then `repeat` draws run between one pair of timestamps, and the time is divided back to a
   single draw.
 - Variants rotate order each round, and the first round is a warm-up.
 - A variant's time is the median of its rounds.
 
-The captured pipeline is then bound again, and the draw runs as recorded.
+The captured pipeline or shader object is then bound again, and the draw runs as recorded.
 
 ```
 vkinsp_replay heavy.gpucap --ablate request.bin
@@ -1154,6 +1178,7 @@ Every capture replayed so far, with its result:
 | test/triangle `--hazard` (two submissions, `vkCmdUpdateBuffer`) | identical |
 | test/triangle `--pipeline-library` (the cube pipeline linked from a vertex and a fragment library) | identical, no validation messages |
 | test/triangle `--shader-object` (linked vertex and fragment shader objects, all state dynamic, dynamic rendering) | identical, no validation messages |
+| test/triangle `--mixed` (the cube drawn with shader objects, then again with its pipeline, in one pass) | identical, no validation messages |
 | test/triangle `--second-device` / `--second-queue` (a 256x256 target cleared each frame on a second VkDevice, or on a second queue) | all 3 targets identical, no validation messages: the second device's objects replay on the one device |
 | test/triangle `--push-template` (the cube's uniform buffer and texture pushed through a descriptor update template) | identical, no validation messages: pushed again as plain writes from the snapshot |
 | test/triangle `--msaa` | identical: the multisampled color and depth through their resolves, and the resolve target |

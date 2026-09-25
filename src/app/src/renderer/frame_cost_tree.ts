@@ -68,7 +68,7 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
   objectId?: number;
   /** Stage, function and line frames: the stage the code runs in. */
   stage?: ShaderStage;
-  /** Stage frames: the entry point, and the pipeline bound for the draws (none for shader objects). */
+  /** Stage frames: the entry point, and the program bound for the draws (a pipeline, or shader objects' key: shaderProgramKey). */
   entryPoint?: string;
   pipelineId?: number;
   invocations?: number;
@@ -580,8 +580,7 @@ export function buildFrameCostTree(o: CostTreeOptions): CostTreeResult {
         n.objectId = s.model.objectId;
         n.stage = s.model.stage;
         n.entryPoint = s.model.entryPoint;
-        // Measuring a stage replays the draw with copies of its pipeline, which shader objects have none of.
-        if (bucket.pipelineId > 0) n.pipelineId = bucket.pipelineId;
+        n.pipelineId = bucket.pipelineId;
         n.command = bucket.items[0].command;
         if (root) {
           const tree = functionTree(root, byId, s.invocations, new Set(), 0);

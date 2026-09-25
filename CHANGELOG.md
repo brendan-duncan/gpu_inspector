@@ -1,3 +1,15 @@
+## Unreleased
+
+### Added
+- Vulkan overdraw, draw overlays, pixel history and **Measure shader** (`measure_shader_cost`) include draws bound with shader objects.
+- `test/triangle --mixed` draws one pass with both shader objects and a pipeline.
+
+### Fixed
+- Vulkan pixel history binds a draw's own pipeline again after following it fragment by fragment.
+- Vulkan pixel history no longer sets dynamic state the bound pipeline holds statically.
+- Shader measuring no longer re-sets depth and stencil writes a draw's pipeline holds statically.
+- Vulkan replay binds no geometry shader to shader-object draws where it turns on `geometryShader` itself, as the app's replays do.
+
 ## v0.24.2
 
 ### Fixed
