@@ -173,6 +173,42 @@ It answers:
 - which passes write something that nothing ever reads
 - the frame's critical path
 
+## Tile-Based GPUs
+
+What the frame would cost a tile-based GPU (the mobile ones: Arm Mali, Qualcomm Adreno, Apple,
+Imagination PowerVR). Such a GPU renders each render pass one screen tile at a time in on-chip
+memory, so beyond its shading a pass pays for what crosses between that tile memory and DRAM:
+attachments loaded when it starts, stored when it ends, and whatever its shaders read and write in
+memory meanwhile. A desktop GPU pays little for any of that, so a frame that runs well on one can
+be bandwidth bound on the other, and this report says where. It works on Vulkan, Direct3D 12 and
+Metal captures alike, from the render graph.
+
+- **Attachment traffic.** Per render pass, the bytes each attachment loads (its contents are kept
+  rather than cleared or discarded) and stores (rather than thrown away), at the attachment's own
+  size, summed over the frame and quoted at 60 frames a second. An estimate: a GPU that compresses
+  its framebuffers moves less. A Direct3D 12 pass begun with `OMSetRenderTargets` has no load or
+  store actions, so it counts both; the parts of a render pass suspended across command lists
+  count only where the pass begins and ends.
+- **Avoidable.** The part the frame's own structure does not need, only where that is certain: a
+  target stored and loaded straight back by the next pass, a store replaced before anything reads
+  it, depth nothing reads, and a result the next pass reads once per pixel (a subpass, framebuffer
+  fetch or a transient target would keep it on chip). A color result nothing in the capture reads
+  is shown apart: it is usually the frame's output on its way to something the capture does not
+  see (an XR compositor, the next frame).
+- **Post-processing.** Render passes that sample what an earlier pass rendered at their own size,
+  and whether they read each pixel once at its own position (it could stay in tile memory) or
+  filter it — a blur, a downsample — which needs it in memory. Vulkan captures say which, from the
+  fragment shaders' SPIR-V; on the other APIs it is left open.
+- **Out of the tile.** Shader writes from inside a render pass (storage, UAV), a pass sampling the
+  target it renders to, a compute pass between two render passes that reads what the first
+  rendered, and copies or clears of render targets outside a pass.
+- **Subpasses** (Vulkan): which render passes have more than one, and their input attachments.
+- The Frame Issues about tile memory — `color-load`, `depth-store`, `msaa-store`,
+  `mergeable-passes`, `subpass-candidate`, `transient-candidate` and the rest — listed beside it,
+  and each API's own spelling of the fixes.
+
+`analyze_tiling` gives the same over [MCP](MCP.md).
+
 ## Validate
 
 The frame replayed on this machine's GPU under the Khronos validation layer, whether or not the

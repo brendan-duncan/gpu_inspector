@@ -366,5 +366,11 @@ export function usageClass(usage: string): string {
   if (usage.startsWith("storage")) return "storage";
   if (usage.startsWith("sampled")) return "sampled";
   if (usage.startsWith("vertex") || usage.startsWith("index") || usage.startsWith("indirect") || usage.startsWith("uniform")) return "input";
+  // The other APIs' names for the same (d3d12/frame_resources.ts, metal/frame_resources.ts): an
+  // SRV or a texture bound to a Metal stage is read as a texture, a UAV is read and written by the
+  // shader, a constant buffer or a buffer bound to a Metal stage is an input.
+  if (usage.startsWith("shader resource") || usage.endsWith(" texture")) return "sampled";
+  if (usage.startsWith("unordered access")) return "storage";
+  if (usage.startsWith("constant buffer") || usage.endsWith(" buffer")) return "input";
   return "other";
 }

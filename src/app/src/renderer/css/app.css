@@ -425,6 +425,17 @@ button.btn-icon { padding: 3px 6px; line-height: 0; }
 .timing-hitch:hover { background: var(--bg-hover); }
 .frame-stats-section { margin-bottom: 14px; }
 .frame-stats-heading { font-size: 11pt; font-weight: bold; margin-bottom: 6px; }
+/* Tile-Based GPUs report (tile_report.ts). */
+.tile-intro { margin-bottom: 10px; }
+.tile-table { display: grid; grid-template-columns: minmax(160px, 1.4fr) repeat(3, minmax(72px, 0.5fr)) minmax(260px, 3fr); font-size: 10pt; }
+.tile-head { font-weight: bold; padding: 3px 6px; border-bottom: 1px solid var(--border-color, #555); }
+.tile-cell { padding: 3px 6px; border-bottom: 1px solid var(--border-subtle, rgba(128, 128, 128, 0.2)); }
+.tile-attachment { white-space: normal; margin-bottom: 2px; }
+.tile-why { padding-left: 12px; font-size: 9pt; }
+.tile-link { cursor: pointer; text-decoration: underline dotted; }
+.tile-bad { color: var(--warning-color, #d9a33a); }
+.tile-good { color: var(--success-color, #5cb85c); }
+.tile-line { padding: 2px 0; }
 /* The split the details pane sits in sets white-space: nowrap for its command rows, and it
    inherits: without this every verdict and note here is one long line clipped at the pane's edge. */
 .frame-stats-list { background: var(--bg-elevated); border-radius: var(--radius-sm); padding: 6px 10px; white-space: normal; }

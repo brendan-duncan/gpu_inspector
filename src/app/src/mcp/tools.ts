@@ -24,6 +24,7 @@ import { cpuVerdict, summarizeCpuTimeline } from "../renderer/cpu_timeline.js";
 import type { GraphNode, GraphResource } from "../renderer/render_graph.js";
 import type { OverdrawMeasurement } from "../shared/protocol.js";
 import { analyzeRenderGraph } from "../renderer/render_graph_analysis.js";
+import { tileReport } from "../renderer/tile_report.js";
 import { pipelineUses } from "../renderer/shader_cache.js";
 import { SEVERITY_RANK, type Severity } from "../renderer/vulkan/spirv_analysis.js";
 import { recentCaptureFiles, settingsFile, type Capture, type CaptureStore } from "./capture_store.js";
@@ -904,6 +905,43 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose vertex " +
             "shader is edited to write its outputs to a transform feedback buffer, with rasterization discarded. Pipelines with tessellation " +
             "or geometry stages are not captured.",
+        });
+      },
+    },
+    {
+      name: "analyze_tiling",
+      description: "How the frame would fare on a tile-based (mobile) GPU: the attachment bytes each render pass loads into and " +
+        "stores out of tile memory, how much of that the frame could avoid and why (a store the next pass loads straight back, a " +
+        "store replaced before it is read, depth nothing reads, a result the next pass reads once per pixel), color results nothing " +
+        "in the capture reads, post-processing passes and whether each reads its input once per pixel (could stay in the tile) or " +
+        "filters it (needs memory), what forces work out of the tile (shader writes in a render pass, sampling one's own render " +
+        "target, compute or transfers between render passes), and Vulkan's use of subpasses. The Frame Issues about tile memory " +
+        "are in get_frame_issues; this is the whole-frame account.",
+      inputSchema: schema({ capture: CAPTURE_PARAM, ...PAGE_PARAMS }),
+      readOnly: true,
+      handler: (args) => {
+        const c = store.resolve(stringArg(args, "capture"));
+        const r = tileReport(c.data, c.db, c.graph);
+        const traffic = r.loadBytes + r.storeBytes;
+        const p = page(r.passes, args, 60, 500);
+        return jsonResult({
+          capture: c.id, renderPasses: r.renderPasses,
+          loadBytes: r.loadBytes, storeBytes: r.storeBytes, avoidableBytes: r.avoidableBytes,
+          avoidableShare: traffic ? Math.round((1000 * r.avoidableBytes) / traffic) / 1000 : 0,
+          unreadColorBytes: r.unreadBytes || undefined,
+          gbPerSecondAt60fps: Math.round(traffic * 60 / 1e7) / 100,
+          subpassPasses: c.data.api === "vulkan" ? r.subpassPasses.map((x) => ({ node: x.node.ordinal, ...x.subpasses })) : undefined,
+          postProcessing: r.post.length ? r.post.map((s) => ({ node: s.node.ordinal, command: s.node.commandIndex, input: s.input, producer: s.producer.ordinal, adjacent: s.adjacent, read: s.kind })) : undefined,
+          outOfTile: r.outOfTile.length ? r.outOfTile.map((o) => ({ node: o.node.ordinal, command: o.node.commandIndex, kind: o.kind, message: o.message })) : undefined,
+          offset: p.offset, nextOffset: p.nextOffset,
+          passes: p.items.map((x) => ({
+            node: x.node.ordinal, label: x.node.label, command: x.node.commandIndex,
+            loadBytes: x.loadBytes || undefined, storeBytes: x.storeBytes || undefined, avoidableBytes: x.avoidableBytes || undefined,
+            attachments: x.attachments.map((a) => ({
+              resource: a.label, bytes: a.bytes, loads: a.loads, stores: a.stores,
+              avoidable: a.avoidable ?? undefined, note: a.note ?? (a.unreadBytes ? "stored, and nothing in the capture reads it" : undefined),
+            })),
+          })),
         });
       },
     },

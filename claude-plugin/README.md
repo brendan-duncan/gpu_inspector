@@ -106,6 +106,7 @@ capture.
 | `get_mesh_output` | What a draw's vertex shader wrote (VS Out): every output, vertices behind the eye, primitives outside the view volume, triangles with no area, NaN positions (a Vulkan capture replayed; not Metal or D3D12) |
 | `debug_shader` | Runs one vertex, pixel or compute invocation in GPU Inspector's interpreter, SPIR-V or Metal Shading Language: outputs, every source line's values in order, the first NaN or infinity, and the GPU's result to compare with (a Vulkan pixel needs the replay, a Metal one does not); `decompiled` steps SPIR-V without debug information by line, through GLSL decompiled from it and checked against the original; a D3D12 shader is stepped as its HLSL compiled to SPIR-V by dxc (there is no DXIL interpreter), so it needs the source: `-Zi`, or a PDB under `symbolDirs` |
 | `get_render_graph` | Passes and the resources between them, critical path, unread outputs; one node in full |
+| `analyze_tiling` | What the frame costs a tile-based (mobile) GPU: attachment traffic per pass, what is avoidable, post-processing, what leaves the tile |
 | `compare_captures` | Timing, statistics, issues and per-pass changes between two captures |
 | `list_commands`, `get_command` | The command stream; one command with the state bound at it |
 | `list_objects`, `get_object` | The object graph with creation arguments |

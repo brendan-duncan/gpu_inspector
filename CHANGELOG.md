@@ -1,6 +1,7 @@
 ## v0.23.0
 
 ### Added
+- A **Tile-Based GPUs** report, and `analyze_tiling` over MCP: what a frame would cost a mobile GPU in attachment traffic, what is avoidable, and what leaves the tile.
 - An application asks for a capture with a name for it: `gpu_inspector_capture_named(frames, label)` in `include/gpu_inspector.h`, and the label names the tab, the saved file and its manifest.
 - The Metal library and the OpenGL ES plugin answer `include/gpu_inspector.h` too, so every API can capture from an assertion or a failed test; the header finds the library on macOS, Linux and Android as well as Windows.
 - `--capture-at N` on the Metal and OpenGL ES samples, and UI test cases for the application's capture on every Windows backend.
@@ -52,6 +53,7 @@
 - The application, its executable and its install directory are named `GPUInspector`, with no space; an updated install keeps the directory it was first installed into.
 
 ### Fixed
+- The render graph of a Direct3D 12 capture has its BeginRenderPass attachments, its split passes, and the textures and buffers its passes read.
 - Launching a WebGPU page in Chrome captures the page's Direct3D 12 again, not the browser's Direct3D 11 compositing.
 - A Direct3D 12 replay makes the resources a capture opened with `OpenSharedHandle`, so a WebGPU page's canvas replays.
 - A multi-frame Direct3D 12 capture takes each frame's own buffer and texture read-backs rather than the first frame's.

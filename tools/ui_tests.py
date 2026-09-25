@@ -2224,6 +2224,16 @@ def d3d12_cases(triangle):
     saved_late = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_late_descriptor.gpucap")
     saved_keep_depth = os.path.join(tempfile.gettempdir(), "gpuinsp_ui_d3d12_keep_depth.gpucap")
 
+    def d3d12_tiling(state, log):
+        # The Tile-Based GPUs report (renderer/tile_analysis.ts) on --keep-depth: the frame loads its
+        # depth buffer rather than clearing it, so the report counts a load into tile memory, and
+        # the 640x480 color and depth targets are what it stores.
+        t = capture(state).get("tiling") or {}
+        return check_connected(state, log) + \
+            expect((t.get("renderPasses") or 0) >= 1, f"the report found no render pass: {t}") + \
+            expect((t.get("loadBytes") or 0) >= 640 * 480 * 4, f"the depth buffer the frame loads is not counted as loaded: {t}") + \
+            expect((t.get("storeBytes") or 0) >= 640 * 480 * 4, f"the targets the frame stores are not counted: {t}")
+
     def d3d12_keep_depth_replay(_work):
         # --keep-depth: every frame depth-tests against what the frames before left in the depth
         # buffer, which it never clears. The capture takes the buffer as the frame found it before
@@ -2301,6 +2311,8 @@ def d3d12_cases(triangle):
                     Case("d3d12-late-descriptor", launch + ["--args=--late-descriptor", "--validation", "--debug-capture",
                                                             f"--debug-save={saved_late}", "--debug-save-delay=9000"],
                          lambda state, log: check_connected(state, log), delay_ms=16000, then=d3d12_late_descriptor_replay),
+                    Case("d3d12-tiling", launch + ["--args=--keep-depth", "--debug-capture", "--debug-view=tiling", "--debug-settle=3000"],
+                         d3d12_tiling, delay_ms=14000),
                     Case("d3d12-keep-depth", launch + ["--args=--keep-depth", "--validation", "--debug-capture",
                                                        f"--debug-save={saved_keep_depth}", "--debug-save-delay=9000"],
                          lambda state, log: check_connected(state, log), delay_ms=16000, then=d3d12_keep_depth_replay)] if find_d3d12_replay() else []

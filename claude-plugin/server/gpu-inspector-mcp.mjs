@@ -1196,9 +1196,11 @@ var D3D12ResourceSource = class {
     const accesses = [];
     const targets = [];
     if (cmd.method === "BeginRenderPass") {
+      const flags = str(a.Flags);
+      const split = { resuming: flags.includes("RESUMING_PASS"), suspending: flags.includes("SUSPENDING_PASS") };
       const colors = Array.isArray(a.pRenderTargets) ? a.pRenderTargets.filter(isObject) : [];
-      colors.forEach((rt) => this._renderPassTarget(rt, "color", accesses, targets));
-      if (isObject(a.pDepthStencil)) this._renderPassTarget(a.pDepthStencil, "depth", accesses, targets);
+      colors.forEach((rt) => this._renderPassTarget(rt, "color", accesses, targets, split));
+      if (isObject(a.pDepthStencil)) this._renderPassTarget(a.pDepthStencil, "depth", accesses, targets, split);
     } else {
       const colors = Array.isArray(a.pRenderTargetDescriptors) ? a.pRenderTargetDescriptors : [];
       for (const h of colors) this._target(h, "color attachment (load/store)", accesses, targets, false, false, "color");
@@ -1370,19 +1372,22 @@ var D3D12ResourceSource = class {
   }
   // ------------------------------------------------------------------------------- targets
   /** One BeginRenderPass target: its handle, beginning access and ending access. */
-  _renderPassTarget(rt, kind, accesses, targets) {
-    const handle = isObject(rt.cpuDescriptor) ? rt.cpuDescriptor : rt;
+  _renderPassTarget(rt, kind, accesses, targets, split = { resuming: false, suspending: false }) {
+    const handle = rt.resource !== void 0 || !isObject(rt.cpuDescriptor) ? rt : rt.cpuDescriptor;
     const beginning = kind === "color" ? rt.BeginningAccess : rt.DepthBeginningAccess;
     const ending = kind === "color" ? rt.EndingAccess : rt.DepthEndingAccess;
     const begin = accessType(beginning);
     const end = accessType(ending);
     const stencilBegin = kind === "depth" ? accessType(rt.StencilBeginningAccess) : "";
     const stencilEnd = kind === "depth" ? accessType(rt.StencilEndingAccess) : "";
-    const loads = begin === "PRESERVE" || stencilBegin === "PRESERVE";
-    const stores = end === "PRESERVE" || stencilEnd === "PRESERVE";
-    const resolved = end === "RESOLVE" || stencilEnd === "RESOLVE";
-    const usage = `${kind} attachment (${loads ? "load" : begin === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : resolved ? "resolve" : "discard"})`;
-    this._target(handle, usage, accesses, targets, !loads, !stores && !resolved, kind, resolved);
+    const local = (t) => t.startsWith("PRESERVE_LOCAL");
+    const loadsLocal = split.resuming || local(begin) || local(stencilBegin);
+    const storesLocal = split.suspending || local(end) || local(stencilEnd);
+    const loads = !split.resuming && (begin === "PRESERVE" || stencilBegin === "PRESERVE");
+    const stores = !split.suspending && (end === "PRESERVE" || stencilEnd === "PRESERVE");
+    const resolved = !split.suspending && (end === "RESOLVE" || stencilEnd === "RESOLVE");
+    const usage = `${kind} attachment (${loads ? "load" : loadsLocal ? "local" : begin === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : storesLocal ? "local" : resolved ? "resolve" : "discard"})`;
+    this._target(handle, usage, accesses, targets, !loads && !loadsLocal, !stores && !storesLocal && !resolved, kind, resolved);
     const resolve = isObject(ending) && isObject(ending.Resolve) ? ending.Resolve : null;
     const resolveId = resolved && resolve ? refId(resolve.pDstResource) : null;
     if (resolveId !== null) {
@@ -4538,6 +4543,9 @@ function usageClass(usage) {
   if (usage.startsWith("storage")) return "storage";
   if (usage.startsWith("sampled")) return "sampled";
   if (usage.startsWith("vertex") || usage.startsWith("index") || usage.startsWith("indirect") || usage.startsWith("uniform")) return "input";
+  if (usage.startsWith("shader resource") || usage.endsWith(" texture")) return "sampled";
+  if (usage.startsWith("unordered access")) return "storage";
+  if (usage.startsWith("constant buffer") || usage.endsWith(" buffer")) return "input";
   return "other";
 }
 
@@ -5802,14 +5810,14 @@ function analyzeSpirv(data) {
   const typeArrays = /* @__PURE__ */ new Map();
   const typeStructs = /* @__PURE__ */ new Map();
   const constantValues = /* @__PURE__ */ new Map();
-  const sizeOf3 = (type, depth = 0) => {
+  const sizeOf4 = (type, depth = 0) => {
     if (depth > 16) return 0;
     const direct = typeSizes.get(type);
     if (direct !== void 0) return direct;
     const arr = typeArrays.get(type);
-    if (arr) return sizeOf3(arr[0], depth + 1) * (constantValues.get(arr[1]) ?? 0);
+    if (arr) return sizeOf4(arr[0], depth + 1) * (constantValues.get(arr[1]) ?? 0);
     const members2 = typeStructs.get(type);
-    if (members2) return members2.reduce((acc, m) => acc + sizeOf3(m, depth + 1), 0);
+    if (members2) return members2.reduce((acc, m) => acc + sizeOf4(m, depth + 1), 0);
     return 0;
   };
   const defs = /* @__PURE__ */ new Map();
@@ -5894,10 +5902,10 @@ function analyzeSpirv(data) {
         typeSizes.set(words2[a], Math.max(1, words2[a + 1] >>> 3));
         break;
       case 23 /* TypeVector */:
-        typeSizes.set(words2[a], sizeOf3(words2[a + 1]) * words2[a + 2]);
+        typeSizes.set(words2[a], sizeOf4(words2[a + 1]) * words2[a + 2]);
         break;
       case 24 /* TypeMatrix */:
-        typeSizes.set(words2[a], sizeOf3(words2[a + 1]) * words2[a + 2]);
+        typeSizes.set(words2[a], sizeOf4(words2[a + 1]) * words2[a + 2]);
         break;
       case 28 /* TypeArray */:
         typeArrays.set(words2[a], [words2[a + 1], words2[a + 2]]);
@@ -5927,7 +5935,7 @@ function analyzeSpirv(data) {
         if (cls === 2 /* Uniform */ && bufferBlocks.has(pointee.get(words2[a]) ?? -1)) cls = 12 /* StorageBuffer */;
         idClass.set(words2[a + 1], cls);
         if (!fn) globalVars.set(words2[a + 1], cls);
-        if (cls === 4 /* Workgroup */) totals.workgroupBytes += sizeOf3(pointee.get(words2[a]) ?? -1);
+        if (cls === 4 /* Workgroup */) totals.workgroupBytes += sizeOf4(pointee.get(words2[a]) ?? -1);
         chainBase.set(words2[a + 1], words2[a + 1]);
         break;
       }
@@ -34075,6 +34083,156 @@ function passQueueResolver(commands, db) {
   };
 }
 
+// src/renderer/tile_analysis.ts
+var sizeOf3 = (detail) => /^(\d+x\d+)/.exec(detail)?.[1] ?? null;
+function attachmentWrites(node2) {
+  return node2.writes.filter((w) => usageClass(w.usage) === "attachment");
+}
+function analyzeTiling(graph, options = {}) {
+  const nodes = graph.nodes;
+  const render = nodes.filter((n) => n.kind === "render");
+  const passes = [];
+  for (const node2 of render) {
+    const next = nodes[node2.ordinal + 1] ?? null;
+    const previous = node2.ordinal > 0 ? nodes[node2.ordinal - 1] : null;
+    const attachments = [];
+    for (const w of attachmentWrites(node2)) {
+      const bytes = w.resource.bytes || 0;
+      const loadsLocal = /\(local\//.test(w.usage);
+      const storesLocal = /\/local\)/.test(w.usage);
+      const loads = !w.discards && !loadsLocal;
+      const stores = !w.dropped && !storesLocal;
+      let avoidable = null;
+      let avoidableBytes2 = 0;
+      let unreadBytes2 = 0;
+      let note = null;
+      const readers = w.version.readers;
+      if (stores && !w.resource.presented && !readers.length && !w.resolved) {
+        const replaced = w.resource.versions.some((v) => v.index > w.version.index && v.producer && v.producer.writes.some((pw) => pw.version === v && pw.discards));
+        const depth = /^(depth|stencil)/.test(w.usage);
+        if (replaced || depth) {
+          avoidable = replaced ? "stored, and replaced before anything reads it" : "depth stored, and nothing later in the capture reads it";
+          avoidableBytes2 += bytes;
+        } else {
+          unreadBytes2 = bytes;
+        }
+      } else if (stores && !w.resource.presented && readers.length && readers.every((r) => r === next) && next?.kind === "render") {
+        const carried = next.writes.some((nw) => nw.resource.key === w.resource.key && !nw.discards);
+        const filters = options.filtersInput?.(next, w.resource.objectId) ?? null;
+        if (carried) {
+          avoidable = "stored, and loaded straight back by the next pass: one pass would keep it in the tile";
+          avoidableBytes2 += bytes;
+        } else if (filters === false) {
+          avoidable = "stored for the next pass alone, which reads it once per pixel: a subpass, framebuffer fetch or a transient target would keep it in the tile";
+          avoidableBytes2 += bytes;
+        } else if (filters === true) {
+          note = "read by the next pass alone, which filters it: that needs it in memory";
+        } else {
+          note = "read by the next pass alone: if that reads each pixel once, a subpass or framebuffer fetch would keep it in the tile";
+        }
+      }
+      if (loads && previous?.kind === "render" && w.version.index > 1 && previous.writes.some((pw) => pw.version.index === w.version.index - 1 && pw.resource.key === w.resource.key && !pw.dropped && !/\/local\)/.test(pw.usage))) {
+        avoidable = avoidable ?? "loaded from the pass before, which stored it: one pass would keep it in the tile";
+        avoidableBytes2 += bytes;
+      }
+      attachments.push({ label: w.resource.label, objectId: w.resource.objectId, bytes, loads, stores, avoidable, avoidableBytes: avoidableBytes2, unreadBytes: unreadBytes2, note });
+    }
+    const loadBytes = attachments.reduce((s, a) => s + (a.loads ? a.bytes : 0), 0);
+    const storeBytes = attachments.reduce((s, a) => s + (a.stores ? a.bytes : 0), 0);
+    const avoidableBytes = attachments.reduce((s, a) => s + a.avoidableBytes, 0);
+    const unreadBytes = attachments.reduce((s, a) => s + a.unreadBytes, 0);
+    passes.push({ node: node2, attachments, loadBytes, storeBytes, avoidableBytes, unreadBytes, subpasses: options.subpasses?.(node2) ?? null });
+  }
+  const post = [];
+  for (const node2 of render) {
+    const targets = attachmentWrites(node2);
+    const size2 = targets.length ? sizeOf3(targets[0].resource.detail) : null;
+    if (!size2) continue;
+    for (const r of node2.reads) {
+      if (r.resource.type !== "image" || usageClass(r.usage) !== "sampled") continue;
+      const producer = r.version.producer;
+      if (!producer || producer.kind !== "render" || producer.frame !== node2.frame) continue;
+      if (sizeOf3(r.resource.detail) !== size2) continue;
+      const filters = options.filtersInput?.(node2, r.resource.objectId) ?? null;
+      post.push({
+        node: node2,
+        input: r.resource.label,
+        producer,
+        adjacent: producer.ordinal === node2.ordinal - 1,
+        kind: filters === true ? "filters" : filters === false ? "same-pixel" : "unknown"
+      });
+    }
+  }
+  const outOfTile = [];
+  for (const node2 of render) {
+    const shaderWrites = node2.writes.filter((w) => usageClass(w.usage) === "storage");
+    if (shaderWrites.length) {
+      const names = [...new Set(shaderWrites.map((w) => w.resource.label))];
+      outOfTile.push({ node: node2, kind: "shader-write", message: `its shaders write ${names.slice(0, 3).join(", ")}${names.length > 3 ? ` and ${names.length - 3} more` : ""} (storage / UAV): memory traffic from inside the pass, which a tiled GPU cannot keep in the tile` });
+    }
+    const feedback = attachmentWrites(node2).filter((w) => w.usage.split(", ").some((u) => usageClass(u) === "sampled") || node2.reads.some((r) => r.resource.key === w.resource.key && usageClass(r.usage) === "sampled"));
+    if (feedback.length) {
+      outOfTile.push({ node: node2, kind: "feedback", message: `samples ${[...new Set(feedback.map((w) => w.resource.label))].join(", ")}, which it also renders to: the texture read goes to memory, which does not hold what the tile has; an input attachment or framebuffer fetch reads the tile` });
+    }
+  }
+  for (let i = 1; i + 1 < nodes.length; i++) {
+    const node2 = nodes[i];
+    if (node2.kind !== "compute") continue;
+    const before = nodes[i - 1];
+    const after = nodes[i + 1];
+    if (before.kind !== "render" || after.kind !== "render") continue;
+    const fromBefore = node2.reads.filter((r) => r.version.producer === before);
+    if (!fromBefore.length) continue;
+    outOfTile.push({ node: node2, kind: "compute-split", message: `a compute pass between two render passes reads what the first rendered (${[...new Set(fromBefore.map((r) => r.resource.label))].join(", ")}): the first has to be stored in full before it runs; a fragment shader in the second pass reading it as an input attachment would not need that` });
+  }
+  for (let i = 1; i + 1 < nodes.length; i++) {
+    const node2 = nodes[i];
+    if (node2.kind !== "transfer") continue;
+    const touches = [...node2.reads, ...node2.writes].filter((u) => nodes.some((n) => n.kind === "render" && n.writes.some((w) => w.resource.key === u.resource.key && usageClass(w.usage) === "attachment")));
+    if (!touches.length) continue;
+    outOfTile.push({ node: node2, kind: "transfer", message: `${node2.label} copies or clears ${[...new Set(touches.map((u) => u.resource.label))].join(", ")}, a render target of the frame, outside a pass: the target goes through memory for it, where a clear load op or a resolve in the pass would not` });
+  }
+  const renderPasses = passes.length;
+  return {
+    passes,
+    loadBytes: passes.reduce((s, p) => s + p.loadBytes, 0),
+    storeBytes: passes.reduce((s, p) => s + p.storeBytes, 0),
+    avoidableBytes: passes.reduce((s, p) => s + p.avoidableBytes, 0),
+    unreadBytes: passes.reduce((s, p) => s + p.unreadBytes, 0),
+    post,
+    outOfTile,
+    subpassPasses: passes.filter((p) => (p.subpasses?.subpasses ?? 1) > 1),
+    renderPasses
+  };
+}
+
+// src/renderer/tile_report.ts
+function vulkanSubpasses(data, db) {
+  return (node2) => {
+    const cmd = data.commands[node2.commandIndex];
+    if (!cmd) return null;
+    if (cmd.method.startsWith("vkCmdBeginRendering")) return { subpasses: 1, inputAttachments: 0 };
+    const begin = isObject(cmd.args?.pRenderPassBegin) ? cmd.args.pRenderPassBegin : null;
+    const rp = begin ? db.getObject(refId(begin.renderPass))?.descriptor ?? null : null;
+    if (!rp) return null;
+    const subpasses = Array.isArray(rp.pSubpasses) ? rp.pSubpasses.filter(isObject) : [];
+    return {
+      subpasses: Math.max(1, subpasses.length),
+      inputAttachments: subpasses.reduce((sum, s) => sum + num(s.inputAttachmentCount), 0)
+    };
+  };
+}
+function tileReport(data, db, graph) {
+  const options = {};
+  if (data.api === "vulkan") {
+    const vulkan = new FrameAnalysis(db);
+    vulkan.analyze(data);
+    options.filtersInput = (node2, imageId) => vulkan.filtersInput(node2.commandIndex, imageId);
+    options.subpasses = vulkanSubpasses(data, db);
+  }
+  return analyzeTiling(graph, options);
+}
+
 // src/mcp/tools.ts
 var SEVERITIES = ["high", "medium", "low", "info"];
 function unique(values) {
@@ -34935,6 +35093,49 @@ function captureTools(store) {
           replayedOn: file.device || void 0,
           replayProblems: file.problems.length ? { count: file.problems.length, first: file.problems.slice(0, 10) } : void 0,
           measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose vertex shader is edited to write its outputs to a transform feedback buffer, with rasterization discarded. Pipelines with tessellation or geometry stages are not captured."
+        });
+      }
+    },
+    {
+      name: "analyze_tiling",
+      description: "How the frame would fare on a tile-based (mobile) GPU: the attachment bytes each render pass loads into and stores out of tile memory, how much of that the frame could avoid and why (a store the next pass loads straight back, a store replaced before it is read, depth nothing reads, a result the next pass reads once per pixel), color results nothing in the capture reads, post-processing passes and whether each reads its input once per pixel (could stay in the tile) or filters it (needs memory), what forces work out of the tile (shader writes in a render pass, sampling one's own render target, compute or transfers between render passes), and Vulkan's use of subpasses. The Frame Issues about tile memory are in get_frame_issues; this is the whole-frame account.",
+      inputSchema: schema({ capture: CAPTURE_PARAM, ...PAGE_PARAMS }),
+      readOnly: true,
+      handler: (args) => {
+        const c2 = store.resolve(stringArg(args, "capture"));
+        const r = tileReport(c2.data, c2.db, c2.graph);
+        const traffic = r.loadBytes + r.storeBytes;
+        const p = page(r.passes, args, 60, 500);
+        return jsonResult({
+          capture: c2.id,
+          renderPasses: r.renderPasses,
+          loadBytes: r.loadBytes,
+          storeBytes: r.storeBytes,
+          avoidableBytes: r.avoidableBytes,
+          avoidableShare: traffic ? Math.round(1e3 * r.avoidableBytes / traffic) / 1e3 : 0,
+          unreadColorBytes: r.unreadBytes || void 0,
+          gbPerSecondAt60fps: Math.round(traffic * 60 / 1e7) / 100,
+          subpassPasses: c2.data.api === "vulkan" ? r.subpassPasses.map((x) => ({ node: x.node.ordinal, ...x.subpasses })) : void 0,
+          postProcessing: r.post.length ? r.post.map((s) => ({ node: s.node.ordinal, command: s.node.commandIndex, input: s.input, producer: s.producer.ordinal, adjacent: s.adjacent, read: s.kind })) : void 0,
+          outOfTile: r.outOfTile.length ? r.outOfTile.map((o) => ({ node: o.node.ordinal, command: o.node.commandIndex, kind: o.kind, message: o.message })) : void 0,
+          offset: p.offset,
+          nextOffset: p.nextOffset,
+          passes: p.items.map((x) => ({
+            node: x.node.ordinal,
+            label: x.node.label,
+            command: x.node.commandIndex,
+            loadBytes: x.loadBytes || void 0,
+            storeBytes: x.storeBytes || void 0,
+            avoidableBytes: x.avoidableBytes || void 0,
+            attachments: x.attachments.map((a) => ({
+              resource: a.label,
+              bytes: a.bytes,
+              loads: a.loads,
+              stores: a.stores,
+              avoidable: a.avoidable ?? void 0,
+              note: a.note ?? (a.unreadBytes ? "stored, and nothing in the capture reads it" : void 0)
+            }))
+          }))
         });
       }
     },

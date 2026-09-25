@@ -956,6 +956,21 @@ vendor's driver is listed at the end so nobody spends time on it.
       not on `MTLRenderCommandEncoder` in the macOS SDK. `test/path_tracer/metal` is the sample that needs the first of these.
 - [ ] D3D12 replay, the rest: mesh shader pipelines from a stream, and the analyses
       `vkinsp_replay` serves (overlays, mesh output, per-draw timing).
+  - [x] A Tile-Based GPUs report (`renderer/tile_analysis.ts`, `tile_report.ts`, MCP
+    `analyze_tiling`): per render pass the attachment bytes loaded into and stored out of tile
+    memory, the avoidable part (only where certain: a round trip to the next pass, a store
+    replaced before it is read, depth nothing reads, a result the next pass reads once per pixel),
+    color results nothing captured reads apart, post-processing classified by the SPIR-V
+    (Vulkan), what forces work out of the tile, and Vulkan's subpasses. Built on the render graph,
+    whose Direct3D 12 side it found broken: every render pass begun with BeginRenderPass had no
+    attachments (the resource was read from inside cpuDescriptor, where the library does not put
+    it), the parts of a suspended pass looked like passes that discard their targets, and SRV, UAV
+    and Metal texture reads fell outside `usageClass`, so the graph saw no D3D12 or Metal pass
+    read anything. All three fixed: on the URP sample, 58 passes with their targets where there
+    were 30 empty ones, and the lighting pass found sampling the G-buffers it renders to. Unit test
+    `tile_analysis.test.js`, UI case `d3d12-tiling`. Left: same-pixel or filter on D3D12 and Metal
+    (needs DXIL and MSL read the way SPIR-V is); texture reads' own traffic, which needs the
+    sampled sizes; and whether to raise the per-pass findings into Frame Issues as rules.
   - [x] A second real application: Chrome running the WebGPU samples through Dawn. Four faults,
     all fixed. The Direct3D 11 plugin went into browser launches and connected from Chrome's
     compositor first, so the session captured the browser drawing the page into its window, not the

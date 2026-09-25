@@ -69,9 +69,13 @@ export class D3D12ResourceSource implements ResourceSource {
     const accesses: RawAccess[] = [];
     const targets: string[] = [];
     if (cmd.method === "BeginRenderPass") {
+      // A pass split across command lists is one render pass: only the first part's beginning and
+      // the last part's ending reach memory, whatever access types the parts in between name.
+      const flags = str(a.Flags);
+      const split = { resuming: flags.includes("RESUMING_PASS"), suspending: flags.includes("SUSPENDING_PASS") };
       const colors = Array.isArray(a.pRenderTargets) ? a.pRenderTargets.filter(isObject) : [];
-      colors.forEach((rt) => this._renderPassTarget(rt, "color", accesses, targets));
-      if (isObject(a.pDepthStencil)) this._renderPassTarget(a.pDepthStencil, "depth", accesses, targets);
+      colors.forEach((rt) => this._renderPassTarget(rt, "color", accesses, targets, split));
+      if (isObject(a.pDepthStencil)) this._renderPassTarget(a.pDepthStencil, "depth", accesses, targets, split);
     } else {
       // OMSetRenderTargets: no load or store operation, so the pass keeps what was there and
       // leaves its result in memory (discards: false, dropped: false).
@@ -257,8 +261,12 @@ export class D3D12ResourceSource implements ResourceSource {
   // ------------------------------------------------------------------------------- targets
 
   /** One BeginRenderPass target: its handle, beginning access and ending access. */
-  private _renderPassTarget(rt: ArgObject, kind: "color" | "depth", accesses: RawAccess[], targets: string[]): void {
-    const handle = isObject(rt.cpuDescriptor) ? rt.cpuDescriptor : rt;
+  private _renderPassTarget(rt: ArgObject, kind: "color" | "depth", accesses: RawAccess[], targets: string[],
+                            split: { resuming: boolean; suspending: boolean } = { resuming: false, suspending: false }): void {
+    // The library writes the target's resource and view beside its cpuDescriptor, which holds only
+    // the heap and the slot; reading the resource from cpuDescriptor found none, and every render
+    // pass begun with BeginRenderPass had no attachments at all.
+    const handle = rt.resource !== undefined || !isObject(rt.cpuDescriptor) ? rt : rt.cpuDescriptor;
     const beginning = kind === "color" ? rt.BeginningAccess : rt.DepthBeginningAccess;
     const ending = kind === "color" ? rt.EndingAccess : rt.DepthEndingAccess;
     const begin = accessType(beginning);
@@ -266,11 +274,18 @@ export class D3D12ResourceSource implements ResourceSource {
     // A depth target with a stencil aspect: the pass loads if either does, stores if either does.
     const stencilBegin = kind === "depth" ? accessType(rt.StencilBeginningAccess) : "";
     const stencilEnd = kind === "depth" ? accessType(rt.StencilEndingAccess) : "";
-    const loads = begin === "PRESERVE" || stencilBegin === "PRESERVE";
-    const stores = end === "PRESERVE" || stencilEnd === "PRESERVE";
-    const resolved = end === "RESOLVE" || stencilEnd === "RESOLVE";
-    const usage = `${kind} attachment (${loads ? "load" : begin === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : resolved ? "resolve" : "discard"})`;
-    this._target(handle, usage, accesses, targets, !loads, !stores && !resolved, kind, resolved);
+    // A pass suspended across command lists hands its attachments from one list's part to the next
+    // on chip: PRESERVE_LOCAL_RENDER (or _SRV, _UAV) ending one part and beginning the next. The
+    // contents carry over -- so the next part depends on the last, and the last is not thrown away --
+    // but never through memory, which is what "local" says (tile_analysis.ts counts no traffic for it).
+    const local = (t: string): boolean => t.startsWith("PRESERVE_LOCAL");
+    const loadsLocal = split.resuming || local(begin) || local(stencilBegin);
+    const storesLocal = split.suspending || local(end) || local(stencilEnd);
+    const loads = !split.resuming && (begin === "PRESERVE" || stencilBegin === "PRESERVE");
+    const stores = !split.suspending && (end === "PRESERVE" || stencilEnd === "PRESERVE");
+    const resolved = !split.suspending && (end === "RESOLVE" || stencilEnd === "RESOLVE");
+    const usage = `${kind} attachment (${loads ? "load" : loadsLocal ? "local" : begin === "CLEAR" ? "clear" : "discard"}/${stores ? "store" : storesLocal ? "local" : resolved ? "resolve" : "discard"})`;
+    this._target(handle, usage, accesses, targets, !loads && !loadsLocal, !stores && !storesLocal && !resolved, kind, resolved);
     // The resolve destination is written as well as (or instead of) the target itself.
     const resolve = isObject(ending) && isObject(ending.Resolve) ? ending.Resolve : null;
     const resolveId = resolved && resolve ? refId(resolve.pDstResource) : null;

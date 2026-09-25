@@ -42,6 +42,8 @@ import { passQueueResolver } from "./pass_queues.js";
 import { accelerationScene, structureDrawing, type StructureDrawing } from "./acceleration_scene.js";
 import type { AccelerationScene } from "./ray_tracing_view.js";
 import { analyzeFrame, type FrameFinding } from "./vulkan/frame_analysis.js";
+import { renderTileReport } from "./tile_report.js";
+import type { TileReport } from "./tile_analysis.js";
 import { frameRenderGraph } from "./frame_graph.js";
 import { apiDisplayName, backendFor, type Backend } from "./backend.js";
 import { renderRenderGraph } from "./render_graph_view.js";
@@ -132,6 +134,8 @@ const ICON_FLAME = '<svg viewBox="0 0 16 16"><rect x="2" y="10.5" width="12" hei
 /** A gauge needle: what limits each pass. */
 const ICON_BOTTLENECK = '<svg viewBox="0 0 16 16"><path d="M2.2 12a6.4 6.4 0 0 1 11.6 0" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M8 12 11 6.6" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><circle cx="8" cy="12" r="1.1" fill="currentColor"/></svg>';
 /** Nodes joined by edges: the pass dependency graph. */
+/** A grid of tiles, one lit: the frame as a tiled GPU renders it. */
+const ICON_TILES = '<svg viewBox="0 0 16 16"><rect x="2" y="2" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M6 2v12M10 2v12M2 6h12M2 10h12" fill="none" stroke="currentColor" stroke-width="1.1"/><rect x="6" y="6" width="4" height="4" fill="currentColor"/></svg>';
 const ICON_GRAPH = '<svg viewBox="0 0 16 16"><circle cx="3.5" cy="8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="3.8" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><circle cx="12.5" cy="12.2" r="2" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M5.4 7.2 10.6 4.6M5.4 8.8l5.2 2.6" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
 
 /** Draw overlays: a pass with this many draws or fewer has all of them drawn in the replay the first one needs. */
@@ -165,6 +169,9 @@ const REPORTS: { id: string; icon: string; label: string; detail: string; toolti
   { id: "graph", icon: ICON_GRAPH, label: "Render Graph",
     detail: "Passes and the resources connecting them",
     tooltip: "Every pass and the resources it reads and writes: which pass produced each one, the frame's critical path, and what nothing reads" },
+  { id: "tiling", icon: ICON_TILES, label: "Tile-Based GPUs",
+    detail: "What the frame costs a mobile GPU in memory traffic",
+    tooltip: "How the frame would fare on a tiled (mobile) GPU: what each render pass loads into and stores from tile memory, how much of that the frame could avoid, which post-processing steps could stay in the tile, and what forces work out of it" },
   { id: "overdraw", icon: ICON_OVERDRAW, label: "Overdraw",
     detail: "Fragments per pixel, over the pass's render target",
     tooltip: "The pass's render target with its overdraw over it: how many fragments landed on each pixel, with and without the depth test, the counts under the pointer, and the history of any pixel you click. A Metal or D3D12 capture carries what it was taken with; a Vulkan capture is replayed on this machine's GPU to measure it" },
@@ -1436,6 +1443,8 @@ export class CaptureView implements CaptureHost {
   private _listMs = 0;
   /** The frame analysis of the current commands (Frame Issues and the row markers). */
   _analysis: { findings: FrameFinding[]; byCommand: Map<number, FrameFinding[]> } | null = null;
+  /** The Tile-Based GPUs report as last shown, for the UI tests (debugState). */
+  private _tileReport: TileReport | null = null;
   /** The capture's render graph, built on demand (see renderGraph()). */
   private _renderGraph: RenderGraph | null = null;
   /** Entries of the Reports menu by id, for marking the ones whose tab is open. */
@@ -2085,6 +2094,12 @@ export class CaptureView implements CaptureHost {
       findings: (this._analysis?.findings ?? []).map((f) => ({ rule: f.rule, severity: f.severity, count: f.count, command: f.commandIndex ?? null })),
       // The selected command's details pane as text (--debug-command), for a case that checks what it shows.
       commandDetails: this.info.text(),
+      // The Tile-Based GPUs report, when it was opened (--debug-view=tiling).
+      tiling: this._tileReport ? {
+        renderPasses: this._tileReport.renderPasses, loadBytes: this._tileReport.loadBytes, storeBytes: this._tileReport.storeBytes,
+        avoidableBytes: this._tileReport.avoidableBytes, post: this._tileReport.post.length,
+        outOfTile: this._tileReport.outOfTile.map((o) => o.kind),
+      } : undefined,
       renderGraph: d.commands.length ? (() => {
         const g = this.renderGraph();
         return {
@@ -2234,6 +2249,7 @@ export class CaptureView implements CaptureHost {
       case "flame": void this._showFlameGraph(); break;
       case "bottlenecks": this._showBottlenecks(); break;
       case "graph": this._showRenderGraph(); break;
+      case "tiling": this._showTiling(); break;
       // Overdraw is the pass's render target with the heat over it, so it opens the target's tab.
       case "overdraw": void this.openOverdraw(); break;
       case "validate": void this.showValidate(); break;
@@ -2507,6 +2523,14 @@ export class CaptureView implements CaptureHost {
         ? () => this.measureHwCounters().then((ok) => { if (ok) this._showBottlenecks(); return ok; }) : undefined);
   }
 
+  /** "Tile-Based GPUs": the frame's memory traffic on a tiled GPU (tile_report.ts). */
+  private _showTiling(): void {
+    const body = this._reportBody("tiling");
+    if (!body) return;
+    this._tileReport = renderTileReport(body, this.data, this.window.database, this.renderGraph(), this._analysis?.findings ?? [],
+      (index) => this.selectCommand(index));
+  }
+
   /** "Render Graph": the frame's passes and the resources that connect them (render_graph_view.ts). */
   private _showRenderGraph(): void {
     const body = this._reportBody("graph");
@@ -2532,6 +2556,7 @@ export class CaptureView implements CaptureHost {
   /** Opens one of the capture's reports by name (--debug-view, tools/ui_tests.py). */
   showView(name: string): void {
     if (name === "graph" || name === "render-graph") this._showRenderGraph();
+    else if (name === "tiling" || name === "tile") this._showTiling();
     else if (name === "bottlenecks") this._showBottlenecks();
     else if (name === "shaders") void this._analyzeShaders();
     else if (name === "stats" || name.startsWith("stats:")) {
