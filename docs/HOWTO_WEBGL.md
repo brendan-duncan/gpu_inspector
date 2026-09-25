@@ -15,8 +15,7 @@ different layers:
 
 Pick Chromium to measure, replay or edit a frame. Pick Firefox to see the calls the page made.
 
-This was checked on Windows against the [WebGL Aquarium](https://webglsamples.org/aquarium/aquarium.html)
-in Chrome and Firefox. In each browser the frame has the same ~614 draws.
+![WebGL Capture](images/WebGL_Capture.png)
 
 ## Steps
 
