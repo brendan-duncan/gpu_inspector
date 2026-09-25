@@ -124,12 +124,19 @@ interpreter and re-created pipelines.
       buffer's device address to a buffer, reads the set's memory through the application's own
       mapping and decodes it into an ordinary descriptor set snapshot, so a draw bound that way
       shows its bindings and their contents like any other. `test/triangle --descriptor-buffer`.
-- [ ] Descriptor buffers the layer cannot read: memory with no host mapping (a device-local
-      descriptor buffer filled by a staging copy) and descriptors made before it attached. Both are
-      reported as unread rather than guessed at. Reading the first needs the buffer copied back the
-      way a captured buffer range is, and then decoded once the copy has landed rather than at
-      record time; the second cannot be recovered at all, since the bytes say nothing about what
-      they name.
+- [x] Descriptor buffers in memory with no host mapping (a device-local descriptor buffer filled by
+      a staging copy): the set's bytes are copied back where the bind runs, as a captured buffer
+      range is, and the bind carries a placeholder set (`CaptureManager::DeferredSetJson`) until the
+      finish, which decodes the bytes and puts the set in its place (`ResolveDescriptorBuffers`,
+      beside the trace tables' `ResolveRecordAddresses`). What the decoded descriptors name is read
+      back then too, buffers and images alike, so it is what the frame left there -- the same
+      compromise the trace tables' addresses make. `test/triangle --device-local-descriptors` binds
+      the same set as `--descriptor-buffer` from device-local memory: the capture's snapshot matches
+      that of the host-visible one, with the uniform buffer and the 8x8 texture's four mips read
+      back, and the validation layer (synchronization too) reports nothing but the triangle's own
+      depth hazard.
+- [ ] Descriptor buffer descriptors made before the layer attached: reported as unread, and not
+      recoverable, since the bytes say nothing about what they name.
 - [ ] Sampled images bound through shader objects.
 
 ### Inspect

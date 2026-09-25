@@ -2544,9 +2544,12 @@ void Hook_vkCmdBindDescriptorBuffersEXT(VkCommandBuffer commandBuffer, uint32_t 
  *
  * This is where a descriptor buffer's sets become bound, so it is the counterpart of
  * vkCmdBindDescriptorSets and snapshots at the same moment: what the memory held when the command
- * was recorded. A set whose memory cannot be read here, or whose layout is unknown, is written with
- * no bindings rather than left out, so the capture says the set was bound and that its contents
- * could not be read — which is different from a draw that bound nothing.
+ * was recorded. Memory with no host mapping (a device-local buffer filled by a copy) cannot be
+ * read then: its bytes are copied back where the command runs, and the set is decoded when the
+ * capture finishes (CaptureManager::ResolveDescriptorBuffers), in place of a placeholder. A set
+ * that cannot be read either way, or whose layout is unknown, is written with no bindings rather
+ * than left out, so the capture says the set was bound and that its contents could not be read —
+ * which is different from a draw that bound nothing.
  */
 static void SnapshotDescriptorBufferSets(VkCommandBuffer commandBuffer, VkPipelineBindPoint bindPoint,
     VkPipelineLayout layout, uint32_t firstSet, uint32_t setCount)
@@ -2573,6 +2576,16 @@ static void SnapshotDescriptorBufferSets(VkCommandBuffer commandBuffer, VkPipeli
         if (setLayout && tracker.SetSource(commandBuffer, bindPoint, set, buffer, offset) && tracker.LayoutSize(dev, setLayout, size))
         {
             bytes = ResourceRegistry::Get().HostPointer(buffer, offset, size);
+            if (!bytes)
+            {
+                CaptureManager& capture = CaptureManager::Get();
+                if (const uint32_t id = capture.QueueBufferCapture(dev, rec, buffer, offset, size, true))
+                {
+                    capture.NoteDeferredDescriptorSet(dev, set, setLayout, id);
+                    w.Raw(CaptureManager::DeferredSetJson(set, id));
+                    continue;
+                }
+            }
         }
         if (!bytes || !tracker.Decode(dev, setLayout, bytes, (size_t)size, c))
         {

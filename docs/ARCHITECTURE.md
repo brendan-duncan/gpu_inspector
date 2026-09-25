@@ -1081,9 +1081,9 @@ bound — and the transfer commands, which name their two ends outright. What a 
 resolve it counts rather than guesses at: bindings through shader objects or Metal's argument
 buffers are not in the capture, and the view says the graph is a lower bound on the frame's edges
 instead of implying those passes read nothing. Descriptor buffers used to be in that group and are
-now decoded (`src/vulkan/src/descriptor_buffer.h`), arriving as an ordinary set snapshot; only one
-the layer could not read — memory it had no host mapping for, or descriptors made before it
-attached — still counts as hidden. Storage bindings are counted
+now decoded (`src/vulkan/src/descriptor_buffer.h`), arriving as an ordinary set snapshot, from
+memory the host maps or, read back and decoded when the capture finishes, memory it does not;
+only descriptors made before the layer attached still count as hidden. Storage bindings are counted
 read-write for the same reason — without shader reflection a read-only storage buffer is
 indistinguishable from one the shader writes — and the view says so.
 

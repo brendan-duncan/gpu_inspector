@@ -4,6 +4,7 @@
 #include "pipeline_stats.h"
 
 #include "depth_resolve.h"
+#include "descriptor_buffer.h"
 
 #include "frame_pause.h"
 #include "image_readback.h"
@@ -437,6 +438,7 @@ void CaptureManager::Finish(DeviceData* dev)
     // bytes say (ResolveRecordAddresses), and the copies that makes are mapped in turn.
     MapStaging();
     ResolveRecordAddresses();
+    ResolveDescriptorBuffers();
     MapStaging();
     SendCommands();
     SendTextures(dev);
@@ -485,6 +487,8 @@ void CaptureManager::Finish(DeviceData* dev)
     _passTimings.clear();
     _pendingTraces.clear();
     _lateExtras.clear();
+    _pendingDescriptorSets.clear();
+    _lateSets.clear();
     _state = State::Idle;
     Log("capture sent");
 }
@@ -625,6 +629,12 @@ void CaptureManager::SendCommands()
                         emit(s.frame, name, "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra + late->second, slot++);
                         continue;
                     }
+                }
+                // A set bound from a descriptor buffer the host could not read was decoded at the finish.
+                if (!_lateSets.empty() && c.extra.find("\"descriptorBufferRead\":") != std::string::npos)
+                {
+                    emit(s.frame, name, "VkCommandBuffer", cb.commandBufferId, c.args, c.result, ReplaceDeferredSets(c.extra), slot++);
+                    continue;
                 }
                 emit(s.frame, name, "VkCommandBuffer", cb.commandBufferId, c.args, c.result, c.extra, slot++);
             }
@@ -1065,6 +1075,12 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
 {
     if (!rec || !view || !IsCapturing() || !_options.captureImages)
         return 0;
+    return ImageViewCapture(dev, rec, view, layout, nullptr);
+}
+
+uint32_t CaptureManager::ImageViewCapture(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageLayout layout,
+    std::vector<PendingImageCopy>* finish)
+{
     {
         std::lock_guard lock(_mutex);
         auto it = _imageCaptureByView.find((uint64_t)(uintptr_t)view);
@@ -1087,6 +1103,11 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     tc.aspect = aspects & VK_IMAGE_ASPECT_DEPTH_BIT ? VK_IMAGE_ASPECT_DEPTH_BIT
         : aspects & VK_IMAGE_ASPECT_STENCIL_BIT     ? VK_IMAGE_ASPECT_STENCIL_BIT
                                                     : VK_IMAGE_ASPECT_COLOR_BIT;
+    // The finish reads the image where the frame left it, so the layout it was left in counts over
+    // the one the descriptor promised.
+    VkImageLayout current = VK_IMAGE_LAYOUT_UNDEFINED;
+    if (finish && LayoutTracker::Get().GetLayout(vi.image, current) && current != VK_IMAGE_LAYOUT_UNDEFINED)
+        layout = current;
     if (layout == VK_IMAGE_LAYOUT_UNDEFINED || layout == VK_IMAGE_LAYOUT_PREINITIALIZED)
     {
         if (!LayoutTracker::Get().GetLayout(vi.image, layout))
@@ -1094,7 +1115,7 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
     }
     // Every mip of the view, back to back (each mip: its layers), so the viewer can show them.
     const uint32_t mips = vi.range.levelCount == VK_REMAINING_MIP_LEVELS ? img.mipLevels - tc.mip : vi.range.levelCount;
-    const uint32_t id = QueueImageCopy(dev, rec, vi.image, img, tc, mips, layout);
+    const uint32_t id = QueueImageCopy(dev, rec, vi.image, img, tc, mips, layout, finish);
     // Every later binding of the same view in this capture refers to it, failed or pending.
     std::lock_guard lock(_mutex);
     _imageCaptureByView[(uint64_t)(uintptr_t)view] = id;
@@ -1102,7 +1123,7 @@ uint32_t CaptureManager::QueueImageCapture(DeviceData* dev, CommandRecorder* rec
 }
 
 uint32_t CaptureManager::QueueImageCopy(DeviceData* dev, CommandRecorder* rec, VkImage image, const ImageInfo& img, TextureCapture tc,
-    uint32_t mips, VkImageLayout layout)
+    uint32_t mips, VkImageLayout layout, std::vector<PendingImageCopy>* finish)
 {
     tc.recorded = false;
     tc.imageId = Tracker::Get().Resolve(HT_VkImage, (uint64_t)(uintptr_t)image);
@@ -1202,9 +1223,9 @@ uint32_t CaptureManager::QueueImageCopy(DeviceData* dev, CommandRecorder* rec, V
             t.note = "depth resolve views could not be created";
             return id;
         }
-        rec->pendingImages().push_back(p);
+        (finish ? *finish : rec->pendingImages()).push_back(p);
     }
-    if (!rec->InsidePass())
+    if (rec && !rec->InsidePass())
         FlushImageCopies(dev, rec);
     return id;
 }
@@ -1838,6 +1859,8 @@ void RecordImageCopy(DeviceData* dev, VkCommandBuffer cb, const PendingImageCopy
 bool CaptureManager::AllocateResolveImage(DeviceData* dev, const ImageInfo& img, uint32_t mip, uint32_t layers, VkImage* out)
 {
     DeviceCapture* dc = CaptureFor(dev);
+    if (!dc && _finishCopies && dev)
+        dc = FindCapture(dev->device);
     if (!dc)
         return false;
     ResolveImage ri;
@@ -2199,6 +2222,162 @@ void CaptureManager::ResolveRecordAddresses()
             {
                 bc.failed = true;
                 bc.note = "read-back of a buffer a shader record's address names failed";
+            }
+        }
+    }
+}
+
+void CaptureManager::NoteDeferredDescriptorSet(DeviceData* dev, uint32_t set, VkDescriptorSetLayout layout, uint32_t capture)
+{
+    if (!dev || !capture)
+        return;
+    std::lock_guard lock(_mutex);
+    _pendingDescriptorSets.push_back({dev, set, layout, capture});
+}
+
+std::string CaptureManager::DeferredSetJson(uint32_t set, uint32_t capture)
+{
+    return "{\"set\":" + std::to_string(set) + ",\"descriptorBufferRead\":" + std::to_string(capture) + ",\"bindings\":[]}";
+}
+
+std::string CaptureManager::ReplaceDeferredSets(const std::string& extra) const
+{
+    // Each placeholder is DeferredSetJson's object: from its "set" to the end of its empty bindings.
+    std::string out;
+    size_t from = 0;
+    for (size_t at = extra.find("\"descriptorBufferRead\":"); at != std::string::npos;
+         at = extra.find("\"descriptorBufferRead\":", at + 1))
+    {
+        const size_t begin = extra.rfind("{\"set\":", at);
+        const size_t end = extra.find("]}", at);
+        if (begin == std::string::npos || begin < from || end == std::string::npos)
+            continue;
+        auto decoded = _lateSets.find(extra.substr(begin, end + 2 - begin));
+        if (decoded == _lateSets.end())
+            continue;
+        out.append(extra, from, begin - from);
+        out += decoded->second;
+        from = end + 2;
+    }
+    out.append(extra, from, std::string::npos);
+    return out;
+}
+
+void CaptureManager::ResolveDescriptorBuffers()
+{
+    std::vector<PendingDescriptorSet> sets;
+    {
+        std::lock_guard lock(_mutex);
+        sets.swap(_pendingDescriptorSets);
+    }
+    if (sets.empty())
+        return;
+    _finishCopies = true;
+    struct Reset
+    {
+        bool& flag;
+        ~Reset() { flag = false; }
+    } reset{_finishCopies};
+    std::unordered_map<DeviceData*, std::vector<PendingBufferCopy>> buffers;
+    std::unordered_map<DeviceData*, std::vector<PendingImageCopy>> images;
+    for (const PendingDescriptorSet& p : sets)
+    {
+        const std::string placeholder = DeferredSetJson(p.set, p.capture);
+        if (_lateSets.count(placeholder))
+            continue;
+        const uint8_t* bytes = nullptr;
+        VkDeviceSize size = 0;
+        {
+            std::lock_guard lock(_mutex);
+            if (p.capture > _buffers.size())
+                continue;
+            const BufferCapture& bc = _buffers[p.capture - 1];
+            if (!bc.recorded || bc.failed || bc.frame == UINT32_MAX)
+                continue;
+            for (auto& [device, dc] : _devices)
+                if (device == bc.device && bc.stagingIndex < dc->staging.size() && dc->staging[bc.stagingIndex].mapped)
+                    bytes = static_cast<const uint8_t*>(dc->staging[bc.stagingIndex].mapped) + bc.stagingOffset;
+            size = bc.size;
+        }
+        DescriptorSetContents c;
+        if (!bytes || !DescriptorBufferTracker::Get().Decode(p.dev, p.layout, bytes, (size_t)size, c))
+            continue;
+        // What the descriptors name, read back as the bound sets' are (CaptureSetBuffers in hooks.cpp).
+        std::vector<std::vector<uint32_t>> ids(c.bindings.size());
+        for (size_t bi = 0; bi < c.bindings.size(); ++bi)
+        {
+            const DescriptorBinding& b = c.bindings[bi];
+            ids[bi].assign(b.entries.size(), 0);
+            for (size_t k = 0; k < b.entries.size(); ++k)
+            {
+                const DescriptorEntry& e = b.entries[k];
+                if (!e.written)
+                    continue;
+                if (IsBufferDescriptor(b.type) && e.buffer && _options.captureBuffers)
+                {
+                    PendingBufferCopy copy;
+                    std::vector<PendingBufferCopy>& mine = buffers[p.dev];
+                    ids[bi][k] = PrepareBufferCopy(p.dev, e.buffer, e.offset, DescriptorBufferRange(e), false, &mine, copy);
+                    if (copy.staging)
+                        mine.push_back(copy);
+                }
+                else if (IsImageDescriptor(b.type) && e.imageView && _options.captureImages)
+                {
+                    ids[bi][k] = ImageViewCapture(p.dev, nullptr, e.imageView, e.imageLayout, &images[p.dev]);
+                }
+            }
+        }
+        JsonWriter w(&Tracker::Get());
+        uint32_t dynamicIndex = 0;
+        WriteDescriptorSetJson(w, p.set, VK_NULL_HANDLE, c, nullptr, 0, dynamicIndex, &ids);
+        _lateSets[placeholder] = w.str();
+    }
+    // The copies, now, in one submission per device behind the frame's last.
+    std::vector<DeviceData*> devices;
+    for (auto& [dev, list] : buffers)
+        devices.push_back(dev);
+    for (auto& [dev, list] : images)
+        if (!buffers.count(dev))
+            devices.push_back(dev);
+    for (DeviceData* dev : devices)
+    {
+        const std::vector<PendingBufferCopy>& bufferList = buffers[dev];
+        const std::vector<PendingImageCopy>& imageList = images[dev];
+        if (bufferList.empty() && imageList.empty())
+            continue;
+        DeviceCapture* dc = FindCapture(dev->device);
+        const VkResult res = dc && dc->lastQueue ? SubmitReadBack(dev, dc->lastQueue, [&](VkCommandBuffer cb) {
+            if (!bufferList.empty())
+                RecordBufferCopies(dev, cb, bufferList);
+            for (const PendingImageCopy& copy : imageList)
+                RecordImageCopy(dev, cb, copy);
+        })
+                                                 : VK_ERROR_INITIALIZATION_FAILED;
+        std::lock_guard lock(_mutex);
+        for (const PendingBufferCopy& copy : bufferList)
+        {
+            if (copy.captureId == 0 || copy.captureId > _buffers.size())
+                continue;
+            BufferCapture& bc = _buffers[copy.captureId - 1];
+            bc.recorded = true;
+            bc.frame = 0;
+            if (res != VK_SUCCESS)
+            {
+                bc.failed = true;
+                bc.note = "read-back of a buffer a descriptor buffer's set names failed";
+            }
+        }
+        for (const PendingImageCopy& copy : imageList)
+        {
+            if (copy.captureId == 0 || copy.captureId > _textures.size())
+                continue;
+            TextureCapture& tc = _textures[copy.captureId - 1];
+            tc.recorded = true;
+            tc.frame = 0;
+            if (res != VK_SUCCESS)
+            {
+                tc.failed = true;
+                tc.note = "read-back of an image a descriptor buffer's set names failed";
             }
         }
     }

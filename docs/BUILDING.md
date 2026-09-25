@@ -152,6 +152,7 @@ differently or misbehave on purpose.
 | `--ray-tracing` | Builds both acceleration structures every frame and traces into a storage image |
 | `--shader-record` | Ray tracing with the hit record holding a tint buffer's device address, read through a buffer reference (implies `--ray-tracing`) |
 | `--descriptor-buffer` | Binds its set through `VK_EXT_descriptor_buffer` instead of a descriptor set |
+| `--device-local-descriptors` | `--descriptor-buffer`, with the descriptor buffer in device-local memory the host never maps, filled by a copy |
 | `--compile-hitch` | Builds a pipeline inside every frame, so the CPU timeline has a compile in it |
 | `--hitch-every <n>` | Stalls 100 ms inside every nth frame, in its own code, for **Capture on hitch** |
 | `--stall <ms>` | Sleeps each frame so vsynced presents miss refreshes, for the dropped-frame count |

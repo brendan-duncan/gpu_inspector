@@ -199,6 +199,9 @@ struct App
     // capture snapshots and the replay pushes again as plain writes.
     bool pushTemplate = false;
     bool descriptorBuffer = false;
+    // --device-local-descriptors: --descriptor-buffer, with the descriptor buffer in memory the host
+    // never maps, filled by a copy from a staging buffer, so the layer cannot read it where it is bound.
+    bool deviceLocalDescriptors = false;
     bool compileHitch = false;
     int hitchEvery = 0;       // --hitch-every N: stall 100 ms inside every Nth frame, for Capture on hitch
     int stallMs = 0;          // --stall <ms>: sleep this long every frame, so vsynced presents miss refreshes
@@ -1982,9 +1985,24 @@ struct App
             VkDeviceSize size = 0;
             db.layoutSize(device, setLayout, &size);
             CreateBuffer(size,
-                VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT,
-                host, db.buffer, db.memory, "Cube descriptors", true);
-            CHECK(vkMapMemory(device, db.memory, 0, VK_WHOLE_SIZE, 0, &db.mapped));
+                VK_BUFFER_USAGE_RESOURCE_DESCRIPTOR_BUFFER_BIT_EXT | VK_BUFFER_USAGE_SAMPLER_DESCRIPTOR_BUFFER_BIT_EXT |
+                    (deviceLocalDescriptors ? VK_BUFFER_USAGE_TRANSFER_DST_BIT : 0),
+                deviceLocalDescriptors ? VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT : host, db.buffer, db.memory, "Cube descriptors", true);
+            // The descriptors are written where the host can reach: the buffer itself, or a staging
+            // buffer copied into it below.
+            VkBuffer staging = VK_NULL_HANDLE;
+            VkDeviceMemory stagingMemory = VK_NULL_HANDLE;
+            void* target = nullptr;
+            if (deviceLocalDescriptors)
+            {
+                CreateBuffer(size, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, host, staging, stagingMemory, "Cube descriptor staging");
+                CHECK(vkMapMemory(device, stagingMemory, 0, VK_WHOLE_SIZE, 0, &target));
+            }
+            else
+            {
+                CHECK(vkMapMemory(device, db.memory, 0, VK_WHOLE_SIZE, 0, &db.mapped));
+                target = db.mapped;
+            }
             VkBufferDeviceAddressInfo bdai{VK_STRUCTURE_TYPE_BUFFER_DEVICE_ADDRESS_INFO};
             bdai.buffer = db.buffer;
             db.address = vkGetBufferDeviceAddress(device, &bdai);
@@ -1999,12 +2017,22 @@ struct App
             get.type = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER;
             get.data.pUniformBuffer = &uniform;
             db.bindingOffset(device, setLayout, 0, &at);
-            db.getDescriptor(device, &get, db.props.uniformBufferDescriptorSize, (char*)db.mapped + at);
+            db.getDescriptor(device, &get, db.props.uniformBufferDescriptorSize, (char*)target + at);
 
             get.type = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
             get.data.pCombinedImageSampler = &dii;
             db.bindingOffset(device, setLayout, 1, &at);
-            db.getDescriptor(device, &get, db.props.combinedImageSamplerDescriptorSize, (char*)db.mapped + at);
+            db.getDescriptor(device, &get, db.props.combinedImageSamplerDescriptorSize, (char*)target + at);
+            if (deviceLocalDescriptors)
+            {
+                VkCommandBuffer upload = BeginOneShot();
+                const VkBufferCopy region{0, 0, size};
+                vkCmdCopyBuffer(upload, staging, db.buffer, 1, &region);
+                EndOneShot(upload);
+                vkUnmapMemory(device, stagingMemory);
+                vkDestroyBuffer(device, staging, nullptr);
+                vkFreeMemory(device, stagingMemory, nullptr);
+            }
         }
 
         // Pipeline
@@ -2861,7 +2889,8 @@ struct App
         vkFreeMemory(device, indexMemory, nullptr);
         if (db.buffer)
         {
-            vkUnmapMemory(device, db.memory);
+            if (db.mapped)
+                vkUnmapMemory(device, db.memory);
             vkDestroyBuffer(device, db.buffer, nullptr);
             vkFreeMemory(device, db.memory, nullptr);
         }
@@ -2955,6 +2984,8 @@ int RunApp(int argc, char** argv)
             app.pushTemplate = true;
         else if (!strcmp(argv[i], "--descriptor-buffer"))
             app.descriptorBuffer = true;
+        else if (!strcmp(argv[i], "--device-local-descriptors"))
+            app.descriptorBuffer = app.deviceLocalDescriptors = true;
         else if (!strcmp(argv[i], "--compile-hitch"))
             app.compileHitch = true;
         else if (!strcmp(argv[i], "--hitch-every") && i + 1 < argc)

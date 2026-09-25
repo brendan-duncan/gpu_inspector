@@ -255,6 +255,16 @@ public:
      * (ResolveRecordAddresses). `key` is the extra the trace's command carries.
      */
     void NoteTraceTables(DeviceData* dev, std::string key, std::vector<TraceTable> tables);
+    /**
+     * A set bound through a descriptor buffer whose memory has no host mapping (a device-local buffer
+     * filled by a copy), so its bytes could not be read where it was bound. They were queued for
+     * read-back there, as buffer capture `capture`, and the set is decoded at the finish, once they
+     * have landed (ResolveDescriptorBuffers). The bind command carries DeferredSetJson's placeholder
+     * for it until then.
+     */
+    void NoteDeferredDescriptorSet(DeviceData* dev, uint32_t set, VkDescriptorSetLayout layout, uint32_t capture);
+    /** The placeholder a deferred set is written as, which SendCommands replaces with the decoded set. */
+    static std::string DeferredSetJson(uint32_t set, uint32_t capture);
     uint32_t QueueBufferCapture(DeviceData* dev, CommandRecorder* rec, VkBuffer buffer, VkDeviceSize offset,
         VkDeviceSize size, bool whole = false);
     // Which capture this is, counting from 1; a structure's build inputs remember the one they were
@@ -306,6 +316,25 @@ private:
      * _lateExtras (`recordAddresses`, by the extras NoteTraceTables was given).
      */
     void ResolveRecordAddresses();
+    /**
+     * The sets bound from descriptor buffers the host could not read (NoteDeferredDescriptorSet),
+     * decoded now that their bytes are mapped. What their descriptors name is read back now, from
+     * the end of the frame, as the trace tables' addresses are: buffers the frame does not change
+     * after the draw read them, and images, hold what the draw saw. Fills _lateSets.
+     */
+    void ResolveDescriptorBuffers();
+    struct PendingDescriptorSet
+    {
+        DeviceData* dev = nullptr;
+        uint32_t set = 0;
+        VkDescriptorSetLayout layout = VK_NULL_HANDLE;
+        uint32_t capture = 0;
+    };
+    std::vector<PendingDescriptorSet> _pendingDescriptorSets;          // guarded by _mutex
+    /** Placeholder -> the decoded set's JSON; the finish's only. */
+    std::unordered_map<std::string, std::string> _lateSets;
+    /** The descriptors' extra with every placeholder it holds replaced by what _lateSets decoded. */
+    std::string ReplaceDeferredSets(const std::string& extra) const;
     struct PendingTrace
     {
         std::string key;
@@ -324,8 +353,12 @@ private:
     // The capture record and pending copies of `tc.mip` .. + `mips` of an image (tc carries the
     // kind, the first layer, the layer count and the aspect); the texture capture id, of a failed
     // record when the copy cannot be made.
+    // `finish`: the copies go there instead of into the recorder (the finish's own read-backs).
     uint32_t QueueImageCopy(DeviceData* dev, CommandRecorder* rec, VkImage image, const ImageInfo& img, TextureCapture tc,
-        uint32_t mips, VkImageLayout layout);
+        uint32_t mips, VkImageLayout layout, std::vector<PendingImageCopy>* finish = nullptr);
+    // QueueImageCapture's work, for a recorder or (with `finish`) for the finish's own read-backs.
+    uint32_t ImageViewCapture(DeviceData* dev, CommandRecorder* rec, VkImageView view, VkImageLayout layout,
+        std::vector<PendingImageCopy>* finish);
     // Resets a query pair and writes its begin timestamp; UINT32_MAX when not profiling.
     uint32_t BeginTimestamp(DeviceData* dev, CommandRecorder* rec);
     // Resets and begins a pipeline statistics query over a render pass; UINT32_MAX when the

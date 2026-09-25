@@ -3,6 +3,8 @@
 ### Added
 - Vulkan overdraw, draw overlays, pixel history and **Measure shader** (`measure_shader_cost`) include draws bound with shader objects.
 - `test/triangle --mixed` draws one pass with both shader objects and a pipeline.
+- Vulkan captures decode descriptor buffers in memory the application never maps, such as a device-local buffer filled by a copy.
+- `test/triangle --device-local-descriptors` binds its set from a device-local descriptor buffer.
 
 ### Fixed
 - Vulkan pixel history binds a draw's own pipeline again after following it fragment by fragment.

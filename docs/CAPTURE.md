@@ -96,8 +96,11 @@ Selecting a command fills the right side with everything that was true at that p
   decoded into the types the shader declares. **Format** lets you override the type, and
   **Radix** the base. A set bound through a descriptor buffer (`VK_EXT_descriptor_buffer`) reads the
   same way: the descriptors are driver-defined bytes in the application's own memory, and the layer
-  decodes them by keeping every descriptor it saw the application ask the driver to make. One it
-  never saw made — built before the inspector attached — is shown as unread rather than guessed at.
+  decodes them by keeping every descriptor it saw the application ask the driver to make. A
+  descriptor buffer in memory the application never maps (device-local, filled by a copy) is read
+  back where the draw bound it and decoded when the capture finishes; the buffers and images its
+  descriptors name are then read as the frame left them. A descriptor it never saw made — built
+  before the inspector attached — is shown as unread rather than guessed at.
 - **Descriptor heap indexed by the shaders** (Direct3D 12) — when the draw's root signature lets its
   shaders take descriptors straight out of the heap (shader model 6.6, `ResourceDescriptorHeap[i]`),
   no root table says which slots they read, so every slot written by the draw's submission is
