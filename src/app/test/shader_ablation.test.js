@@ -2,7 +2,8 @@
 // answer of `vkinsp_replay --ablate` (src/renderer/shader_ablation.ts), and what a part is charged.
 //
 // vectors/ablation/heavy.frag.spv is test/triangle/heavy.frag (`glslc -g`): fbm (a loop of hash
-// calls), blurred (a loop of texture reads), and main combining them. reuse.frag.spv (`glslc -g`,
+// calls), blurred (a loop of texture reads), and main combining them. heavy.vert.spv is
+// test/triangle/heavy.vert (`glslc -g`): wobble (a loop of hash calls) displacing the position. reuse.frag.spv (`glslc -g`,
 // its source beside it) keeps two texture reads in one temporary, and branches on the first.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -25,9 +26,9 @@ const { encodeAblationRequest, parseAblationResult, measuredAblation, partShare 
 const { validateSpirv } = await load("main/shader_tools.ts", "shader_tools");
 
 const vector = (name) => new Uint8Array(readFileSync(join(here, "vectors", "ablation", name)));
-const plan = (name) => {
+const plan = (name, stage = "fragment") => {
   const spirv = vector(name);
-  return planAblation(spirv, "fragment", "main", analyzeSpirv(spirv), {});
+  return planAblation(spirv, stage, "main", analyzeSpirv(spirv), {});
 };
 
 test("a stage's functions, lines and textures each get a variant, and what control flow needs is left alone", () => {
@@ -42,6 +43,17 @@ test("a stage's functions, lines and textures each get a variant, and what contr
   // The octave's `p = p * 2.03` and `amplitude *= 0.5` feed the next iteration: taking them out would
   // let the compiler hoist the loop.
   for (const line of [34, 35]) assert.match(skipped.get(`heavy.frag:${line}`) ?? "", /other lines of its loop read every iteration/, `line ${line}`);
+});
+
+test("a vertex shader is measured whole, its position left out too: the replay times it without rasterization", () => {
+  const p = plan("heavy.vert.spv", "vertex");
+  const names = p.variants.map((v) => `${v.kind} ${v.name}`);
+  for (const expected of ["stage vertex: main", "function wobble(vf3;", "function hash(vf3;", "function shade(vf3;"]) {
+    assert.ok(names.includes(expected), `${expected} in ${names.join(", ")}`);
+  }
+  // Every output store goes: gl_Position's, fragColor's and fragUV's.
+  assert.equal(p.variants.find((v) => v.kind === "stage").edits, 3);
+  assert.ok(!p.skipped.some((s) => s.kind === "stage"), JSON.stringify(p.skipped));
 });
 
 test("a line's upstream names the parts whose values reach it", () => {
@@ -69,8 +81,8 @@ test("every variant passes spirv-val", async (t) => {
     t.skip("spirv-val not found (install the Vulkan SDK)");
     return;
   }
-  for (const name of ["heavy.frag.spv", "reuse.frag.spv"]) {
-    for (const v of plan(name).variants) assert.equal(await validateSpirv(v.spirv), null, `${name}: ${v.kind} ${v.name}`);
+  for (const [name, stage] of [["heavy.frag.spv", "fragment"], ["reuse.frag.spv", "fragment"], ["heavy.vert.spv", "vertex"]]) {
+    for (const v of plan(name, stage).variants) assert.equal(await validateSpirv(v.spirv), null, `${name}: ${v.kind} ${v.name}`);
   }
 });
 

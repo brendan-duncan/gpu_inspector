@@ -88,7 +88,8 @@ export interface FlameNode extends FlameGraphNodeBase<FlameNode> {
    */
   measured?: { savedMs: number; ownMs: number; share: number };
   /** Stage frames sized by an ablation: where it was measured and what the stage took there. */
-  ablation?: { command: number; stageMs: number; drawMs: number; noiseMs: number };
+  /** `rasterized` false: measured with rasterization discarded, so drawMs is the draw's work before it. */
+  ablation?: { command: number; stageMs: number; drawMs: number; noiseMs: number; rasterized?: boolean };
 }
 
 export interface CostTreeOptions {
@@ -470,7 +471,7 @@ function applyAblation(stageNode: FlameNode, a: ShaderAblation, entryFunctionId:
   };
   // The stage frame's children are its entry point's: its callees and its own lines.
   visit(stageNode, entryFunctionId);
-  stageNode.ablation = { command: a.command, stageMs: a.stageMs, drawMs: a.baselineMs, noiseMs: a.noiseMs };
+  stageNode.ablation = { command: a.command, stageMs: a.stageMs, drawMs: a.baselineMs, noiseMs: a.noiseMs, ...(a.rasterized === false ? { rasterized: false } : {}) };
   return true;
 }
 

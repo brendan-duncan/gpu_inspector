@@ -375,6 +375,15 @@ struct App
     // --heavy: the cube's fragment shader is heavy.frag, whose functions cost known amounts (the
     // Shader Flame Graph's measurements by ablation).
     bool heavy = false;
+    // --heavy-vertex: the cube's vertex shader is heavy.vert, whose functions cost known amounts, for
+    // measuring a vertex shader by ablation (on its own, or beside --heavy's fragment shader). The cube
+    // is drawn as kHeavyInstances instances in one place: 24 vertices are one batch whose latency a GPU
+    // hides behind the next draw, so their cost only shows in the throughput of many; the depth test
+    // rejects all but the first instance's fragments.
+    static constexpr uint32_t kHeavyInstances = 4096;
+    bool heavyVertex = false;
+    /** The cube's vertex shader. */
+    const char* VertexShader() const { return multiview ? "cube_mv.vert.spv" : layered ? "cube_layered.vert.spv" : heavyVertex ? "heavy.vert.spv" : "cube.vert.spv"; }
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -2165,7 +2174,7 @@ struct App
         }
 
         // Pipeline
-        VkShaderModule vs = LoadShader(multiview ? "cube_mv.vert.spv" : layered ? "cube_layered.vert.spv" : "cube.vert.spv");
+        VkShaderModule vs = LoadShader(VertexShader());
         VkShaderModule fs = LoadShader(heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv");
         // The vertex and fragment stages, then --tessellation's and --geometry's.
         VkPipelineShaderStageCreateInfo stages[5]{};
@@ -2317,7 +2326,7 @@ struct App
         if (shaderObject)
         {
             // The same code as linked shader objects, with the pipeline layout's set layout and push constants.
-            std::vector<char> vcode = ReadFile(ExeDir() + (multiview ? "cube_mv.vert.spv" : layered ? "cube_layered.vert.spv" : "cube.vert.spv"));
+            std::vector<char> vcode = ReadFile(ExeDir() + VertexShader());
             std::vector<char> fcode = ReadFile(ExeDir() + (heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv"));
             VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
             // Linked in stage order: vertex, [tessellation control, evaluation], [geometry], fragment.
@@ -2855,8 +2864,8 @@ struct App
         vkCmdBindIndexBuffer(cb, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
         float tint = 0.5f + 0.5f * sinf(t);
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
-        // --layered: an instance per layer.
-        const uint32_t instances = layered ? 2 : 1;
+        // --layered: an instance per layer; --heavy-vertex: many in one place.
+        const uint32_t instances = layered ? 2 : heavyVertex ? kHeavyInstances : 1;
         vkCmdDrawIndexed(cb, insideOut ? 18 : 36, instances, 0, 0, 0);
         if (mixed)
         {
@@ -3267,6 +3276,8 @@ int RunApp(int argc, char** argv)
             app.persistent = true;
         else if (!strcmp(argv[i], "--heavy"))
             app.heavy = true;
+        else if (!strcmp(argv[i], "--heavy-vertex"))
+            app.heavyVertex = true;
         else if (!strcmp(argv[i], "--msaa"))
             app.samples = VK_SAMPLE_COUNT_4_BIT;
         else if (!strcmp(argv[i], "--offscreen"))

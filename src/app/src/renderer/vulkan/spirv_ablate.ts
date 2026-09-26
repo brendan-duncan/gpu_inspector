@@ -827,14 +827,16 @@ export function planAblation(spirv: Uint8Array, stage: ShaderStage, entryPoint: 
   let stageVariant: AblationVariant | null = null;
 
   // The stage: its outputs are not written. A fragment shader keeps the depth and sample mask it
-  // writes (they change which fragments are shaded at all), a vertex shader its position.
+  // writes (they change which fragments are shaded at all). A stage before rasterization loses its
+  // position too: the replay times it with rasterization discarded (ablation.cpp), so what it
+  // rasterizes changes nothing that is timed.
   {
     const part: AblationPart = { kind: "stage", name: `${stage}: ${entry.name}` };
     const outputs = new Set<number>();
     for (const v of moduleEntry.interface) {
       if (m.variableClass.get(v) !== StorageClass.Output) continue;
       const builtIn = m.builtIns.get(v);
-      if (builtIn === BuiltIn.FragDepth || builtIn === BuiltIn.SampleMask || builtIn === BuiltIn.Position) continue;
+      if (builtIn === BuiltIn.FragDepth || builtIn === BuiltIn.SampleMask) continue;
       outputs.add(v);
     }
     const remove = new Set<Instruction>();
@@ -848,8 +850,7 @@ export function planAblation(spirv: Uint8Array, stage: ShaderStage, entryPoint: 
         remove.add(ins);
       }
     }
-    if (stage !== "fragment" && stage !== "compute") plan.skipped.push({ ...part, reason: "only fragment and compute stages are measured whole: a vertex shader's outputs decide what is rasterized" });
-    else if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
+    if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
     else stageVariant = { ...part, spirv: rewrite(m, stage, moduleEntry.index, new Set(), remove), edits: remove.size, upstream: [] };
   }
 

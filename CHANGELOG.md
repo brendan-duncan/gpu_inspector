@@ -19,8 +19,11 @@
 - The shader debugger steps Vulkan geometry and tessellation shaders, and checks their results against the GPU's.
 - The mesh view's GS Out and DS Out name the primitive, invocation and `gl_TessCoord` behind each vertex, and **Debug** opens the invocation that wrote it.
 - `debug_shader` takes the `geometry`, `tess_control` and `tess_eval` stages.
+- **Measure shader** measures a Vulkan vertex shader whole, not only its functions and lines.
+- `test/triangle --heavy-vertex` draws the cube with a costly vertex shader, as many instances.
 
 ### Fixed
+- **Measure shader** no longer charges a vertex shader for the rasterization and fragment work a variant stopped.
 - Vulkan mesh output of a draw writing `gl_Layer` no longer draws into a single-layer framebuffer.
 - Vulkan pixel history no longer crashes the replay on a multiview pass.
 - Vulkan pixel history binds a draw's own pipeline again after following it fragment by fragment.

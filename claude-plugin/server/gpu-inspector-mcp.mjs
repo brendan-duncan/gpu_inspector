@@ -3184,6 +3184,7 @@ function parseAblationResult(input) {
       passIndex: num4(t.passIndex),
       rounds: num4(t.rounds),
       baseline: timing(t.baseline),
+      ...t.rasterized === false ? { rasterized: false } : {},
       variants: (Array.isArray(t.variants) ? t.variants : []).map(timing),
       ...typeof t.note === "string" ? { note: t.note } : {}
     };
@@ -3218,7 +3219,8 @@ function measuredAblation(pipeline, stage, entryPoint, plan, result, device) {
     stageMs: null,
     parts: [],
     skipped: plan.skipped,
-    ...result.note ? { note: result.note } : {}
+    ...result.note ? { note: result.note } : {},
+    ...result.rasterized === false ? { rasterized: false } : {}
   };
   const saved = plan.variants.map((_, i) => {
     const timing = result.variants[i];
@@ -8665,7 +8667,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
     for (const v of moduleEntry.interface) {
       if (m.variableClass.get(v) !== 3 /* Output */) continue;
       const builtIn = m.builtIns.get(v);
-      if (builtIn === 22 /* FragDepth */ || builtIn === 20 /* SampleMask */ || builtIn === 0 /* Position */) continue;
+      if (builtIn === 22 /* FragDepth */ || builtIn === 20 /* SampleMask */) continue;
       outputs.add(v);
     }
     const remove = /* @__PURE__ */ new Set();
@@ -8679,8 +8681,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
         remove.add(ins);
       }
     }
-    if (stage !== "fragment" && stage !== "compute") plan.skipped.push({ ...part, reason: "only fragment and compute stages are measured whole: a vertex shader's outputs decide what is rasterized" });
-    else if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
+    if (!remove.size) plan.skipped.push({ ...part, reason: "the stage writes no outputs that can be left out" });
     else stageVariant = { ...part, spirv: rewrite(m, stage, moduleEntry.index, /* @__PURE__ */ new Set(), remove), edits: remove.size, upstream: [] };
   }
   for (const f of entry2.functions.filter((fn) => fn.id !== entry2.functionId).slice(0, limits.functions ?? 16)) {
@@ -32852,7 +32853,7 @@ function applyAblation(stageNode, a, entryFunctionId) {
     if (n.kind === "function") n.selfCost = Math.max(0, n.totalCost - n.children.reduce((acc, c2) => acc + c2.totalCost, 0));
   };
   visit(stageNode, entryFunctionId);
-  stageNode.ablation = { command: a.command, stageMs: a.stageMs, drawMs: a.baselineMs, noiseMs: a.noiseMs };
+  stageNode.ablation = { command: a.command, stageMs: a.stageMs, drawMs: a.baselineMs, noiseMs: a.noiseMs, ...a.rasterized === false ? { rasterized: false } : {} };
   return true;
 }
 function buildFrameCostTree(o) {
@@ -33277,6 +33278,7 @@ var COST_MODEL = "Modeled cost of one invocation, not a measurement: instruction
 var FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
 var FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 var FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
+var BEFORE_RASTERIZATION = "This stage runs before rasterization, so the draw was timed with rasterization discarded, as captured and in every variant: drawMs is the draw's work up to rasterization, not the draw as captured, and nothing the stage's outputs change about what is rasterized is counted.";
 var ABLATION_MEANING = "Measured on this machine's GPU, per draw: drawMs is the draw as captured (the median of the rounds), stageMs what it saved with the stage's outputs left out, and savedMs what it saved with that function's calls or that line's values replaced. Taking a part out takes along the work that only feeds it, so a line's ownMs is what it saved beyond the costliest measured part feeding it: what the line does itself. share is a function's savedMs, or a line's ownMs, over stageMs. Savings within noiseMs are noise.";
 var SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"];
 var CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"];
@@ -34145,7 +34147,7 @@ function resourceTools(store) {
     },
     {
       name: "measure_shader_cost",
-      description: "Measure what the functions and source lines of a Vulkan draw's (or dispatch's) shader cost, by ablation, where analyze_shaders and the flame graph only model it. The capture is replayed on this machine's GPU with the draw issued again, right before it runs, with variants of one stage of its pipeline (or of the shader object bound for that stage): each has one function or one source line made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work that only feeds it, so shares add up to more than the stage. The measurement is kept with the open capture, and get_shader_flame_graph then sizes that stage's functions and lines by it. Takes seconds; needs vkinsp_replay built.",
+      description: "Measure what the functions and source lines of a Vulkan draw's (or dispatch's) shader cost, by ablation, where analyze_shaders and the flame graph only model it. The capture is replayed on this machine's GPU with the draw issued again, right before it runs, with variants of one stage of its pipeline (or of the shader object bound for that stage): each has one function or one source line made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. A vertex shader is timed with rasterization discarded, as captured and in every variant, so what it saves is vertex work: a variant that moves its position would otherwise take the fragment work of every pixel it no longer covers with it. Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work that only feeds it, so shares add up to more than the stage. The measurement is kept with the open capture, and get_shader_flame_graph then sizes that stage's functions and lines by it. Takes seconds; needs vkinsp_replay built.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch (a command index). Default: the costliest stage of the frame in the flame graph." },
@@ -34249,7 +34251,8 @@ function resourceTools(store) {
           device: measured.device,
           rounds: measured.rounds,
           drawsPerTimedSpan: measured.repeat,
-          meaning: ABLATION_MEANING,
+          meaning: measured.rasterized === false ? `${ABLATION_MEANING} ${BEFORE_RASTERIZATION}` : ABLATION_MEANING,
+          rasterized: measured.rasterized === false ? false : void 0,
           drawMs: round(measured.baselineMs),
           noiseMs: round(measured.noiseMs),
           stageMs: measured.stageMs === null ? void 0 : round(measured.stageMs),

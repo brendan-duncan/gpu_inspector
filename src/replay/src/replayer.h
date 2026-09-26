@@ -254,6 +254,11 @@ struct AblationResult
     uint32_t passIndex = 0;
     uint32_t rounds = 0;
     uint32_t repeat = 1;
+    /**
+     * False for a stage before rasterization (vertex, tessellation, geometry): the baseline and the
+     * variants were timed with rasterization discarded, so the times are that stage's work alone.
+     */
+    bool rasterized = true;
     AblationTiming baseline;
     std::vector<AblationTiming> variants;
     std::string note;
@@ -1130,6 +1135,8 @@ private:
         /** The commands that set the depth write enable and the stencil write mask, restored after an ablation changes them. */
         std::vector<uint32_t> depthWriteCommands;
         std::vector<uint32_t> stencilWriteCommands;
+        /** The command that set rasterizer discard, restored after an ablation of a stage before rasterization. */
+        std::vector<uint32_t> rasterizerDiscardCommands;
     };
     static void NoteStreamCommand(StreamState& stream, const std::string& method, const JValue& args, uint32_t index);
 

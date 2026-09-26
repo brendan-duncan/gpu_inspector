@@ -546,8 +546,8 @@ shader taken out: the time it saves is the part's cost.
 **The variants.** `src/app/src/renderer/vulkan/spirv_ablate.ts` writes the variants of a stage, and
 spirv-val checks each one before any reaches the driver:
 
-- **The stage**, with its outputs left out (fragment and compute stages only: a vertex stage
-  decides what is rasterized).
+- **The stage**, with its outputs left out. A fragment shader keeps the depth and sample mask it
+  writes; a vertex shader loses its position too, since it is timed without rasterization (below).
 - **Each function**, with its calls removed or their results replaced.
 - **Each source line**, with the values it computes replaced. This needs line information.
 - **Each texture**, with every read of it replaced.
@@ -580,6 +580,24 @@ variant:
 - A variant's time is the median of its rounds.
 
 The captured pipeline or shader object is then bound again, and the draw runs as recorded.
+
+**A stage before rasterization** (vertex, tessellation, geometry) is timed with rasterization
+discarded, as captured and in every variant: the pipeline copies have `rasterizerDiscardEnable` and
+no fragment stage, and a shader-object draw sets rasterizer discard, then gets its own setting
+back. Its outputs decide what is rasterized, so with rasterization on, a variant that moved the
+position (the line that writes `gl_Position`, or any line feeding it) saved the fragment, raster
+and depth work of every pixel it no longer covered, and all of it was charged to the vertex code.
+The baseline is then the draw's work up to rasterization, and the answer says so
+(`"rasterized": false`).
+
+On `test/triangle --heavy-vertex` (a vertex shader running 2,000 octaves of hash noise, drawn as
+4,096 instances in one place), before this the line writing `gl_Position` saved 1.094 ms, the whole
+draw with its rasterization, and the noise function 0.129 ms, half hidden behind the raster work.
+Now the draw's vertex work is 0.259 ms, the stage 0.255 ms of it, the noise function 0.247 ms (97%),
+and the cheap `shade()` nothing, the same with shader objects. The rasterization of the 49,152
+overlapping triangles, 1 ms of the draw, is no longer charged to anything. A small mesh's vertex
+work does not show at all: 24 vertices are one batch, whose latency the GPU hides behind the next
+draw, and the timed span repeats the draw, so on `--heavy` the cube's vertex shader measures 0.
 
 ```
 vkinsp_replay heavy.gpucap --ablate request.bin

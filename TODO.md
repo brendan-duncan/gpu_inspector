@@ -616,8 +616,15 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Shader cost by ablation (`renderer/vulkan/spirv_ablate.ts`, `src/replay/src/ablation.cpp`,
       **Measure shader**, `measure_shader_cost`): a draw replayed with SPIR-V variants that leave out
       a function, a line or a texture, sizing the flame graph's measured stages.
+- [x] Ablation of vertex stages, timed with rasterization discarded (`src/replay/src/ablation.cpp`):
+      the baseline and every variant alike, so a variant that moves the position no longer saves the
+      raster and fragment work of the pixels it stops covering, and the stage is measured whole.
+      `test/triangle --heavy-vertex` checks it: the `gl_Position` line went from the whole draw
+      (1.094 ms, rasterization included) to its share of the vertex work (0.247 of 0.259 ms), the
+      noise function from 0.129 ms to 0.247 ms (97% of the stage), with shader objects the same.
 - [ ] Ablation, the rest:
-  - Vertex stages, which decide what is rasterized: time them with the fragment stage off.
+  - Tessellation and geometry stages in the app: the replay times them the same way, but the plan
+    has no replacement values for them (`sourceBuiltIn`) and `measure_shader_cost` does not offer them.
   - Parts inside control flow: measure a branch's arms by forcing the condition, rather than
     skipping everything a branch depends on.
   - More than one draw of a pipeline: several targets per request exist, but nothing sends them.

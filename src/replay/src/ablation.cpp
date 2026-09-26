@@ -32,12 +32,25 @@ namespace vkreplay
 // made again with each variant's code and bound in its place (the baseline is the draw's own), and the
 // depth and stencil writes, which are dynamic state for every such draw, are turned off the same way.
 //
+// A stage before rasterization (vertex, tessellation, geometry) is timed with rasterization discarded,
+// the baseline and every variant alike. Its outputs decide what is rasterized: a variant that loses
+// its position rasterizes nothing, and with the fragment stage running, the fragment work that goes
+// with it would be charged to the vertex code. Without rasterization, what a variant saves is that
+// stage's work, and the baseline is the draw's pre-rasterization work alone.
+//
 // A time is not what the draw costs alone (the GPU pipelines work, so a timestamp also sees what came
 // just before), but that is the same for every pipeline of a round, which is why the baseline is
 // issued in each round and a variant's cost is the difference of medians.
 
 namespace
 {
+
+/** Whether a stage runs before rasterization, and is timed with it discarded. */
+bool BeforeRasterization(VkShaderStageFlagBits stage)
+{
+    return stage == VK_SHADER_STAGE_VERTEX_BIT || stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT ||
+        stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT || stage == VK_SHADER_STAGE_GEOMETRY_BIT;
+}
 
 /** The stage bit a stage name means. */
 VkShaderStageFlagBits StageBit(const std::string& stage)
@@ -128,6 +141,10 @@ void Replayer::NoteStreamCommand(StreamState& stream, const std::string& method,
     else if (method == "vkCmdSetDepthWriteEnable" || method == "vkCmdSetDepthWriteEnableEXT")
     {
         stream.depthWriteCommands = {index};   // the last one is what is in effect
+    }
+    else if (method == "vkCmdSetRasterizerDiscardEnable" || method == "vkCmdSetRasterizerDiscardEnableEXT")
+    {
+        stream.rasterizerDiscardCommands = {index};
     }
     else if (method == "vkCmdSetStencilWriteMask")
     {
@@ -249,6 +266,21 @@ VkPipeline Replayer::AblationPipeline(uint64_t pipelineId, size_t target, int va
             {
                 s->module = module;
                 s->pNext = nullptr;
+            }
+            // Before rasterization: nothing rasterized, and so no fragment stage (see the top).
+            if (BeforeRasterization(stage))
+            {
+                if (!p.hasRasterization)
+                {
+                    p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
+                    p.rasterization.lineWidth = 1.0f;
+                    p.hasRasterization = true;
+                }
+                p.rasterization.rasterizerDiscardEnable = VK_TRUE;
+                p.RemoveDynamic({VK_DYNAMIC_STATE_RASTERIZER_DISCARD_ENABLE});
+                p.stages.erase(std::remove_if(p.stages.begin(), p.stages.end(),
+                                   [](const VkPipelineShaderStageCreateInfo& st) { return st.stage == VK_SHADER_STAGE_FRAGMENT_BIT; }),
+                    p.stages.end());
             }
             // No depth or stencil written: every issue meets the depth the draw itself meets. Where
             // the pipeline takes them dynamically, they are set before the issues instead.
@@ -379,6 +411,17 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
     }
     if (stencilDynamic)
         _fns.CmdSetStencilWriteMask(cb, VK_STENCIL_FACE_FRONT_AND_BACK, 0);
+    // A stage before rasterization is timed without it: a pipeline copy holds that, a shader-object
+    // draw sets it (and gets the application's own setting back after).
+    const auto setDiscard = _fns.CmdSetRasterizerDiscardEnable ? _fns.CmdSetRasterizerDiscardEnable : _fns.CmdSetRasterizerDiscardEnableEXT;
+    const bool discard = !compute && BeforeRasterization(stageBit);
+    if (discard && shaderObject)
+    {
+        if (!setDiscard)
+            return fail("rasterizer discard cannot be set for the shader objects, and a stage before rasterization is timed without it");
+        setDiscard(cb, VK_TRUE);
+    }
+    result.rasterized = !discard;
 
     ReplayFn fn = FindReplayCommand(method);
     const uint32_t rounds = result.rounds + 1;
@@ -420,9 +463,10 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
         _fns.CmdBindPipeline(cb, point, (VkPipeline)Handle(result.pipeline));
     // Only what the issues set dynamically: a state the pipeline holds statically must not be set
     // after it is bound, and the application's last setting of it was for an earlier pipeline.
-    for (const std::vector<uint32_t>* list : {&stream.depthWriteCommands, &stream.stencilWriteCommands})
+    for (const std::vector<uint32_t>* list : {&stream.depthWriteCommands, &stream.stencilWriteCommands, &stream.rasterizerDiscardCommands})
     {
-        if (list == &stream.depthWriteCommands ? !depthDynamic : !stencilDynamic)
+        const bool changed = list == &stream.depthWriteCommands ? depthDynamic : list == &stream.stencilWriteCommands ? stencilDynamic : discard && shaderObject;
+        if (!changed)
             continue;
         for (uint32_t i : *list)
         {

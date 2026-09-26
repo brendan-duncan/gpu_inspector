@@ -746,7 +746,7 @@ bool WriteAblationData(const ReplayReport& report, const std::string& path)
             ",\"pipeline\":" + std::to_string(a.pipeline) + (a.shaderObject ? ",\"shaderObject\":true" : "") +
             ",\"frame\":" + std::to_string(a.frame) + ",\"commandBuffer\":" +
             std::to_string(a.commandBuffer) + ",\"passIndex\":" + std::to_string(a.passIndex) + ",\"rounds\":" + std::to_string(a.rounds) + ",\"repeat\":" + std::to_string(a.repeat) +
-            ",\"baseline\":" + timing(a.baseline) + ",\"variants\":[";
+            (a.rasterized ? "" : ",\"rasterized\":false") + ",\"baseline\":" + timing(a.baseline) + ",\"variants\":[";
         for (size_t v = 0; v < a.variants.size(); ++v)
             json += (v ? "," : "") + timing(a.variants[v]);
         json += "]" + (a.note.empty() ? std::string() : ",\"note\":" + JsonString(a.note)) + "}";
@@ -774,7 +774,7 @@ void PrintAblations(const ReplayReport& report)
             std::printf("not measured: %s\n", a.note.c_str());
             continue;
         }
-        std::printf("%.4f ms as captured (median of %u rounds)\n", a.baseline.ms, a.rounds);
+        std::printf("%.4f ms %s (median of %u rounds)\n", a.baseline.ms, a.rasterized ? "as captured" : "with rasterization discarded", a.rounds);
         for (const AblationTiming& v : a.variants)
         {
             if (!v.measured)

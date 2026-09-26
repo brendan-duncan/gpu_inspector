@@ -66,6 +66,8 @@ export interface AblationTargetResult {
   commandBuffer: number;
   passIndex: number;
   rounds: number;
+  /** False where the stage runs before rasterization and was timed with it discarded. */
+  rasterized?: boolean;
   baseline: AblationTiming;
   variants: AblationTiming[];
   note?: string;
@@ -100,6 +102,7 @@ export function parseAblationResult(input: Uint8Array | string): AblationResultF
     return {
       command: num(t.command), stage: typeof t.stage === "string" ? t.stage : "", pipeline: num(t.pipeline), frame: num(t.frame),
       commandBuffer: num(t.commandBuffer), passIndex: num(t.passIndex), rounds: num(t.rounds), baseline: timing(t.baseline),
+      ...(t.rasterized === false ? { rasterized: false } : {}),
       variants: (Array.isArray(t.variants) ? t.variants : []).map(timing), ...(typeof t.note === "string" ? { note: t.note } : {}),
     };
   });
@@ -132,8 +135,12 @@ export interface ShaderAblation {
   rounds: number;
   /** Draws issued in each timed span. */
   repeat?: number;
-  /** The draw's time with the shader as captured (median of the rounds). */
+  /**
+   * The draw's time with the shader as captured (median of the rounds). For a stage before
+   * rasterization (`rasterized` false), the draw with rasterization discarded: that work alone.
+   */
   baselineMs: number;
+  rasterized?: boolean;
   /** How far apart the baseline's rounds were (the median absolute deviation): savings below it are noise. */
   noiseMs: number;
   /** What the stage's own work took: the baseline less the draw without the stage's outputs; null when not measured. */
@@ -179,6 +186,7 @@ export function measuredAblation(pipeline: number, stage: ShaderStage, entryPoin
     pipeline, stage, entryPoint, command: result.command, device, rounds: result.rounds, baselineMs: baseline.ms,
     noiseMs: medianAbsoluteDeviation(baseline.samples), stageMs: null, parts: [], skipped: plan.skipped,
     ...(result.note ? { note: result.note } : {}),
+    ...(result.rasterized === false ? { rasterized: false } : {}),
   };
   const saved = plan.variants.map((_, i) => {
     const timing = result.variants[i];

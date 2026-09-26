@@ -168,6 +168,7 @@ differently or misbehave on purpose.
 | `--bad-scissor` | A negative scissor offset, a validation error |
 | `--occluded` | Draws the cube twice in the same place, so every fragment is overdrawn |
 | `--heavy` | A costly fragment shader with known per-function costs, for shader analysis |
+| `--heavy-vertex` | A costly vertex shader with known per-function costs, the cube drawn as 4,096 instances in one place so its vertex work shows in a draw's throughput, for measuring a vertex shader by ablation |
 | `--churn` | A buffer made and freed every frame and one kept every 30th, for a Memory Capture to find |
 | `--capture-at <frame>` | Asks the inspector for a capture at that frame itself (`include/gpu_inspector.h`) |
 | `--msaa`, `--stencil` | Multisampled and stencil attachments, for the read-back paths |

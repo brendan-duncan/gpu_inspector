@@ -33,6 +33,9 @@ const COST_MODEL = "Modeled cost of one invocation, not a measurement: instructi
 const FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
 const FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 const FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
+/** How a stage before rasterization is measured, which changes what drawMs is. */
+const BEFORE_RASTERIZATION = "This stage runs before rasterization, so the draw was timed with rasterization discarded, as captured and in every variant: " +
+  "drawMs is the draw's work up to rasterization, not the draw as captured, and nothing the stage's outputs change about what is rasterized is counted.";
 const ABLATION_MEANING = "Measured on this machine's GPU, per draw: drawMs is the draw as captured (the median of the rounds), stageMs what it saved with the stage's outputs left out, and savedMs what it saved with that function's calls or that line's values replaced. Taking a part out takes along the work that only feeds it, so a line's ownMs is what it saved beyond the costliest measured part feeding it: what the line does itself. share is a function's savedMs, or a line's ownMs, over stageMs. Savings within noiseMs are noise.";
 const SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"] as const;
 const CHANNELS = ["rgb", "r", "g", "b", "a", "luminance"] as const;
@@ -910,6 +913,8 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         "again, right before it runs, with variants of one stage of its pipeline (or of the shader object bound for that stage): " +
         "each has one function or one source line " +
         "made constant, and the stage's outputs left out for its total. A part's cost is the time the draw saved without it. " +
+        "A vertex shader is timed with rasterization discarded, as captured and in every variant, so what it saves is vertex work: " +
+        "a variant that moves its position would otherwise take the fragment work of every pixel it no longer covers with it. " +
         "Answers the stage's measured time, and each function and line with the milliseconds it saved, its share of the " +
         "stage and the model's share beside it, with the code of each line. Parts overlap: taking one out also takes the work " +
         "that only feeds it, so shares add up to more than the stage. The measurement is kept with the open capture, and " +
@@ -1003,7 +1008,8 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         return jsonResult({
           capture: c.id, command, method: cmd.method, pipeline: state.pipeline ? programName : undefined, shaderObjects: state.pipeline ? undefined : programName, stage: model.stage, entryPoint: model.entryPoint,
           shader: refText(c.db, model.objectId), device: measured.device, rounds: measured.rounds, drawsPerTimedSpan: measured.repeat,
-          meaning: ABLATION_MEANING,
+          meaning: measured.rasterized === false ? `${ABLATION_MEANING} ${BEFORE_RASTERIZATION}` : ABLATION_MEANING,
+          rasterized: measured.rasterized === false ? false : undefined,
           drawMs: round(measured.baselineMs), noiseMs: round(measured.noiseMs),
           stageMs: measured.stageMs === null ? undefined : round(measured.stageMs),
           stageShareOfDraw: measured.stageMs !== null && measured.baselineMs > 0 ? round(Math.min(1, Math.max(0, measured.stageMs / measured.baselineMs))) : undefined,

@@ -148,7 +148,8 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
       if (n.confidence) lines.push(`Invocation count: ${n.confidence}`);
       if (n.dimension) lines.push(`Dominant cost: ${n.dimension.toUpperCase()}`);
       if (n.ablation) {
-        lines.push(`Measured by ablation at #${n.ablation.command}: the stage ${n.ablation.stageMs.toFixed(4)} ms of the draw's ${n.ablation.drawMs.toFixed(4)} ms (noise ${n.ablation.noiseMs.toFixed(4)} ms); its frames are sized by what they measured.`);
+        const of = n.ablation.rasterized === false ? `the draw's ${n.ablation.drawMs.toFixed(4)} ms with rasterization discarded` : `the draw's ${n.ablation.drawMs.toFixed(4)} ms`;
+        lines.push(`Measured by ablation at #${n.ablation.command}: the stage ${n.ablation.stageMs.toFixed(4)} ms of ${of} (noise ${n.ablation.noiseMs.toFixed(4)} ms); its frames are sized by what they measured.`);
       }
       if (n.measured) {
         const share = `${(n.measured.share * 100).toFixed(1)}% of the stage`;
