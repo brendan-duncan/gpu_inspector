@@ -242,6 +242,20 @@ export function activate(host: PluginHost): Backend {
     return new Map(list(s.attributes).map((a) => [num(a.location), str(a.name)]));
   };
 
+  /**
+   * A program's code: each shader it was linked from, with its source as it was at the link (the
+   * shaders themselves are usually deleted right after), or a separable program's one source.
+   */
+  const sourceSections = (d: ArgObject, collapsed: boolean): DetailSection[] => {
+    const out: DetailSection[] = [];
+    for (const stage of list(d.stages)) {
+      const kind = str(stage.type).replace(/^GL_/, "").replace(/_SHADER$/, "").toLowerCase();
+      out.push({ title: `${kind.charAt(0).toUpperCase()}${kind.slice(1)} Shader`, collapsed, code: { text: str(stage.source), language: "glsl" } });
+    }
+    if (d.source) out.push({ title: "Shader", collapsed, code: { text: str(d.source), language: "glsl" } });
+    return out;
+  };
+
   /** A program's stages: the shaders it was linked from, with their sources as they were at the link. */
   const programSections = (program: InspectorObject | null): DetailSection[] => {
     if (!program) return [{ title: "Program", note: "No program is in use." }];
@@ -254,12 +268,25 @@ export function activate(host: PluginHost): Backend {
         ...(str(d.infoLog).trim() ? [["Info log", str(d.infoLog).trim()] as [string, DetailValue]] : []),
       ],
     }];
-    for (const stage of list(d.stages)) {
-      const kind = str(stage.type).replace(/^GL_/, "").replace(/_SHADER$/, "").toLowerCase();
-      out.push({ title: `${kind.charAt(0).toUpperCase()}${kind.slice(1)} Shader`, collapsed: true, code: { text: str(stage.source), language: "glsl" } });
+    return [...out, ...sourceSections(d, true)];
+  };
+
+  /** The Inspect pane's sections: a program's shaders' source, a shader's own and its compile log. */
+  const objectDetails = (o: InspectorObject): DetailSection[] => {
+    const d = described(o);
+    if (o.type === "GLProgram") {
+      const out = sourceSections(d, false);
+      if (!out.length && d.fromBinary) out.push({ title: "Source", note: "Loaded from a program binary (glProgramBinary): the application gave no source." });
+      return out;
     }
-    if (d.source) out.push({ title: "Shader", collapsed: true, code: { text: str(d.source), language: "glsl" } });
-    return out;
+    if (o.type === "GLShader") {
+      const log = str(d.infoLog).trim();
+      return [
+        ...(log ? [{ title: "Compile Log", code: { text: log } }] : []),
+        ...(d.source !== undefined ? [{ title: "Source", code: { text: str(d.source), language: "glsl" } }] : []),
+      ];
+    }
+    return [];
   };
 
   /**
@@ -550,6 +577,7 @@ export function activate(host: PluginHost): Backend {
     drawState,
     vertexInputNames,
     commandDetails,
+    objectDetails,
     objectSummary,
     objectBytes,
     resourceSource,

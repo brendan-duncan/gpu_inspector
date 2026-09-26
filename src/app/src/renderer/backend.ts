@@ -112,6 +112,13 @@ export interface DetailContext {
   nameOf(id: number | null | undefined): string;
 }
 
+/** What a backend's object details can look at: the objects, in a live session or a capture alike. */
+export interface ObjectDetailContext {
+  db: ObjectLookup;
+  /** An object's display name. */
+  nameOf(id: number | null | undefined): string;
+}
+
 export interface Backend {
   /** The name captures carry in `api`: "vulkan", "d3d12", "metal", or a plugin's. */
   readonly id: string;
@@ -147,6 +154,12 @@ export interface Backend {
   vertexInputNames?(cmd: CaptureCommand): Map<number, string> | null;
   /** Sections to show for a command, above its Arguments (draws: the pipeline state, the shaders, the bindings). */
   commandDetails?(cmd: CaptureCommand, ctx: DetailContext): DetailSection[];
+  /**
+   * Sections to show for an object in the Inspect pane, above its Arguments (a program: its shaders'
+   * source). Rows can link objects; captured textures and buffers show as their text, since the pane
+   * may have no capture open.
+   */
+  objectDetails?(obj: VulkanObject, ctx: ObjectDetailContext): DetailSection[];
   /** This API's spelling of the render graph's advice (render_graph_analysis.ts); generic words where absent. */
   readonly advice?: Partial<BackendAdvice>;
   /** One line describing an object, beside its name in lists ("RGBA8 1920x1080", "vertex shader"). */

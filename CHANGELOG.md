@@ -30,6 +30,7 @@
 - `test/triangle --heavy-geometry` and `--heavy-tessellation` draw the cube with a costly geometry or tessellation evaluation shader.
 
 ### Fixed
+- An OpenGL ES program in the Inspect tab shows its shaders' GLSL, and a shader its source and compile log.
 - The Android test triangle is 16 KB aligned and fits a portrait screen.
 - A render target the capture did not read back says why in the replay.
 - **Measure shader** scales back the work a draw's hidden fragments added, and refuses a draw that would shade many times its own work instead of hanging the GPU.

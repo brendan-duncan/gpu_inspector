@@ -128,6 +128,7 @@ The optional ones fill in what the command sets alone cannot say:
 | `drawState(data, db, cmd)` | The state bound at a draw, when a walk back through the command stream cannot find it. Vertex layouts go in `vertexInput` in the shape of `vkCmdSetVertexInputEXT`'s arguments, with `VK_FORMAT_*` names, which is what the mesh view and the buffer views read. |
 | `vertexInputNames(cmd)` | A draw's vertex inputs by location, for the mesh view's columns. |
 | `commandDetails(cmd, ctx)` | Sections to show for a command, described as data (`DetailSection`): label/value rows, tables, source text. A value can be an object reference, a captured texture (shown as a thumbnail opening the image viewer) or a captured buffer range, typed by the member offsets given. The app draws them, and the MCP server's `get_command` reports them. |
+| `objectDetails(obj, ctx)` | Sections to show for an object in the Inspect pane, above its Arguments, in the same shape: a GL program's shader source, say. The pane may have no capture open, so a texture or buffer value shows as its text. |
 | `objectSummary(obj)`, `objectBytes(obj)` | An object's line in the object list, and the memory it holds. |
 | `resourceSource(db)` | What each pass writes and each draw reads, for the render graph and its rules. Without it the graph is empty. |
 | `analyzeFrame(data, db)` | The API's own frame analysis rules, beside the API-neutral ones that run for every capture. |

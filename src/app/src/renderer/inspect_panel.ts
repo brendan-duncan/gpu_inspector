@@ -1,6 +1,7 @@
 // Live object inspection: grouped object lists on the left, details of the selected object on
 // the right. Structure follows WebGPU Inspector's devtools/inspect_panel.js (MIT, Brendan Duncan).
-import { backendForObjectType, shortTypeName } from "./backend.js";
+import { backendForObjectType, shortTypeName, type DetailValue } from "./backend.js";
+import { renderDetailSections } from "./detail_sections.js";
 import { Button } from "./widget/button.js";
 import { Checkbox } from "./widget/checkbox.js";
 import { collapsible } from "./widget/collapsible.js";
@@ -1209,6 +1210,22 @@ export class InspectPanel {
     if (object.type === "VkImage" || object.type === "VkImageView" || object.type === "MTLTexture" || isD3D12Texture(object)) {
       const grp = new collapsible(this.inspectPanel, { label: "Image", collapsed: false });
       this._imageView = new ImageView(grp.body, this.window, object);
+    }
+
+    // A plugin's API describes its objects itself (backend.ts, objectDetails): a GL program's shaders.
+    const plugin = backendForObjectType(object.type);
+    const pluginSections = plugin?.objectDetails?.(object, { db, nameOf: (id) => db.getObject(id)?.name ?? (id ? `#${id}` : "(none)") });
+    if (pluginSections?.length) {
+      renderDetailSections(this.inspectPanel, pluginSections, (parent: Widget, value: DetailValue) => {
+        if (value === null || value === undefined) new Span(parent, { text: "-", class: "text-muted" });
+        else if (typeof value !== "object") new Span(parent, { text: String(value) });
+        else if ("object" in value) {
+          const obj = db.getObject(value.object);
+          if (obj) objectLink(parent, obj, onLink);
+          else new Span(parent, { text: value.text ?? (value.object ? `#${value.object}` : "(none)"), class: "text-muted" });
+        } else if ("args" in value) renderArgs(new Div(parent, { class: "args-tree" }), value.args, db, onLink);
+        else new Span(parent, { text: value.text ?? "", class: "text-muted" });
+      });
     }
 
     const argsGrp = new collapsible(this.inspectPanel, { label: "Arguments", collapsed: false });

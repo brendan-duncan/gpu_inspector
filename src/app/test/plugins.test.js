@@ -338,6 +338,20 @@ test("the render graph sees the passes, what they sample, and what they clear an
   assert.equal(graph.unreadNodes.length, 0);
 });
 
+test("a program's Inspect pane shows the source it was linked from, and a shader its own and its log", () => {
+  const b = m.backendFor("gles");
+  const ctx_ = { db, nameOf: () => "" };
+  assert.deepEqual(b.objectDetails(objects.get(5), ctx_),
+    [{ title: "Vertex Shader", collapsed: false, code: { text: "void main() {}", language: "glsl" } }]);
+  const shader = new m.VulkanObject(addObject(30, "GLShader", "glCreateShader",
+    { type: "GL_FRAGMENT_SHADER", source: "void main() { oops }", compiled: false, infoLog: "0:1: syntax error\n" }));
+  assert.deepEqual(b.objectDetails(shader, ctx_).map((s) => [s.title, s.code.text]),
+    [["Compile Log", "0:1: syntax error"], ["Source", "void main() { oops }"]]);
+  const binary = new m.VulkanObject(addObject(31, "GLProgram", "glCreateProgram", { linked: true, fromBinary: true }));
+  assert.match(b.objectDetails(binary, ctx_)[0].note, /program binary/);
+  assert.deepEqual(b.objectDetails(objects.get(20), ctx_), []);
+});
+
 test("GL objects are summarized by the plugin and their types read without the prefix", () => {
   assert.equal(objects.get(20).shortType, "Texture");
   assert.equal(objects.get(20).summary(db), "R8G8B8A8_UNORM 8x8");

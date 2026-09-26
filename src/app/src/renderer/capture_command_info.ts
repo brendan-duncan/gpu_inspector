@@ -22,7 +22,6 @@ import { hasMetalReflection, metalBufferResource } from "./metal/reflection.js";
 import { d3d12AttributeNames, d3d12PipelineKind, d3d12ViewSubresource, isD3D12Type } from "./d3d12/d3d12_object.js";
 import { dxgiFormatShort } from "./d3d12/dxgi_format.js";
 import { isD3D12Binding } from "./d3d12/reflection.js";
-import { highlight } from "./code_editor.js";
 import { argumentBufferEntries, isArgumentBufferType } from "./metal/argument_buffer.js";
 import { renderArgumentBuffer } from "./metal/argument_buffer_view.js";
 import { decodeImage } from "./vulkan/texture_decode.js";
@@ -55,6 +54,8 @@ import { structuresOfCommand } from "./acceleration_view.js";
 import { tableRecords } from "./binding_table.js";
 import type { SessionContext } from "./session_panel.js";
 import { backendFor, type DetailSection, type DetailValue } from "./backend.js";
+import { renderDetailSections } from "./detail_sections.js";
+import { highlight } from "./code_editor.js";
 import type { ObjectDatabase } from "./vulkan/object_database.js";
 import type {
   ArgObject, ArgValue, CaptureCommand, CaptureDescriptor, CaptureDescriptorBinding, CaptureDescriptorSet, ImageDataMessage,
@@ -1703,38 +1704,7 @@ export class CommandInfoView {
 
   /** A plugin's command details (backend.ts, DetailSection): described by the backend, drawn here. */
   private _renderSections(container: Widget, sections: DetailSection[]): void {
-    for (const section of sections) {
-      const grp = new collapsible(container, { label: section.title, collapsed: !!section.collapsed });
-      const body = grp.body;
-      // Buffer contents and image viewers open below the section's rows or table, not inside a cell.
-      const contents = (): Div => new Div(body, { class: "plugin-detail-contents" });
-      if (section.note) new Div(body, { text: section.note, class: "text-muted capture-note" });
-      if (section.rows?.length) {
-        const rows = new Div(body, { class: "draw-state" });
-        for (const [label, value] of section.rows) {
-          const row = new Div(rows, { class: "draw-state-row" });
-          new Span(row, { text: label, class: "draw-state-label" });
-          this._renderDetailValue(row, value, contents);
-        }
-      }
-      if (section.table) {
-        const wrap = new Div(body, { class: "plugin-detail-table-wrap" });
-        const table = new Widget("table", wrap, { class: "plugin-detail-table" });
-        const head = new Widget("tr", new Widget("thead", table));
-        for (const c of section.table.columns) new Widget("th", head, { text: c });
-        const tbody = new Widget("tbody", table);
-        for (const r of section.table.rows) {
-          const tr = new Widget("tr", tbody);
-          for (const cell of r) this._renderDetailValue(new Widget("td", tr), cell, contents);
-        }
-      }
-      if (section.code) {
-        const pre = new Widget("pre", body, { class: "plugin-detail-code" });
-        const language = section.code.language;
-        if (language === "glsl" || language === "hlsl" || language === "msl") pre.element.innerHTML = highlight(section.code.text, language);
-        else pre.element.textContent = section.code.text;
-      }
-    }
+    renderDetailSections(container, sections, (parent, value, contents) => this._renderDetailValue(parent, value, contents));
   }
 
   private _renderDetailValue(parent: Widget, value: DetailValue, contents: () => Div): void {

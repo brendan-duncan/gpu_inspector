@@ -5,7 +5,7 @@
 // type-only imports. The types are the app's own, re-exported from where they live, so a plugin
 // built in this repository is checked against exactly what the app reads.
 export type {
-  Backend, BackendAdvice, BackendLiveMeasurements, BackendReplay, DetailContext, DetailSection, DetailValue,
+  Backend, BackendAdvice, BackendLiveMeasurements, BackendReplay, DetailContext, DetailSection, DetailValue, ObjectDetailContext,
 } from "../../app/src/renderer/backend.js";
 export type { PluginHost } from "../../app/src/renderer/plugin_host.js";
 export type {
