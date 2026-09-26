@@ -591,8 +591,17 @@ application with injected state. Route (a) is the general one and is the prerequ
       exercise it; every output checked exactly against what the shaders compute, and each Adreno
       XR eye's projected mesh covers the pixels its overdraw counted. The mesh tab picks the view,
       `get_mesh_output` takes `view`.
-- [ ] Mesh output, the rest: GPUs without transform feedback (RenderDoc's compute-shader
-      conversion), mesh shader pipelines, and a solid shaded preview.
+- [x] Mesh output on GPUs without transform feedback (`src/replay/src/store_patch.cpp`): the vertex
+      shader stores its outputs itself (`vertexPipelineStoresAndAtomics`), a record per vertex of the
+      draw in a descriptor set of the replay's own, and the replay puts them in transform feedback's
+      order from the draw's index buffer (strips, fans and primitive restart included). Rather than
+      RenderDoc's conversion to a compute shader, which has to fetch every vertex attribute format
+      itself. `--mesh-stores` takes the path where transform feedback is: byte for byte its records on
+      every draw tried, the Unity frame and the Adreno XR frames among them. `test/triangle --strip` and
+      `--fan` cover strips, fans and restart.
+- [ ] Mesh output, the rest: without transform feedback, tessellation and geometry stages (a store
+      cannot reproduce their output order) and indirect draws; mesh shader pipelines; a solid shaded
+      preview.
 - [x] Shader debugger (`renderer/spirv/`, `renderer/shader_debugger_view.ts`, `debug_shader`): a
       SPIR-V interpreter for vertex, pixel and compute invocations, with variables, stepping and
       breakpoints.

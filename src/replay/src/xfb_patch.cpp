@@ -447,7 +447,10 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
             Emit(decorations, OpMemberDecorate, {p.structType, p.member, DecorationOffset, p.out.offset});
         else
             Emit(decorations, OpDecorate, {p.variable, DecorationOffset, p.out.offset});
-        patch.outputs.push_back(p.out);
+        XfbOutput out = p.out;
+        out.variable = p.variable;
+        out.member = p.isMember ? (int32_t)p.member : -1;
+        patch.outputs.push_back(out);
     }
     if (!afterAnnotations)
         afterAnnotations = firstType ? firstType : count;

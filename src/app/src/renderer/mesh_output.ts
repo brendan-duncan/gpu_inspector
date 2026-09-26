@@ -33,6 +33,11 @@ export interface MeshOutput {
   topology: string;
   /** The stage whose outputs these are: "vertex" (absent from older replays), "tessellation evaluation" or "geometry". */
   stage?: string;
+  /**
+   * How the replay captured them: "transform feedback", or "vertex stores" on a GPU without it, where
+   * the vertex shader wrote them to a buffer itself (src/replay/src/store_patch.h). Absent from older replays.
+   */
+  capturedBy?: string;
   /** A multiview draw: the view this mesh is of (gl_ViewIndex), and on the first view's mesh, every view's. */
   view?: number;
   views?: MeshOutput[];

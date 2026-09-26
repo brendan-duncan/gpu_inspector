@@ -534,6 +534,23 @@ def triangle_mesh(state, log):
         expect(preview.get("webgl") is True and preview.get("edges") == 36, f"the preview did not draw the cube's 12 triangles: {preview}")
 
 
+def triangle_mesh_stores(state, log):
+    c = capture(state)
+    m = c.get("meshTab") or {}
+    o = m.get("output") or {}
+    preview = m.get("preview") or {}
+    # The mesh tab's VS Out as a GPU without transform feedback gets it: the replay (VKINSP_MESH_STORES)
+    # has the vertex shader store its outputs itself (src/replay/src/store_patch.cpp), and puts the
+    # records in the draw's order. --strip draws each face as a strip, the faces split by primitive
+    # restart, which the replay has to unroll into lists as transform feedback does.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(m), "--debug-view=mesh opened no mesh tab") + \
+        expect(not m.get("error"), f"the mesh replay failed: {m.get('error')}") + \
+        expect(o.get("capturedBy") == "vertex stores", f"the outputs were not captured by vertex stores: {o.get('capturedBy')}") + \
+        expect(o.get("measured") is True and o.get("vertices") == 36, f"the strips' 12 triangles (36 vertices) were not captured: {o}") + \
+        expect(preview.get("edges") == 36, f"the preview did not draw the cube's 12 triangles: {preview}")
+
+
 def triangle_mesh_geometry(state, log):
     c = capture(state)
     m = c.get("meshTab") or {}
@@ -1896,6 +1913,8 @@ def triangle_cases(triangle):
                           triangle_stencil_overlay, delay_ms=24000))
         cases.append(Case("mesh", launch + ["--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
                           triangle_mesh, delay_ms=20000))
+        cases.append(Case("mesh-stores", launch + ["--args=--strip", "--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
+                          triangle_mesh_stores, delay_ms=20000, env={"VKINSP_MESH_STORES": "1"}))
         cases.append(Case("mesh-geometry", launch + ["--args=--geometry", "--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
                           triangle_mesh_geometry, delay_ms=20000))
         cases.append(Case("mesh-multiview", launch + ["--args=--multiview --tessellation", "--debug-capture", "--debug-view=mesh:out",

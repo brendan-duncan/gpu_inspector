@@ -347,7 +347,9 @@ bool Replayer::CreateDevice()
     VkPhysicalDeviceFeatures features{};
     // The pixel history's primitive-id pass needs one too (geometryShader, below).
     const bool wantPrimitiveId = _options.history.enabled || _options.allFeatures;
-    if (wantDrawStats || wantWireframe || wantPrimitiveId || _options.ablation.enabled)
+    // The mesh output without transform feedback: the vertex shader stores its outputs (store_patch.h).
+    const bool wantVertexStores = _options.mesh.enabled || _options.allFeatures;
+    if (wantDrawStats || wantWireframe || wantPrimitiveId || _options.ablation.enabled || wantVertexStores)
     {
         VkPhysicalDeviceFeatures supported{};
         _fns.GetPhysicalDeviceFeatures(_physical, &supported);
@@ -371,6 +373,11 @@ bool Replayer::CreateDevice()
         {
             ours->pipelineStatisticsQuery = VK_TRUE;
             _drawCountersAvailable = true;
+        }
+        if (wantVertexStores && supported.vertexPipelineStoresAndAtomics)
+        {
+            ours->vertexPipelineStoresAndAtomics = VK_TRUE;
+            _vertexStoresAvailable = true;
         }
         else if (wantDrawStats)
         {
@@ -492,7 +499,7 @@ bool Replayer::CreateDevice()
         info.pNext = nullptr;
         info.pEnabledFeatures = nullptr;
         // Nothing that needed a feature can be used now.
-        _drawCountersAvailable = _drawSamplesAvailable = _wireframeAvailable = _xfbAvailable = false;
+        _drawCountersAvailable = _drawSamplesAvailable = _wireframeAvailable = _xfbAvailable = _vertexStoresAvailable = false;
         _nvperfReady = _perfQueryAvailable = false;
         _primitiveIdAvailable = _geometryShaderAdded = false;
         r = _fns.CreateDevice(_physical, &info, nullptr, &_device);

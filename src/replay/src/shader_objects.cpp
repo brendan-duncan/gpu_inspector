@@ -186,11 +186,20 @@ bool Replayer::ShaderObjectInfo(uint64_t shaderId, VkShaderCreateInfoEXT& info, 
     return true;
 }
 
-VkShaderEXT Replayer::ShaderObjectWithCode(uint64_t shaderId, const uint32_t* words, size_t count, std::string& error)
+VkShaderEXT Replayer::ShaderObjectWithCode(uint64_t shaderId, const uint32_t* words, size_t count, std::string& error,
+    VkDescriptorSetLayout extraSet)
 {
     VkShaderCreateInfoEXT info{};
     if (!_fns.CreateShadersEXT || !ShaderObjectInfo(shaderId, info, error))
         return VK_NULL_HANDLE;
+    // A set of the replay's own after the shader's (the mesh output's stores).
+    std::vector<VkDescriptorSetLayout> sets(info.pSetLayouts, info.pSetLayouts + info.setLayoutCount);
+    if (extraSet)
+    {
+        sets.push_back(extraSet);
+        info.setLayoutCount = (uint32_t)sets.size();
+        info.pSetLayouts = sets.data();
+    }
     // Made on its own, like every shader object the replay makes.
     info.flags &= ~(VkShaderCreateFlagsEXT)VK_SHADER_CREATE_LINK_STAGE_BIT_EXT;
     info.codeType = VK_SHADER_CODE_TYPE_SPIRV_EXT;

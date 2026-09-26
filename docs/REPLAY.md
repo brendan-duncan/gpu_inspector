@@ -395,7 +395,34 @@ messages:
 
 Limits:
 - Mesh shader pipelines are not captured.
-- A GPU without `VK_EXT_transform_feedback` (most mobile GPUs, MoltenVK) cannot capture VS Out.
+- Without transform feedback (below), only a vertex shader's outputs of a direct draw are captured.
+
+**Without transform feedback.** Most mobile GPUs and MoltenVK have no `VK_EXT_transform_feedback`,
+but they have `vertexPipelineStoresAndAtomics`, which lets a vertex shader write memory. There the
+vertex shader stores its outputs itself (`store_patch.cpp`): at each return of its entry point,
+every output transform feedback would have captured is written, in the same record layout, to
+record `(gl_InstanceIndex - firstInstance) * perInstance + (gl_VertexIndex - base)` of a storage
+buffer, `base` being the draw's `firstVertex` (its `vertexOffset` when indexed). The buffer is bound
+in a descriptor set of the replay's own after the application's sets, through a pipeline layout
+that repeats the application's sets and push constants and adds that one, so what the application
+bound stays bound. A record is then a vertex of the draw (an index value, for an indexed draw)
+rather than an assembled vertex, so the replay copies the draw's index range out after the pass and,
+once the submission is done, puts the records in transform feedback's order: index order, split at
+primitive restart, triangle strip i as (v[i], v[i+1+i%2], v[i+2-i%2]), fan i as (v[i+1], v[i+2],
+v[0]), line strip i as (v[i], v[i+1]), instance after instance. An indexed draw has room for its index
+type's range of vertices (a 32-bit index, a million), 4 million in all; an index past that reads as
+zero and the mesh is marked truncated. Tessellation and geometry stages, whose output order a store
+cannot reproduce, and indirect draws, whose counts are in a buffer, still need transform feedback,
+and say so. The answer names which way the outputs were captured (`"capturedBy"`).
+
+`--mesh-stores` (or `VKINSP_MESH_STORES` for the replays the app and the MCP server run) takes this
+path where transform feedback is there, to check the one against the other. On this machine the
+records are byte for byte transform feedback's for every draw tried: test/triangle in a render
+pass, in dynamic rendering, with shader objects, as two layered instances, as 4,096 instances
+(147,456 records), in both views of `--multiview`, and as `--strip` and `--fan` (each face a strip
+or fan, split by primitive restart), with pipelines and shader objects; the Unity frame's five draws
+(the sky sphere's 5,040 indexed vertices among them); and both eyes of the two Adreno XR frames, a
+non-indexed draw. All with no validation messages.
 - A tessellated draw that emits more than 1,024 vertices per input vertex is marked truncated.
 
 ## Pixel history

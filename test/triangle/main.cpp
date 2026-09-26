@@ -382,6 +382,19 @@ struct App
     // rejects all but the first instance's fragments.
     static constexpr uint32_t kHeavyInstances = 4096;
     bool heavyVertex = false;
+    // --strip / --fan: each face of the cube a four-vertex triangle strip or fan, the faces split by
+    // primitive restart, for the mesh output's ordering of strips and fans without transform feedback.
+    bool strip = false;
+    bool fan = false;
+    /** The cube's topology. */
+    VkPrimitiveTopology CubeTopology() const
+    {
+        return tessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : strip ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_STRIP
+            : fan                                                   ? VK_PRIMITIVE_TOPOLOGY_TRIANGLE_FAN
+                                                                    : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+    }
+    /** The cube's index count: six strips or fans of four and the five restarts between them, or 36 (18 inside out). */
+    uint32_t CubeIndexCount() const { return strip || fan ? 29 : insideOut ? 18 : 36; }
     /** The cube's vertex shader. */
     const char* VertexShader() const { return multiview ? "cube_mv.vert.spv" : layered ? "cube_layered.vert.spv" : heavyVertex ? "heavy.vert.spv" : "cube.vert.spv"; }
     bool resized = false;   // swapchain must be recreated before the next frame
@@ -1926,6 +1939,16 @@ struct App
                 ++v;
             }
             uint16_t b = (uint16_t)(f * 4);
+            if (strip || fan)
+            {
+                // A strip's corners zigzag (0, 1, 3, 2); a fan's go round (0, 1, 2, 3). 0xFFFF restarts.
+                if (f)
+                    indices[ix++] = 0xFFFF;
+                const uint16_t corners[4] = {b, (uint16_t)(b + 1), (uint16_t)(b + (strip ? 3 : 2)), (uint16_t)(b + (strip ? 2 : 3))};
+                for (uint16_t c : corners)
+                    indices[ix++] = c;
+                continue;
+            }
             uint16_t quad[6] = {b, (uint16_t)(b + 1), (uint16_t)(b + 2), b, (uint16_t)(b + 2), (uint16_t)(b + 3)};
             for (int k = 0; k < 6; ++k)
                 indices[ix++] = quad[k];
@@ -2207,7 +2230,8 @@ struct App
         vi.vertexAttributeDescriptionCount = 3;
         vi.pVertexAttributeDescriptions = via;
         VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        ia.topology = tessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        ia.topology = CubeTopology();
+        ia.primitiveRestartEnable = strip || fan;
         VkPipelineTessellationStateCreateInfo tess{VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};
         tess.patchControlPoints = 3;
         VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
@@ -2811,8 +2835,8 @@ struct App
             so.depthCompare(cb, VK_COMPARE_OP_LESS);
             so.depthBias(cb, VK_FALSE);
             so.stencilTest(cb, VK_FALSE);
-            so.topology(cb, tessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
-            so.primitiveRestart(cb, VK_FALSE);
+            so.topology(cb, CubeTopology());
+            so.primitiveRestart(cb, strip || fan ? VK_TRUE : VK_FALSE);
             VkVertexInputBindingDescription2EXT binding{VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT};
             binding.binding = 0;
             binding.stride = sizeof(Vertex);
@@ -2866,7 +2890,7 @@ struct App
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
         // --layered: an instance per layer; --heavy-vertex: many in one place.
         const uint32_t instances = layered ? 2 : heavyVertex ? kHeavyInstances : 1;
-        vkCmdDrawIndexed(cb, insideOut ? 18 : 36, instances, 0, 0, 0);
+        vkCmdDrawIndexed(cb, CubeIndexCount(), instances, 0, 0, 0);
         if (mixed)
         {
             // The pipeline in place of the shader objects: the bindings and push constants carry over.
@@ -2875,7 +2899,7 @@ struct App
             vkCmdSetScissor(cb, 0, 1, &scissor);
         }
         if (occluded || mixed)
-            vkCmdDrawIndexed(cb, 36, instances, 0, 0, 0);
+            vkCmdDrawIndexed(cb, CubeIndexCount(), instances, 0, 0, 0);
     }
 
     // --------------------------------------------------------------------------------- frame
@@ -3278,6 +3302,10 @@ int RunApp(int argc, char** argv)
             app.heavy = true;
         else if (!strcmp(argv[i], "--heavy-vertex"))
             app.heavyVertex = true;
+        else if (!strcmp(argv[i], "--strip"))
+            app.strip = true;
+        else if (!strcmp(argv[i], "--fan"))
+            app.fan = true;
         else if (!strcmp(argv[i], "--msaa"))
             app.samples = VK_SAMPLE_COUNT_4_BIT;
         else if (!strcmp(argv[i], "--offscreen"))

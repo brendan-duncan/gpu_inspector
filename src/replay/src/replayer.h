@@ -39,6 +39,7 @@
 #include "vk_decode.gen.h"
 #include "count_patch.h"
 #include "layer_patch.h"
+#include "store_patch.h"
 #include "xfb_patch.h"
 
 namespace vkreplay
@@ -112,6 +113,11 @@ struct ReplayOptions
     {
         bool enabled = false;
         std::vector<uint32_t> commands;
+        /**
+         * Capture the outputs with vertex shader stores (store_patch.h) even where transform feedback
+         * is there: what a GPU without it gets, to check against transform feedback's.
+         */
+        bool stores = false;
     } mesh;
     /**
      * Time draws or dispatches again with variants of one shader stage, each with a part of the shader
@@ -493,6 +499,8 @@ struct MeshResult
     std::string stage;
     /** A multiview pass has a mesh per view, with gl_ViewIndex that view; -1 in a single-view pass. */
     int32_t view = -1;
+    /** "transform feedback", or "vertex stores" where the vertex shader wrote them to a buffer itself (store_patch.h). */
+    std::string capturedBy;
     uint32_t stride = 0;
     uint32_t vertices = 0;
     /** The buffer filled up: the draw wrote more than was captured. */
@@ -752,6 +760,23 @@ private:
         uint64_t pipeline = 0;
         /** Vertices the draw's arguments say it assembles, three times over for strips and fans; 0 for indirect draws. */
         uint64_t estimate = 0;
+        /**
+         * Vertex stores (no transform feedback): `buffer` holds a record per vertex of the draw (an
+         * index value of an indexed one), perInstance of them per instance, put in transform
+         * feedback's order once the submission is done, from the index buffer's range copied to
+         * `indices`.
+         */
+        bool stores = false;
+        VkDescriptorSet set = VK_NULL_HANDLE;
+        uint32_t perInstance = 0;
+        uint32_t instances = 1;
+        uint32_t count = 0;          // the draw's vertexCount or indexCount
+        uint32_t firstIndex = 0;
+        bool indexed = false;
+        VkIndexType indexType = VK_INDEX_TYPE_UINT32;
+        Staging indices;
+        std::string topology;
+        bool restart = false;
     };
     /** One draw's overlay waiting for its submission: a staging buffer per variant drawn. */
     struct PendingOverlay
@@ -1085,7 +1110,8 @@ private:
     /** A captured shader object's create info, decoded into the arena (reset it once done); false with `error` when it cannot be. */
     bool ShaderObjectInfo(uint64_t shaderId, VkShaderCreateInfoEXT& info, std::string& error);
     /** A captured shader object made again, unlinked, with other code; null (and `error`) when it cannot be. */
-    VkShaderEXT ShaderObjectWithCode(uint64_t shaderId, const uint32_t* words, size_t count, std::string& error);
+    VkShaderEXT ShaderObjectWithCode(uint64_t shaderId, const uint32_t* words, size_t count, std::string& error,
+        VkDescriptorSetLayout extraSet = VK_NULL_HANDLE);
     /** Whether a graphics stage is bound to a shader object anywhere in the group up to `endIndex`. */
     bool PassUsesShaderObjects(const CommandGroup& group, uint32_t endIndex) const;
     /** The overdraw and overlay counting edit of a shader-object draw, bound and set before it; false when it cannot be drawn. */
@@ -1121,6 +1147,19 @@ private:
      * shader bound beside an evaluation one, whose modes may give the topology.
      */
     VkShaderEXT FeedbackShader(uint64_t shaderId, uint64_t tessellationControl = 0);
+    /**
+     * Vertex stores: the pipeline layout (or, for a shader object, one made from its create info) with
+     * the store buffer's set after the application's; false with `error` where none can be.
+     */
+    bool MeshStoreLayout(uint64_t source, bool shaderObject, VkPipelineLayout& layout, uint32_t& set, std::string& error);
+    /** At the target draw, before its copy is made: the store edit's parameters from the draw's arguments. */
+    bool PrepareMeshStores(const std::string& method, const JValue& args, uint64_t source, bool shaderObject);
+    /** At the target draw, its copy bound: the buffer, sized by the copy's record layout, bound in its set. */
+    bool BindMeshStores(VkCommandBuffer cb, uint64_t source);
+    /** The vertex stage's code with the store edit (and the view's gl_ViewIndex), its record layout in `layout`. */
+    void MeshStoreCode(uint64_t objectId, const std::string& entry, XfbPatch& layout, std::vector<uint32_t>& words);
+    /** A vertex shader object edited to store its outputs; null when it cannot be made. */
+    VkShaderEXT StoreShader(uint64_t shaderId);
     /** The stage's code edited for the mesh: gl_ViewIndex made the recorded view, then transform feedback when `feedback`. */
     void MeshStageCode(uint64_t objectId, VkShaderStageFlagBits stage, const std::string& entry, bool feedback, XfbPatch& layout,
         std::vector<uint32_t>& words, const std::vector<uint32_t>& controlCode);
@@ -1401,7 +1440,7 @@ private:
     VkShaderModule _countModule = VK_NULL_HANDLE;
     VkShaderModule _backFaceModule = VK_NULL_HANDLE;
     /** Copies by pipeline, depth tested, depth format, mode, whether they draw in dynamic rendering, and the view mask. */
-    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool, uint32_t, int32_t>, VkPipeline> _overdrawPipelines;
+    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool, uint32_t, int32_t, uint64_t>, VkPipeline> _overdrawPipelines;
     /** The views the pass being reissued renders into (overdraw of a multiview pass), 0 for one. */
     uint32_t _reissueViewMask = 0;
     /** The layers of the framebuffer the pass is reissued into (overdraw of a layered pass), without a view mask. */
@@ -1477,6 +1516,32 @@ private:
     std::map<uint64_t, VkShaderEXT> _xfbShaders;
     /** The view of a multiview draw the mesh is recorded for (gl_ViewIndex made that constant); -1 otherwise. */
     int32_t _meshView = -1;
+    /** vertexPipelineStoresAndAtomics: a vertex shader can write the mesh output itself where transform feedback is not. */
+    bool _vertexStoresAvailable = false;
+    /** The target draw's store edit while its copy is made and it is issued; `key` tells copies of other draws apart. */
+    struct MeshStores
+    {
+        bool active = false;
+        StoreParams params;
+        VkPipelineLayout layout = VK_NULL_HANDLE;
+        uint64_t key = 0;
+    };
+    MeshStores _meshStores;
+    VkDescriptorSetLayout _meshStoreSetLayout = VK_NULL_HANDLE;
+    VkDescriptorPool _meshStorePool = VK_NULL_HANDLE;
+    /** The layouts with the store buffer's set after their own sets, by captured pipeline or shader object: the layout and that set. */
+    std::map<uint64_t, std::pair<VkPipelineLayout, uint32_t>> _meshStoreLayouts;
+    std::map<std::pair<uint64_t, uint64_t>, VkShaderEXT> _meshStoreShaders;
+    /** The index buffer the reissued commands last bound, and the primitive restart they last set (-1: none). */
+    struct IndexBinding
+    {
+        bool bound = false;
+        uint64_t buffer = 0;
+        VkDeviceSize offset = 0;
+        VkIndexType type = VK_INDEX_TYPE_UINT32;
+    };
+    IndexBinding _reissueIndexBinding;
+    int _reissueRestart = -1;
     /** The mesh being recorded, whose buffers the target draw binds. */
     PendingMesh* _meshTarget = nullptr;
     std::vector<PendingMesh> _pendingMeshes;

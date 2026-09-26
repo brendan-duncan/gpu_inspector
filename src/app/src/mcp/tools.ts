@@ -920,9 +920,12 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           note: m.note,
           replayedOn: file.device || undefined,
           replayProblems: file.problems.length ? { count: file.problems.length, first: file.problems.slice(0, 10) } : undefined,
+          capturedBy: m.capturedBy,
           measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose last " +
             "stage before rasterization (vertex, tessellation evaluation or geometry) is edited to write its outputs to a transform feedback " +
-            "buffer, with rasterization discarded. Mesh shader pipelines are not captured.",
+            "buffer, with rasterization discarded. On a GPU without transform feedback (capturedBy \"vertex stores\") the vertex shader " +
+            "writes them to a storage buffer itself and the replay puts them in the order the draw assembled them; tessellation and geometry " +
+            "stages and indirect draws then are not captured. Mesh shader pipelines are not captured.",
         });
       },
     },

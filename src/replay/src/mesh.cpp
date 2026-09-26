@@ -5,6 +5,7 @@
 #include <string>
 
 #include "identity_patch.h"
+#include "store_patch.h"
 #include "util.h"
 
 namespace vkreplay
@@ -20,6 +21,13 @@ namespace vkreplay
 // then the draw alone, with a copy of its pipeline whose last pre-rasterization stage writes
 // transform feedback (xfb_patch.cpp) and which rasterizes nothing. The buffer holds every vertex
 // that stage emitted, in order, and the counter says how much of it was written.
+//
+// A GPU without transform feedback (most mobile GPUs, MoltenVK) has the vertex shader store its outputs
+// itself instead (store_patch.h), into a buffer bound in a descriptor set of the replay's own after the
+// application's: a record per vertex of the draw, which the replay puts in transform feedback's order
+// once the submission is done, from the draw's index buffer (index order, strips and fans as lists,
+// instance after instance). `--mesh-stores` does the same where transform feedback is, to check the
+// one against the other.
 //
 // Transform feedback cannot be active in a multiview pass, so a multiview draw is recorded once per
 // view outside one, each time with gl_ViewIndex made that view's constant in every stage: a mesh
@@ -94,16 +102,20 @@ void Replayer::RecordMeshView(VkCommandBuffer cb, const CommandGroup& group, con
             _report->meshes.push_back(std::move(result));
             return;
         }
-        if (!_xfbAvailable)
+        // Transform feedback, or the vertex shader's own stores where there is none.
+        const bool stores = _options.mesh.stores || !_xfbAvailable;
+        if (stores && !_vertexStoresAvailable)
         {
-            result.note = "this GPU cannot capture vertex shader outputs (no VK_EXT_transform_feedback)";
+            result.note = "this GPU cannot capture vertex shader outputs: it has neither VK_EXT_transform_feedback nor vertexPipelineStoresAndAtomics";
             _report->meshes.push_back(std::move(result));
             return;
         }
+        result.capturedBy = stores ? "vertex stores" : "transform feedback";
 
         // How many vertices the draw assembles, from its arguments; the buffer is sized from that once the
         // pipeline's record layout is known, at the draw (PrepareMeshBuffers).
         PendingMesh p;
+        p.stores = stores;
         p.result = _report->meshes.size();
         const JValue* args = command.Get("args");
         if (result.method.find("Indirect") == std::string::npos)
@@ -157,6 +169,17 @@ void Replayer::RecordMeshView(VkCommandBuffer cb, const CommandGroup& group, con
         ReissuePass(cb, group, pass, endIndex, false, VK_FORMAT_UNDEFINED, rp, fb, shaderObjects ? color.view : VK_NULL_HANDLE);
         _reissueLayers = 1;
         const bool drawn = _overlayIssued && _overlayDrawn && p.buffer.buffer;
+        // Vertex stores: the draw's indices, in order, for putting the records in that order once they are back.
+        if (drawn && p.stores && p.indexed && p.count && _reissueIndexBinding.bound)
+        {
+            const VkDeviceSize size = p.indexType == VK_INDEX_TYPE_UINT16 ? 2 : p.indexType == VK_INDEX_TYPE_UINT8_EXT ? 1 : 4;
+            VkBuffer indexBuffer = (VkBuffer)(uintptr_t)Handle(_reissueIndexBinding.buffer);
+            if (indexBuffer && CreateStaging(size * p.count, p.indices))
+            {
+                VkBufferCopy copy{_reissueIndexBinding.offset + size * p.firstIndex, 0, size * p.count};
+                _fns.CmdCopyBuffer(cb, indexBuffer, p.indices.buffer, 1, &copy);
+            }
+        }
         // The pipeline the draw was issued with (a later secondary of the pass resets the one bound last).
         const uint64_t pipeline = _overlayIssued ? _overlayDrawnPipeline : _overlayPipeline;
         _meshTarget = nullptr;
@@ -188,6 +211,9 @@ void Replayer::RecordMeshView(VkCommandBuffer cb, const CommandGroup& group, con
                                                                                        : "the draw could not be issued again (its pipeline could not be copied, or there was no memory for its vertices)";
             DestroyStaging(p.buffer);
             DestroyStaging(p.counter);
+            DestroyStaging(p.indices);
+            if (p.set && _meshStorePool)
+                _fns.FreeDescriptorSets(_device, _meshStorePool, 1, &p.set);
             _report->meshes.push_back(std::move(result));
             return;
         }
@@ -295,6 +321,263 @@ VkShaderEXT Replayer::FeedbackShader(uint64_t shaderId, uint64_t tessellationCon
     return shader;
 }
 
+bool Replayer::MeshStoreLayout(uint64_t source, bool shaderObject, VkPipelineLayout& layout, uint32_t& set, std::string& error)
+{
+    if (auto it = _meshStoreLayouts.find(source); it != _meshStoreLayouts.end())
+    {
+        layout = it->second.first;
+        set = it->second.second;
+        if (!layout)
+            error = "the draw's pipeline layout could not be made again with a set for the outputs";
+        return layout != VK_NULL_HANDLE;
+    }
+    _meshStoreLayouts[source] = {VK_NULL_HANDLE, 0};
+    if (!_meshStoreSetLayout)
+    {
+        VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_VERTEX_BIT, nullptr};
+        VkDescriptorSetLayoutCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
+        info.bindingCount = 1;
+        info.pBindings = &binding;
+        if (_fns.CreateDescriptorSetLayout(_device, &info, nullptr, &_meshStoreSetLayout) != VK_SUCCESS)
+        {
+            error = "the outputs' descriptor set layout could not be made";
+            return false;
+        }
+        Track("VkDescriptorSetLayout", (uint64_t)_meshStoreSetLayout);
+    }
+    // The application's sets and push constants, as the pipeline's layout (or the shader object) has them.
+    std::vector<VkDescriptorSetLayout> sets;
+    std::vector<VkPushConstantRange> ranges;
+    const size_t problems = _ctx.problems.size();
+    const size_t unresolved = _ctx.unresolved;
+    if (shaderObject)
+    {
+        VkShaderCreateInfoEXT info{};
+        if (!ShaderObjectInfo(source, info, error))
+            return false;
+        sets.assign(info.pSetLayouts, info.pSetLayouts + info.setLayoutCount);
+        ranges.assign(info.pPushConstantRanges, info.pPushConstantRanges + info.pushConstantRangeCount);
+        _arena.Reset();
+    }
+    else
+    {
+        const uint64_t layoutId = IdOf(PipelineState(source, "layout", "PRE_RASTERIZATION_SHADERS"));
+        const JValue* object = layoutId ? _capture->Object(layoutId) : nullptr;
+        if (!object || !object->Get("args"))
+        {
+            error = "the pipeline's layout is not in the capture";
+            return false;
+        }
+        Args_vkCreatePipelineLayout a{};
+        DecodeArgs(_ctx, *object->Get("args"), a);
+        const bool usable = a.pCreateInfo && _ctx.unresolved == unresolved;
+        if (usable)
+        {
+            sets.assign(a.pCreateInfo->pSetLayouts, a.pCreateInfo->pSetLayouts + a.pCreateInfo->setLayoutCount);
+            ranges.assign(a.pCreateInfo->pPushConstantRanges, a.pCreateInfo->pPushConstantRanges + a.pCreateInfo->pushConstantRangeCount);
+        }
+        _ctx.problems.resize(problems);
+        _ctx.unresolved = unresolved;
+        _arena.Reset();
+        if (!usable)
+        {
+            error = "the pipeline's layout names objects the replay does not have";
+            return false;
+        }
+    }
+    if (std::any_of(sets.begin(), sets.end(), [](VkDescriptorSetLayout l) { return !l; }))
+    {
+        error = "the pipeline's layout leaves a set out, which a layout of the replay's own cannot";
+        return false;
+    }
+    VkPhysicalDeviceProperties props{};
+    _fns.GetPhysicalDeviceProperties(_physical, &props);
+    if (sets.size() >= props.limits.maxBoundDescriptorSets)
+    {
+        error = "the pipeline uses every descriptor set the GPU can bind, and the outputs need one more";
+        return false;
+    }
+    // Sets 0 to n-1 and the push constants are the application's, so what it bound stays bound.
+    sets.push_back(_meshStoreSetLayout);
+    VkPipelineLayoutCreateInfo info{VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO};
+    info.setLayoutCount = (uint32_t)sets.size();
+    info.pSetLayouts = sets.data();
+    info.pushConstantRangeCount = (uint32_t)ranges.size();
+    info.pPushConstantRanges = ranges.data();
+    if (_fns.CreatePipelineLayout(_device, &info, nullptr, &layout) != VK_SUCCESS)
+    {
+        error = "the pipeline layout with a set for the outputs was refused";
+        return false;
+    }
+    Track("VkPipelineLayout", (uint64_t)layout);
+    set = (uint32_t)sets.size() - 1;
+    _meshStoreLayouts[source] = {layout, set};
+    return true;
+}
+
+bool Replayer::PrepareMeshStores(const std::string& method, const JValue& args, uint64_t source, bool shaderObject)
+{
+    PendingMesh& p = *_meshTarget;
+    auto fail = [&](std::string why) {
+        _xfbLayouts[source].error = std::move(why);
+        return false;
+    };
+    if (method.find("Indirect") != std::string::npos)
+        return fail("without transform feedback an indirect draw's outputs are not captured: its counts are in a buffer");
+    std::string error;
+    VkPipelineLayout layout = VK_NULL_HANDLE;
+    uint32_t set = 0;
+    if (!MeshStoreLayout(source, shaderObject, layout, set, error))
+        return fail(error);
+    const auto arg = [&](const char* name) -> int64_t {
+        const JValue* v = args.Get(name);
+        return v ? v->Int() : 0;
+    };
+    p.indexed = method.find("Indexed") != std::string::npos;
+    p.instances = (uint32_t)std::max<int64_t>(1, arg("instanceCount"));
+    p.count = (uint32_t)std::max<int64_t>(0, arg(p.indexed ? "indexCount" : "vertexCount"));
+    p.firstIndex = p.indexed ? (uint32_t)std::max<int64_t>(0, arg("firstIndex")) : 0;
+    StoreParams params;
+    params.set = set;
+    params.binding = 0;
+    params.firstInstance = (int32_t)arg("firstInstance");
+    params.base = (int32_t)arg(p.indexed ? "vertexOffset" : "firstVertex");
+    // A slot per vertex the draw can name: its index type's range, or its vertex count. Past 4 million
+    // in all, what a larger index names is not kept, and the mesh says it was truncated.
+    uint64_t perInstance = p.count;
+    if (p.indexed)
+    {
+        if (!_reissueIndexBinding.bound)
+            return fail("no index buffer is bound at the indexed draw");
+        p.indexType = _reissueIndexBinding.type;
+        perInstance = p.indexType == VK_INDEX_TYPE_UINT16 ? 65536 : p.indexType == VK_INDEX_TYPE_UINT8_EXT ? 256 : 1u << 20;
+    }
+    perInstance = std::clamp<uint64_t>(perInstance, 1, std::max<uint64_t>(1, (4ull << 20) / p.instances));
+    p.perInstance = (uint32_t)perInstance;
+    params.perInstance = p.perInstance;
+    params.capacity = p.perInstance * p.instances;
+    // How the records are put in order afterwards: the topology and primitive restart the draw had.
+    bool dynamic = false;
+    const std::string baked = shaderObject ? "" : PipelineTopology(source, dynamic);
+    p.topology = shaderObject || dynamic ? _overlayTopology : baked;
+    if (shaderObject || PipelineDynamic(source, "VK_DYNAMIC_STATE_PRIMITIVE_RESTART_ENABLE"))
+    {
+        p.restart = _reissueRestart == 1;
+    }
+    else
+    {
+        const JValue* assembly = PipelineState(source, "pInputAssemblyState", "VERTEX_INPUT_INTERFACE");
+        const JValue* restart = assembly ? assembly->Get("primitiveRestartEnable") : nullptr;
+        p.restart = restart && (restart->IsBool() ? restart->boolean : restart->Uint() != 0);
+    }
+    _meshStores.active = true;
+    _meshStores.params = params;
+    _meshStores.layout = layout;
+    _meshStores.key = ((uint64_t)set << 56) ^ ((uint64_t)(uint32_t)params.firstInstance << 40) ^ ((uint64_t)params.perInstance << 16) ^
+        (uint64_t)(uint32_t)params.base ^ ((uint64_t)params.capacity << 24) ^ 1;
+    return true;
+}
+
+void Replayer::MeshStoreCode(uint64_t objectId, const std::string& entry, XfbPatch& layout, std::vector<uint32_t>& words)
+{
+    // The record layout transform feedback would have: what is stored, where in a record.
+    std::vector<uint32_t> feedback;
+    MeshStageCode(objectId, VK_SHADER_STAGE_VERTEX_BIT, entry, true, layout, feedback, {});
+    words.clear();
+    if (!layout.error.empty())
+        return;
+    std::vector<uint32_t> code;
+    XfbPatch unused;
+    MeshStageCode(objectId, VK_SHADER_STAGE_VERTEX_BIT, entry, false, unused, code, {});
+    const StorePatch stored = PatchForVertexStores(code.data(), code.size(), entry, layout.outputs, layout.stride, _meshStores.params);
+    if (!stored.error.empty())
+    {
+        layout.error = "the vertex shader could not be edited to store its outputs: " + stored.error;
+        return;
+    }
+    words = stored.words;
+}
+
+VkShaderEXT Replayer::StoreShader(uint64_t shaderId)
+{
+    const auto key = std::make_pair(shaderId, _meshStores.key);
+    if (auto it = _meshStoreShaders.find(key); it != _meshStoreShaders.end())
+        return it->second;
+    _meshStoreShaders[key] = VK_NULL_HANDLE;
+    XfbPatch& layout = _xfbLayouts[shaderId];
+    VkShaderCreateInfoEXT info{};
+    std::string error;
+    if (!ShaderObjectInfo(shaderId, info, error))
+    {
+        layout.error = "the vertex shader object could not be made again: " + error;
+        return VK_NULL_HANDLE;
+    }
+    const std::string entry = info.pName ? info.pName : "main";
+    _arena.Reset();
+    std::vector<uint32_t> words;
+    MeshStoreCode(shaderId, entry, layout, words);
+    if (!layout.error.empty())
+        return VK_NULL_HANDLE;
+    VkShaderEXT shader = ShaderObjectWithCode(shaderId, words.data(), words.size(), error, _meshStoreSetLayout);
+    if (!shader)
+        layout.error = "the edited vertex shader object was refused: " + error;
+    _meshStoreShaders[key] = shader;
+    return shader;
+}
+
+bool Replayer::BindMeshStores(VkCommandBuffer cb, uint64_t source)
+{
+    PendingMesh& p = *_meshTarget;
+    const MeshStores stores = _meshStores;
+    _meshStores.active = false;
+    auto layout = _xfbLayouts.find(source);
+    if (layout == _xfbLayouts.end() || !layout->second.stride || !stores.layout)
+        return false;
+    const uint64_t bytes = (uint64_t)stores.params.capacity * layout->second.stride;
+    if (bytes > kMaxMeshBytes)
+    {
+        layout->second.error = "the draw's vertices would take more than 256 MB of outputs";
+        return false;
+    }
+    if (!_meshStorePool)
+    {
+        VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 64};
+        VkDescriptorPoolCreateInfo info{VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO};
+        info.flags = VK_DESCRIPTOR_POOL_CREATE_FREE_DESCRIPTOR_SET_BIT;
+        info.maxSets = 64;
+        info.poolSizeCount = 1;
+        info.pPoolSizes = &size;
+        if (_fns.CreateDescriptorPool(_device, &info, nullptr, &_meshStorePool) != VK_SUCCESS)
+            return false;
+        Track("VkDescriptorPool", (uint64_t)_meshStorePool);
+    }
+    if (!CreateStaging(bytes, p.buffer, VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT))
+        return false;
+    std::memset(p.buffer.mapped, 0, (size_t)bytes);
+    VkDescriptorSetAllocateInfo allocate{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
+    allocate.descriptorPool = _meshStorePool;
+    allocate.descriptorSetCount = 1;
+    allocate.pSetLayouts = &_meshStoreSetLayout;
+    if (_fns.AllocateDescriptorSets(_device, &allocate, &p.set) != VK_SUCCESS)
+    {
+        p.set = VK_NULL_HANDLE;
+        DestroyStaging(p.buffer);
+        return false;
+    }
+    VkDescriptorBufferInfo range{p.buffer.buffer, 0, VK_WHOLE_SIZE};
+    VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
+    write.dstSet = p.set;
+    write.dstBinding = 0;
+    write.descriptorCount = 1;
+    write.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    write.pBufferInfo = &range;
+    _fns.UpdateDescriptorSets(_device, 1, &write, 0, nullptr);
+    // After the application's sets: what it bound stays bound (the layout is compatible up to them).
+    _fns.CmdBindDescriptorSets(cb, VK_PIPELINE_BIND_POINT_GRAPHICS, stores.layout, stores.params.set, 1, &p.set, 0, nullptr);
+    p.pipeline = source;
+    return true;
+}
+
 bool Replayer::PrepareMeshBuffers(uint64_t source)
 {
     if (!_meshTarget)
@@ -337,6 +620,97 @@ void Replayer::CompleteMesh(bool submitted)
         {
             r.note = "the submission holding the draw did not run";
         }
+        else if (p.stores && p.buffer.mapped && r.stride)
+        {
+            // The draw's vertices in order: its index values, or its vertices from the first.
+            std::vector<uint32_t> order;
+            const uint32_t restartValue = p.indexType == VK_INDEX_TYPE_UINT16 ? 0xFFFFu : p.indexType == VK_INDEX_TYPE_UINT8_EXT ? 0xFFu : 0xFFFFFFFFu;
+            if (p.indexed && p.indices.mapped)
+            {
+                const auto* bytes = static_cast<const uint8_t*>(p.indices.mapped);
+                for (uint32_t i = 0; i < p.count; ++i)
+                {
+                    uint32_t v = 0;
+                    if (p.indexType == VK_INDEX_TYPE_UINT16)
+                        v = (uint32_t)bytes[i * 2] | (uint32_t)bytes[i * 2 + 1] << 8;
+                    else if (p.indexType == VK_INDEX_TYPE_UINT8_EXT)
+                        v = bytes[i];
+                    else
+                        std::memcpy(&v, bytes + i * 4, 4);
+                    order.push_back(v);
+                }
+            }
+            else if (!p.indexed)
+            {
+                for (uint32_t i = 0; i < p.count; ++i)
+                    order.push_back(i);
+            }
+            // Split where primitive restart does, then each run of vertices assembled as transform
+            // feedback writes it: lists as they are, strips and fans as lists.
+            std::vector<std::vector<uint32_t>> runs(1);
+            for (uint32_t v : order)
+            {
+                if (p.indexed && p.restart && v == restartValue)
+                    runs.emplace_back();
+                else
+                    runs.back().push_back(v);
+            }
+            const std::string topology = p.topology;
+            const bool triangles = topology.find("TRIANGLE") != std::string::npos;
+            const bool lines = topology.find("LINE") != std::string::npos;
+            const bool strip = topology.find("STRIP") != std::string::npos;
+            const bool fan = topology.find("FAN") != std::string::npos;
+            std::vector<uint32_t> assembled;
+            bool known = topology.find("ADJACENCY") == std::string::npos && topology.find("PATCH") == std::string::npos && !topology.empty();
+            for (const auto& run : runs)
+            {
+                const size_t n = run.size();
+                if (fan)
+                {
+                    for (size_t i = 0; i + 2 < n; ++i)
+                        assembled.insert(assembled.end(), {run[i + 1], run[i + 2], run[0]});
+                }
+                else if (strip && triangles)
+                {
+                    for (size_t i = 0; i + 2 < n; ++i)
+                        assembled.insert(assembled.end(), {run[i], run[i + 1 + (i % 2)], run[i + 2 - (i % 2)]});
+                }
+                else if (strip && lines)
+                {
+                    for (size_t i = 0; i + 1 < n; ++i)
+                        assembled.insert(assembled.end(), {run[i], run[i + 1]});
+                }
+                else
+                {
+                    const size_t per = triangles ? 3 : lines ? 2 : 1;
+                    assembled.insert(assembled.end(), run.begin(), run.begin() + (ptrdiff_t)(n / per * per));
+                }
+            }
+            if (!known)
+            {
+                r.note = "without transform feedback, a draw of " + (topology.empty() ? std::string("an unknown topology") : topology) + " is not put in order";
+            }
+            else
+            {
+                const auto* data = static_cast<const uint8_t*>(p.buffer.mapped);
+                r.data.assign((size_t)assembled.size() * p.instances * r.stride, 0);
+                size_t at = 0;
+                for (uint32_t instance = 0; instance < p.instances; ++instance)
+                {
+                    for (uint32_t v : assembled)
+                    {
+                        if (v < p.perInstance)
+                            std::memcpy(r.data.data() + at, data + ((size_t)instance * p.perInstance + v) * r.stride, r.stride);
+                        else
+                            r.truncated = true;
+                        at += r.stride;
+                    }
+                }
+                r.vertices = (uint32_t)(assembled.size() * p.instances);
+                if (r.truncated)
+                    r.note = "the draw names vertices past what was kept of its outputs: those read as zero";
+            }
+        }
         else if (p.buffer.mapped && p.counter.mapped && r.stride)
         {
             // The counter holds the byte offset the next vertex would have been written at.
@@ -352,6 +726,9 @@ void Replayer::CompleteMesh(bool submitted)
         }
         DestroyStaging(p.buffer);
         DestroyStaging(p.counter);
+        DestroyStaging(p.indices);
+        if (p.set && _meshStorePool)
+            _fns.FreeDescriptorSets(_device, _meshStorePool, 1, &p.set);
     }
     _pendingMeshes.clear();
     ReleaseTransients();

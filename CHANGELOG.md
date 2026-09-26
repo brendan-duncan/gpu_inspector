@@ -21,6 +21,8 @@
 - `debug_shader` takes the `geometry`, `tess_control` and `tess_eval` stages.
 - **Measure shader** measures a Vulkan vertex shader whole, not only its functions and lines.
 - `test/triangle --heavy-vertex` draws the cube with a costly vertex shader, as many instances.
+- The Vulkan mesh view shows VS Out on GPUs without transform feedback, such as most mobile GPUs and MoltenVK.
+- `test/triangle --strip` and `--fan` draw the cube as triangle strips or fans split by primitive restart.
 
 ### Fixed
 - **Measure shader** scales back the work a draw's hidden fragments added, and refuses a draw that would shade many times its own work instead of hanging the GPU.

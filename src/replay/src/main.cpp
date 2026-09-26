@@ -49,7 +49,7 @@ void PrintUsage()
         "usage: vkinsp_replay <capture.gpucap> [--validate [--validate-data <file>]] [--dump <dir>] [--overdraw <dir>] [--overdraw-data <file>]\n"
         "                     [--pixel <image> <x> <y> [--mip <n>] [--layer <n>] [--pixel-data <file>]]\n"
         "                     [--draws [--draw-data <file>]] [--overlay <command> ... [--overlay-data <file>]]\n"
-        "                     [--mesh <command> ... [--mesh-data <file>]] [--ablate <request> [--ablate-data <file>]]\n"
+        "                     [--mesh <command> ... [--mesh-data <file>] [--mesh-stores]] [--ablate <request> [--ablate-data <file>]]\n"
         "                     [--counters [--counter <name>]... [--counter-draws] [--counter-backend nvperf|khr] [--counter-data <file>]]\n"
         "                     [--list-counters [--counter-data <file>]]\n"
         "                     [--export <directory> [--export-data <file>]]\n"
@@ -918,6 +918,8 @@ bool WriteMeshData(const ReplayReport& report, const std::string& path)
             json += ",\"stage\":" + JsonString(m.stage);
         if (m.view >= 0)
             json += ",\"view\":" + std::to_string(m.view);
+        if (!m.capturedBy.empty())
+            json += ",\"capturedBy\":" + JsonString(m.capturedBy);
         if (!m.note.empty())
             json += ",\"note\":" + JsonString(m.note);
         if (size)
@@ -952,6 +954,8 @@ void PrintMeshes(const ReplayReport& report)
         std::printf("  [%u] %s", m.command, m.method.empty() ? "?" : m.method.c_str());
         if (m.view >= 0)
             std::printf(", view %d", m.view);
+        if (m.capturedBy == "vertex stores")
+            std::printf(", by vertex stores");
         if (!m.stride)
         {
             std::printf(": not captured: %s\n", m.note.c_str());
@@ -1601,6 +1605,8 @@ int Serve(const CaptureFile& capture, bool validation)
         else if (kind == "mesh")
         {
             options.mesh.enabled = true;
+            // A replay forced onto the vertex stores (as on a GPU without transform feedback), for checking them.
+            options.mesh.stores = std::getenv("VKINSP_MESH_STORES") != nullptr;
             commands(options.mesh.commands);
         }
         else if (kind == "ablate")
@@ -1762,6 +1768,8 @@ int main(int argc, char** argv)
         }
         else if (!std::strcmp(argv[i], "--mesh-data") && i + 1 < argc)
             meshData = argv[++i];
+        else if (!std::strcmp(argv[i], "--mesh-stores"))
+            options.mesh.stores = true;
         else if (!std::strcmp(argv[i], "--ablate") && i + 1 < argc)
             ablationRequest = argv[++i];
         else if (!std::strcmp(argv[i], "--replace") && i + 1 < argc)

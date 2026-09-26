@@ -137,7 +137,7 @@ export class MeshView {
       draw: this._draw.index, stage: this._stage, running: this._outputRunning, error: this._outputError || null,
       output: o ? {
         measured: o.measured, vertices: o.vertices, stride: o.stride, topology: o.topology, outputs: o.outputs.map((x) => x.name), note: o.note ?? null, stats,
-        stage: o.stage ?? "vertex", view: o.view ?? null,
+        stage: o.stage ?? "vertex", view: o.view ?? null, capturedBy: o.capturedBy ?? null,
       } : null,
       input: this._input ? { vertices: this._input.ids.length, attributes: this._input.attributes.map((a) => a.name), position: this._input.position, notes: this._input.notes } : null,
       preview: this._preview?.debugState() ?? null,
@@ -358,6 +358,9 @@ export class MeshView {
     const stats = clipStats(o);
     const notes: string[] = [];
     if (o.note && o.measured) notes.push(o.note);
+    if (o.capturedBy === "vertex stores") {
+      notes.push("This GPU has no transform feedback: the vertex shader wrote its outputs to a buffer itself, and the replay put them in the order the draw assembled them.");
+    }
     if (o.stage && o.stage !== "vertex") {
       notes.push(`${outputStageLabel(o)}: what the ${o.stage} shader emitted, the last stage before rasterization, its primitives as a list.`);
     }

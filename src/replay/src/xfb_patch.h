@@ -31,6 +31,9 @@ struct XfbOutput
     int32_t location = -1;
     /** Written by the replay's edit rather than the shader: which invocation made the vertex (identity_patch.h). */
     bool added = false;
+    /** The output variable it is, and the member of its block, or -1 (store_patch.cpp reads it from there). */
+    uint32_t variable = 0;
+    int32_t member = -1;
 };
 
 struct XfbPatch

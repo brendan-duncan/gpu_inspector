@@ -162,7 +162,8 @@ VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat, uint32_t viewMas
 
 VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode)
 {
-    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode, _reissueRendering, _reissueViewMask, _meshView);
+    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode, _reissueRendering, _reissueViewMask, _meshView,
+        _meshStores.active ? _meshStores.key : 0);
     auto it = _overdrawPipelines.find(key);
     if (it != _overdrawPipelines.end())
         return it->second;
@@ -206,6 +207,22 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
                 if (auto tesc = find(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT); tesc != p.stages.end() && last->stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
                     StageCode(pipelineId, std::string(StageName(tesc->stage)) + ":" + (tesc->pName ? tesc->pName : "main"), control);
                 const VkShaderStageFlagBits lastStage = last->stage;
+                // Without transform feedback the vertex shader stores its outputs itself, which a
+                // stage after it cannot be captured by, and which needs a set of the replay's own.
+                if (_meshStores.active)
+                {
+                    if (lastStage != VK_SHADER_STAGE_VERTEX_BIT)
+                    {
+                        layout.error = "without transform feedback only a vertex shader's outputs are captured, and this pipeline has tessellation or geometry stages";
+                        return false;
+                    }
+                    if (p.info.flags & VK_PIPELINE_CREATE_DESCRIPTOR_BUFFER_BIT_EXT)
+                    {
+                        layout.error = "without transform feedback the outputs are written through a descriptor set, which a pipeline using descriptor buffers cannot bind";
+                        return false;
+                    }
+                    p.info.layout = _meshStores.layout;
+                }
                 for (VkPipelineShaderStageCreateInfo& s : p.stages)
                 {
                     const bool feedback = s.stage == lastStage;
@@ -213,7 +230,10 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
                         continue;
                     std::vector<uint32_t> words;
                     XfbPatch unused;
-                    MeshStageCode(pipelineId, s.stage, s.pName ? s.pName : "main", feedback, feedback ? layout : unused, words, control);
+                    if (feedback && _meshStores.active)
+                        MeshStoreCode(pipelineId, s.pName ? s.pName : "main", layout, words);
+                    else
+                        MeshStageCode(pipelineId, s.stage, s.pName ? s.pName : "main", feedback, feedback ? layout : unused, words, control);
                     if (feedback && !layout.error.empty())
                         return false;
                     if (words.empty())
@@ -466,6 +486,22 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     }
     if (args && (m == "vkCmdSetPrimitiveTopology" || m == "vkCmdSetPrimitiveTopologyEXT"))
         _overlayTopology = Str(args->Get("primitiveTopology"));
+    // What the mesh output's vertex stores need of the draw: its index buffer and primitive restart.
+    if (args && (m == "vkCmdBindIndexBuffer" || m == "vkCmdBindIndexBuffer2" || m == "vkCmdBindIndexBuffer2KHR"))
+    {
+        const std::string type = Str(args->Get("indexType"));
+        _reissueIndexBinding.bound = true;
+        _reissueIndexBinding.buffer = IdOf(args->Get("buffer"));
+        _reissueIndexBinding.offset = args->Get("offset") ? args->Get("offset")->Uint() : 0;
+        _reissueIndexBinding.type = type == "VK_INDEX_TYPE_UINT16" ? VK_INDEX_TYPE_UINT16
+            : type.find("UINT8") != std::string::npos ? VK_INDEX_TYPE_UINT8_EXT
+                                                        : VK_INDEX_TYPE_UINT32;
+    }
+    if (args && (m == "vkCmdSetPrimitiveRestartEnable" || m == "vkCmdSetPrimitiveRestartEnableEXT"))
+    {
+        const JValue* v = args->Get("primitiveRestartEnable");
+        _reissueRestart = v && (v->IsBool() ? v->boolean : v->Uint() != 0) ? 1 : 0;
+    }
     if (!args || (!insidePass && !IsStateCommand(m)) || kOverdrawSkipped.count(m))
         return;
     if ((!depthTested || depthFormat == VK_FORMAT_UNDEFINED) && kDepthState.count(m))
@@ -511,6 +547,8 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     const bool draw = StartsWith(m, "vkCmdDraw");
     const bool target = overlay && draw && index == _overlayTarget;
     bool feedback = false;
+    // The mesh output's target writing its outputs itself (no transform feedback): bound already, like feedback's.
+    bool storing = false;
     if (target && !_overlayPipeline && _overlayVertexShader && _overlayTargetMode == ReissueMode::Xfb)
     {
         // Shader objects: the last stage before rasterization in its feedback copy, the others as
@@ -519,7 +557,15 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         const VkShaderStageFlagBits lastStage = _overlayGeometryShader ? VK_SHADER_STAGE_GEOMETRY_BIT
             : _overlayTeseShader                                    ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
                                                                     : VK_SHADER_STAGE_VERTEX_BIT;
-        VkShaderEXT copy = FeedbackShader(last, lastStage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT ? _overlayTescShader : 0);
+        // Without transform feedback: the vertex shader object stores its outputs itself.
+        const bool stores = _meshTarget && _meshTarget->stores;
+        VkShaderEXT copy = VK_NULL_HANDLE;
+        if (!stores)
+            copy = FeedbackShader(last, lastStage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT ? _overlayTescShader : 0);
+        else if (lastStage != VK_SHADER_STAGE_VERTEX_BIT)
+            _xfbLayouts[last].error = "without transform feedback only a vertex shader's outputs are captured, and tessellation or geometry shader objects are bound";
+        else if (PrepareMeshStores(m, *args, last, true))
+            copy = StoreShader(last);
         const auto setDiscard = _fns.CmdSetRasterizerDiscardEnable ? _fns.CmdSetRasterizerDiscardEnable : _fns.CmdSetRasterizerDiscardEnableEXT;
         _overdrawDrawable = copy && setDiscard;
         _overlayIssued = true;  // drawn or not, nothing after it matters
@@ -531,9 +577,14 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
             const VkShaderEXT bound[] = {copy, VK_NULL_HANDLE};
             _fns.CmdBindShadersEXT(cb, 2, stages, bound);
             setDiscard(cb, VK_TRUE);
-            feedback = PrepareMeshBuffers(last);
-            if (!feedback)
-                _overdrawDrawable = false;
+            if (stores)
+                storing = _overdrawDrawable = BindMeshStores(cb, last);
+            else
+            {
+                feedback = PrepareMeshBuffers(last);
+                if (!feedback)
+                    _overdrawDrawable = false;
+            }
         }
         _overlayDrawn = _overdrawDrawable;
     }
@@ -547,7 +598,10 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     }
     else if (target)
     {
-        VkPipeline pipeline = _overlayPipeline ? OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, _overlayTargetMode) : VK_NULL_HANDLE;
+        // Without transform feedback the copy's vertex shader stores its outputs: its parameters come from the draw.
+        const bool stores = _overlayTargetMode == ReissueMode::Xfb && _meshTarget && _meshTarget->stores;
+        const bool storesReady = stores && _overlayPipeline && PrepareMeshStores(m, *args, _overlayPipeline, false);
+        VkPipeline pipeline = _overlayPipeline && (!stores || storesReady) ? OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, _overlayTargetMode) : VK_NULL_HANDLE;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
         _reissueCopy = pipeline;
         if (pipeline)
@@ -555,12 +609,17 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         _overlayIssued = true;  // drawn or not, nothing after it matters
         _overlayDrawnPipeline = _overlayPipeline;
         // The mesh output view: the draw writes its vertices into a buffer instead of rasterizing.
-        if (pipeline && _overlayTargetMode == ReissueMode::Xfb)
+        if (pipeline && stores)
+        {
+            storing = _overdrawDrawable = BindMeshStores(cb, _overlayPipeline);
+        }
+        else if (pipeline && _overlayTargetMode == ReissueMode::Xfb)
         {
             feedback = PrepareMeshBuffers(_overlayPipeline);
             if (!feedback)
                 _overdrawDrawable = false;
         }
+        _meshStores.active = false;
         _overlayDrawn = _overdrawDrawable;
     }
     else if (overlay && draw && _overlayOnlyTarget)
@@ -569,7 +628,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     }
     // A shader-object draw is edited here, right before it: the overlay's other draws move only the
     // depth and stencil, and the mesh output's target has bound its own shaders already.
-    if (draw && _overdrawDrawable && !_overlayPipeline && _reissueShaders && !feedback)
+    if (draw && _overdrawDrawable && !_overlayPipeline && _reissueShaders && !feedback && !storing)
     {
         const ReissueMode mode = target ? _overlayTargetMode : overlay ? ReissueMode::DepthOnly : ReissueMode::Count;
         _overdrawDrawable = ReissueShaderObjectDraw(cb, mode, depthTested, depthFormat);
@@ -637,6 +696,8 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
     _overlayPipeline = 0;
     _overlayVertexShader = _overlayTescShader = _overlayTeseShader = _overlayGeometryShader = 0;
     _overlayTopology.clear();
+    _reissueIndexBinding = IndexBinding{};
+    _reissueRestart = -1;
     for (uint32_t i = group.first + 1; i < pass.beginIndex; ++i)
         if (!commands->items[i].Get("secondary"))
             ReissueCommand(cb, i, depthTested, depthFormat, false);
