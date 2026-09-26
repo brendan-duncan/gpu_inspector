@@ -67,6 +67,27 @@ def find_d3d12_triangle():
     return None
 
 
+def find_adb():
+    """adb from PATH, or from the Android SDK where Android Studio puts it."""
+    found = shutil.which("adb")
+    if found:
+        return found
+    sdk = os.environ.get("ANDROID_HOME") or os.environ.get("ANDROID_SDK_ROOT") or \
+        (os.path.join(os.environ.get("LOCALAPPDATA", ""), "Android", "Sdk") if IS_WIN else os.path.expanduser("~/Library/Android/sdk"))
+    candidate = os.path.join(sdk, "platform-tools", "adb.exe" if IS_WIN else "adb")
+    return candidate if os.path.isfile(candidate) else None
+
+
+def android_device(adb):
+    """The serial of the one attached device ready to use (`adb devices`), or None."""
+    try:
+        out = subprocess.run([adb, "devices"], capture_output=True, text=True, timeout=30).stdout
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    ready = [line.split()[0] for line in out.splitlines()[1:] if line.strip().endswith("\tdevice")]
+    return ready[0] if ready else None
+
+
 def find_plugin_sample(exe):
     """A plugin's sample (test/d3d11_triangle, test/gles_triangle): Windows only, like the plugins."""
     if sys.platform != "win32":
@@ -225,10 +246,10 @@ def expect(cond, message):
     return [] if cond else [message]
 
 
-def check_connected(state, log):
+def check_connected(state, log, min_objects=20):
     s = session(state)
     return expect(s.get("state") == "connected", f"session state is {s.get('state')!r} ({s.get('detail')})") + \
-        expect((s.get("objects") or 0) > 20, f"only {s.get('objects')} objects")
+        expect((s.get("objects") or 0) > min_objects, f"only {s.get('objects')} objects")
 
 
 def check_capture_basic(state, log, min_draws=1, textures=2, timings=True):
@@ -2238,6 +2259,84 @@ def d3d12_debug_compute(state, log):
         expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}")
 
 
+# ------------------------------------------------------------------------------------------ Android
+
+ANDROID_TRIANGLE = "com.brendanduncan.androidtriangle"
+ANDROID_GLES_TRIANGLE = "com.brendanduncan.androidglestriangle"
+
+
+def android_install(adb, serial, apk, package):
+    """Before a case: the test application installed fresh, and stopped (the launch starts it)."""
+    def before():
+        subprocess.run([adb, "-s", serial, "install", "-r", apk], capture_output=True, timeout=120)
+        subprocess.run([adb, "-s", serial, "shell", "am", "force-stop", package], capture_output=True, timeout=30)
+    return before
+
+
+def android_stop(adb, serial, package):
+    """After a case: the application stopped and the GPU debug layer settings the launch made removed."""
+    def after():
+        subprocess.run([adb, "-s", serial, "shell", "am", "force-stop", package], capture_output=True, timeout=30)
+        for setting in ("enable_gpu_debug_layers", "gpu_debug_app", "gpu_debug_layers", "gpu_debug_layer_app", "gpu_debug_layers_gles"):
+            subprocess.run([adb, "-s", serial, "shell", "settings", "delete", "global", setting], capture_output=True, timeout=30)
+    return after
+
+
+def android_capture(state, log):
+    s = session(state)
+    c = capture(state)
+    # test/android_triangle on a phone: launched through the app's Android launch (the layer package,
+    # the GPU debug layer settings, an adb port forward), a live session, and one frame captured: the
+    # ring's one instanced draw into the swapchain, its colour and depth-stencil read back. A phone's
+    # GPU may have no pipeline statistics, so the pass counters are not asked for.
+    return check_connected(state, log) + check_capture_basic(state, log, textures=2, timings=False) + \
+        expect(c.get("draws") == 1, f"{c.get('draws')} draws: the ring is one instanced draw") + \
+        expect("android" in (s.get("name") or "").lower(), f"the session is not the Android launch: {s.get('name')!r}")
+
+
+def android_overdraw(state, log):
+    c = capture(state)
+    t = c.get("textureTab") or {}
+    # The phone's capture replayed on this machine (vkinsp_replay) for its overdraw: the ring's
+    # triangles barely overlap, so nearly every covered pixel is shaded once.
+    return check_connected(state, log) + check_capture_basic(state, log, textures=2, timings=False) + \
+        expect((c.get("overdraw") or 0) >= 2, f"{c.get('overdraw')} overdraw measurements (the replay takes two per pass)") + \
+        expect(t.get("measured") is True and t.get("counts") is True, f"the tab's pass has no counts to draw over the image: {t}")
+
+
+def android_gles(state, log):
+    s = session(state)
+    # test/android_gles_triangle through the OpenGL ES plugin's Android launch (api gles): the plugin's
+    # layer instead of the Vulkan one, which an Android launch chooses one of. A GL context holds far
+    # fewer objects than a Vulkan device (14 here), so fewer are asked for.
+    return check_connected(state, log, min_objects=10) + check_capture_basic(state, log, textures=1, timings=False) + \
+        expect("android" in (s.get("name") or "").lower(), f"the session is not the Android launch: {s.get('name')!r}")
+
+
+def android_cases(adb, serial):
+    """
+    The phone test applications on an attached device, launched from the app (--launch-android):
+    run only when `adb devices` lists one, and only for the APKs that are built
+    (tools/build_android_triangle.py, tools/build_android_gles_triangle.py).
+    """
+    cases = []
+    apk = os.path.join(ROOT, "build", "android", "android_triangle.apk")
+    gles_apk = os.path.join(ROOT, "build", "android", "android_gles_triangle.apk")
+    launch = [f"--launch-android={ANDROID_TRIANGLE}", f"--device={serial}"]
+    if os.path.isfile(apk):
+        cases.append(Case("android-capture", launch + ["--debug-capture"], android_capture, delay_ms=26000,
+                          before=android_install(adb, serial, apk, ANDROID_TRIANGLE), after=android_stop(adb, serial, ANDROID_TRIANGLE)))
+        cases.append(Case("android-overdraw", launch + ["--debug-capture", "--debug-view=overdraw", "--debug-settle=8000"], android_overdraw,
+                          delay_ms=32000, before=android_install(adb, serial, apk, ANDROID_TRIANGLE), after=android_stop(adb, serial, ANDROID_TRIANGLE)))
+    else:
+        print("  (build/android/android_triangle.apk not built: skipping the Android Vulkan cases)")
+    if os.path.isfile(gles_apk):
+        cases.append(Case("android-gles", [f"--launch-android={ANDROID_GLES_TRIANGLE}", f"--device={serial}", "--api=gles", "--debug-capture"],
+                          android_gles, delay_ms=26000, before=android_install(adb, serial, gles_apk, ANDROID_GLES_TRIANGLE),
+                          after=android_stop(adb, serial, ANDROID_GLES_TRIANGLE)))
+    return cases
+
+
 def plugin_cases(d3d11_triangle, gles_triangle):
     """
     The plugin samples (docs/PLUGINS.md), each asking for its own capture through
@@ -2546,6 +2645,7 @@ def main():
     ap.add_argument("--no-metal", action="store_true", help="skip the live Metal cases (macOS)")
     ap.add_argument("--unity", help="a Unity player (.app) to run the Metal cases against a real frame too")
     ap.add_argument("--no-d3d12", action="store_true", help="skip the live Direct3D 12 cases (Windows)")
+    ap.add_argument("--no-android", action="store_true", help="skip the cases on an attached Android device")
     args = ap.parse_args()
     if not electron():
         print("electron not installed: run npm install in src/app/", file=sys.stderr)
@@ -2576,6 +2676,11 @@ def main():
         elif sys.platform == "win32":
             print("  (dxinsp_triangle not built: skipping the Direct3D 12 cases)")
         cases += plugin_cases(find_plugin_sample("d3d11insp_triangle.exe"), find_plugin_sample("glesinsp_triangle.exe"))
+    if not args.no_android:
+        adb = find_adb()
+        serial = android_device(adb) if adb else None
+        if serial:
+            cases += android_cases(adb, serial)
     if args.captures:
         for p in sorted(glob.glob(os.path.join(args.captures, "*.gpucap"))):
             cases.append(capture_case(p))

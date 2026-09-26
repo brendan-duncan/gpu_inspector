@@ -232,6 +232,14 @@ npm test             # renderer and MCP server unit tests
 frame, and a pixel followed through it — which has passes the samples do not. Opt-in: the player
 is not part of the repository.
 
+With an Android device attached (`adb devices` lists it), three more cases run on it, launched from
+the app's Android launch: `android-capture` (the Vulkan phone triangle with the capture layer, a live
+session and a capture), `android-overdraw` (that capture replayed on this machine for its overdraw)
+and `android-gles` (the OpenGL ES triangle through the plugin). Each installs its APK first and
+removes the GPU debug layer settings after, so build them before (`python tools/build_android.py`,
+`tools/build_android_triangle.py`, `tools/build_android_gles_triangle.py`); a case whose APK is not
+built is skipped. `--no-android` leaves the device alone.
+
 `python tools/doc_screenshots.py` regenerates the screenshots in `docs/images` from the built UI:
 each is a run of the app with its testing aids, quitting once the shot is written.
 Shots taken from capture files need those files — `--captures <dir>`, or

@@ -25,6 +25,7 @@
 - `test/triangle --strip` and `--fan` draw the cube as triangle strips or fans split by primitive restart.
 - Captures on Android read back at most a share of the phone's available memory, with a render target budget beside the image and buffer ones.
 - `debug.vkinsp.readback_mb` (`VKINSP_READBACK_MB` elsewhere) sets a capture's read-back budget.
+- `tools/ui_tests.py` runs Vulkan and OpenGL ES cases on an attached Android device.
 
 ### Fixed
 - The Android test triangle is 16 KB aligned and fits a portrait screen.

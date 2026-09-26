@@ -2290,8 +2290,12 @@ experiment `src/metal/README.md` records for macOS signing; put the resulting ta
 - [x] macOS build of the UI, signed with the project's Developer ID and notarized.
 
 ## Tooling
-- [ ] UI tests: cases for the Unity player and Android devices when attached (the saved-capture
-      mode covers their captures), image comparison of the screenshots against references.
+- [x] UI tests on an attached Android device (`android_cases`, `tools/ui_tests.py`): `android-capture`,
+      `android-overdraw` and `android-gles` launch the phone test applications from the app, check the
+      live session and the capture, replay it on this machine, and leave the device's GPU debug layer
+      settings as they were. Run only when `adb devices` lists a device; passing on a Pixel 8 Pro.
+- [ ] UI tests, the rest: a case for a Unity player on Android (none is built here), and image
+      comparison of the screenshots against references.
 - [ ] Help links to docs from the panels.
 - [ ] A screenshot of **Memory Use / Over time**, the one v0.14.0 feature the documentation still
       describes without a picture. It needs a session whose memory actually moves: the shot has to
