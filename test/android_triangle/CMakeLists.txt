@@ -12,5 +12,5 @@ add_library(android_triangle SHARED main.cpp "${GLUE_DIR}/android_native_app_glu
 target_include_directories(android_triangle PRIVATE "${GLUE_DIR}" "${SHADERS_DIR}")
 target_compile_definitions(android_triangle PRIVATE VK_USE_PLATFORM_ANDROID_KHR)
 # The glue's entry point must survive the linker (NativeActivity finds ANativeActivity_onCreate).
-target_link_options(android_triangle PRIVATE "-Wl,-u,ANativeActivity_onCreate")
+target_link_options(android_triangle PRIVATE "-Wl,-u,ANativeActivity_onCreate" "-Wl,-z,max-page-size=16384")
 target_link_libraries(android_triangle PRIVATE android log vulkan)

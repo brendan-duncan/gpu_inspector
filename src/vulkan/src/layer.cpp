@@ -72,6 +72,45 @@ std::string ConfigValue(const char* envName)
 #endif
 }
 
+/**
+ * A capture's read-back budgets where memory is short. A phone shares its memory between the GPU and
+ * everything else, and Android ends an application that takes too much of it, so there a capture
+ * reads back at most an eighth of the memory available when it starts: half of that for render
+ * targets, a quarter each for sampled images and buffers, never more than the defaults. On any
+ * platform VKINSP_READBACK_MB (debug.vkinsp.readback_mb) sets that total instead. A request's own
+ * limits come after this.
+ */
+void ApplyMemoryBudgets(CaptureOptions& o)
+{
+    uint64_t total = 0;
+    const std::string configured = ConfigValue("VKINSP_READBACK_MB");
+    if (!configured.empty())
+        total = strtoull(configured.c_str(), nullptr, 10) << 20;
+#if defined(__ANDROID__)
+    if (configured.empty())
+    {
+        if (FILE* f = fopen("/proc/meminfo", "r"))
+        {
+            char line[256];
+            unsigned long long kb = 0;
+            while (fgets(line, sizeof(line), f))
+                if (sscanf(line, "MemAvailable: %llu kB", &kb) == 1)
+                    break;
+            fclose(f);
+            total = (uint64_t)kb * 1024 / 8;
+        }
+    }
+#endif
+    if (!total)
+        return;
+    o.maxTargetTotal = std::min<uint64_t>(o.maxTargetTotal, total / 2);
+    o.maxImageTotal = std::min<uint64_t>(o.maxImageTotal, total / 4);
+    o.maxBufferTotal = std::min<uint64_t>(o.maxBufferTotal, total / 4);
+    o.maxTextureSize = std::min<uint64_t>(o.maxTextureSize, total / 2);
+    Log("capture read-back budget %llu MB: render targets %llu MB, images %llu MB, buffers %llu MB", (unsigned long long)(total >> 20),
+        (unsigned long long)(o.maxTargetTotal >> 20), (unsigned long long)(o.maxImageTotal >> 20), (unsigned long long)(o.maxBufferTotal >> 20));
+}
+
 bool ConfigFlag(const char* envName)
 {
     std::string v = ConfigValue(envName);
@@ -365,6 +404,7 @@ static void HandleUiMessage(const std::string& text)
     else if (action == "Capture")
     {
         CaptureOptions o;
+        ApplyMemoryBudgets(o);
         o.frameCount = (uint32_t)msg.GetNumber("frameCount", 1);
         if (const JsonValue* v = msg.Get("atFrame"))
         {
@@ -379,6 +419,8 @@ static void HandleUiMessage(const std::string& text)
             o.maxBufferTotal = (uint64_t)v->num;
         if (const JsonValue* v = msg.Get("maxImageTotal"))
             o.maxImageTotal = (uint64_t)v->num;
+        if (const JsonValue* v = msg.Get("maxTargetTotal"))
+            o.maxTargetTotal = (uint64_t)v->num;
         o.captureTextures = msg.GetBool("captureTextures", true);
         o.captureBuffers = msg.GetBool("captureBuffers", true);
         o.captureImages = msg.GetBool("captureImages", true);

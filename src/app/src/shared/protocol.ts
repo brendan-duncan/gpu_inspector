@@ -992,6 +992,11 @@ export interface CaptureRequest {
   captureImages?: boolean;
   /** Total image bytes captured per capture; further images are reported as errors. */
   maxImageTotal?: number;
+  /**
+   * Total render target bytes read back per capture; further targets are reported as errors. The layer
+   * sets it (and lowers the other budgets) to a share of the memory available on a phone.
+   */
+  maxTargetTotal?: number;
   /** Write GPU timestamps around every render pass (CapturePassTimings). */
   profilePasses?: boolean;
   /** Every recorded command carries the stack it was recorded from. */

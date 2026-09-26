@@ -22,7 +22,7 @@ namespace vkreplay
 // transform feedback (xfb_patch.cpp) and which rasterizes nothing. The buffer holds every vertex
 // that stage emitted, in order, and the counter says how much of it was written.
 //
-// A GPU without transform feedback (most mobile GPUs, MoltenVK) has the vertex shader store its outputs
+// A GPU without transform feedback (MoltenVK, for one) has the vertex shader store its outputs
 // itself instead (store_patch.h), into a buffer bound in a descriptor set of the replay's own after the
 // application's: a record per vertex of the draw, which the replay puts in transform feedback's order
 // once the submission is done, from the draw's index buffer (index order, strips and fans as lists,

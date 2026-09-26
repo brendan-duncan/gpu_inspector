@@ -668,10 +668,17 @@ application with injected state. Route (a) is the general one and is the prerequ
       Windows behavior. The Windows installer script has now been run on a machine too.
 - [ ] Remote targets over TCP (the transport is already socket-based; Android devices are
       reached through `adb forward` today, see ARCHITECTURE.md).
-- [ ] Android: verify `test/android_triangle` (the phone NativeActivity, built by
-      `tools/build_android_triangle.py`) on a phone: on a Quest it runs as a 2D panel that the
-      shell keeps in the background, so it never gets a window; a GLES layer for Unity's GLES
-      player; lower default read-back limits for phones.
+- [x] Android: `test/android_triangle` verified on a Pixel 8 Pro (Mali-G715): launched with the layer
+      through `launch_android_app`, live at 120 Hz with no validation messages, captured, and the
+      capture replayed on the desktop with overdraw, overlays, mesh output (transform feedback and
+      vertex stores alike), pixel history and per-draw stats; it differs from the phone only in the
+      depth ties of the ring's coplanar overlaps. Fixed on the way: the library was not 16 KB
+      aligned (Android 15+ warned), and the ring ran off a portrait screen. Read-back budgets on
+      Android are a share of the memory available (`ApplyMemoryBudgets`, `src/vulkan/src/layer.cpp`),
+      with a render target budget beside the image and buffer ones, and `debug.vkinsp.readback_mb`
+      to set them. (A GLES layer for Unity's GLES player is the plugin, docs/PLUGINS.md.)
+- [ ] Android, the rest: on a Quest the triangle runs as a 2D panel that the shell keeps in the
+      background, so it never gets a window.
 - [x] Read-back after submission (command buffers recorded before the capture) splits the
       submission after each such buffer, so a later buffer of the same submission cannot
       overwrite what it rendered before it is read (`PreHook_vkQueueSubmit`, triangle `--prerecord`).

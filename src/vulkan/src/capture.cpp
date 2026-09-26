@@ -74,6 +74,7 @@ void CaptureManager::Start(DeviceData* dev)
     _nextBufferId = 1;
     _imageCaptureByView.clear();
     _imageBytes = 0;
+    _targetBytes = 0;
     _imageStates.clear();
     _passTimings.clear();
     _commandTotal = 0;
@@ -1970,6 +1971,16 @@ bool CaptureManager::PrepareAttachment(DeviceData* dev, uint64_t commandBufferId
     tc.size = (VkDeviceSize)tc.width * tc.height * tc.depth * tc.layers * bpp;
     if (tc.size > _options.maxTextureSize)
         return fail("exceeds max texture size");
+    bool overTargets = false;
+    {
+        std::lock_guard lock(_mutex);
+        overTargets = _targetBytes + tc.size > _options.maxTargetTotal;
+        if (!overTargets)
+            _targetBytes += tc.size;
+    }
+    // fail() takes the lock itself.
+    if (overTargets)
+        return fail("render target budget exceeded");
 
     uint32_t chunkIndex = 0;
     VkDeviceSize offset = 0;

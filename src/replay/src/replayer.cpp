@@ -3405,9 +3405,10 @@ void Replayer::InjectReadbacks(VkCommandBuffer cb, const PassState& pass, std::v
             skip(skipReason);
             continue;
         }
-        if (info->Get("error"))
+        if (const JValue* error = info->Get("error"))
         {
-            skip("the capture's read-back failed");
+            const std::string why = Str(error);
+            skip(why.empty() ? "the capture's read-back failed" : "the capture did not read it back: " + why);
             continue;
         }
         const bool resolve = info->Get("resolve") && info->Get("resolve")->boolean;

@@ -35,6 +35,7 @@ struct CaptureOptions
     uint64_t maxBufferTotal = 512ull << 20;   // stop capturing buffers past this many bytes per capture
     uint64_t maxTextureSize = 256ull << 20;   // skip render targets (and sampled images) larger than this
     uint64_t maxImageTotal = 256ull << 20;    // stop capturing sampled / storage images past this many bytes
+    uint64_t maxTargetTotal = UINT64_MAX;     // stop reading back render targets past this many bytes (a phone's is a share of its memory)
     bool captureTextures = true;
     bool captureBuffers = true;
     // Read back the images bound by descriptor sets (sampled, storage, input attachments), once
@@ -499,6 +500,8 @@ private:
     // Sampled image captures: one per image view per capture, and the bytes taken so far.
     std::unordered_map<uint64_t, uint32_t> _imageCaptureByView;
     uint64_t _imageBytes = 0;
+    /** Render target bytes read back this capture (maxTargetTotal). */
+    uint64_t _targetBytes = 0;
     // Frame-start contents: per image, per aspect and subresource (SubresourceState), whether the
     // capture has read it (and taken its contents) or written it whole first.
     enum SubresourceState : uint8_t

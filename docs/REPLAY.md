@@ -397,8 +397,10 @@ Limits:
 - Mesh shader pipelines are not captured.
 - Without transform feedback (below), only a vertex shader's outputs of a direct draw are captured.
 
-**Without transform feedback.** Most mobile GPUs and MoltenVK have no `VK_EXT_transform_feedback`,
-but they have `vertexPipelineStoresAndAtomics`, which lets a vertex shader write memory. There the
+**Without transform feedback.** A GPU may have no `VK_EXT_transform_feedback` but have
+`vertexPipelineStoresAndAtomics`, which lets a vertex shader write memory: MoltenVK does, so a replay
+on a Mac does. (Phones vary the other way too: a Pixel 8 Pro's Mali-G715 has transform feedback and
+no vertex stores.) There the
 vertex shader stores its outputs itself (`store_patch.cpp`): at each return of its entry point,
 every output transform feedback would have captured is written, in the same record layout, to
 record `(gl_InstanceIndex - firstInstance) * perInstance + (gl_VertexIndex - base)` of a storage

@@ -21,10 +21,14 @@
 - `debug_shader` takes the `geometry`, `tess_control` and `tess_eval` stages.
 - **Measure shader** measures a Vulkan vertex shader whole, not only its functions and lines.
 - `test/triangle --heavy-vertex` draws the cube with a costly vertex shader, as many instances.
-- The Vulkan mesh view shows VS Out on GPUs without transform feedback, such as most mobile GPUs and MoltenVK.
+- The Vulkan mesh view shows VS Out on GPUs without transform feedback that allow vertex shader stores, such as MoltenVK.
 - `test/triangle --strip` and `--fan` draw the cube as triangle strips or fans split by primitive restart.
+- Captures on Android read back at most a share of the phone's available memory, with a render target budget beside the image and buffer ones.
+- `debug.vkinsp.readback_mb` (`VKINSP_READBACK_MB` elsewhere) sets a capture's read-back budget.
 
 ### Fixed
+- The Android test triangle is 16 KB aligned and fits a portrait screen.
+- A render target the capture did not read back says why in the replay.
 - **Measure shader** scales back the work a draw's hidden fragments added, and refuses a draw that would shade many times its own work instead of hanging the GPU.
 - **Measure shader** no longer charges a vertex shader for the rasterization and fragment work a variant stopped.
 - Vulkan mesh output of a draw writing `gl_Layer` no longer draws into a single-layer framebuffer.

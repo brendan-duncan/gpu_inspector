@@ -531,7 +531,9 @@ struct App
             turn = (float)M_PI_2;
         const bool sideways = transform == VK_SURFACE_TRANSFORM_ROTATE_90_BIT_KHR || transform == VK_SURFACE_TRANSFORM_ROTATE_270_BIT_KHR;
         const float aspect = sideways ? (float)extent.height / (float)extent.width : (float)extent.width / (float)extent.height;
-        return Multiply(Multiply(RotationZ(turn), Perspective(1.1f, aspect, 0.1f, 100.0f)), model);
+        // 1.1 radians across the narrower side, so the ring fits a phone held upright as well as sideways.
+        const float fovY = aspect < 1.0f ? 2.0f * atanf(tanf(0.55f) / aspect) : 1.1f;
+        return Multiply(Multiply(RotationZ(turn), Perspective(fovY, aspect, 0.1f, 100.0f)), model);
     }
 
     void RenderFrame(float seconds)

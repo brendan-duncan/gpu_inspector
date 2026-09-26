@@ -1,6 +1,6 @@
 // A vertex shader edited to write its outputs to a storage buffer, for the mesh output (mesh.cpp) on a
-// GPU without transform feedback: most mobile GPUs and MoltenVK have none, but they have
-// vertexPipelineStoresAndAtomics. Where the shader finishes (each return of its entry point), the
+// GPU without transform feedback but with vertexPipelineStoresAndAtomics (MoltenVK, for one). Where
+// the shader finishes (each return of its entry point), the
 // outputs transform feedback would have captured (xfb_patch.h decides which, and their layout) are
 // written, word by word, to record `slot` of a buffer at the descriptor set and binding given:
 //

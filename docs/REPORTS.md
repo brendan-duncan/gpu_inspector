@@ -399,7 +399,7 @@ Only a triangle list can be filled: lines and points are drawn as they are, and 
   position.
 - **VS Out** — what the vertex shader wrote: `gl_Position` and every output, drawn in normalized
   device coordinates inside the outline of the view volume. On a GPU without transform feedback
-  (most mobile GPUs, MoltenVK) the vertex shader writes them to a buffer itself, and the notes say so. Past a geometry or tessellation shader
+  (MoltenVK, for one) the vertex shader writes them to a buffer itself, and the notes say so. Past a geometry or tessellation shader
   it is what that stage emitted (GS Out, DS Out), and a multiview draw (an XR frame's eyes) has a
   mesh per view, picked beside the camera controls. The status line counts what keeps a
   mesh from being seen: primitives outside the view volume, vertices behind the eye, triangles with

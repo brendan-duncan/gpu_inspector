@@ -91,6 +91,18 @@ these is in the way.
 Expect the captured frame to take noticeably longer on a tiled mobile GPU: every render target is
 read back at the end of its pass. This affects the frame being captured, not the frames around it.
 
+A phone shares its memory between the GPU and everything else, and Android ends an application that
+takes too much of it. So a capture on Android reads back at most an eighth of the memory available
+when it starts: half of that for render targets, a quarter each for sampled images and buffers, and
+never more than the desktop's limits (512 MB of buffers, 256 MB of images). What does not fit is
+reported as not captured, with the reason. On a Pixel 8 Pro with 6.4 GB available that is 772 MB:
+386 MB of render targets, 193 MB each of images and buffers. To set the total yourself (in MB, on
+any platform):
+
+```
+adb shell setprop debug.vkinsp.readback_mb 1024     # the environment variable VKINSP_READBACK_MB elsewhere
+```
+
 ## What works the same as the desktop
 
 - The whole [Inspect](INSPECT.md) tab, including live texture readback.
@@ -109,6 +121,12 @@ python tools/build_android_triangle.py        # build/android/android_triangle.a
 python tools/build_android_gles_triangle.py   # build/android/android_gles_triangle.apk, OpenGL ES 3.2
 python tools/build_xr_triangle.py             # build/android/xr_triangle.apk + xr_triangle_slow.apk
 ```
+
+`android_triangle.apk` renders a ring of triangles in one instanced draw, and was checked on a Pixel 8
+Pro (Mali-G715): it launches with the layer, a live session shows its frames at 120 Hz with no
+validation messages, and a capture replays on a desktop NVIDIA GPU with every analysis working. The
+replay differs from the capture only where two triangles of the ring overlap in one plane, a depth tie
+the two GPUs break differently.
 
 `xr_triangle.apk` renders a ring of triangles in one multiview pass. `xr_triangle_slow.apk`
 renders the same scene with deliberate inefficiencies — a pass per eye, a stored depth buffer, a draw and
