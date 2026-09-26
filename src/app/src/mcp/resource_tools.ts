@@ -928,7 +928,7 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch (a command index). Default: the costliest stage of the frame in the flame graph." },
-        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "The stage to measure (default fragment for a draw, compute for a dispatch)." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute", "geometry", "tess_control", "tess_eval"], description: "The stage to measure (default fragment for a draw, compute for a dispatch). The stages before rasterization (vertex, tessellation, geometry) are timed with rasterization discarded." },
         rounds: { type: "integer", minimum: 1, maximum: 32, description: "Timed rounds, each timing every variant once (default 5); more rounds, less noise." },
         functions: { type: "integer", minimum: 0, maximum: 64, description: "Functions measured, the costliest by the model first (default 16)." },
         lines: { type: "integer", minimum: 0, maximum: 128, description: "Source lines measured, the costliest by the model first (default 32; modules with line information)." },

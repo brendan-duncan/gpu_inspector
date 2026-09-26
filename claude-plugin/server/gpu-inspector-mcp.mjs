@@ -8354,6 +8354,9 @@ function sourceBuiltIn(stage) {
   if (stage === "fragment") return { builtIn: 15 /* FragCoord */, kind: "vec4" };
   if (stage === "vertex") return { builtIn: 42 /* VertexIndex */, kind: "int" };
   if (stage === "compute") return { builtIn: 28 /* GlobalInvocationId */, kind: "uvec3" };
+  if (stage === "geometry") return { builtIn: 7 /* PrimitiveId */, kind: "int" };
+  if (stage === "tess_control") return { builtIn: 8 /* InvocationId */, kind: "int" };
+  if (stage === "tess_eval") return { builtIn: 13 /* TessCoord */, kind: "vec3" };
   return null;
 }
 function rewrite(m, stage, entryIndex, replace, remove, written = /* @__PURE__ */ new Set()) {
@@ -8411,7 +8414,7 @@ function rewrite(m, stage, entryIndex, replace, remove, written = /* @__PURE__ *
     for (const [id, builtIn] of m.builtIns) {
       if (builtIn === source.builtIn && m.variableClass.get(id) === 1 /* Input */) input = id;
     }
-    const valueType2 = source.kind === "vec4" ? type(23 /* TypeVector */, [float32(), 4]) : source.kind === "int" ? type(21 /* TypeInt */, [32, 1]) : type(23 /* TypeVector */, [type(21 /* TypeInt */, [32, 0]), 3]);
+    const valueType2 = source.kind === "vec4" ? type(23 /* TypeVector */, [float32(), 4]) : source.kind === "vec3" ? type(23 /* TypeVector */, [float32(), 3]) : source.kind === "int" ? type(21 /* TypeInt */, [32, 1]) : type(23 /* TypeVector */, [type(21 /* TypeInt */, [32, 0]), 3]);
     if (input) {
       inputType = valueType2;
     } else {
@@ -8428,7 +8431,7 @@ function rewrite(m, stage, entryIndex, replace, remove, written = /* @__PURE__ *
     out2.push(4 << 16 | 61 /* Load */, inputType, loaded, input);
     const f = float32();
     const x = bound++;
-    if (source.kind === "vec4") {
+    if (source.kind === "vec4" || source.kind === "vec3") {
       out2.push(5 << 16 | 81 /* CompositeExtract */, f, x, loaded, 0);
     } else if (source.kind === "int") {
       out2.push(4 << 16 | 111 /* ConvertSToF */, f, x, loaded);
@@ -8671,7 +8674,7 @@ function planAblation(spirv, stage, entryPoint, analysis, limits = {}) {
     for (const v of moduleEntry.interface) {
       if (m.variableClass.get(v) !== 3 /* Output */) continue;
       const builtIn = m.builtIns.get(v);
-      if (builtIn === 22 /* FragDepth */ || builtIn === 20 /* SampleMask */) continue;
+      if (builtIn === 22 /* FragDepth */ || builtIn === 20 /* SampleMask */ || builtIn === 11 /* TessLevelOuter */ || builtIn === 12 /* TessLevelInner */) continue;
       outputs.add(v);
     }
     const remove = /* @__PURE__ */ new Set();
@@ -34158,7 +34161,7 @@ function resourceTools(store) {
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch (a command index). Default: the costliest stage of the frame in the flame graph." },
-        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "The stage to measure (default fragment for a draw, compute for a dispatch)." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute", "geometry", "tess_control", "tess_eval"], description: "The stage to measure (default fragment for a draw, compute for a dispatch). The stages before rasterization (vertex, tessellation, geometry) are timed with rasterization discarded." },
         rounds: { type: "integer", minimum: 1, maximum: 32, description: "Timed rounds, each timing every variant once (default 5); more rounds, less noise." },
         functions: { type: "integer", minimum: 0, maximum: 64, description: "Functions measured, the costliest by the model first (default 16)." },
         lines: { type: "integer", minimum: 0, maximum: 128, description: "Source lines measured, the costliest by the model first (default 32; modules with line information)." },

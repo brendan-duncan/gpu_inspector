@@ -26,6 +26,8 @@
 - Captures on Android read back at most a share of the phone's available memory, with a render target budget beside the image and buffer ones.
 - `debug.vkinsp.readback_mb` (`VKINSP_READBACK_MB` elsewhere) sets a capture's read-back budget.
 - `tools/ui_tests.py` runs Vulkan and OpenGL ES cases on an attached Android device.
+- **Measure shader** and `measure_shader_cost` measure Vulkan geometry and tessellation shaders.
+- `test/triangle --heavy-geometry` and `--heavy-tessellation` draw the cube with a costly geometry or tessellation evaluation shader.
 
 ### Fixed
 - The Android test triangle is 16 KB aligned and fits a portrait screen.

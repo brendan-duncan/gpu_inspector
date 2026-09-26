@@ -82,11 +82,13 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
       } });
   }
 
-  // The stage to measure: the one the selected frame is in, else the widest fragment or compute stage.
+  // The stage to measure: the one the selected frame is in (any stage a Vulkan shader is measured in),
+  // else the widest fragment or compute stage.
   const measureTarget = (): { node: FlameNode; target: ShaderMeasureTarget } | null => {
     if (!tree) return null;
-    const stages = stageFrames(tree).filter(({ stage }) => stage.pipelineId !== undefined && stage.command && stage.stage
-      && (stage.stage === "fragment" || stage.stage === "compute"));
+    const measurable = (s: FlameNode): boolean => s.stage === "fragment" || s.stage === "compute"
+      || (!o.models.get(s.pipelineId!)?.some((m) => m.dxil) && ["vertex", "geometry", "tess_control", "tess_eval"].includes(s.stage ?? ""));
+    const stages = stageFrames(tree).filter(({ stage }) => stage.pipelineId !== undefined && stage.command && stage.stage && measurable(stage));
     const withSpirv = (n: FlameNode): ShaderMeasureTarget | null => {
       const model = o.models.get(n.pipelineId!)?.find((m) => m.stage === n.stage && m.entryPoint === n.entryPoint && m.objectId === n.objectId);
       if (!model?.spirv) return null;
@@ -94,7 +96,8 @@ export function renderFrameFlameGraph(parent: Widget, o: FlameGraphPanelOptions)
                ...(model.dxil ? { dxil: model.dxil } : {}) };
     };
     const picked = selected ? stages.find((s) => s.nodes.has(selected!)) : undefined;
-    const candidates = picked ? [picked] : stages.slice().sort((a, b) => b.stage.totalCost - a.stage.totalCost);
+    const candidates = picked ? [picked]
+      : stages.filter((s) => s.stage.stage === "fragment" || s.stage.stage === "compute").sort((a, b) => b.stage.totalCost - a.stage.totalCost);
     for (const { stage } of candidates) {
       const target = withSpirv(stage);
       if (target) return { node: stage, target };

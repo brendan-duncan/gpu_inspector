@@ -3,7 +3,9 @@
 //
 // vectors/ablation/heavy.frag.spv is test/triangle/heavy.frag (`glslc -g`): fbm (a loop of hash
 // calls), blurred (a loop of texture reads), and main combining them. heavy.vert.spv is
-// test/triangle/heavy.vert (`glslc -g`): wobble (a loop of hash calls) displacing the position. reuse.frag.spv (`glslc -g`,
+// test/triangle/heavy.vert (`glslc -g`): wobble (a loop of hash calls) displacing the position;
+// heavy.geom.spv and heavy.tese.spv the same functions in test/triangle's geometry and tessellation
+// evaluation shaders, cube.tesc.spv test/triangle/cube.tesc. reuse.frag.spv (`glslc -g`,
 // its source beside it) keeps two texture reads in one temporary, and branches on the first.
 import { test } from "node:test";
 import assert from "node:assert/strict";
@@ -56,6 +58,23 @@ test("a vertex shader is measured whole, its position left out too: the replay t
   assert.ok(!p.skipped.some((s) => s.kind === "stage"), JSON.stringify(p.skipped));
 });
 
+test("geometry and tessellation stages are measured like a vertex shader, the tessellation levels kept", () => {
+  for (const [name, stage, stores] of [["heavy.geom.spv", "geometry", 3], ["heavy.tese.spv", "tess_eval", 3]]) {
+    const p = plan(name, stage);
+    const names = p.variants.map((v) => `${v.kind} ${v.name}`);
+    for (const expected of [`stage ${stage}: main`, "function wobble(vf3;", "function hash(vf3;", "function shade(vf3;"]) {
+      assert.ok(names.includes(expected), `${name}: ${expected} in ${names.join(", ")}`);
+    }
+    // gl_Position's, fragColor's and fragUV's stores (the geometry shader's once, in its loop).
+    assert.equal(p.variants.find((v) => v.kind === "stage").edits, stores, name);
+  }
+  // The control shader loses its position and its two arrays, not the four tessellation levels.
+  const p = plan("cube.tesc.spv", "tess_control");
+  const stage = p.variants.find((v) => v.kind === "stage");
+  assert.ok(stage, JSON.stringify(p.skipped));
+  assert.equal(stage.edits, 3);
+});
+
 test("a line's upstream names the parts whose values reach it", () => {
   const p = plan("heavy.frag.spv");
   const upstream = (name) => p.variants.find((v) => v.name === name).upstream.map((k) => p.variants[k].name);
@@ -81,7 +100,8 @@ test("every variant passes spirv-val", async (t) => {
     t.skip("spirv-val not found (install the Vulkan SDK)");
     return;
   }
-  for (const [name, stage] of [["heavy.frag.spv", "fragment"], ["reuse.frag.spv", "fragment"], ["heavy.vert.spv", "vertex"]]) {
+  for (const [name, stage] of [["heavy.frag.spv", "fragment"], ["reuse.frag.spv", "fragment"], ["heavy.vert.spv", "vertex"],
+    ["heavy.geom.spv", "geometry"], ["heavy.tese.spv", "tess_eval"], ["cube.tesc.spv", "tess_control"]]) {
     for (const v of plan(name, stage).variants) assert.equal(await validateSpirv(v.spirv), null, `${name}: ${v.kind} ${v.name}`);
   }
 });

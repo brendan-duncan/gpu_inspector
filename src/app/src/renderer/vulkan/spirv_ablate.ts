@@ -44,7 +44,10 @@ const enum Op {
 
 const enum StorageClass { Input = 1, Uniform = 2, Output = 3, StorageBuffer = 12, PhysicalStorageBuffer = 5349 }
 const enum Decoration { BufferBlock = 3, BuiltIn = 11, Location = 30, Binding = 33, DescriptorSet = 34 }
-const enum BuiltIn { Position = 0, FragCoord = 15, SampleMask = 20, FragDepth = 22, GlobalInvocationId = 28, VertexIndex = 42 }
+const enum BuiltIn {
+  Position = 0, PrimitiveId = 7, InvocationId = 8, TessLevelOuter = 11, TessLevelInner = 12, TessCoord = 13, FragCoord = 15, SampleMask = 20,
+  FragDepth = 22, GlobalInvocationId = 28, VertexIndex = 42,
+}
 
 /** What a variant takes out. */
 export interface AblationPart {
@@ -450,11 +453,19 @@ class Module {
 // ---------------------------------------------------------------------------------------------
 // Rewriting
 
-/** The built-in input a stage's replacements are read from, and its type. */
-function sourceBuiltIn(stage: ShaderStage): { builtIn: number; kind: "vec4" | "int" | "uvec3" } | null {
+/**
+ * The built-in input a stage's replacements are read from, and its type: one that differs between the
+ * stage's invocations, so the compiler cannot fold a replaced value into a constant.
+ */
+function sourceBuiltIn(stage: ShaderStage): { builtIn: number; kind: "vec4" | "vec3" | "int" | "uvec3" } | null {
   if (stage === "fragment") return { builtIn: BuiltIn.FragCoord, kind: "vec4" };
   if (stage === "vertex") return { builtIn: BuiltIn.VertexIndex, kind: "int" };
   if (stage === "compute") return { builtIn: BuiltIn.GlobalInvocationId, kind: "uvec3" };
+  // A geometry shader invocation per input primitive, a tessellation control one per output vertex of a
+  // patch, a tessellation evaluation one per point of it.
+  if (stage === "geometry") return { builtIn: BuiltIn.PrimitiveId, kind: "int" };
+  if (stage === "tess_control") return { builtIn: BuiltIn.InvocationId, kind: "int" };
+  if (stage === "tess_eval") return { builtIn: BuiltIn.TessCoord, kind: "vec3" };
   return null;
 }
 
@@ -522,6 +533,7 @@ function rewrite(m: Module, stage: ShaderStage, entryIndex: number, replace: Set
       if (builtIn === source.builtIn && m.variableClass.get(id) === StorageClass.Input) input = id;
     }
     const valueType = source.kind === "vec4" ? type(Op.TypeVector, [float32(), 4])
+      : source.kind === "vec3" ? type(Op.TypeVector, [float32(), 3])
       : source.kind === "int" ? type(Op.TypeInt, [32, 1]) : type(Op.TypeVector, [type(Op.TypeInt, [32, 0]), 3]);
     if (input) {
       inputType = valueType;
@@ -541,7 +553,7 @@ function rewrite(m: Module, stage: ShaderStage, entryIndex: number, replace: Set
     out.push((4 << 16) | Op.Load, inputType, loaded, input);
     const f = float32();
     const x = bound++;
-    if (source!.kind === "vec4") {
+    if (source!.kind === "vec4" || source!.kind === "vec3") {
       out.push((5 << 16) | Op.CompositeExtract, f, x, loaded, 0);
     } else if (source!.kind === "int") {
       out.push((4 << 16) | Op.ConvertSToF, f, x, loaded);
@@ -827,16 +839,17 @@ export function planAblation(spirv: Uint8Array, stage: ShaderStage, entryPoint: 
   let stageVariant: AblationVariant | null = null;
 
   // The stage: its outputs are not written. A fragment shader keeps the depth and sample mask it
-  // writes (they change which fragments are shaded at all). A stage before rasterization loses its
-  // position too: the replay times it with rasterization discarded (ablation.cpp), so what it
-  // rasterizes changes nothing that is timed.
+  // writes (they change which fragments are shaded at all), and a tessellation control shader the
+  // tessellation levels (they decide how much the tessellator and the stages after it run). A stage
+  // before rasterization loses its position too: the replay times it with rasterization discarded
+  // (ablation.cpp), so what it rasterizes changes nothing that is timed.
   {
     const part: AblationPart = { kind: "stage", name: `${stage}: ${entry.name}` };
     const outputs = new Set<number>();
     for (const v of moduleEntry.interface) {
       if (m.variableClass.get(v) !== StorageClass.Output) continue;
       const builtIn = m.builtIns.get(v);
-      if (builtIn === BuiltIn.FragDepth || builtIn === BuiltIn.SampleMask) continue;
+      if (builtIn === BuiltIn.FragDepth || builtIn === BuiltIn.SampleMask || builtIn === BuiltIn.TessLevelOuter || builtIn === BuiltIn.TessLevelInner) continue;
       outputs.add(v);
     }
     const remove = new Set<Instruction>();

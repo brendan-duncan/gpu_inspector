@@ -103,8 +103,9 @@ Inside a pass, the split between draws is modeled until something measures it:
   It replays one draw of the stage with variants of its shader, each missing one part: a function's
   calls, a line's values, or every read of one texture. The time a variant saves is that part's
   cost. The button measures the stage of the selected frame, or the widest fragment or compute
-  stage when nothing is selected. A vertex shader is timed with nothing rasterized, so what it is
-  charged is vertex work, not the pixels a variant stopped covering. A draw whose triangles hide
+  stage when nothing is selected; on Vulkan that can be a vertex, tessellation or geometry stage
+  too. Those are timed with nothing rasterized, so what they are charged is their own work, not
+  the pixels a variant stopped covering. A draw whose triangles hide
   one another shades the hidden ones in the timed copies (they write no depth), so its savings
   are scaled back by how many more samples those shaded, and one that would shade many times its
   work is not timed. It works this way:

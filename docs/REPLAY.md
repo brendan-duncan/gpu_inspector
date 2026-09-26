@@ -576,13 +576,17 @@ shader taken out: the time it saves is the part's cost.
 spirv-val checks each one before any reaches the driver:
 
 - **The stage**, with its outputs left out. A fragment shader keeps the depth and sample mask it
-  writes; a vertex shader loses its position too, since it is timed without rasterization (below).
+  writes, and a tessellation control shader its tessellation levels, which decide how much the
+  stages after it run. A vertex, tessellation or geometry shader loses its position too, since it is
+  timed without rasterization (below).
 - **Each function**, with its calls removed or their results replaced.
 - **Each source line**, with the values it computes replaced. This needs line information.
 - **Each texture**, with every read of it replaced.
 
 **Replacement values.** A replaced value comes from something the compiler cannot fold into a
-constant: `gl_FragCoord`, the vertex index or the invocation id. Inside a loop it comes from a
+constant: `gl_FragCoord`, the vertex index, the global invocation id, and in the stages between,
+`gl_PrimitiveID` (geometry), `gl_InvocationID` (tessellation control) or `gl_TessCoord`
+(tessellation evaluation). Inside a loop it comes from a
 value that changes every iteration, so the loop's work is not hoisted out.
 
 **What is left out:**
@@ -649,6 +653,13 @@ and the cheap `shade()` nothing, the same with shader objects. The rasterization
 overlapping triangles, 1 ms of the draw, is no longer charged to anything. A small mesh's vertex
 work does not show at all: 24 vertices are one batch, whose latency the GPU hides behind the next
 draw, and the timed span repeats the draw, so on `--heavy` the cube's vertex shader measures 0.
+
+Tessellation and geometry shaders are measured the same way. `test/triangle --heavy-geometry` and
+`--heavy-tessellation` run the same noise in a geometry shader (once a triangle) or a tessellation
+evaluation shader (once a tessellated point), on 4,096 instances. The noise function measured 0.291
+of the geometry draw's 0.305 ms, and 2.33 of the tessellated draw's 2.38 ms, with `shade()` within
+noise both times. That draw's tessellation control shader, which passes its patch through, measured
+0.017 ms: its tessellation levels are kept, so the evaluation work after it still runs.
 
 ```
 vkinsp_replay heavy.gpucap --ablate request.bin

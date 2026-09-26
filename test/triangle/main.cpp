@@ -382,6 +382,10 @@ struct App
     // rejects all but the first instance's fragments.
     static constexpr uint32_t kHeavyInstances = 4096;
     bool heavyVertex = false;
+    // --heavy-geometry / --heavy-tessellation: --geometry or --tessellation with heavy.geom or
+    // heavy.tese in place of the cube's, the same known costs as heavy.vert's, and as many instances.
+    bool heavyGeometry = false;
+    bool heavyTessellation = false;
     // --strip / --fan: each face of the cube a four-vertex triangle strip or fan, the faces split by
     // primitive restart, for the mesh output's ordering of strips and fans without transform feedback.
     bool strip = false;
@@ -397,6 +401,9 @@ struct App
     uint32_t CubeIndexCount() const { return strip || fan ? 29 : insideOut ? 18 : 36; }
     /** The cube's vertex shader. */
     const char* VertexShader() const { return multiview ? "cube_mv.vert.spv" : layered ? "cube_layered.vert.spv" : heavyVertex ? "heavy.vert.spv" : "cube.vert.spv"; }
+    /** --tessellation's evaluation shader and --geometry's shader. */
+    const char* TessEvalShader() const { return heavyTessellation ? "heavy.tese.spv" : "cube.tese.spv"; }
+    const char* GeometryShader() const { return heavyGeometry ? "heavy.geom.spv" : "cube.geom.spv"; }
     bool resized = false;   // swapchain must be recreated before the next frame
 
 #if defined(_WIN32)
@@ -2214,10 +2221,10 @@ struct App
         if (tessellation)
         {
             addStage(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, LoadShader("cube.tesc.spv"));
-            addStage(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, LoadShader("cube.tese.spv"));
+            addStage(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, LoadShader(TessEvalShader()));
         }
         if (geometry)
-            addStage(VK_SHADER_STAGE_GEOMETRY_BIT, LoadShader("cube.geom.spv"));
+            addStage(VK_SHADER_STAGE_GEOMETRY_BIT, LoadShader(GeometryShader()));
         VkVertexInputBindingDescription vib{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
         VkVertexInputAttributeDescription via[3] = {
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)},
@@ -2362,12 +2369,12 @@ struct App
                 order.push_back(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
                 code.push_back(ReadFile(ExeDir() + "cube.tesc.spv"));
                 order.push_back(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
-                code.push_back(ReadFile(ExeDir() + "cube.tese.spv"));
+                code.push_back(ReadFile(ExeDir() + TessEvalShader()));
             }
             if (geometry)
             {
                 order.push_back(VK_SHADER_STAGE_GEOMETRY_BIT);
-                code.push_back(ReadFile(ExeDir() + "cube.geom.spv"));
+                code.push_back(ReadFile(ExeDir() + GeometryShader()));
             }
             order.push_back(VK_SHADER_STAGE_FRAGMENT_BIT);
             code.push_back(fcode);
@@ -2888,8 +2895,8 @@ struct App
         vkCmdBindIndexBuffer(cb, indexBuffer, 0, VK_INDEX_TYPE_UINT16);
         float tint = 0.5f + 0.5f * sinf(t);
         vkCmdPushConstants(cb, pipelineLayout, VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float), &tint);
-        // --layered: an instance per layer; --heavy-vertex: many in one place.
-        const uint32_t instances = layered ? 2 : heavyVertex ? kHeavyInstances : 1;
+        // --layered: an instance per layer; --heavy-vertex, --heavy-geometry, --heavy-tessellation: many in one place.
+        const uint32_t instances = layered ? 2 : heavyVertex || heavyGeometry || heavyTessellation ? kHeavyInstances : 1;
         vkCmdDrawIndexed(cb, CubeIndexCount(), instances, 0, 0, 0);
         if (mixed)
         {
@@ -3302,6 +3309,10 @@ int RunApp(int argc, char** argv)
             app.heavy = true;
         else if (!strcmp(argv[i], "--heavy-vertex"))
             app.heavyVertex = true;
+        else if (!strcmp(argv[i], "--heavy-geometry"))
+            app.geometry = app.heavyGeometry = true;
+        else if (!strcmp(argv[i], "--heavy-tessellation"))
+            app.tessellation = app.heavyTessellation = true;
         else if (!strcmp(argv[i], "--strip"))
             app.strip = true;
         else if (!strcmp(argv[i], "--fan"))

@@ -638,14 +638,17 @@ application with injected state. Route (a) is the general one and is the prerequ
       (1.46 times the samples) the stage went from 0.173 ms to 0.119 ms, against 0.107 ms predicted
       from the convex cube's cost per sample; `--heavy-vertex --heavy` (4,096 times) is refused with
       the counts where the GPU used to fail the replay.
+- [x] Ablation of tessellation and geometry stages (`sourceBuiltIn`, `spirv_ablate.ts`): replacements
+      from `gl_PrimitiveID`, `gl_InvocationID` and `gl_TessCoord`, the tessellation levels kept,
+      `measure_shader_cost` and **Measure shader** (a selected frame) offering them. On
+      `test/triangle --heavy-geometry` the noise function measured 0.291 of 0.305 ms, on
+      `--heavy-tessellation` 2.33 of 2.38 ms; the pass-through control shader 0.017 ms.
 - [ ] Ablation, the rest:
   - A draw that hides parts of itself, exactly: its depth restored before every timed issue with its
     writes on, rather than the count scaling above: either the pass broken at the draw and its depth
     copied back before each issue (which loses the repeats that average out a draw's own overhead,
     and cannot reach a draw in a secondary command buffer), or a full-screen draw of the replay's own
     restoring depth inside the pass before each repeat, timed on its own and subtracted.
-  - Tessellation and geometry stages in the app: the replay times them the same way, but the plan
-    has no replacement values for them (`sourceBuiltIn`) and `measure_shader_cost` does not offer them.
   - Parts inside control flow: measure a branch's arms by forcing the condition, rather than
     skipping everything a branch depends on.
   - More than one draw of a pipeline: several targets per request exist, but nothing sends them.
