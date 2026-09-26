@@ -347,7 +347,7 @@ bool Replayer::CreateDevice()
     VkPhysicalDeviceFeatures features{};
     // The pixel history's primitive-id pass needs one too (geometryShader, below).
     const bool wantPrimitiveId = _options.history.enabled || _options.allFeatures;
-    if (wantDrawStats || wantWireframe || wantPrimitiveId)
+    if (wantDrawStats || wantWireframe || wantPrimitiveId || _options.ablation.enabled)
     {
         VkPhysicalDeviceFeatures supported{};
         _fns.GetPhysicalDeviceFeatures(_physical, &supported);
@@ -383,8 +383,8 @@ bool Replayer::CreateDevice()
         }
         // Samples passing each draw's depth and stencil tests: the layer cannot count them for a
         // pass that executes secondary command buffers, but here the query sits inside the
-        // secondary, around one draw.
-        if (wantDrawStats && supported.occlusionQueryPrecise)
+        // secondary, around one draw. Ablation counts what its timed issues pass the same way.
+        if ((wantDrawStats || _options.ablation.enabled) && supported.occlusionQueryPrecise)
         {
             ours->occlusionQueryPrecise = VK_TRUE;
             _drawSamplesAvailable = true;
@@ -3728,6 +3728,7 @@ void Replayer::RecordSecondaries(size_t executeIndex, const JValue& execute, uin
                 const bool countDraw = _options.counters.enabled && _hw && IsMeasured(m);
                 const int counterRange = countDraw ? BeginCounterDraw(cb, i, frame, commandBuffer, passIndex) : -1;
                 IssueCommand(fn, c, *args, cb, i);
+                EndAblationCount(cb);   // the counting replay's count of the draw as captured
                 if (countDraw)
                     EndCounterDraw(cb, counterRange);
                 if (drawSlot >= 0)
@@ -4039,6 +4040,7 @@ void Replayer::RecordGroup(CommandGroup& group, std::vector<PendingReadback>& re
             ? HistoryDirectWrite(m, *args)
             : DirectWrite{};
         IssueCommand(fn, c, *args, cb, i);
+        EndAblationCount(cb);   // the counting replay's count of the draw as captured
         // A copy, a blit or a resolve into a swapchain image is how a frame that renders elsewhere reaches the screen.
         if (m == "vkCmdCopyImage" || m == "vkCmdBlitImage" || m == "vkCmdResolveImage")
         {
@@ -4351,6 +4353,24 @@ void Replayer::RunFrame(const ReplayOptions& requested, ReplayReport& report)
     if (options.drawStats)
         PrepareDrawStats();
     const bool ablating = options.ablation.enabled && PrepareAblation();
+    // A draw's timed issues write no depth: a replay first counts the samples they pass against the
+    // draw's own, so one that would do many times its work is not timed (ablation.cpp). It compares
+    // no targets and keeps no problems, which the timed replay reports.
+    if (ablating && AblationNeedsCounts())
+    {
+        const bool compare = _options.compareTargets;
+        const size_t problems = _report->problems.size();
+        _options.compareTargets = false;
+        _ablationCounting = true;
+        ReplayCommands();
+        _ablationCounting = false;
+        _options.compareTargets = compare;
+        _report->problems.resize(problems);
+        ReadAblationCounts();
+        ResetFrameState();
+        UploadImageContents();
+        TransitionToInitialLayouts();
+    }
     ReplayCommands();
     DestroyDrawStats();
     DestroyAblation();

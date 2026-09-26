@@ -581,6 +581,28 @@ variant:
 
 The captured pipeline or shader object is then bound again, and the draw runs as recorded.
 
+**A draw that hides parts of itself.** The timed issues write no depth, so each meets the depth the
+draw met, but not what its own earlier triangles leave: a mesh whose parts hide one another shades
+the hidden fragments in every timed issue, which the draw itself does not. So a replay runs first,
+whenever a target's stage rasterizes, and counts: the target issued once with the timed copy
+inside an occlusion query, and the draw as captured inside another. Then:
+
+- The answer carries both counts (`samplesAsCaptured`, `samplesTimed`). The app scales what each
+  part saved, the stage's time and the noise by the draw's samples over the timed issue's, and
+  says so; the draw's own time is left as timed.
+- A draw whose timed issues would shade more than 8 times its samples is not timed. 4,096 cubes
+  drawn in one place, each hiding the next, shade 4,096 times their fragments without their depth
+  writes; eight repeats of that were long enough for the GPU to fail the replay, which is now a
+  note naming both counts.
+
+On `test/triangle --heavy --no-cull`, where the cube's back faces are drawn too and some are hidden
+by triangles drawn before them, each timed issue shaded 1.46 times the draw's samples (97,568
+against 66,973). Unscaled, the stage measured 0.173 ms; scaled, 0.119 ms with a pipeline and 0.110
+ms with shader objects, against the 0.107 ms the convex cube's cost per sample (0.0786 ms for
+49,068) predicts. The shares are unchanged: the noise function is 98.9% of the stage either way. A
+convex draw, or any whose triangles do not overlap, counts the same both ways and is not scaled:
+the Unity frame's five full-screen draws pass 480,000 samples each both ways.
+
 **A stage before rasterization** (vertex, tessellation, geometry) is timed with rasterization
 discarded, as captured and in every variant: the pipeline copies have `rasterizerDiscardEnable` and
 no fragment stage, and a shader-object draw sets rasterizer discard, then gets its own setting
@@ -618,10 +640,12 @@ costliest measured part feeding it. On `test/triangle --heavy`, a fragment shade
 octaves of hash noise, the hash function measures at 98.7% of the stage, its one line at 98.7%, and
 the lines that only call it at 0.
 
-Two limits:
+Limits:
 
 - The times come from one GPU and driver.
 - A part the driver's optimizer had already made free measures as free.
+- Scaling by the overcount assumes the extra samples cost what the draw's own do. It does not
+  apply to what the draw does per vertex, which the draw time still includes.
 
 ## Hardware counters
 

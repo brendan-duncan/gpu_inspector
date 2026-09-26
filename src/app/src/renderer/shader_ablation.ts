@@ -68,6 +68,12 @@ export interface AblationTargetResult {
   rounds: number;
   /** False where the stage runs before rasterization and was timed with it discarded. */
   rasterized?: boolean;
+  /**
+   * A draw that rasterizes: the samples it passes as captured, and those one timed issue passed.
+   * The timed issues write no depth, so a mesh hiding parts of itself shades them there too.
+   */
+  samplesAsCaptured?: number;
+  samplesTimed?: number;
   baseline: AblationTiming;
   variants: AblationTiming[];
   note?: string;
@@ -103,6 +109,7 @@ export function parseAblationResult(input: Uint8Array | string): AblationResultF
       command: num(t.command), stage: typeof t.stage === "string" ? t.stage : "", pipeline: num(t.pipeline), frame: num(t.frame),
       commandBuffer: num(t.commandBuffer), passIndex: num(t.passIndex), rounds: num(t.rounds), baseline: timing(t.baseline),
       ...(t.rasterized === false ? { rasterized: false } : {}),
+      ...(typeof t.samplesAsCaptured === "number" && typeof t.samplesTimed === "number" ? { samplesAsCaptured: t.samplesAsCaptured, samplesTimed: t.samplesTimed } : {}),
       variants: (Array.isArray(t.variants) ? t.variants : []).map(timing), ...(typeof t.note === "string" ? { note: t.note } : {}),
     };
   });
@@ -141,6 +148,12 @@ export interface ShaderAblation {
    */
   baselineMs: number;
   rasterized?: boolean;
+  /**
+   * How many times the draw's samples each timed issue shaded, over 1 where its triangles hide one
+   * another (the issues write no depth). What the parts saved, the stage's time and the noise are
+   * scaled back by it; baselineMs is not.
+   */
+  overcount?: number;
   /** How far apart the baseline's rounds were (the median absolute deviation): savings below it are noise. */
   noiseMs: number;
   /** What the stage's own work took: the baseline less the draw without the stage's outputs; null when not measured. */
@@ -182,15 +195,21 @@ function medianAbsoluteDeviation(samples: number[]): number {
 export function measuredAblation(pipeline: number, stage: ShaderStage, entryPoint: string, plan: AblationPlan, result: AblationTargetResult,
                                  device: string): ShaderAblation {
   const baseline = result.baseline;
+  // Timed issues that shaded more samples than the draw did that much more fragment work: what a part
+  // of a fragment shader saved is scaled back to the draw's own.
+  const overcount = result.samplesAsCaptured && result.samplesTimed && result.samplesTimed > result.samplesAsCaptured
+    ? result.samplesTimed / result.samplesAsCaptured : 1;
+  const scale = 1 / overcount;
   const out: ShaderAblation = {
     pipeline, stage, entryPoint, command: result.command, device, rounds: result.rounds, baselineMs: baseline.ms,
-    noiseMs: medianAbsoluteDeviation(baseline.samples), stageMs: null, parts: [], skipped: plan.skipped,
+    noiseMs: medianAbsoluteDeviation(baseline.samples) * scale, stageMs: null, parts: [], skipped: plan.skipped,
     ...(result.note ? { note: result.note } : {}),
     ...(result.rasterized === false ? { rasterized: false } : {}),
+    ...(overcount > 1 ? { overcount } : {}),
   };
   const saved = plan.variants.map((_, i) => {
     const timing = result.variants[i];
-    return baseline.measured && timing?.measured ? baseline.ms - timing.ms : null;
+    return baseline.measured && timing?.measured ? (baseline.ms - timing.ms) * scale : null;
   });
   plan.variants.forEach((variant, i) => {
     const timing = result.variants[i];

@@ -3185,6 +3185,7 @@ function parseAblationResult(input) {
       rounds: num4(t.rounds),
       baseline: timing(t.baseline),
       ...t.rasterized === false ? { rasterized: false } : {},
+      ...typeof t.samplesAsCaptured === "number" && typeof t.samplesTimed === "number" ? { samplesAsCaptured: t.samplesAsCaptured, samplesTimed: t.samplesTimed } : {},
       variants: (Array.isArray(t.variants) ? t.variants : []).map(timing),
       ...typeof t.note === "string" ? { note: t.note } : {}
     };
@@ -3207,6 +3208,8 @@ function medianAbsoluteDeviation(samples) {
 }
 function measuredAblation(pipeline, stage, entryPoint, plan, result, device) {
   const baseline = result.baseline;
+  const overcount = result.samplesAsCaptured && result.samplesTimed && result.samplesTimed > result.samplesAsCaptured ? result.samplesTimed / result.samplesAsCaptured : 1;
+  const scale = 1 / overcount;
   const out = {
     pipeline,
     stage,
@@ -3215,16 +3218,17 @@ function measuredAblation(pipeline, stage, entryPoint, plan, result, device) {
     device,
     rounds: result.rounds,
     baselineMs: baseline.ms,
-    noiseMs: medianAbsoluteDeviation(baseline.samples),
+    noiseMs: medianAbsoluteDeviation(baseline.samples) * scale,
     stageMs: null,
     parts: [],
     skipped: plan.skipped,
     ...result.note ? { note: result.note } : {},
-    ...result.rasterized === false ? { rasterized: false } : {}
+    ...result.rasterized === false ? { rasterized: false } : {},
+    ...overcount > 1 ? { overcount } : {}
   };
   const saved = plan.variants.map((_, i) => {
     const timing = result.variants[i];
-    return baseline.measured && timing?.measured ? baseline.ms - timing.ms : null;
+    return baseline.measured && timing?.measured ? (baseline.ms - timing.ms) * scale : null;
   });
   plan.variants.forEach((variant, i) => {
     const timing = result.variants[i];
@@ -33278,6 +33282,9 @@ var COST_MODEL = "Modeled cost of one invocation, not a measurement: instruction
 var FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
 var FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 var FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
+function overcountMeaning(overcount) {
+  return `The timed issues write no depth, and this draw's triangles hide one another, so each shaded ${overcount.toFixed(2)} times the samples the draw does: stageMs, savedMs, ownMs and noiseMs are scaled back by that; drawMs is not.`;
+}
 var BEFORE_RASTERIZATION = "This stage runs before rasterization, so the draw was timed with rasterization discarded, as captured and in every variant: drawMs is the draw's work up to rasterization, not the draw as captured, and nothing the stage's outputs change about what is rasterized is counted.";
 var ABLATION_MEANING = "Measured on this machine's GPU, per draw: drawMs is the draw as captured (the median of the rounds), stageMs what it saved with the stage's outputs left out, and savedMs what it saved with that function's calls or that line's values replaced. Taking a part out takes along the work that only feeds it, so a line's ownMs is what it saved beyond the costliest measured part feeding it: what the line does itself. share is a function's savedMs, or a line's ownMs, over stageMs. Savings within noiseMs are noise.";
 var SHADER_VIEWS = ["reflection", "source", "analysis", "glsl", "hlsl", "msl", "disassembly"];
@@ -34251,8 +34258,9 @@ function resourceTools(store) {
           device: measured.device,
           rounds: measured.rounds,
           drawsPerTimedSpan: measured.repeat,
-          meaning: measured.rasterized === false ? `${ABLATION_MEANING} ${BEFORE_RASTERIZATION}` : ABLATION_MEANING,
+          meaning: measured.rasterized === false ? `${ABLATION_MEANING} ${BEFORE_RASTERIZATION}` : measured.overcount ? `${ABLATION_MEANING} ${overcountMeaning(measured.overcount)}` : ABLATION_MEANING,
           rasterized: measured.rasterized === false ? false : void 0,
+          overcount: measured.overcount ? round(measured.overcount) : void 0,
           drawMs: round(measured.baselineMs),
           noiseMs: round(measured.noiseMs),
           stageMs: measured.stageMs === null ? void 0 : round(measured.stageMs),

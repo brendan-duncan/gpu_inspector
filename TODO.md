@@ -622,7 +622,19 @@ application with injected state. Route (a) is the general one and is the prerequ
       `test/triangle --heavy-vertex` checks it: the `gl_Position` line went from the whole draw
       (1.094 ms, rasterization included) to its share of the vertex work (0.247 of 0.259 ms), the
       noise function from 0.129 ms to 0.247 ms (97% of the stage), with shader objects the same.
+- [x] Ablation of a draw whose triangles hide one another (`src/replay/src/ablation.cpp`): a counting
+      replay first counts the samples one timed issue passes (its depth writes off) against the draw's
+      own, the answer carries both, the app scales what the parts saved by them, and a draw whose timed
+      issues would shade more than 8 times its samples is not timed. On `test/triangle --heavy --no-cull`
+      (1.46 times the samples) the stage went from 0.173 ms to 0.119 ms, against 0.107 ms predicted
+      from the convex cube's cost per sample; `--heavy-vertex --heavy` (4,096 times) is refused with
+      the counts where the GPU used to fail the replay.
 - [ ] Ablation, the rest:
+  - A draw that hides parts of itself, exactly: its depth restored before every timed issue with its
+    writes on, rather than the count scaling above: either the pass broken at the draw and its depth
+    copied back before each issue (which loses the repeats that average out a draw's own overhead,
+    and cannot reach a draw in a secondary command buffer), or a full-screen draw of the replay's own
+    restoring depth inside the pass before each repeat, timed on its own and subtracted.
   - Tessellation and geometry stages in the app: the replay times them the same way, but the plan
     has no replacement values for them (`sourceBuiltIn`) and `measure_shader_cost` does not offer them.
   - Parts inside control flow: measure a branch's arms by forcing the condition, rather than

@@ -23,6 +23,7 @@
 - `test/triangle --heavy-vertex` draws the cube with a costly vertex shader, as many instances.
 
 ### Fixed
+- **Measure shader** scales back the work a draw's hidden fragments added, and refuses a draw that would shade many times its own work instead of hanging the GPU.
 - **Measure shader** no longer charges a vertex shader for the rasterization and fragment work a variant stopped.
 - Vulkan mesh output of a draw writing `gl_Layer` no longer draws into a single-layer framebuffer.
 - Vulkan pixel history no longer crashes the replay on a multiview pass.

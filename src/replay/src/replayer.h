@@ -23,6 +23,7 @@
 #include <functional>
 #include <initializer_list>
 #include <map>
+#include <set>
 #include <string>
 #include <tuple>
 #include <utility>
@@ -259,6 +260,15 @@ struct AblationResult
      * variants were timed with rasterization discarded, so the times are that stage's work alone.
      */
     bool rasterized = true;
+    /**
+     * A draw that rasterizes: the samples it passes as captured, and the samples one issue of the
+     * timed copies passes. The copies write no depth, so a draw whose own triangles hide one another
+     * shades the hidden ones too, and `samplesTimed` over `samplesAsCaptured` is how much more
+     * fragment work each timed issue did than the draw. Both 0 when not counted.
+     */
+    bool counted = false;
+    uint64_t samplesAsCaptured = 0;
+    uint64_t samplesTimed = 0;
     AblationTiming baseline;
     std::vector<AblationTiming> variants;
     std::string note;
@@ -1152,6 +1162,21 @@ private:
     VkShaderEXT AblationShader(uint64_t shaderId, size_t target, int variant);
     void CompleteAblation(bool submitted);
     void DestroyAblation();
+    /** Whether a target rasterizes, so a counting replay should run before the timed one. */
+    bool AblationNeedsCounts() const;
+    /** After the counting replay: each target's two sample counts, read into _ablationCounts. */
+    void ReadAblationCounts();
+    /** Right after a command: ends the as-captured count begun for it, if one was. */
+    void EndAblationCount(VkCommandBuffer cb);
+    /** The counting replay: each rasterizing target issued once with the timed copy, and the real draw, each counted, and nothing timed. */
+    bool _ablationCounting = false;
+    VkQueryPool _ablationCountPool = VK_NULL_HANDLE;
+    /** The query of the real draw's count, open until EndAblationCount; -1 when none is. */
+    int32_t _ablationCountOpen = -1;
+    /** By target: the samples the draw passes as captured, and with the timed copy; set by ReadAblationCounts. */
+    std::map<size_t, std::pair<uint64_t, uint64_t>> _ablationCounts;
+    /** Counting replay: the targets it counted (their queries hold results). */
+    std::set<size_t> _ablationCounted;
 
     // Hardware counters (hw_counters.cpp): the vendor's counters around every pass and every draw,
     // collected over as many replays of the frame as they need.

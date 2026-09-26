@@ -126,3 +126,24 @@ test("what a part saved, what a line did itself, and its share of the stage", ()
   assert.ok(Math.abs(partShare(a, byName.get("b")) - 0.125) < 1e-9, "a line's share is what it did itself");
   assert.equal(partShare(a, byName.get("c")), null);
 });
+
+test("timed issues that shaded more samples than the draw (its triangles hide one another) have their savings scaled back", () => {
+  const timing = (name, ms, samples = [ms, ms, ms]) => ({ name, measured: true, ms, samples });
+  const result = parseAblationResult(JSON.stringify({
+    format: "gpu-inspector-ablation", device: "Test GPU", problems: [],
+    targets: [{ command: 30, stage: "fragment", pipeline: 7, frame: 0, commandBuffer: 4, passIndex: 0, rounds: 5,
+      samplesAsCaptured: 1000, samplesTimed: 2000,
+      baseline: timing("baseline", 1.0, [0.98, 1.0, 1.02]), variants: [timing("stage", 0.2), timing("fbm", 0.4)] }],
+  }));
+  const part = (kind, name) => ({ kind, name, spirv: new Uint8Array(), edits: 1, upstream: [] });
+  const a = measuredAblation(7, "fragment", "main", { variants: [part("stage", "stage"), part("function", "fbm")], skipped: [] }, result.targets[0], result.device);
+  assert.equal(a.overcount, 2);
+  assert.equal(a.baselineMs, 1.0, "the draw's time is as timed");
+  assert.ok(Math.abs(a.stageMs - 0.4) < 1e-9, `half of the 0.8 saved: ${a.stageMs}`);
+  assert.ok(Math.abs(a.parts[0].savedMs - 0.3) < 1e-9);
+  assert.ok(Math.abs(a.noiseMs - 0.01) < 1e-9, "the noise in the same terms");
+  assert.ok(Math.abs(partShare(a, a.parts[0]) - 0.75) < 1e-9, "shares are unchanged");
+  // Equal counts (a convex mesh): nothing scaled.
+  const same = parseAblationResult(JSON.stringify({ format: "gpu-inspector-ablation", targets: [{ ...JSON.parse(JSON.stringify(result.targets[0])), samplesAsCaptured: 500, samplesTimed: 500 }] }));
+  assert.equal(measuredAblation(7, "fragment", "main", { variants: [part("stage", "stage"), part("function", "fbm")], skipped: [] }, same.targets[0], "").overcount, undefined);
+});

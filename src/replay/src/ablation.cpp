@@ -38,12 +38,25 @@ namespace vkreplay
 // with it would be charged to the vertex code. Without rasterization, what a variant saves is that
 // stage's work, and the baseline is the draw's pre-rasterization work alone.
 //
+// The copies write no depth, so every issue meets the depth the draw itself met, but not the depth
+// its own earlier triangles leave: a mesh whose parts hide one another shades the hidden fragments
+// in every timed issue, which the draw does not. A counting replay runs first, before anything is
+// timed, whenever a target rasterizes: the target issued once with the timed copy inside an
+// occlusion query, and the draw as captured inside another. The first over the second is how much
+// more fragment work each timed issue does. The timed replay reports both counts (the app scales what
+// a part saved by them), and a draw whose timed issues would do many times its work is not timed at
+// all: 4,096 instances drawn in one place, each hiding the next, shade 4,096 times the fragments
+// without their depth writes, and eight repeats of that is long enough for a GPU to be reset.
+//
 // A time is not what the draw costs alone (the GPU pipelines work, so a timestamp also sees what came
 // just before), but that is the same for every pipeline of a round, which is why the baseline is
 // issued in each round and a variant's cost is the difference of medians.
 
 namespace
 {
+
+/** Past this many times the fragment work of the draw, its timed issues are not run. */
+constexpr double kMaxOvercount = 8.0;
 
 /** Whether a stage runs before rasterization, and is timed with it discarded. */
 bool BeforeRasterization(VkShaderStageFlagBits stage)
@@ -178,6 +191,17 @@ bool Replayer::PrepareAblation()
     }
     if (!queries)
         return false;
+    // Two sample counts per target, for the counting replay; precise counts only.
+    if (_drawSamplesAvailable)
+    {
+        VkQueryPoolCreateInfo counts{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        counts.queryType = VK_QUERY_TYPE_OCCLUSION;
+        counts.queryCount = (uint32_t)_options.ablation.targets.size() * 2;
+        if (_fns.CreateQueryPool(_device, &counts, nullptr, &_ablationCountPool) != VK_SUCCESS)
+            _ablationCountPool = VK_NULL_HANDLE;
+    }
+    _ablationCounts.clear();
+    _ablationCounted.clear();
     VkQueryPoolCreateInfo info{VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
     info.queryType = VK_QUERY_TYPE_TIMESTAMP;
     info.queryCount = queries;
@@ -197,6 +221,8 @@ void Replayer::ResetAblationQueries(VkCommandBuffer cb, const CommandGroup& grou
         if (target.command <= group.first || target.command >= group.last)
             continue;
         _fns.CmdResetQueryPool(cb, _ablationPool, _ablationBase[t], rounds * ((uint32_t)target.variants.size() + 1) * 2);
+        if (_ablationCounting && _ablationCountPool)
+            _fns.CmdResetQueryPool(cb, _ablationCountPool, (uint32_t)t * 2, 2);
     }
 }
 
@@ -343,7 +369,10 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
     if (!result.pipeline)
         if (auto it = stream.shaders.find(stageBit); it != stream.shaders.end())
             shaderObject = it->second;
+    // The counting replay answers nothing: the timed replay after it does.
     auto fail = [&](std::string why) {
+        if (_ablationCounting)
+            return;
         result.note = std::move(why);
         _report->ablations.push_back(std::move(result));
     };
@@ -372,7 +401,7 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
         shaders[0] = (VkShaderEXT)(uintptr_t)Handle(shaderObject);
         if (!shaders[0] || !_fns.CmdBindShadersEXT)
             return fail("the " + target.stage + " stage's shader object was not made by the replay");
-        for (size_t v = 1; v < count; ++v)
+        for (size_t v = 1; v < count && !_ablationCounting; ++v)
         {
             shaders[v] = AblationShader(shaderObject, t, (int)v - 1);
             if (!shaders[v])
@@ -386,7 +415,7 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
         pipelines[0] = AblationPipeline(result.pipeline, t, -1, compute);
         if (!pipelines[0])
             return fail("the pipeline could not be copied (the capture has no code for its " + target.stage + " stage, or the copy was refused)");
-        for (size_t v = 1; v < count; ++v)
+        for (size_t v = 1; v < count && !_ablationCounting; ++v)
         {
             pipelines[v] = AblationPipeline(result.pipeline, t, (int)v - 1, compute);
             if (!pipelines[v])
@@ -422,6 +451,31 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
         setDiscard(cb, VK_TRUE);
     }
     result.rasterized = !discard;
+    const bool rasterizing = !compute && !discard;
+    if (_ablationCounting && !rasterizing)
+        return;
+    bool refused = false;
+    // What the counting replay found: a draw whose timed issues would do many times its work is not timed.
+    if (!_ablationCounting && rasterizing)
+    {
+        if (auto c = _ablationCounts.find(t); c != _ablationCounts.end())
+        {
+            result.counted = true;
+            result.samplesAsCaptured = c->second.first;
+            result.samplesTimed = c->second.second;
+            const double over = (double)result.samplesTimed / (double)std::max<uint64_t>(1, result.samplesAsCaptured);
+            if (result.samplesTimed > result.samplesAsCaptured && over > kMaxOvercount)
+            {
+                char text[256];
+                std::snprintf(text, sizeof(text), "not timed: without its own depth writes each issue would shade %.0f times the samples the draw does "
+                    "(%llu against %llu), because its triangles hide one another", over, (unsigned long long)result.samplesTimed,
+                    (unsigned long long)result.samplesAsCaptured);
+                // Nothing is issued; the write state turned off above is put back below.
+                result.note = text;
+                refused = true;
+            }
+        }
+    }
 
     ReplayFn fn = FindReplayCommand(method);
     const uint32_t rounds = result.rounds + 1;
@@ -431,7 +485,17 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
     pending.issued.assign(rounds * count, false);
     const size_t problems = _ctx.problems.size();
     const size_t unresolved = _ctx.unresolved;
-    for (uint32_t r = 0; r < rounds && fn; ++r)
+    // Counting: one issue of the timed copy, counted; the real draw's count begins after the state is back.
+    const bool countThis = _ablationCounting && _ablationCountPool && fn;
+    if (countThis)
+    {
+        bind(0);
+        _fns.CmdBeginQuery(cb, _ablationCountPool, (uint32_t)t * 2 + 1, VK_QUERY_CONTROL_PRECISE_BIT);
+        fn(_ctx, args, cb);
+        _arena.Reset();
+        _fns.CmdEndQuery(cb, _ablationCountPool, (uint32_t)t * 2 + 1);
+    }
+    for (uint32_t r = 0; r < rounds && fn && !_ablationCounting && !refused; ++r)
     {
         for (size_t k = 0; k < count; ++k)
         {
@@ -478,8 +542,51 @@ void Replayer::IssueAblation(VkCommandBuffer cb, uint32_t index, const std::stri
     }
     _ctx.problems.resize(problems);
     _ctx.unresolved = unresolved;
+    if (_ablationCounting)
+    {
+        // The draw as captured comes next, in the state it had: counted until EndAblationCount.
+        if (countThis)
+        {
+            _fns.CmdBeginQuery(cb, _ablationCountPool, (uint32_t)t * 2, VK_QUERY_CONTROL_PRECISE_BIT);
+            _ablationCountOpen = (int32_t)t;
+        }
+        return;
+    }
     _report->ablations.push_back(std::move(result));
     _pendingAblations.push_back(std::move(pending));
+}
+
+void Replayer::EndAblationCount(VkCommandBuffer cb)
+{
+    if (_ablationCountOpen < 0)
+        return;
+    _fns.CmdEndQuery(cb, _ablationCountPool, (uint32_t)_ablationCountOpen * 2);
+    _ablationCounted.insert((size_t)_ablationCountOpen);
+    _ablationCountOpen = -1;
+}
+
+bool Replayer::AblationNeedsCounts() const
+{
+    if (!_ablationCountPool)
+        return false;
+    // A target whose stage is the fragment stage (a compute or pre-rasterization one rasterizes nothing timed).
+    return std::any_of(_options.ablation.targets.begin(), _options.ablation.targets.end(), [](const ReplayOptions::AblationTarget& t) {
+        const VkShaderStageFlagBits stage = StageBit(t.stage);
+        return stage && stage != VK_SHADER_STAGE_COMPUTE_BIT && !BeforeRasterization(stage);
+    });
+}
+
+void Replayer::ReadAblationCounts()
+{
+    _ablationCounts.clear();
+    for (size_t t : _ablationCounted)
+    {
+        uint64_t samples[2] = {0, 0};   // as captured, timed copy
+        if (_fns.GetQueryPoolResults(_device, _ablationCountPool, (uint32_t)t * 2, 2, sizeof(samples), samples, sizeof(uint64_t),
+                VK_QUERY_RESULT_64_BIT | VK_QUERY_RESULT_WAIT_BIT) == VK_SUCCESS)
+            _ablationCounts[t] = {samples[0], samples[1]};
+    }
+    _ablationCounted.clear();
 }
 
 void Replayer::CompleteAblation(bool submitted)
@@ -527,6 +634,10 @@ void Replayer::DestroyAblation()
     if (_ablationPool)
         _fns.DestroyQueryPool(_device, _ablationPool, nullptr);
     _ablationPool = VK_NULL_HANDLE;
+    if (_ablationCountPool)
+        _fns.DestroyQueryPool(_device, _ablationCountPool, nullptr);
+    _ablationCountPool = VK_NULL_HANDLE;
+    _ablationCountOpen = -1;
     _pendingAblations.clear();
 }
 

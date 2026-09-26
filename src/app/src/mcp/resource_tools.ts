@@ -33,6 +33,12 @@ const COST_MODEL = "Modeled cost of one invocation, not a measurement: instructi
 const FLAME_MS = "Milliseconds. Each pass is its measured GPU time; the split inside a pass is modeled (each stage's modeled cost times its invocations), so compare frames inside a pass with each other rather than with the clock.";
 const FLAME_MS_DRAWS = "Milliseconds. Each pass is its measured GPU time, split between its draws by what the replay timed each draw at; only the split between the stages of one draw is modeled.";
 const FLAME_OPS = "Modeled op units (each stage's modeled cost times its invocations): they rank frames against each other and are not time. A capture with Profile passes scales each pass to its measured milliseconds.";
+/** What scaling by the overcount did, when the draw's triangles hide one another. */
+function overcountMeaning(overcount: number): string {
+  return `The timed issues write no depth, and this draw's triangles hide one another, so each shaded ${overcount.toFixed(2)} times the samples ` +
+    "the draw does: stageMs, savedMs, ownMs and noiseMs are scaled back by that; drawMs is not.";
+}
+
 /** How a stage before rasterization is measured, which changes what drawMs is. */
 const BEFORE_RASTERIZATION = "This stage runs before rasterization, so the draw was timed with rasterization discarded, as captured and in every variant: " +
   "drawMs is the draw's work up to rasterization, not the draw as captured, and nothing the stage's outputs change about what is rasterized is counted.";
@@ -1008,8 +1014,10 @@ export function resourceTools(store: CaptureStore): ToolDefinition[] {
         return jsonResult({
           capture: c.id, command, method: cmd.method, pipeline: state.pipeline ? programName : undefined, shaderObjects: state.pipeline ? undefined : programName, stage: model.stage, entryPoint: model.entryPoint,
           shader: refText(c.db, model.objectId), device: measured.device, rounds: measured.rounds, drawsPerTimedSpan: measured.repeat,
-          meaning: measured.rasterized === false ? `${ABLATION_MEANING} ${BEFORE_RASTERIZATION}` : ABLATION_MEANING,
+          meaning: measured.rasterized === false ? `${ABLATION_MEANING} ${BEFORE_RASTERIZATION}`
+            : measured.overcount ? `${ABLATION_MEANING} ${overcountMeaning(measured.overcount)}` : ABLATION_MEANING,
           rasterized: measured.rasterized === false ? false : undefined,
+          overcount: measured.overcount ? round(measured.overcount) : undefined,
           drawMs: round(measured.baselineMs), noiseMs: round(measured.noiseMs),
           stageMs: measured.stageMs === null ? undefined : round(measured.stageMs),
           stageShareOfDraw: measured.stageMs !== null && measured.baselineMs > 0 ? round(Math.min(1, Math.max(0, measured.stageMs / measured.baselineMs))) : undefined,
