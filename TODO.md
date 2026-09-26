@@ -602,8 +602,17 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Metal shaders (`renderer/msl/`): the Metal Shading Language a capture holds, lexed, parsed,
       lowered to a linear form and interpreted, for all three stages. A fragment's varyings come
       from running the draw's own vertex shader rather than from a replay, since Metal has none.
-- [ ] Shader debugger, the rest: tessellation and geometry stages (Metal: object, mesh and tile),
-      per-sample shading, watch expressions, and editing a value and running on.
+- [x] The shader debugger's geometry and tessellation stages on Vulkan (`renderer/vulkan/primitive_debug.ts`,
+      `renderer/spirv/group.ts`): per-vertex inputs from running the stages before in the
+      interpreter, `EmitVertex` copies compared with the replay's GS Out, a tessellation control
+      patch's invocations sharing outputs across `barrier()`, and a tessellation evaluation
+      invocation named by a DS Out record, whose patch and `gl_TessCoord` the replay now records
+      (`src/replay/src/identity_patch.cpp`). On test/triangle `--geometry` and `--tessellation`, with
+      pipelines, shader objects and multiview, every emitted vertex and DS Out record checked
+      matches the GPU; a strip longer than a triangle was checked against the GPU's record order.
+- [ ] Shader debugger, the rest: a geometry shader after tessellation (its inputs are the
+      tessellator's), Metal's object, mesh and tile stages and D3D12's hull, domain and geometry
+      shaders, per-sample shading, watch expressions, and editing a value and running on.
 - [x] Shader cost by ablation (`renderer/vulkan/spirv_ablate.ts`, `src/replay/src/ablation.cpp`,
       **Measure shader**, `measure_shader_cost`): a draw replayed with SPIR-V variants that leave out
       a function, a line or a texture, sizing the flame graph's measured stages.

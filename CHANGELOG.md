@@ -16,6 +16,9 @@
 - The Vulkan mesh view shows what a geometry or tessellation shader emitted (GS Out, DS Out).
 - The Vulkan mesh view has a mesh per view of a multiview draw, and `get_mesh_output` takes `view`.
 - `test/triangle --geometry` and `--tessellation` draw the cube through those stages.
+- The shader debugger steps Vulkan geometry and tessellation shaders, and checks their results against the GPU's.
+- The mesh view's GS Out and DS Out name the primitive, invocation and `gl_TessCoord` behind each vertex, and **Debug** opens the invocation that wrote it.
+- `debug_shader` takes the `geometry`, `tess_control` and `tess_eval` stages.
 
 ### Fixed
 - Vulkan mesh output of a draw writing `gl_Layer` no longer draws into a single-layer framebuffer.

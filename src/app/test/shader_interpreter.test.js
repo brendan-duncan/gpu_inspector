@@ -6,6 +6,7 @@
 //     glslangValidator -V -gVS -o basic.frag.nsdi.spv basic.frag   (NonSemantic.Shader.DebugInfo.100)
 //     spirv-opt -O basic.frag.spv -o basic.frag.opt.spv            (and basic.comp: phis, inlined calls)
 //     dxc -spirv -T ps_6_0 -E main -fspv-target-env=vulkan1.1 -Fo basic.hlsl.spv basic.hlsl
+//     glslangValidator -V -g -o stages.geom.spv stages.geom                (and stages.tesc, stages.tese)
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, readFileSync } from "node:fs";
@@ -18,10 +19,10 @@ const here = dirname(fileURLToPath(import.meta.url));
 const dir = mkdtempSync(join(tmpdir(), "interp-"));
 const out = join(dir, "interp.mjs");
 buildSync({
-  stdin: { contents: `export * from "./module.js"; export * from "./interpreter.js"; export * from "./values.js";`, resolveDir: join(here, "..", "src", "renderer", "spirv"), loader: "ts" },
+  stdin: { contents: `export * from "./module.js"; export * from "./interpreter.js"; export * from "./values.js"; export * from "./group.js";`, resolveDir: join(here, "..", "src", "renderer", "spirv"), loader: "ts" },
   bundle: true, format: "esm", platform: "node", outfile: out, logLevel: "silent",
 });
-const { SpirvModule, Invocation } = await import(pathToFileURL(out).href);
+const { SpirvModule, Invocation, InvocationGroup } = await import(pathToFileURL(out).href);
 
 const vector = (name) => new SpirvModule(new Uint8Array(readFileSync(join(here, "vectors", "interpreter", name))));
 
@@ -236,5 +237,68 @@ test("derivatives.frag: dFdx, dFdy, fwidth and implicit-LOD sampling across the 
   close(out.slice(0, 3), [10, 20, 40], "dFdx(uv).x, dFdy(uv).y and fwidth(4 uv.x), times 1000");
   // uv (0.11, 0.42): texel centers at 0.25 and 0.75 put it between the two columns, in the top row.
   assert.ok(out[3] > 0 && out[3] <= 1, `the red channel of a magnified sample: ${out[3]}`);
+  assert.deepEqual([...inv.warnings], []);
+});
+
+// BuiltIn numbers the stage tests give values to.
+const POSITION = 0, PRIMITIVE_ID = 7, INVOCATION_ID = 8, TESS_LEVEL_OUTER = 11, TESS_LEVEL_INNER = 12, TESS_COORD = 13, PATCH_VERTICES = 14;
+const GEOMETRY = 3, TESS_CONTROL = 1, TESS_EVAL = 2;
+
+/** Input vertices: each a position and one located value. */
+function vertices(list) {
+  return list.map(([position, value]) => ({ builtins: new Map([[POSITION, position]]), locations: new Map([[0, value]]) }));
+}
+
+test("stages.geom: gl_in[] and arrayed inputs per vertex, and every EmitVertex kept with its primitive", () => {
+  const inv = new Invocation(vector("stages.geom.spv"), {
+    model: GEOMETRY, bindings: bindings(),
+    inputs: {
+      ...inputs({}, { [PRIMITIVE_ID]: 4, [INVOCATION_ID]: 1 }),
+      vertices: vertices([[[0, 0, 0, 1], [1, 0, 0]], [[1, 0, 0, 1], [0, 1, 0]], [[0, 1, 0, 1], [0, 0, 1]]]),
+    },
+  });
+  assert.equal(inv.run(), "returned", inv.error);
+  const emitted = inv.emittedVertices();
+  assert.equal(emitted.length, 7);
+  assert.deepEqual(emitted.map((e) => e.primitive), [0, 0, 0, 1, 1, 1, 1]);
+  const out = (k, name) => emitted[k].outputs.find((o) => o.name === name).value;
+  close(out(1, "color"), [0, 1, 0], "the second vertex's color");
+  close([out(2, "tag")], [41], "gl_PrimitiveIDIn * 10 + gl_InvocationID");
+  close(out(3, "gl_PerVertex")[0], [1, 0, 0, 1], "the strip's first position, shifted");
+  close(out(6, "color"), [2, 0, 0], "the strip's fourth vertex wraps to the first input");
+  assert.deepEqual([...inv.warnings], []);
+});
+
+test("stages.tesc: a patch's invocations share outputs, and barrier() lets each read its neighbour's", () => {
+  const module = vector("stages.tesc.spv");
+  const patch = vertices([[[1, 2, 3, 1], [1]], [[4, 5, 6, 1], [2]], [[7, 8, 9, 1], [3]]]);
+  const group = new InvocationGroup(3, 1, (i, g, shared) => new Invocation(module, {
+    model: TESS_CONTROL, bindings: bindings(),
+    inputs: { ...inputs({}, { [INVOCATION_ID]: i, [PRIMITIVE_ID]: 0, [PATCH_VERTICES]: 3 }), vertices: patch },
+    sharedOutputs: shared?.outputCells, barrier: g,
+  }));
+  // Invocation 1 alone reaches the barrier first; its neighbour's value is only there once the others catch up.
+  assert.equal(group.run(), "returned", group.invocation.error);
+  const out = (name) => group.invocation.outputs().find((o) => o.name === name).value;
+  close(out("doubled"), [2, 4, 6], "each invocation's own vertex");
+  close(out("neighbour"), [4, 6, 2], "each reads the next one's after the barrier");
+  close([out("total")], [12], "a patch output invocation 0 wrote");
+  close(out("gl_TessLevelOuter"), [3, 4, 5, 0], "the tessellation levels");
+  close(out("gl_out").map((v) => v[0]), [[1, 2, 3, 1], [4, 5, 6, 1], [7, 8, 9, 1]], "gl_out[].gl_Position");
+  assert.ok(group.lanes.every((l) => l.status === "returned"), "every lane finished with the debugged one");
+});
+
+test("stages.tese: per-vertex and patch inputs, the tessellation levels and gl_TessCoord", () => {
+  const inv = new Invocation(vector("stages.tese.spv"), {
+    model: TESS_EVAL, bindings: bindings(),
+    inputs: {
+      ...inputs({ 2: [12] }, { [TESS_COORD]: [0.5, 0.25, 0.25], [PRIMITIVE_ID]: 7, [TESS_LEVEL_OUTER]: [3, 4, 5, 0], [TESS_LEVEL_INNER]: [6, 0] }),
+      vertices: vertices([[[0, 0, 0, 1], [2]], [[4, 0, 0, 1], [4]], [[0, 8, 0, 1], [6]]]),
+    },
+  });
+  assert.equal(inv.run(), "returned", inv.error);
+  const out = (name) => inv.outputs().find((o) => o.name === name).value;
+  close(out("gl_PerVertex")[0], [1, 2, 0, 1], "the position at the coordinate");
+  close(out("result"), [0.5 * 2 + 0.25 * 4 + 0.25 * 6, 12, 4, 7], "doubled at the coordinate, the patch total, a level, the patch");
   assert.deepEqual([...inv.warnings], []);
 });

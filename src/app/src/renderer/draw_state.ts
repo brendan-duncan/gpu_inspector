@@ -38,7 +38,10 @@ export interface DrawState {
    * Vulkan dynamic state, which a draw with shader objects always sets and a pipeline may leave
    * dynamic: null where no command set it.
    */
-  dynamic: { cullMode: ArgValue | null; frontFace: ArgValue | null; topology: ArgValue | null; depthTest: ArgValue | null; depthCompare: ArgValue | null };
+  dynamic: {
+    cullMode: ArgValue | null; frontFace: ArgValue | null; topology: ArgValue | null; depthTest: ArgValue | null; depthCompare: ArgValue | null;
+    patchControlPoints: ArgValue | null;
+  };
   sets: Map<number, BoundSet>;
   vertexBuffers: Map<number, BoundVertexBuffer>;
   /** Metal: buffers bound to a stage by index, keyed "stage:index". */
@@ -72,6 +75,7 @@ export interface DrawState {
 const DYNAMIC_STATES: Record<keyof DrawState["dynamic"], string> = {
   cullMode: "VK_DYNAMIC_STATE_CULL_MODE", frontFace: "VK_DYNAMIC_STATE_FRONT_FACE", topology: "VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY",
   depthTest: "VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE", depthCompare: "VK_DYNAMIC_STATE_DEPTH_COMPARE_OP",
+  patchControlPoints: "VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT",
 };
 
 /**
@@ -186,7 +190,7 @@ export function sameStream(cmdSets: CommandSets, cmd: CaptureCommand, c: Capture
 export function emptyDrawState(bindPoint: string): DrawState {
   return {
     bindPoint, pipelineCmd: null, pipeline: null, shaders: [], shadersCmd: null,
-    dynamic: { cullMode: null, frontFace: null, topology: null, depthTest: null, depthCompare: null },
+    dynamic: { cullMode: null, frontFace: null, topology: null, depthTest: null, depthCompare: null, patchControlPoints: null },
     sets: new Map(), vertexBuffers: new Map(), stageBuffers: new Map(), rayBindings: new Map(),
     stageTextures: new Map(), stageSamplers: new Map(), indexBuffer: null,
     vertexInput: null, viewports: null, scissors: null, pushConstants: [],
@@ -313,6 +317,9 @@ export function drawState(data: CaptureData, db: ObjectLookup, cmd: CaptureComma
       case "vkCmdSetPrimitiveTopology":
       case "vkCmdSetPrimitiveTopologyEXT":
         state.dynamic.topology ??= a.primitiveTopology ?? null;
+        break;
+      case "vkCmdSetPatchControlPointsEXT":
+        state.dynamic.patchControlPoints ??= a.patchControlPoints ?? null;
         break;
       case "vkCmdSetDepthTestEnable":
       case "vkCmdSetDepthTestEnableEXT":

@@ -609,7 +609,14 @@ replay's transform feedback (`mesh_output.ts`) and a Metal draw by running its o
 the interpreter, since Metal has no replay. The rasterizer state comes from the pipeline on Vulkan
 and from commands on the encoder on Metal, and their clip-space Y points opposite ways, which is
 why `RasterState` names both. `renderer/shader_debugger.ts` steps a session by source line or
-instruction with breakpoints and per-line values, without a UI. The capture's debugger tab
+instruction with breakpoints and per-line values, without a UI. A Vulkan geometry or tessellation
+shader's inputs come from running the stages before it in the interpreter
+(`renderer/vulkan/primitive_debug.ts`): the interpreter reads a per-vertex input's element i from
+input vertex i (`InvocationInputs.vertices`), keeps a copy of the outputs at each `EmitVertex`, and a
+tessellation control patch's invocations share output cells and wait for one another at a barrier
+in an `InvocationGroup` (`renderer/spirv/group.ts`), the way `PixelQuad` runs a pixel quad to a
+derivative point. A tessellation evaluation invocation is named by a DS Out record, whose
+`gl_TessCoord` the replay adds (`src/replay/src/identity_patch.cpp`). The capture's debugger tab
 (`renderer/shader_debugger_view.ts`) and the MCP server's `debug_shader` (`mcp/debug_tools.ts`) are
 both built on it.
 

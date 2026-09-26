@@ -268,7 +268,7 @@ export function activate(host: PluginHost): Backend {
       pipeline: null,
       shaders,
       shadersCmd: null,
-      dynamic: { cullMode, frontFace, topology: TOPOLOGY[str(s.topology)] ?? null, depthTest: null, depthCompare: null },
+      dynamic: { cullMode, frontFace, topology: TOPOLOGY[str(s.topology)] ?? null, depthTest: null, depthCompare: null, patchControlPoints: null },
       sets: new Map(),
       vertexBuffers,
       stageBuffers,

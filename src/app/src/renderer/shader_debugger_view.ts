@@ -1,6 +1,6 @@
 // The shader debugger in a tab of its own, after RenderDoc's shader viewer and WebGPU Inspector's
-// shader debugger: one invocation of a draw's vertex or fragment shader, or of a dispatch's compute
-// shader, run in the interpreter of whichever language the shader is in — SPIR-V (spirv/) for a
+// shader debugger: one invocation of a draw's vertex or fragment shader (on Vulkan also its geometry
+// or tessellation shaders), or of a dispatch's compute shader, run in the interpreter of whichever language the shader is in — SPIR-V (spirv/) for a
 // Vulkan capture, MSL (msl/) for a Metal one, and for a D3D12 capture the stage's HLSL compiled to
 // SPIR-V by dxc (d3d12/shader_debug.ts) — on the capture's inputs (shader_debug_setup.ts),
 // stepped by source line (shader_debugger.ts) with breakpoints, the values each line computed,
@@ -20,7 +20,11 @@ import { drawState } from "./draw_state.js";
 import type { MeshOutput } from "./mesh_output.js";
 import type { OverdrawPassKey } from "./overdraw.js";
 import { DebugController, sourceKey, type StepKind } from "./shader_debugger.js";
-import { compareWithOriginal, coveredPixel, interpretsVertexOutputs, pixelRasterState, prepareDebugSession, sameValue, vertexOutputsOf, type DebugContext, type DebugSession, type DebugTarget, type Stepper } from "./shader_debug_setup.js";
+import {
+  compareWithOriginal, coveredPixel, emittedComparison, interpretsVertexOutputs, pixelRasterState, prepareDebugSession, replayRows, sameValue, STAGE_NAMES,
+  vertexOutputsOf, type DebugContext, type DebugSession, type DebugTarget, type Stepper,
+} from "./shader_debug_setup.js";
+import { geometryTargetOfRecord } from "./vulkan/primitive_debug.js";
 import type { StageSource } from "./shader_cache.js";
 import { resolveSourcesFromHost } from "./shader_source_view.js";
 import type { SessionContext } from "./session_panel.js";
@@ -36,7 +40,12 @@ import type { CaptureCommand, DebugTranslationResult, ShaderTextResult } from ".
 export type DebugRequest =
   | { stage: "vertex"; command: number; vertex?: number; instance?: number; /** A VS Out row: the vertex and instance it was. */ record?: number }
   | { stage: "fragment"; command: number; x?: number; y?: number }
-  | { stage: "compute"; command: number; invocation?: [number, number, number] };
+  | { stage: "compute"; command: number; invocation?: [number, number, number] }
+  /** A GS Out row (`record`) names the primitive, instance and invocation that emitted it. */
+  | { stage: "geometry"; command: number; primitive?: number; instance?: number; invocation?: number; record?: number }
+  | { stage: "tess_control"; command: number; patch?: number; instance?: number; invocation?: number }
+  /** A DS Out row: the patch and gl_TessCoord the invocation was given. */
+  | { stage: "tess_eval"; command: number; record?: number };
 
 export interface ShaderDebuggerOptions {
   /** Testing aid: steps over this many lines once open (-1 runs to the end). */
@@ -75,7 +84,9 @@ export interface ShaderDebuggerHost {
 /** Instructions run between UI updates while a step runs. */
 const STEP_BUDGET = 50_000;
 const MAX_ROWS = 200;
-const STAGE_LABEL = { vertex: "Vertex", fragment: "Pixel", compute: "Compute" } as const;
+const STAGE_LABEL = { vertex: "Vertex", fragment: "Pixel", compute: "Compute", geometry: "Geometry", tess_control: "Tess Control", tess_eval: "Tess Eval" } as const;
+/** Emitted vertices listed in the side pane. */
+const MAX_EMITTED = 64;
 
 // Stepping icons (inline SVG in the button's text color), after a debugger's usual toolbar.
 const ICON_CONTINUE = '<svg viewBox="0 0 16 16" aria-label="Continue"><path d="M3 3v10" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/><path d="M6 3l7.5 5L6 13z" fill="currentColor"/></svg>';
@@ -185,6 +196,8 @@ export class ShaderDebuggerView {
       outputs: inv ? inv.outputs().map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, value: scalars(o.value) })) : [],
       targetPixel: this._session?.targetPixel ?? null,
       replayedOutputs: this._session?.replayedOutputs ?? null,
+      emitted: inv?.emittedVertices?.().length ?? null,
+      replayComparison: this._replayComparison(),
       lineValues: ctl?.lastLine.results.length ?? 0,
       // The values the last line computed, named, so a test can assert what a shader worked out
       // rather than only that it ran. A ray query needs this: "the kernel returned" says nothing
@@ -328,6 +341,15 @@ export class ShaderDebuggerView {
     const cmd = this.host.data.commands[r.command];
     if (!cmd) throw new Error(`the capture has no command ${r.command}`);
     if (r.stage === "compute") return { stage: "compute", command: r.command, invocation: r.invocation ?? [0, 0, 0] };
+    if (r.stage === "tess_eval") return { stage: "tess_eval", command: r.command, record: r.record ?? 0 };
+    if (r.stage === "tess_control") return { stage: "tess_control", command: r.command, patch: r.patch ?? 0, instance: r.instance ?? 0, invocation: r.invocation ?? 0 };
+    if (r.stage === "geometry") {
+      if (r.record === undefined) return { stage: "geometry", command: r.command, primitive: r.primitive ?? 0, instance: r.instance ?? 0, invocation: r.invocation ?? 0 };
+      this._setStatus("Replaying the capture for the draw's GS Out, to find the invocation that emitted the record...");
+      const mesh = await this.host.meshOutput(r.command);
+      if (token !== this._token) return null;
+      return { stage: "geometry", command: r.command, ...geometryTargetOfRecord(mesh, r.record) };
+    }
     const state = drawState(this.host.data, this.host.db, cmd);
     // Where the draw's vertex outputs come from: a Vulkan replay, or the interpreter itself (Metal, D3D12).
     const interpreted = interpretsVertexOutputs(state);
@@ -448,9 +470,27 @@ export class ShaderDebuggerView {
     const go = (): void => {
       if (r.stage === "vertex") this.show({ stage: "vertex", command: r.command, vertex: val(0), instance: val(1) });
       else if (r.stage === "fragment") this.show({ stage: "fragment", command: r.command, x: val(0), y: val(1) });
+      else if (r.stage === "geometry") this.show({ stage: "geometry", command: r.command, primitive: val(0), instance: val(1), invocation: val(2) });
+      else if (r.stage === "tess_control") this.show({ stage: "tess_control", command: r.command, patch: val(0), instance: val(1), invocation: val(2) });
+      else if (r.stage === "tess_eval") this.show({ stage: "tess_eval", command: r.command, record: val(0) });
       else this.show({ stage: "compute", command: r.command, invocation: [val(0), val(1), val(2)] });
     };
-    if (r.stage === "vertex") {
+    // The target as resolved (a GS Out row's primitive), so the fields show the invocation debugged.
+    const t = this._session?.target;
+    if (r.stage === "geometry") {
+      const g = t?.stage === "geometry" ? t : null;
+      field("Primitive", g?.primitive ?? r.primitive, limits?.primitives ? `0 to ${limits.primitives - 1}: the draw's input primitives, within the instance` : "The input primitive, within the instance");
+      field("Instance", g?.instance ?? r.instance, limits?.instances ? `0 to ${limits.instances - 1}` : "The instance");
+      field("Invocation", g?.invocation ?? r.invocation, limits?.invocations ? `gl_InvocationID: 0 to ${limits.invocations - 1}` : "gl_InvocationID");
+    } else if (r.stage === "tess_control") {
+      field("Patch", r.patch, limits?.patches ? `0 to ${limits.patches - 1}: the draw's patches, within the instance` : "The patch, within the instance");
+      field("Instance", r.instance, limits?.instances ? `0 to ${limits.instances - 1}` : "The instance");
+      field("Invocation", r.invocation, limits?.invocations ? `gl_InvocationID: 0 to ${limits.invocations - 1}` : "gl_InvocationID");
+    } else if (r.stage === "tess_eval") {
+      field("Record", r.record, limits?.records
+        ? `0 to ${limits.records - 1}: a row of the replay's DS Out, which names the patch and gl_TessCoord`
+        : "A row of the replay's DS Out, which names the patch and gl_TessCoord");
+    } else if (r.stage === "vertex") {
       field("Vertex", r.vertex, limits?.vertices ? `0 to ${limits.vertices - 1}: the draw's vertices in the order it read them` : "The vertex, in the order the draw read them");
       field("Instance", r.instance, limits?.instances ? `0 to ${limits.instances - 1}` : "The instance");
     } else if (r.stage === "fragment") {
@@ -773,6 +813,21 @@ export class ShaderDebuggerView {
 
     this._variables(this._section(side, "Inputs"), program, inv.inputVariables(), "No inputs.");
     this._variables(this._section(side, "Outputs"), program, inv.outputs(), "No outputs.");
+    // A geometry shader's results: each EmitVertex's copy of the outputs.
+    const emitted = inv.emittedVertices?.();
+    if (emitted && (emitted.length || this._session?.target.stage === "geometry")) {
+      const body = this._section(side, `Emitted (${emitted.length})`);
+      if (!emitted.length) new Div(body, { text: "Nothing emitted yet.", class: "text-muted" });
+      const table = variableTable(body);
+      emitted.slice(0, MAX_EMITTED).forEach((e, k) => {
+        const head = table.insertRow().insertCell();
+        head.colSpan = 3;
+        head.className = "text-muted font-sm";
+        head.textContent = `Vertex ${k}, primitive ${e.primitive}${e.stream ? `, stream ${e.stream}` : ""}`;
+        for (const v of e.outputs) addVariable(table, program, v.name, v.type, v.value, false, program.variableWhere(v), 1);
+      });
+      if (emitted.length > MAX_EMITTED) new Div(body, { text: `And ${emitted.length - MAX_EMITTED} more.`, class: "text-muted" });
+    }
     this._variables(this._section(side, "Globals"), program, inv.privateVariables(), "No private variables.");
     this._variables(this._section(side, "Resources"), program, inv.resourceVariables(), "No resources.");
     side.element.scrollTop = scrollTop;
@@ -795,25 +850,48 @@ export class ShaderDebuggerView {
       }
       return;
     }
+    const compareRow = (table: HTMLTableElement, r: { name: string; interpreted: number[]; gpu: number[]; matches: boolean }): void => {
+      const row = table.insertRow();
+      row.insertCell().textContent = r.name;
+      row.insertCell().textContent = r.interpreted.length ? `(${r.interpreted.map((v) => +v.toPrecision(6)).join(", ")})` : "—";
+      const cell = row.insertCell();
+      cell.textContent = r.matches ? "matches the GPU" : `GPU (${r.gpu.map((v) => +v.toPrecision(6)).join(", ")})`;
+      cell.className = r.matches ? "text-muted" : "shader-debugger-warning";
+      if (!r.matches) cell.title = "The replay's transform feedback differs: a driver may reorder floating-point operations the interpreter keeps in order.";
+    };
+    // A geometry shader: what it emitted, as transform feedback records it, beside the replay's GS Out.
+    const emitted = emittedComparison(session, inv);
+    if (emitted) {
+      const count = inv.emittedVertices?.().length ?? 0;
+      const all = emitted.every((e) => e.rows.every((r) => r.matches));
+      new Div(body, {
+        text: `Emitted ${count} vertices, ${emitted.length} records as transform feedback writes them (strips as lists): ${all ? "every one matches the GPU's GS Out" : "some differ from the GPU's GS Out"}.`,
+        class: all ? "text-muted" : "shader-debugger-warning",
+      });
+      if (!all) {
+        const table = variableTable(body);
+        for (const e of emitted) for (const r of e.rows) if (!r.matches) compareRow(table, { ...r, name: `record ${e.record} ${r.name}` });
+      }
+      return;
+    }
     const replayed = session.replayedOutputs;
     if (!replayed) {
       if (session.target.stage === "vertex") new Div(body, { text: "The replay's outputs of this vertex were not available to compare with.", class: "text-muted font-sm" });
+      if (session.target.stage === "geometry") new Div(body, { text: "The replay's GS Out was not available to compare with.", class: "text-muted font-sm" });
       return;
     }
     const table = variableTable(body);
-    for (const r of replayed) {
-      const mine = r.builtin === "Position" ? positionOf(outs) : outs.find((o) => o.location === r.location)?.value;
-      const values = scalars(mine ?? undefined);
-      const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
-      const same = diff < 1e-4;
-      const row = table.insertRow();
-      row.insertCell().textContent = r.name;
-      row.insertCell().textContent = values.length ? `(${values.map((v) => +v.toPrecision(6)).join(", ")})` : "—";
-      const cell = row.insertCell();
-      cell.textContent = same ? "matches the GPU" : `GPU (${r.value.map((v) => +v.toPrecision(6)).join(", ")})`;
-      cell.className = same ? "text-muted" : "shader-debugger-warning";
-      if (!same) cell.title = "The replay's transform feedback differs: a driver may reorder floating-point operations the interpreter keeps in order.";
-    }
+    for (const r of replayRows(outs, replayed)) compareRow(table, r);
+  }
+
+  /** How the finished invocation compares with the replay, for the UI tests: every output, or every emitted record, matching. */
+  private _replayComparison(): { compared: number; differences: number } | null {
+    const session = this._session;
+    const inv = this._ctl?.invocation;
+    if (!session || !inv || inv.status !== "returned") return null;
+    const emitted = emittedComparison(session, inv);
+    const rows = emitted ? emitted.flatMap((e) => e.rows) : session.replayedOutputs ? replayRows(inv.outputs(), session.replayedOutputs) : null;
+    return rows ? { compared: rows.length, differences: rows.filter((r) => !r.matches).length } : null;
   }
 
   /** A translation's results beside the original module's, which runs (once per invocation) when first needed. */
@@ -930,9 +1008,14 @@ export class ShaderDebuggerView {
 // ---------------------------------------------------------------------------------------------
 
 function requestOf(t: DebugTarget): DebugRequest {
-  return t.stage === "vertex" ? { stage: "vertex", command: t.command, vertex: t.vertex, instance: t.instance }
-    : t.stage === "fragment" ? { stage: "fragment", command: t.command, x: t.x, y: t.y }
-    : { stage: "compute", command: t.command, invocation: t.invocation };
+  switch (t.stage) {
+    case "vertex": return { stage: "vertex", command: t.command, vertex: t.vertex, instance: t.instance };
+    case "fragment": return { stage: "fragment", command: t.command, x: t.x, y: t.y };
+    case "geometry": return { stage: "geometry", command: t.command, primitive: t.primitive, instance: t.instance, invocation: t.invocation };
+    case "tess_control": return { stage: "tess_control", command: t.command, patch: t.patch, instance: t.instance, invocation: t.invocation };
+    case "tess_eval": return { stage: "tess_eval", command: t.command, record: t.record };
+    default: return { stage: "compute", command: t.command, invocation: t.invocation };
+  }
 }
 
 /**
@@ -953,15 +1036,8 @@ export function recordVertex(record: number, vertices: number, topology: string)
 }
 
 function stageName(stage: DebugRequest["stage"]): string {
-  return stage === "vertex" ? "Vertex" : stage === "fragment" ? "Fragment" : "Compute";
-}
-
-function positionOf(outs: VariableView[]): Value | undefined {
-  const direct = outs.find((o) => o.builtin === 0);
-  if (direct) return direct.value;
-  // gl_PerVertex: a block whose first member is the position.
-  const block = outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]));
-  return block && Array.isArray(block.value) ? block.value[0] : undefined;
+  const name = STAGE_NAMES[stage];
+  return name[0].toUpperCase() + name.slice(1);
 }
 
 /** The identifier (or %id) under a point of the page. */

@@ -463,10 +463,13 @@ One run of a shader, stepped through line by line, like RenderDoc's shader debug
 values each line computed. Open it from:
 
 - **Debug Vertex** or **Debug Pixel** in a draw's details. Debug Pixel starts on a pixel the draw
-  covers.
+  covers. On Vulkan a draw with those stages also has **Debug Tess Control**, **Debug Tess Eval**
+  and **Debug Geometry** (see below).
 - **Debug Invocation** in a dispatch's details.
 - **Debug** on a draw in a [pixel history](#pixel-history), for that pixel.
-- **Debug Vertex** in the [mesh view](#mesh-view), for the selected row.
+- **Debug** in the [mesh view](#mesh-view), for the selected row: the vertex shader on a VS In or
+  VS Out row, the geometry shader invocation that emitted a GS Out row, the tessellation
+  evaluation invocation that wrote a DS Out row.
 
 ![The shader debugger, paused on the second line of the test application's fragment shader: the source with the current line, the values the first line computed, the locals, call stack, inputs and outputs](images/shader-debugger.png)
 
@@ -563,11 +566,32 @@ Current limits:
   whether an *argument* exists is not honored.
 - A Metal fragment runs the draw's vertex shader once per vertex to find its triangle, so a draw
   with very many vertices is capped, and the notes say so.
-- Tessellation and geometry stages (Metal: object, mesh and tile stages) are not supported.
+- Metal's object, mesh and tile stages, and Direct3D 12's hull, domain and geometry shaders, are not
+  supported. Vulkan's tessellation and geometry stages are, as below, but a geometry shader after
+  tessellation is not, and a tessellation evaluation shader followed by a geometry shader is not.
 - Multisampled pixels are shaded at the center.
 - An indirect dispatch's group counts read (1, 1, 1).
 - A GPU driver may reorder floating-point operations the debugger performs in source order, so a
   value can differ in the last digits, or more where a shader cancels large numbers.
+
+### Geometry and tessellation shaders
+
+A Vulkan draw's geometry and tessellation shaders are debugged the same way. Their inputs are what
+the stage before them wrote, which the capture does not hold, so the debugger runs those stages
+too:
+
+- **A geometry shader** invocation is an input primitive and a `gl_InvocationID`. The primitive's
+  vertices run through the vertex shader first. The **Emitted** section lists each `EmitVertex`
+  with its primitive, and at the end what it emitted is compared with the replay's GS Out records
+  of that invocation, strips taken as the lists transform feedback writes.
+- **A tessellation control shader** invocation is a patch and a `gl_InvocationID`. The patch's
+  invocations run together and share their outputs, as on a GPU: at a `barrier()` the others run
+  up to it before the debugged one goes on, and when it finishes they finish too, so its outputs
+  are the whole patch's.
+- **A tessellation evaluation shader** invocation is a row of the replay's DS Out, because which
+  patch and which point of it (`gl_TessCoord`) each invocation got is the tessellator's choice.
+  The replay records both beside the outputs. The patch's control shader runs to its end for the
+  inputs, and the outputs are compared with the row.
 
 `debug_shader` gives Claude the same run, with every line's values in order, and `decompiled`
 steps the decompiled GLSL with the same check against the original.

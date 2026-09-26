@@ -165,6 +165,8 @@ export interface DebugInvocation {
   outputs(): VariableView[];
   privateVariables(): VariableView[];
   resourceVariables(): VariableView[];
+  /** A geometry shader's EmitVertex copies of its outputs, with the primitive (EndPrimitive count) and stream of each. */
+  emittedVertices?(): { primitive: number; stream: number; outputs: VariableView[] }[];
 }
 
 /** Something that steps an invocation: the invocation itself, or a pixel quad around it. */

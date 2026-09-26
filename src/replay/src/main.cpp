@@ -901,7 +901,7 @@ bool WriteMeshData(const ReplayReport& report, const std::string& path)
             outputs += std::string(k ? "," : "") + "{\"name\":" + JsonString(o.name) + ",\"offset\":" + std::to_string(o.offset) +
                 ",\"components\":" + std::to_string(o.components) + ",\"base\":" + JsonString(o.base) +
                 (o.builtin.empty() ? "" : ",\"builtin\":" + JsonString(o.builtin)) +
-                (o.location >= 0 ? ",\"location\":" + std::to_string(o.location) : "") + "}";
+                (o.location >= 0 ? ",\"location\":" + std::to_string(o.location) : "") + (o.added ? ",\"added\":true" : "") + "}";
         }
         json += std::string(i ? "," : "") + "{\"command\":" + std::to_string(m.command) + ",\"method\":" + JsonString(m.method) +
             ",\"frame\":" + std::to_string(m.frame) + ",\"commandBuffer\":" + std::to_string(m.commandBuffer) +

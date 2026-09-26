@@ -8,6 +8,8 @@
 //     (perspective-correct, flat or noperspective as the fragment shader's inputs say), for the
 //     pixel and the three others of its 2x2 quad.
 //   * A compute invocation: its ids from the dispatch and the shader's local size.
+//   * A geometry or tessellation shader invocation (Vulkan): its input vertices from running the
+//     stages before it in the interpreter (vulkan/primitive_debug.ts).
 //
 // This file holds the Vulkan half and the rasterizer every API shares; metal/shader_debug.ts holds
 // the Metal one, d3d12/shader_debug.ts the Direct3D 12 one, and prepareDebugSession sends a command
@@ -29,8 +31,10 @@ import { stateStages, type StageSource } from "./shader_cache.js";
 import { Invocation, type InvocationInputs, type ShaderBindings } from "./spirv/interpreter.js";
 import { BuiltIn, Decoration, ExecutionModel, SpirvModule, StorageClass } from "./spirv/module.js";
 import { SpirvProgram } from "./spirv/program.js";
+import { preparePrimitiveSession } from "./vulkan/primitive_debug.js";
+import type { MeshInput } from "./mesh_input.js";
 import { PixelQuad, type DerivativeSource } from "./debug/quad.js";
-import type { DebugInvocation, DebugProgram, Stepper } from "./debug/program.js";
+import type { DebugInvocation, DebugProgram, Stepper, VariableView } from "./debug/program.js";
 import { scalars } from "./debug/values.js";
 import type { DebugSampler, DebugTexture, Value } from "./spirv/values.js";
 import { decodeBase64 } from "./utils/base64.js";
@@ -41,7 +45,31 @@ import type { ArgValue, CaptureCommand, CaptureDescriptor } from "../shared/prot
 export type DebugTarget =
   | { stage: "vertex"; command: number; vertex: number; instance: number }
   | { stage: "fragment"; command: number; x: number; y: number }
-  | { stage: "compute"; command: number; invocation: [number, number, number] };
+  | { stage: "compute"; command: number; invocation: [number, number, number] }
+  /** An input primitive of the draw (within its instance) and one of the geometry shader's invocations on it. */
+  | { stage: "geometry"; command: number; primitive: number; instance: number; invocation: number }
+  /** A patch of the draw (within its instance) and one of its tessellation control invocations. */
+  | { stage: "tess_control"; command: number; patch: number; instance: number; invocation: number }
+  /** A record of the replay's DS Out: it names the patch and the point of it (gl_TessCoord) the invocation was given. */
+  | { stage: "tess_eval"; command: number; record: number };
+
+/** A vertex, a fragment or a compute invocation: the targets every API's debugger takes. */
+export type BasicTarget = Extract<DebugTarget, { stage: "vertex" | "fragment" | "compute" }>;
+
+/** Stages whose invocations are a draw's primitives rather than its vertices or pixels. */
+export type PrimitiveStage = "geometry" | "tess_control" | "tess_eval";
+
+export function isPrimitiveStage(stage: DebugTarget["stage"]): stage is PrimitiveStage {
+  return stage === "geometry" || stage === "tess_control" || stage === "tess_eval";
+}
+
+/** One output the replay captured, to compare the interpreter's with. */
+export interface ReplayedValue {
+  name: string;
+  location?: number;
+  builtin?: string;
+  value: number[];
+}
 
 export type { Stepper };
 
@@ -58,11 +86,22 @@ export interface DebugSession {
   description: string;
   notes: string[];
   /** What the invocation's range is, for the picker: vertices and instances of a draw, the dispatch size, the viewport. */
-  limits: { vertices?: number; instances?: number; groups?: [number, number, number]; localSize?: [number, number, number]; width?: number; height?: number };
+  limits: {
+    vertices?: number; instances?: number; groups?: [number, number, number]; localSize?: [number, number, number]; width?: number; height?: number;
+    /** Geometry: the input primitives per instance and the shader's invocations; tessellation control: the patches and output vertices. */
+    primitives?: number; invocations?: number; patches?: number;
+    /** Tessellation evaluation: the replay's DS Out records. */
+    records?: number;
+  };
   /** Fragment: the render target's value at the pixel after the pass, for comparison. */
   targetPixel?: { image: number; attachment: number; value: number[]; format: string };
-  /** Vertex: what the replay's transform feedback captured for the vertex, for comparison. */
-  replayedOutputs?: { name: string; location?: number; builtin?: string; value: number[] }[];
+  /** Vertex and tessellation evaluation: what the replay's transform feedback captured for the invocation, for comparison. */
+  replayedOutputs?: ReplayedValue[];
+  /**
+   * Geometry: the replay's records of what this invocation emitted, in order, as transform feedback
+   * wrote them (strips as lists); compared with the interpreter's EmitVertex copies.
+   */
+  replayedEmitted?: { topology: string; records: ReplayedValue[][] };
   /**
    * When the program is a translation of the capture's module (DebugContext.translate): starts the
    * same invocation of the original, to check the translation computes what it does.
@@ -107,7 +146,16 @@ export interface DebugContext {
 export const TRANSLATION_NOTE = "This steps GLSL that spirv-cross decompiled from the SPIR-V and glslang compiled back: " +
   "it should compute the same values, but it is not the module the GPU ran, so the result is checked against the original.";
 
-const STAGE_MODEL = { vertex: ExecutionModel.Vertex, fragment: ExecutionModel.Fragment, compute: ExecutionModel.GLCompute } as const;
+const STAGE_MODEL = {
+  vertex: ExecutionModel.Vertex, fragment: ExecutionModel.Fragment, compute: ExecutionModel.GLCompute, geometry: ExecutionModel.Geometry,
+  tess_control: ExecutionModel.TessellationControl, tess_eval: ExecutionModel.TessellationEvaluation,
+} as const;
+
+/** How a debug target's stage is named in prose. */
+export const STAGE_NAMES: Record<DebugTarget["stage"], string> = {
+  vertex: "vertex", fragment: "fragment", compute: "compute", geometry: "geometry", tess_control: "tessellation control",
+  tess_eval: "tessellation evaluation",
+};
 
 function bytesOf(v: ArgValue | undefined): Uint8Array | null {
   if (!isObject(v) || typeof v.base64 !== "string") return null;
@@ -119,12 +167,13 @@ function bytesOf(v: ArgValue | undefined): Uint8Array | null {
 }
 
 /** The pipeline stage a target debugs, with its SPIR-V. */
-function stageOf(ctx: DebugContext, state: DrawState, stage: "vertex" | "fragment" | "compute"): { source: StageSource; bytes: Uint8Array; module: SpirvModule } {
+export function stageOf(ctx: DebugContext, state: DrawState, stage: DebugTarget["stage"]): { source: StageSource; bytes: Uint8Array; module: SpirvModule } {
   if (!state.pipeline && !state.shaders.length) throw new Error("no pipeline or shader object is bound at the command");
+  const name = STAGE_NAMES[stage];
   const source = stateStages(state, ctx.db).find((s) => s.stage === stage);
-  if (!source) throw new Error(state.pipeline ? `the pipeline has no ${stage} stage` : `no ${stage} shader object is bound at the command`);
+  if (!source) throw new Error(state.pipeline ? `the pipeline has no ${name} stage` : `no ${name} shader object is bound at the command`);
   const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
-  if (!bytes) throw new Error(`the capture does not hold the ${stage} shader's SPIR-V`);
+  if (!bytes) throw new Error(`the capture does not hold the ${name} shader's SPIR-V`);
   return { source, bytes, module: new SpirvModule(bytes) };
 }
 
@@ -162,6 +211,10 @@ function sameScalars(a: number[] | null, b: number[] | null): boolean {
 export function compareWithOriginal(translated: DebugInvocation, original: DebugInvocation, stage: DebugTarget["stage"]): OriginalComparison {
   const keyed = (inv: DebugInvocation): Map<string, { label: string; value: number[] }> => {
     const out = new Map<string, { label: string; value: number[] }>();
+    // A geometry shader's results are what it emitted.
+    (inv.emittedVertices?.() ?? []).forEach((e, k) => {
+      for (const v of e.outputs) out.set(`e${k}:${v.location ?? `b${v.builtin}`}:${v.name}`, { label: `emitted vertex ${k} ${v.name}`, value: scalars(v.value) });
+    });
     const vars = stage === "compute" ? inv.resourceVariables().filter((v) => v.set !== undefined && v.binding !== undefined) : inv.outputs();
     for (const v of vars) {
       if (stage === "compute") {
@@ -776,6 +829,80 @@ export function interpretedVertexOutputs(ctx: DebugContext, cmd: CaptureCommand)
 
 // ---------------------------------------------------------------------------------------------
 
+/** A vertex shader invocation's inputs: vertex `order` of the draw (in the order it read them), of `instance`. */
+export function vertexInvocationInputs(input: MeshInput, a: Record<string, ArgValue>, order: number, instance: number): InvocationInputs {
+  const locations = new Map<number, number[]>();
+  input.attributes.forEach((attr, k) => {
+    const values = input.values(order, k, instance);
+    if (values) locations.set(attr.location, values);
+  });
+  const firstInstance = num(a.firstInstance);
+  const baseVertex = num(a.vertexOffset ?? a.firstVertex);
+  const vertexId = input.ids[order];
+  return {
+    locations,
+    builtins: new Map<number, Value>([
+      [BuiltIn.VertexIndex, vertexId], [BuiltIn.VertexId, vertexId], [BuiltIn.InstanceIndex, firstInstance + instance],
+      [BuiltIn.InstanceId, instance], [BuiltIn.BaseVertex, baseVertex], [BuiltIn.BaseInstance, firstInstance], [BuiltIn.DrawIndex, 0],
+      [BuiltIn.ViewIndex, 0],
+    ]),
+  };
+}
+
+/** The interpreter's value of an output the replay captured, found the way the replay named it. */
+export function interpretedOutput(outs: VariableView[], r: ReplayedValue): Value | undefined {
+  if (r.builtin === "Position") {
+    const direct = outs.find((o) => o.builtin === BuiltIn.Position);
+    if (direct) return direct.value;
+    // gl_PerVertex: a block whose first member is the position.
+    const block = outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]));
+    return block && Array.isArray(block.value) ? block.value[0] : undefined;
+  }
+  if (r.builtin === "Layer") return outs.find((o) => o.builtin === BuiltIn.Layer)?.value;
+  if (r.builtin === "ViewportIndex") return outs.find((o) => o.builtin === BuiltIn.ViewportIndex)?.value;
+  return r.location === undefined ? undefined : outs.find((o) => o.location === r.location)?.value;
+}
+
+/** Each replayed output beside the interpreter's, and whether they agree (to 1e-4, relative past 1). */
+export function replayRows(outs: VariableView[], replayed: ReplayedValue[]): { name: string; interpreted: number[]; gpu: number[]; matches: boolean }[] {
+  return replayed.map((r) => {
+    const values = scalars(interpretedOutput(outs, r) ?? undefined);
+    const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
+    return { name: r.name, interpreted: values, gpu: r.value, matches: diff < 1e-4 };
+  });
+}
+
+/**
+ * A geometry shader's emitted vertices in the order transform feedback records them: each strip
+ * as its list (triangle i of a strip as v[i], v[i+1+i%2], v[i+2-i%2]; line i as v[i], v[i+1]).
+ */
+export function emittedAsRecords<T extends { primitive: number; stream: number }>(emitted: T[], topology: string): T[] {
+  const per = /POINT/.test(topology) ? 1 : /LINE/.test(topology) ? 2 : 3;
+  const out: T[] = [];
+  const strips = new Map<number, T[]>();
+  for (const e of emitted) {
+    if (e.stream !== 0) continue;
+    const strip = strips.get(e.primitive) ?? [];
+    strip.push(e);
+    strips.set(e.primitive, strip);
+  }
+  for (const strip of strips.values()) {
+    if (per === 1) out.push(...strip);
+    else if (per === 2) for (let i = 0; i + 1 < strip.length; i++) out.push(strip[i], strip[i + 1]);
+    else for (let i = 0; i + 2 < strip.length; i++) out.push(strip[i], strip[i + 1 + (i % 2)], strip[i + 2 - (i % 2)]);
+  }
+  return out;
+}
+
+/** A geometry session's emitted vertices beside the replay's records: per record, whether every output agrees. */
+export function emittedComparison(session: DebugSession, inv: DebugInvocation): { record: number; rows: ReturnType<typeof replayRows> }[] | null {
+  const replayed = session.replayedEmitted;
+  const emitted = inv.emittedVertices?.();
+  if (!replayed || !emitted) return null;
+  const mine = emittedAsRecords(emitted, replayed.topology);
+  return replayed.records.map((record, k) => ({ record: k, rows: mine[k] ? replayRows(mine[k].outputs, record) : record.map((r) => ({ name: r.name, interpreted: [], gpu: r.value, matches: false })) }));
+}
+
 /** Prepares a debugging session for a target; throws with the reason it cannot be debugged. */
 export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget): Promise<DebugSession> {
   const { data, db } = ctx;
@@ -786,10 +913,14 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
     throw new Error(`command ${target.command} (${cmd.method}) is not a ${target.stage === "compute" ? "dispatch" : "draw"}`);
   }
   const state = drawState(data, db, cmd);
+  if (isPrimitiveStage(target.stage) && data.api !== "vulkan") {
+    throw new Error(`${STAGE_NAMES[target.stage]} shaders are debugged on Vulkan captures only`);
+  }
   // A Metal pipeline's shaders are Metal Shading Language, run by a different interpreter; a D3D12
   // pipeline state's are HLSL compiled to SPIR-V for this one.
-  if (isMetalPipeline(state.pipeline)) return prepareMetalSession(ctx, target, state, cmd);
-  if (isD3D12Pipeline(state.pipeline)) return prepareD3D12Session(ctx, target, state, cmd);
+  // Past this, a primitive stage's target is a Vulkan one.
+  if (isMetalPipeline(state.pipeline)) return prepareMetalSession(ctx, target as BasicTarget, state, cmd);
+  if (isD3D12Pipeline(state.pipeline)) return prepareD3D12Session(ctx, target as BasicTarget, state, cmd);
   const { source, bytes, module: captured } = stageOf(ctx, state, target.stage);
   const bindings = commandBindings(ctx, state, source);
   const model = STAGE_MODEL[target.stage];
@@ -806,6 +937,10 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
     start: () => start(module),
     original: translated ? () => start(captured) : undefined,
   });
+
+  if (target.stage === "geometry" || target.stage === "tess_control" || target.stage === "tess_eval") {
+    return preparePrimitiveSession(ctx, target, state, cmd, { source, captured, bindings, notes, program, both, model });
+  }
 
   if (target.stage === "compute") {
     const entry = captured.entryPoint(entryPoint, model);
@@ -841,22 +976,8 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
     notes.push(...input.notes);
     const order = target.vertex;
     if (order < 0 || order >= input.ids.length) throw new Error(`the draw reads ${input.ids.length.toLocaleString()} vertices: there is no vertex ${order}`);
-    const locations = new Map<number, number[]>();
-    input.attributes.forEach((attr, k) => {
-      const values = input.values(order, k, target.instance);
-      if (values) locations.set(attr.location, values);
-    });
-    const firstInstance = num(a.firstInstance);
-    const baseVertex = num(a.vertexOffset ?? a.firstVertex);
+    const inputs = vertexInvocationInputs(input, a, order, target.instance);
     const vertexId = input.ids[order];
-    const inputs: InvocationInputs = {
-      locations,
-      builtins: new Map<number, Value>([
-        [BuiltIn.VertexIndex, vertexId], [BuiltIn.VertexId, vertexId], [BuiltIn.InstanceIndex, firstInstance + target.instance],
-        [BuiltIn.InstanceId, target.instance], [BuiltIn.BaseVertex, baseVertex], [BuiltIn.BaseInstance, firstInstance], [BuiltIn.DrawIndex, 0],
-        [BuiltIn.ViewIndex, 0],
-      ]),
-    };
     let replayedOutputs: DebugSession["replayedOutputs"];
     if (ctx.meshOutput) {
       try {

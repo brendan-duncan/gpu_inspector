@@ -14,6 +14,8 @@ export interface MeshOutputVariable {
   /** "Position" for gl_Position. */
   builtin?: string;
   location?: number;
+  /** Written by the replay rather than the shader: which invocation made the record (gl_PrimitiveID, gl_InvocationID, gl_TessCoord). */
+  added?: boolean;
 }
 
 export interface MeshOutput {

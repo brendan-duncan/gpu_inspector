@@ -614,6 +614,51 @@ def triangle_debug_vertex(state, log):
         expect(len(replayed) >= 3, f"the replay's outputs of the vertex are missing: {replayed}")
 
 
+def triangle_debug_geometry(state, log):
+    d = debugger_tab(state)
+    c = d.get("replayComparison") or {}
+    # test/triangle --geometry: the geometry shader on the draw's first triangle, its vertices from
+    # running cube.vert in the interpreter, and the six vertices it emits (the triangle and its copy)
+    # compared with the replay's GS Out records of that invocation (src/renderer/vulkan/primitive_debug.ts).
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:geometry opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the invocation: {d.get('error')}") + \
+        expect(d.get("status") == "returned", f"the invocation did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect(d.get("emitted") == 6, f"not the six vertices cube.geom emits: {d.get('emitted')}") + \
+        expect(c.get("compared", 0) >= 18 and c.get("differences") == 0, f"the emitted vertices do not match the replay's GS Out: {c}")
+
+
+def triangle_debug_tess_eval(state, log):
+    d = debugger_tab(state)
+    c = d.get("replayComparison") or {}
+    # test/triangle --tessellation: the first DS Out record names the patch and gl_TessCoord; the
+    # patch's control shader runs for the evaluation shader's inputs, and its outputs are compared
+    # with the record.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:tess_eval opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the invocation: {d.get('error')}") + \
+        expect(d.get("status") == "returned", f"the invocation did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect("gl_TessCoord" in (d.get("description") or ""), f"the record's patch and point are not described: {d.get('description')}") + \
+        expect(c.get("compared", 0) >= 3 and c.get("differences") == 0, f"the outputs do not match the replay's DS Out record: {c}")
+
+
+def triangle_debug_tess_control(state, log):
+    d = debugger_tab(state)
+    outs = {o.get("name"): o.get("value") for o in d.get("outputs") or []}
+    # The first patch's control invocation 0, run with the patch's other invocations: the outputs
+    # are the whole patch's once it finishes (gl_out[] flattened, seven scalars a vertex: position, point
+    # size, one clip and one cull distance), and the tessellation levels cube.tesc sets are there.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(d), "--debug-view=debugger:tess_control opened no debugger tab") + \
+        expect(not d.get("error"), f"the debugger could not prepare the invocation: {d.get('error')}") + \
+        expect(d.get("status") == "returned", f"the invocation did not run to the end: {d.get('status')} {d.get('invocationError')}") + \
+        expect(not d.get("warnings"), f"the interpreter warned: {d.get('warnings')}") + \
+        expect((outs.get("gl_TessLevelOuter") or [])[:3] == [2, 2, 2], f"the tessellation levels are not cube.tesc's: {outs.get('gl_TessLevelOuter')}") + \
+        expect(all(v != 0 for v in (outs.get("gl_out") or [0])[3::7]), f"not every vertex of the patch has a position: {outs.get('gl_out')}")
+
+
 def triangle_debug_compute(state, log):
     d = debugger_tab(state)
     # wave.comp ships without its text: the source roots supply it (like the sources case).
@@ -1863,6 +1908,13 @@ def triangle_cases(triangle):
                           triangle_debug_pixel, delay_ms=20000))
         cases.append(Case("debug-vertex", launch + ["--debug-capture", "--debug-view=debugger:vertex::2", "--debug-settle=8000"],
                           triangle_debug_vertex, delay_ms=20000))
+        cases.append(Case("debug-geometry", launch + ["--args=--geometry", "--debug-capture", "--debug-view=debugger:geometry::end", "--debug-settle=8000"],
+                          triangle_debug_geometry, delay_ms=20000))
+        cases.append(Case("debug-tess-eval", launch + ["--args=--tessellation", "--debug-capture", "--debug-view=debugger:tess_eval::end", "--debug-settle=8000"],
+                          triangle_debug_tess_eval, delay_ms=20000))
+        cases.append(Case("debug-tess-control", launch + ["--args=--tessellation", "--debug-capture", "--debug-view=debugger:tess_control::end",
+                                                          "--debug-settle=8000"],
+                          triangle_debug_tess_control, delay_ms=20000))
     else:
         print("  (no vkinsp_replay build: skipping the overdraw, mesh, overlay and pixel debugger cases)")
     return cases

@@ -91,6 +91,8 @@ add_executable(vkinsp_replay
     src/count_patch.cpp
     src/layer_patch.h
     src/layer_patch.cpp
+    src/identity_patch.h
+    src/identity_patch.cpp
     src/history.cpp
     src/draw_stats.cpp
     src/ablation.cpp

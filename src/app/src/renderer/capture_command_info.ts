@@ -302,6 +302,22 @@ export class CommandInfoView {
             tooltip: api === "vulkan"
               ? "Step through the draw's fragment shader at a pixel it covers (the replay rasterizes its vertex outputs); a pixel history's Debug picks the pixel"
               : `Step through the draw's ${d3d12 ? "pixel" : "fragment"} shader at a pixel it covers (the interpreter runs the vertex shader to find the triangle); a pixel history's Debug picks the pixel${d3d12 ? ". The HLSL the capture holds is compiled to SPIR-V by dxc" : ""}` });
+          // Vulkan's stages between the vertex and fragment ones, when the draw has them.
+          if (api === "vulkan") {
+            const stages = new Set(stateStages(state, this.db).map((s) => s.stage));
+            if (stages.has("tess_control")) {
+              new Button(row, { label: "Debug Tess Control", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "tess_control", command: cmd.index }),
+                tooltip: "Step through the draw's tessellation control shader for one invocation of its first patch: the patch's vertices run through the vertex shader, and its invocations run together across barrier()" });
+            }
+            if (stages.has("tess_eval")) {
+              new Button(row, { label: "Debug Tess Eval", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "tess_eval", command: cmd.index }),
+                tooltip: "Step through the draw's tessellation evaluation shader for the first record of its DS Out, which says which patch and gl_TessCoord the invocation was given (the mesh view's Debug picks another row)" });
+            }
+            if (stages.has("geometry")) {
+              new Button(row, { label: "Debug Geometry", class: "btn btn-sm", callback: () => this.panel.debugShader({ stage: "geometry", command: cmd.index }),
+                tooltip: "Step through the draw's geometry shader for its first input primitive: the primitive's vertices run through the vertex shader, and what it emits is compared with the replay's GS Out" });
+            }
+          }
         }
         this._renderVertexBuffers(container, state, [...state.vertexBuffers.values()].sort((a, b) => a.binding - b.binding), token);
         if (state.indexBuffer) this._renderIndexBuffer(container, state.indexBuffer, cmd);

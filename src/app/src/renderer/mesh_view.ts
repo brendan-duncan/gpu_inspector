@@ -45,8 +45,12 @@ export interface MeshViewHost {
   interpretedMeshOutput?(cmd: CaptureCommand): Promise<MeshOutput>;
   /** The vertex shader's input names by location. */
   inputNames(cmd: CaptureCommand): Promise<Map<number, string>>;
-  /** Vulkan: opens the shader debugger on a vertex (a VS In row, or the VS Out record). */
-  debugVertex?(command: number, row: number, stage: MeshStage): void;
+  /**
+   * Vulkan: opens the shader debugger on a vertex (a VS In row, or the VS Out record), or past a
+   * geometry or tessellation shader on the invocation that wrote a GS Out or DS Out record
+   * (`outputStage`, the stage the records are of).
+   */
+  debugVertex?(command: number, row: number, stage: MeshStage, outputStage?: string): void;
 }
 
 export interface MeshViewOptions {
@@ -198,14 +202,13 @@ export class MeshView {
     new Button(bar, { label: "Reset View", class: "btn btn-sm", tooltip: "Frame the mesh again (or double-click the preview)", callback: () => this._preview?.resetView() });
     const cameraBar = new Div(bar, { class: "mesh-view-camera" });
     if (this.host.debugVertex) {
-      new Button(bar, { label: "Debug Vertex", class: "btn btn-sm", tooltip: "Debug the vertex shader on the vertex selected in the table (the first when none is)",
+      new Button(bar, { label: "Debug", class: "btn btn-sm",
+        tooltip: "Debug the shader that wrote the row selected in the table (the first when none is): the vertex shader on a VS In or VS Out row, " +
+          "the geometry shader invocation that emitted a GS Out row, the tessellation evaluation invocation of a DS Out row",
         callback: () => {
-          // Past a tessellation or geometry stage a record is not one of the draw's vertices.
-          if (this._stage === "out" && this._output?.stage && this._output.stage !== "vertex") {
-            this._setNotes([`These records are what the ${this._output.stage} shader emitted, not the draw's vertices: VS In debugs the vertex shader on a vertex.`]);
-            return;
-          }
-          this.host.debugVertex!(this._draw.index, this._selected ?? 0, this._stage);
+          // Past a tessellation or geometry stage a record is that stage's: the invocation that wrote it is debugged.
+          const outputStage = this._stage === "out" ? this._output?.stage : undefined;
+          this.host.debugVertex!(this._draw.index, this._selected ?? 0, this._stage, outputStage);
         } });
     }
     this._status = new Span(bar, { class: "text-muted" });

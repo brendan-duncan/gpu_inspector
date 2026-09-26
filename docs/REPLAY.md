@@ -347,6 +347,14 @@ which the replay enables where the GPU has it. The edit to the shader is much sm
   mesh of its own, with its `view` index.
 - **Layered passes.** The pass the draw is issued in has the framebuffer's layers, so a shader that
   writes `gl_Layer` is valid there, and `gl_Layer` is among the outputs captured.
+- **Which invocation wrote each record.** Past the vertex stage, `identity_patch.cpp` also has the
+  shader write its invocation's identity to outputs of its own, placed after the shader's
+  locations: a geometry shader's `gl_PrimitiveIDIn` and `gl_InvocationID` at every `EmitVertex`, a
+  tessellation evaluation shader's `gl_PrimitiveID` and `gl_TessCoord` at its end. They are
+  captured like any other output and marked `"added": true`. The shader debugger finds the
+  invocation behind a GS Out or DS Out row from them, and `gl_TessCoord` is the only record of which
+  point of a patch the tessellator gave an invocation. On test/triangle they are the primitive and
+  patch of each record, and `gl_TessCoord` equals the coordinate the shader writes itself.
 - **The draw** is issued after the replay has executed its pass, like the overlays: the pass's
   state again, then the draw alone with a pipeline copy that uses the edited shader, has no fragment
   stage and discards rasterization. A draw with shader objects (`VK_EXT_shader_object`) binds a copy

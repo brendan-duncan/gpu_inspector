@@ -11,7 +11,8 @@ import { compileHlslForDebugging, decompileForDebugging } from "../main/shader_t
 import { drawState } from "../renderer/draw_state.js";
 import { parseMeshFile, type MeshOutput } from "../renderer/mesh_output.js";
 import { DebugController } from "../renderer/shader_debugger.js";
-import { compareWithOriginal, coveredPixel, pixelRasterState, prepareDebugSession, sameValue, vertexOutputsOf, type DebugContext, type DebugTarget } from "../renderer/shader_debug_setup.js";
+import { compareWithOriginal, coveredPixel, emittedComparison, pixelRasterState, prepareDebugSession, replayRows, sameValue, vertexOutputsOf, type DebugContext, type DebugTarget } from "../renderer/shader_debug_setup.js";
+import { geometryTargetOfRecord } from "../renderer/vulkan/primitive_debug.js";
 import { nonFinite, Pointer, scalars } from "../renderer/debug/values.js";
 import { SpirvProgram } from "../renderer/spirv/program.js";
 import { sourceLineMap } from "../renderer/vulkan/spirv_debug.js";
@@ -49,7 +50,10 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         "does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V, a Metal " +
         "capture's Metal Shading Language, or a D3D12 capture's HLSL (compiled to SPIR-V by dxc, since there is no DXIL interpreter). " +
         "A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a " +
-        "pixel, or a dispatch's compute invocation, on the resources the command had bound. A Vulkan fragment's inputs are rasterized " +
+        "pixel, or a dispatch's compute invocation, on the resources the command had bound. On Vulkan also a geometry shader invocation " +
+        "(an input primitive, its input vertices from running the vertex shader; what it emits is compared with the replay's GS Out), " +
+        "a tessellation control invocation (a patch, its invocations run together across barrier()), and a tessellation evaluation " +
+        "invocation named by a record of the replay's DS Out (which gives the patch and gl_TessCoord; the patch's control shader runs for its inputs). A Vulkan fragment's inputs are rasterized " +
         "from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal or D3D12 fragment's come from running the draw's own " +
         "vertex shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to " +
         "compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line " +
@@ -59,12 +63,18 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
-        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "Default: compute for a dispatch, fragment for a draw." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute", "geometry", "tess_control", "tess_eval"], description: "Default: compute for a dispatch, fragment for a draw." },
+        primitive: { type: "integer", minimum: 0, description: "Geometry: the input primitive, within its instance (get_mesh_output's gl_PrimitiveIDIn). Default 0." },
+        patch: { type: "integer", minimum: 0, description: "Tessellation control: the patch, within its instance. Default 0." },
+        record: { type: "integer", minimum: 0, description: "Tessellation evaluation (required, default 0) or geometry: a record of get_mesh_output's DS Out / GS Out, which names the invocation that wrote it." },
         vertex: { type: "integer", minimum: 0, description: "Vertex: the vertex, in the order the draw read them (an indexed draw's index order). Default 0." },
-        instance: { type: "integer", minimum: 0, description: "Vertex: the instance. Default 0." },
+        instance: { type: "integer", minimum: 0, description: "Vertex, geometry and tessellation control: the instance. Default 0." },
         x: { type: "integer", minimum: 0, description: "Fragment: the pixel's column. Default: a pixel the draw covers." },
         y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
-        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
+        invocation: {
+          type: ["array", "integer"], items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, minimum: 0,
+          description: "Compute: gl_GlobalInvocationID as [x, y, z] (Metal: thread_position_in_grid), default [0, 0, 0]. Geometry and tessellation control: gl_InvocationID, default 0.",
+        },
         line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
         trace: { type: "boolean", description: "Include the line-by-line values (default true)." },
         decompiled: { type: "boolean", description: "Vulkan: step GLSL that spirv-cross decompiles from the SPIR-V and glslang compiles back " +
@@ -79,7 +89,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
         if (!cmd) throw new Error(`The capture has no command ${command}.`);
         const isDispatch = c.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
-        const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"] as const, isDispatch ? "compute" : "fragment");
+        const stage = enumArg(args, "stage", ["vertex", "fragment", "compute", "geometry", "tess_control", "tess_eval"] as const, isDispatch ? "compute" : "fragment");
         if (!backendFor(c.data.api).builtin) {
           return jsonResult({ capture: c.id, command, stage, note: `The shader debugger interprets SPIR-V (Vulkan, and D3D12's HLSL compiled to it) and MSL; ${apiDisplayName(c.data.api)} shaders are not among them.` });
         }
@@ -113,6 +123,21 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           target = { stage, command, invocation: [inv[0] ?? 0, inv[1] ?? 0, inv[2] ?? 0] };
         } else if (stage === "vertex") {
           target = { stage, command, vertex: intArg(args, "vertex", 0, 0), instance: intArg(args, "instance", 0, 0) };
+        } else if (stage === "tess_eval") {
+          target = { stage, command, record: intArg(args, "record", 0, 0) };
+        } else if (stage === "tess_control") {
+          target = { stage, command, patch: intArg(args, "patch", 0, 0), instance: intArg(args, "instance", 0, 0), invocation: typeof args.invocation === "number" ? Math.max(0, Math.floor(args.invocation)) : 0 };
+        } else if (stage === "geometry") {
+          const record = optionalInt(args, "record");
+          if (record !== undefined) {
+            try {
+              target = { stage, command, ...geometryTargetOfRecord(await meshOutputs(c)(command), record) };
+            } catch (e) {
+              return jsonResult({ capture: c.id, command, stage, note: `Cannot debug: ${(e as Error).message}` });
+            }
+          } else {
+            target = { stage, command, primitive: intArg(args, "primitive", 0, 0), instance: intArg(args, "instance", 0, 0), invocation: typeof args.invocation === "number" ? Math.max(0, Math.floor(args.invocation)) : 0 };
+          }
         } else {
           let x = optionalInt(args, "x"), y = optionalInt(args, "y");
           if (x === undefined || y === undefined) {
@@ -229,18 +254,26 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
             note: "The pixel after the whole pass: blending and later draws come between. get_pixel_history has the value after this draw.",
           };
         } else if (inv.status === "returned" && session.replayedOutputs) {
-          const outs = inv.outputs();
           compare = {
-            replayedVertexOutputs: session.replayedOutputs.map((r) => {
-              const mine = r.builtin === "Position"
-                ? outs.find((o) => o.builtin === 0)?.value ?? (outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]))?.value as unknown[] | undefined)?.[0]
-                : outs.find((o) => o.location === r.location)?.value;
-              const values = scalars(mine as never);
-              const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
-              return { name: r.name, gpu: r.value.map(tidy), matches: diff < 1e-4 };
-            }),
+            [stage === "tess_eval" ? "replayedDsOut" : "replayedVertexOutputs"]: replayRows(inv.outputs(), session.replayedOutputs)
+              .map((r) => ({ name: r.name, gpu: r.gpu.map(tidy), matches: r.matches })),
+          };
+        } else if (inv.status === "returned" && session.replayedEmitted) {
+          // What the invocation emitted, as transform feedback records it, beside the replay's GS Out.
+          const rows = emittedComparison(session, inv) ?? [];
+          const emitted = inv.emittedVertices?.().length ?? 0;
+          compare = {
+            emittedVertices: emitted, replayedRecords: session.replayedEmitted.records.length,
+            allMatch: rows.every((r) => r.rows.every((x) => x.matches)),
+            differences: rows.flatMap((r) => r.rows.filter((x) => !x.matches).map((x) => ({ record: r.record, name: x.name, interpreted: x.interpreted.map(tidy), gpu: x.gpu.map(tidy) }))).slice(0, 20),
           };
         }
+        // A geometry shader's results are what it emitted, not its outputs at the end.
+        const emitted = inv.emittedVertices?.();
+        const emittedOut = emitted?.length ? emitted.slice(0, 32).map((e) => ({
+          primitive: e.primitive, stream: e.stream || undefined,
+          outputs: Object.fromEntries(e.outputs.map((o) => [o.name, program.valueText(o.type, o.value, 16)])),
+        })) : undefined;
         return jsonResult({
           capture: c.id, command, method: cmd.method, stage, entryPoint: session.stage.entryPoint,
           invocation: session.description, notes: session.notes.length ? session.notes : undefined,
@@ -248,7 +281,7 @@ export function debugTools(store: CaptureStore): ToolDefinition[] {
           steppedBy: decompiled ? "source line of GLSL decompiled from the SPIR-V (spirv-cross, recompiled by glslang)"
             : d3d12 ? "source line of the HLSL the capture holds, compiled to SPIR-V by dxc (there is no DXIL interpreter, so nothing checks it against the DXIL the GPU ran)"
             : ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
-          outputs, compare, original, firstNonFinite,
+          outputs: emittedOut ? undefined : outputs, emitted: emittedOut, compare, original, firstNonFinite,
           warnings: inv.warnings.size ? [...inv.warnings] : undefined,
           trace: wantTrace ? trace : undefined, traceTruncated: traceTruncated || undefined,
         });

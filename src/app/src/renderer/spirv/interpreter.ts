@@ -4,6 +4,10 @@
 //
 // Inputs come from the capture: the vertex's attributes or the fragment's interpolated varyings
 // (InvocationInputs), and the descriptor sets and push constants the draw had bound (ShaderBindings).
+// A tessellation or geometry stage reads its inputs per vertex (gl_in[], and every arrayed input),
+// which InvocationInputs.vertices holds. A geometry shader's EmitVertex keeps a copy of the outputs
+// (`emitted`), and a tessellation control shader's invocations share their outputs and wait for
+// one another at a barrier (an InvocationGroup, debug/group.ts, runs them).
 // Derivatives (dFdx, implicit-LOD sampling) need the neighboring invocations of the pixel quad;
 // a DerivativeSource (quad.ts) runs them in lockstep, and without one they are zero.
 import {
@@ -40,8 +44,32 @@ export interface ShaderBindings {
 export interface InvocationInputs {
   /** Built-in inputs by BuiltIn number (gl_FragCoord a vec4, gl_VertexIndex a number, ...). */
   builtins: Map<number, Value>;
-  /** Input variables by location: their scalars in order. */
+  /** Input variables by location: their scalars in order (a tessellation evaluation shader's patch inputs too). */
   locations: Map<number, number[]>;
+  /**
+   * Tessellation and geometry stages: each input vertex's built-ins (gl_in[i].gl_Position) and located
+   * values, from which element i of every arrayed input is read.
+   */
+  vertices?: InputVertex[];
+}
+
+/** One vertex of a tessellation or geometry stage's input. */
+export interface InputVertex {
+  builtins: Map<number, Value>;
+  locations: Map<number, number[]>;
+}
+
+/** What a geometry shader's EmitVertex kept: its outputs at the time, and the primitive (EndPrimitive count) it belongs to. */
+export interface EmittedVertex {
+  primitive: number;
+  stream: number;
+  outputs: VariableView[];
+}
+
+/** What decides when an invocation waiting at a barrier may go on: its group (debug/group.ts). */
+export interface BarrierSource {
+  /** True when every invocation has arrived and this one may pass; false while it waits. */
+  arrive(invocation: Invocation): boolean;
 }
 
 export interface Frame {
@@ -121,8 +149,20 @@ export class Invocation implements DebugInvocation {
   private _results: SpirvStepResult[] = [];
   /** Called with every value an instruction produces (the MCP tool's trace). */
   onResult: ((r: SpirvStepResult) => void) | null = null;
+  /** A geometry shader's emitted vertices, in order. */
+  readonly emitted: EmittedVertex[] = [];
+  private _primitive = 0;
+  /** The output variables' cells, by id: what the other invocations of a tessellation control patch share. */
+  readonly outputCells = new Map<number, Cell>();
+  private readonly _sharedOutputs: Map<number, Cell> | null;
+  barrier: BarrierSource | null;
 
-  constructor(module: SpirvModule, options: { entryPoint?: string; model?: number; bindings: ShaderBindings; inputs: InvocationInputs; derivatives?: DerivativeSource | null }) {
+  constructor(module: SpirvModule, options: {
+    entryPoint?: string; model?: number; bindings: ShaderBindings; inputs: InvocationInputs; derivatives?: DerivativeSource | null;
+    /** Another invocation's output cells to write into (the invocations of one tessellation control patch). */
+    sharedOutputs?: Map<number, Cell>;
+    barrier?: BarrierSource | null;
+  }) {
     this.module = module;
     const entry = module.entryPoint(options.entryPoint, options.model);
     if (!entry) throw new Error(`the module has no ${options.entryPoint ?? ""} entry point`);
@@ -130,6 +170,8 @@ export class Invocation implements DebugInvocation {
     this.bindings = options.bindings;
     this.inputs = options.inputs;
     this.derivatives = options.derivatives ?? null;
+    this._sharedOutputs = options.sharedOutputs ?? null;
+    this.barrier = options.barrier ?? null;
     this.constants = new Map(module.constants);
     this._specialize();
     this._createGlobals();
@@ -142,6 +184,12 @@ export class Invocation implements DebugInvocation {
   get stage(): "vertex" | "fragment" | "compute" | "other" {
     const m = this.entry.model;
     return m === ExecutionModel.Vertex ? "vertex" : m === ExecutionModel.Fragment ? "fragment" : m === ExecutionModel.GLCompute ? "compute" : "other";
+  }
+
+  /** A tessellation or geometry stage, whose non-patch inputs are arrays of one element per vertex. */
+  get arrayedInputs(): boolean {
+    const m = this.entry.model;
+    return m === ExecutionModel.TessellationControl || m === ExecutionModel.TessellationEvaluation || m === ExecutionModel.Geometry;
   }
 
   /** Itself: an invocation steps itself (a PixelQuad steps one of four). */
@@ -227,6 +275,11 @@ export class Invocation implements DebugInvocation {
 
   inputVariables(): VariableView[] {
     return this._interfaceVariables(StorageClass.Input);
+  }
+
+  /** A geometry shader's emitted vertices; empty for another stage. */
+  emittedVertices(): EmittedVertex[] {
+    return this.emitted;
   }
 
   /** Uniform, storage and push constant blocks, images and samplers. */
@@ -375,7 +428,18 @@ export class Invocation implements DebugInvocation {
         case StorageClass.Input:
           cell.value = this._input(id, pointee);
           break;
-        case StorageClass.Output:
+        case StorageClass.Output: {
+          // The invocations of a tessellation control patch write into one set of outputs.
+          const shared = this._sharedOutputs?.get(id);
+          if (shared) {
+            this.outputCells.set(id, shared);
+            this.globals.set(id, new Pointer(shared, [], pointee, g.storage, id));
+            continue;
+          }
+          cell.value = g.initializer ? cloneValue(this.constants.get(g.initializer) as Value) : (m.zero(pointee) as Value);
+          this.outputCells.set(id, cell);
+          break;
+        }
         case StorageClass.Private:
         case StorageClass.Workgroup:
         default:
@@ -413,36 +477,73 @@ export class Invocation implements DebugInvocation {
   /** An input variable's value: a built-in, or the scalars at its location shaped into its type. */
   private _input(id: number, type: number): Value {
     const m = this.module;
+    const t = m.types.get(type);
+    // A tessellation or geometry stage's per-vertex input: an array with an element per input vertex
+    // (gl_in[], and every located input but a patch one).
+    if (this.arrayedInputs && t?.kind === "array" && !m.decoration(id, Decoration.Patch) && !this._patchBuiltin(id)) {
+      const vertices = this.inputs.vertices ?? [];
+      // A tessellation stage's inputs are sized to the largest patch (gl_MaxPatchVertices), not this one.
+      if (vertices.length < t.length && this.entry.model === ExecutionModel.Geometry) {
+        this.warnings.add(`${m.nameOf(id)}: ${t.length} input vertices are read, ${vertices.length} were found`);
+      }
+      return Array.from({ length: t.length }, (_, i) => {
+        const vertex = vertices[i];
+        return vertex ? this._inputFrom(id, t.element, vertex.builtins, vertex.locations, `vertex ${i}`) : (m.zero(t.element) as Value);
+      });
+    }
+    return this._inputFrom(id, type, this.inputs.builtins, this.inputs.locations, "");
+  }
+
+  /** Built-in inputs that are the patch's rather than a vertex's, although arrays (the tessellation levels). */
+  private _patchBuiltin(id: number): boolean {
+    const b = this.module.decoration(id, Decoration.BuiltIn)?.[0];
+    return b === BuiltIn.TessLevelOuter || b === BuiltIn.TessLevelInner;
+  }
+
+  /** An input from one set of built-ins and locations: the invocation's, or one input vertex's. */
+  private _inputFrom(id: number, type: number, builtins: Map<number, Value>, locations: Map<number, number[]>, of: string): Value {
+    const m = this.module;
+    const where = of ? ` of ${of}` : "";
     const builtin = m.decoration(id, Decoration.BuiltIn)?.[0];
     if (builtin !== undefined) {
-      const v = this.inputs.builtins.get(builtin);
+      const v = builtins.get(builtin);
       if (v === undefined) {
-        this.warnings.add(`${BUILTIN_NAMES[builtin] ?? `built-in ${builtin}`} has no value here: it reads as zero`);
+        this.warnings.add(`${BUILTIN_NAMES[builtin] ?? `built-in ${builtin}`}${where} has no value here: it reads as zero`);
         return m.zero(type) as Value;
       }
       return this._shape(type, flat(v), { at: 0 });
     }
     const t = m.types.get(type);
     if (t?.kind === "struct") {
-      // An input block: each member at its own location.
+      // An input block: each member at its own location, or a built-in (gl_PerVertex).
       const base = m.decoration(id, Decoration.Location)?.[0] ?? 0;
       return t.members.map((member, i) => {
+        const memberBuiltin = m.memberDecoration(type, i, Decoration.BuiltIn)?.[0];
+        if (memberBuiltin !== undefined) {
+          const v = builtins.get(memberBuiltin);
+          if (v === undefined) {
+            // Only the position is worth a warning: point size and clip distances are rarely read.
+            if (memberBuiltin === BuiltIn.Position) this.warnings.add(`gl_Position${where} has no value here: it reads as zero`);
+            return m.zero(member) as Value;
+          }
+          return this._shape(member, flat(v), { at: 0 });
+        }
         const location = m.memberDecoration(type, i, Decoration.Location)?.[0] ?? base + i;
-        return this._shape(member, this.inputs.locations.get(location) ?? [], { at: 0 });
+        return this._shape(member, locations.get(location) ?? [], { at: 0 });
       });
     }
     const location = m.decoration(id, Decoration.Location)?.[0];
     if (location === undefined) return m.zero(type) as Value;
-    const scalars = this.inputs.locations.get(location);
+    const scalars = locations.get(location);
     if (!scalars) {
-      this.warnings.add(`input ${m.nameOf(id)} (location ${location}) has no value here: it reads as zero`);
+      this.warnings.add(`input ${m.nameOf(id)} (location ${location})${where} has no value here: it reads as zero`);
       return m.zero(type) as Value;
     }
     // Arrays and matrices take consecutive locations.
     if (t?.kind === "array" || t?.kind === "matrix") {
       const count = t.kind === "array" ? t.length : t.count;
       const element = t.kind === "array" ? t.element : t.column;
-      return Array.from({ length: count }, (_, i) => this._shape(element, this.inputs.locations.get(location + i) ?? [], { at: 0 }));
+      return Array.from({ length: count }, (_, i) => this._shape(element, locations.get(location + i) ?? [], { at: 0 }));
     }
     return this._shape(type, scalars, { at: 0 });
   }
@@ -586,6 +687,24 @@ export class Invocation implements DebugInvocation {
       case Op.Kill:
       case Op.TerminateInvocation:
         this.status = "discarded";
+        return "ok";
+      case Op.EmitVertex:
+      case Op.EmitStreamVertex: {
+        // What the rasterizer (and transform feedback) gets: the outputs as they are now.
+        const stream = inst.op === Op.EmitStreamVertex ? num(this.value(frame, w[0])) : 0;
+        this.emitted.push({ primitive: this._primitive, stream, outputs: this.outputs() });
+        frame.pc++;
+        return "ok";
+      }
+      case Op.EndPrimitive:
+      case Op.EndStreamPrimitive:
+        this._primitive++;
+        frame.pc++;
+        return "ok";
+      case Op.ControlBarrier:
+        // A tessellation control patch's invocations wait for one another; a lone invocation goes on.
+        if (this.barrier && !this.barrier.arrive(this)) return "blocked";
+        frame.pc++;
         return "ok";
       case Op.DemoteToHelperInvocation:
         this.helper = true;

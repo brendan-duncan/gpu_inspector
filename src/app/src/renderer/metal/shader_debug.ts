@@ -24,7 +24,7 @@ import { buildRayScene, type RayFunctionTable, type RayScene } from "../msl/rayt
 import type { MeshOutput, MeshOutputVariable } from "../mesh_output.js";
 import {
   coveringTriangle, debugTexture, interpolate, packInterpretedMesh, passOfCommand, passPixel, rasterStateOf, scalarsOf,
-  type Covering, type DebugContext, type DebugSession, type DebugTarget, type Interpolation, type RasterState,
+  type Covering, type BasicTarget, type DebugContext, type DebugSession, type DebugTarget, type Interpolation, type RasterState,
 } from "../shader_debug_setup.js";
 import type { DrawState } from "../draw_state.js";
 import type { StageSource } from "../shader_cache.js";
@@ -379,7 +379,7 @@ export function metalRasterState(ctx: DebugContext, cmd: CaptureCommand, state: 
 // Sessions
 
 /** A Metal draw or dispatch prepared for the debugger. */
-export async function prepareMetalSession(ctx: DebugContext, target: DebugTarget, state: DrawState, cmd: CaptureCommand): Promise<DebugSession> {
+export async function prepareMetalSession(ctx: DebugContext, target: BasicTarget, state: DrawState, cmd: CaptureCommand): Promise<DebugSession> {
   const stage: Stage = target.stage;
   const { source, program, entry, constants } = await metalStage(ctx, state, stage);
   const bindings = metalBindings(ctx, state, stage);

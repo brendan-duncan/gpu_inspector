@@ -31,7 +31,7 @@ import { meshInput, type MeshInput } from "../mesh_input.js";
 import type { MeshOutput, MeshOutputVariable } from "../mesh_output.js";
 import {
   coveringTriangle, debugTexture, interpolate, packInterpretedMesh, passOfCommand, passPixel, rasterStateOf, scalarsOf,
-  type Covering, type DebugContext, type DebugSession, type DebugTarget, type Interpolation, type RasterState,
+  type Covering, type BasicTarget, type DebugContext, type DebugSession, type DebugTarget, type Interpolation, type RasterState,
 } from "../shader_debug_setup.js";
 import { stateStages, type StageSource } from "../shader_cache.js";
 import { Invocation, type InvocationInputs, type ShaderBindings } from "../spirv/interpreter.js";
@@ -459,7 +459,7 @@ function fragmentInputs(module: SpirvModule, hit: Covering, px: number, py: numb
 // Sessions
 
 /** A D3D12 draw or dispatch prepared for the debugger. */
-export async function prepareD3D12Session(ctx: DebugContext, target: DebugTarget, state: DrawState, cmd: CaptureCommand): Promise<DebugSession> {
+export async function prepareD3D12Session(ctx: DebugContext, target: BasicTarget, state: DrawState, cmd: CaptureCommand): Promise<DebugSession> {
   const stage: Stage = target.stage;
   const { source, module, program, entryPoint } = await d3d12Stage(ctx, state, stage);
   const bindings = d3d12Bindings(ctx, state);

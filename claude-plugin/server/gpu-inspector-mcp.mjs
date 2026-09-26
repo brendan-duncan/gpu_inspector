@@ -12071,7 +12071,8 @@ var DYNAMIC_STATES = {
   frontFace: "VK_DYNAMIC_STATE_FRONT_FACE",
   topology: "VK_DYNAMIC_STATE_PRIMITIVE_TOPOLOGY",
   depthTest: "VK_DYNAMIC_STATE_DEPTH_TEST_ENABLE",
-  depthCompare: "VK_DYNAMIC_STATE_DEPTH_COMPARE_OP"
+  depthCompare: "VK_DYNAMIC_STATE_DEPTH_COMPARE_OP",
+  patchControlPoints: "VK_DYNAMIC_STATE_PATCH_CONTROL_POINTS_EXT"
 };
 function dynamicValue(state, key, baked) {
   const value = state.dynamic[key];
@@ -12103,7 +12104,7 @@ function emptyDrawState(bindPoint) {
     pipeline: null,
     shaders: [],
     shadersCmd: null,
-    dynamic: { cullMode: null, frontFace: null, topology: null, depthTest: null, depthCompare: null },
+    dynamic: { cullMode: null, frontFace: null, topology: null, depthTest: null, depthCompare: null, patchControlPoints: null },
     sets: /* @__PURE__ */ new Map(),
     vertexBuffers: /* @__PURE__ */ new Map(),
     stageBuffers: /* @__PURE__ */ new Map(),
@@ -12226,6 +12227,9 @@ function drawState(data, db, cmd, bindPoint = data.sets.bindPointOf(cmd.method))
       case "vkCmdSetPrimitiveTopology":
       case "vkCmdSetPrimitiveTopologyEXT":
         state.dynamic.topology ??= a.primitiveTopology ?? null;
+        break;
+      case "vkCmdSetPatchControlPointsEXT":
+        state.dynamic.patchControlPoints ??= a.patchControlPoints ?? null;
         break;
       case "vkCmdSetDepthTestEnable":
       case "vkCmdSetDepthTestEnableEXT":
@@ -17460,15 +17464,15 @@ var Lowering = class {
           return Array.from({ length: length2 }, (_, i) => args[i] === void 0 ? this.types.zero(t.element) : this._constantValue(args[i], t.element) ?? this.types.zero(t.element));
         }
         if (t?.kind === "vector") {
-          const flat3 = [];
+          const flat4 = [];
           for (const a of args) {
             const v = this._constantValue(a, t.element);
             if (v === void 0) return void 0;
-            if (Array.isArray(v)) flat3.push(...v);
-            else flat3.push(v);
+            if (Array.isArray(v)) flat4.push(...v);
+            else flat4.push(v);
           }
-          if (flat3.length === 1) return Array.from({ length: t.count }, () => flat3[0]);
-          return Array.from({ length: t.count }, (_, i) => flat3[i] ?? 0);
+          if (flat4.length === 1) return Array.from({ length: t.count }, () => flat4[0]);
+          return Array.from({ length: t.count }, (_, i) => flat4[i] ?? 0);
         }
         return args.length === 1 ? this._constantValue(args[0], type) : void 0;
       }
@@ -19065,7 +19069,7 @@ function substitute(macro, args) {
   return out;
 }
 function evaluate(tokens, macros, line, diagnostics, report) {
-  const flat3 = [];
+  const flat4 = [];
   for (let i = 0; i < tokens.length; i++) {
     const t = tokens[i];
     if (t.kind === "identifier" && t.text === "defined") {
@@ -19073,30 +19077,30 @@ function evaluate(tokens, macros, line, diagnostics, report) {
       const paren = tokens[k]?.text === "(";
       if (paren) k++;
       const name = tokens[k];
-      flat3.push({ kind: "number", text: name && macros.has(name.text) ? "1" : "0", line: t.line, column: t.column });
+      flat4.push({ kind: "number", text: name && macros.has(name.text) ? "1" : "0", line: t.line, column: t.column });
       i = paren ? k + 1 : k;
       continue;
     }
     if (t.kind === "identifier" && macros.has(t.text)) {
       const macro = macros.get(t.text);
       if (!macro.params) {
-        flat3.push(...macro.body);
+        flat4.push(...macro.body);
         continue;
       }
     }
-    flat3.push(t);
+    flat4.push(t);
   }
   let at = 0;
-  const peek = () => flat3[at];
+  const peek = () => flat4[at];
   const eat = (text) => {
-    if (flat3[at]?.text === text) {
+    if (flat4[at]?.text === text) {
       at++;
       return true;
     }
     return false;
   };
   const primary = () => {
-    const t = flat3[at];
+    const t = flat4[at];
     if (!t) return 0;
     if (eat("(")) {
       const v = ternary();
@@ -21504,22 +21508,22 @@ var MslInvocation = class {
       const attribute = m.attributes.find((a) => a.name === "attribute");
       const builtin = m.attributes.find((a) => BUILTIN_INPUT_NAMES.has(a.name));
       const user = m.attributes.find((a) => a.name === "user");
-      let scalars2;
-      if (attribute) scalars2 = this.inputs.attributes.get(attribute.args[0] ?? 0);
+      let scalars3;
+      if (attribute) scalars3 = this.inputs.attributes.get(attribute.args[0] ?? 0);
       else if (builtin) {
         const value = this.inputs.builtins.get(builtin.name);
         if (value !== void 0) return this._fit(value, m.type);
       }
-      if (!scalars2) scalars2 = this.inputs.varyings.get(m.name) ?? (user?.text ? this.inputs.varyings.get(user.text) : void 0);
-      if (!scalars2 && user?.text) {
+      if (!scalars3) scalars3 = this.inputs.varyings.get(m.name) ?? (user?.text ? this.inputs.varyings.get(user.text) : void 0);
+      if (!scalars3 && user?.text) {
         const locn = /locn(\d+)/.exec(user.text);
-        if (locn) scalars2 = this.inputs.attributes.get(Number(locn[1]));
+        if (locn) scalars3 = this.inputs.attributes.get(Number(locn[1]));
       }
-      if (!scalars2) {
+      if (!scalars3) {
         this.warn(`the capture has no input for ${name}.${m.name}, so it reads as zero`);
         return this._types.zero(m.type);
       }
-      return this._fromScalars(scalars2, m.type);
+      return this._fromScalars(scalars3, m.type);
     });
   }
   _builtinInput(attribute, type, name) {
@@ -21540,15 +21544,15 @@ var MslInvocation = class {
     if (t?.kind === "scalar") return this._normalize(Array.isArray(value) ? value[0] ?? 0 : value, type);
     return value;
   }
-  _fromScalars(scalars2, type) {
+  _fromScalars(scalars3, type) {
     const t = this._types.get(type);
-    if (t?.kind === "vector") return Array.from({ length: t.count }, (_, i) => this._normalize(scalars2[i] ?? 0, t.element));
+    if (t?.kind === "vector") return Array.from({ length: t.count }, (_, i) => this._normalize(scalars3[i] ?? 0, t.element));
     if (t?.kind === "matrix") {
       const column = this._types.get(t.column);
       const rows = column?.kind === "vector" ? column.count : 1;
-      return Array.from({ length: t.columns }, (_, c2) => Array.from({ length: rows }, (_2, r) => this._normalize(scalars2[c2 * rows + r] ?? 0, t.column)));
+      return Array.from({ length: t.columns }, (_, c2) => Array.from({ length: rows }, (_2, r) => this._normalize(scalars3[c2 * rows + r] ?? 0, t.column)));
     }
-    return this._normalize(scalars2[0] ?? 0, type);
+    return this._normalize(scalars3[0] ?? 0, type);
   }
   _normalize(value, type) {
     const scalar = this._types.scalarOf(type);
@@ -22193,14 +22197,14 @@ var MslInvocation = class {
     const t = types.get(type);
     if (!t) return null;
     if (t.kind === "vector") {
-      const scalars2 = [];
+      const scalars3 = [];
       for (const a of args) {
-        if (Array.isArray(a)) scalars2.push(...a.flat(2));
-        else scalars2.push(a);
+        if (Array.isArray(a)) scalars3.push(...a.flat(2));
+        else scalars3.push(a);
       }
       const element = t.element;
-      if (scalars2.length === 1) return Array.from({ length: t.count }, () => this._convertScalar(scalars2[0], element));
-      return Array.from({ length: t.count }, (_, i) => this._convertScalar(scalars2[i] ?? 0, element));
+      if (scalars3.length === 1) return Array.from({ length: t.count }, () => this._convertScalar(scalars3[0], element));
+      return Array.from({ length: t.count }, (_, i) => this._convertScalar(scalars3[i] ?? 0, element));
     }
     if (t.kind === "matrix") {
       const column = types.get(t.column);
@@ -22212,12 +22216,12 @@ var MslInvocation = class {
       if (args.every((a) => Array.isArray(a)) && args.length === t.columns) {
         return args.map((col) => this._convert(col, t.column));
       }
-      const scalars2 = [];
+      const scalars3 = [];
       for (const a of args) {
-        if (Array.isArray(a)) scalars2.push(...a.flat(2));
-        else scalars2.push(a);
+        if (Array.isArray(a)) scalars3.push(...a.flat(2));
+        else scalars3.push(a);
       }
-      return Array.from({ length: t.columns }, (_, c2) => Array.from({ length: rows }, (_2, r) => this._convertScalar(scalars2[c2 * rows + r] ?? 0, types.elementOf(t.column))));
+      return Array.from({ length: t.columns }, (_, c2) => Array.from({ length: rows }, (_2, r) => this._convertScalar(scalars3[c2 * rows + r] ?? 0, types.elementOf(t.column))));
     }
     if (t.kind === "array") {
       const length2 = t.length < 0 ? args.length : t.length;
@@ -23319,7 +23323,13 @@ var BUILTIN_NAMES = {
   5: "gl_VertexID",
   6: "gl_InstanceID",
   7: "gl_PrimitiveID",
+  8: "gl_InvocationID",
   9: "gl_Layer",
+  10: "gl_ViewportIndex",
+  11: "gl_TessLevelOuter",
+  12: "gl_TessLevelInner",
+  13: "gl_TessCoord",
+  14: "gl_PatchVerticesIn",
   15: "gl_FragCoord",
   16: "gl_PointCoord",
   17: "gl_FrontFacing",
@@ -24125,6 +24135,13 @@ var Invocation = class {
   _results = [];
   /** Called with every value an instruction produces (the MCP tool's trace). */
   onResult = null;
+  /** A geometry shader's emitted vertices, in order. */
+  emitted = [];
+  _primitive = 0;
+  /** The output variables' cells, by id: what the other invocations of a tessellation control patch share. */
+  outputCells = /* @__PURE__ */ new Map();
+  _sharedOutputs;
+  barrier;
   constructor(module, options) {
     this.module = module;
     const entry2 = module.entryPoint(options.entryPoint, options.model);
@@ -24133,6 +24150,8 @@ var Invocation = class {
     this.bindings = options.bindings;
     this.inputs = options.inputs;
     this.derivatives = options.derivatives ?? null;
+    this._sharedOutputs = options.sharedOutputs ?? null;
+    this.barrier = options.barrier ?? null;
     this.constants = new Map(module.constants);
     this._specialize();
     this._createGlobals();
@@ -24144,6 +24163,11 @@ var Invocation = class {
   get stage() {
     const m = this.entry.model;
     return m === 0 /* Vertex */ ? "vertex" : m === 4 /* Fragment */ ? "fragment" : m === 5 /* GLCompute */ ? "compute" : "other";
+  }
+  /** A tessellation or geometry stage, whose non-patch inputs are arrays of one element per vertex. */
+  get arrayedInputs() {
+    const m = this.entry.model;
+    return m === 1 /* TessellationControl */ || m === 2 /* TessellationEvaluation */ || m === 3 /* Geometry */;
   }
   /** Itself: an invocation steps itself (a PixelQuad steps one of four). */
   get invocation() {
@@ -24216,6 +24240,10 @@ var Invocation = class {
   }
   inputVariables() {
     return this._interfaceVariables(1 /* Input */);
+  }
+  /** A geometry shader's emitted vertices; empty for another stage. */
+  emittedVertices() {
+    return this.emitted;
   }
   /** Uniform, storage and push constant blocks, images and samplers. */
   resourceVariables() {
@@ -24351,7 +24379,17 @@ var Invocation = class {
         case 1 /* Input */:
           cell.value = this._input(id, pointee);
           break;
-        case 3 /* Output */:
+        case 3 /* Output */: {
+          const shared = this._sharedOutputs?.get(id);
+          if (shared) {
+            this.outputCells.set(id, shared);
+            this.globals.set(id, new Pointer(shared, [], pointee, g.storage, id));
+            continue;
+          }
+          cell.value = g.initializer ? cloneValue(this.constants.get(g.initializer)) : m.zero(pointee);
+          this.outputCells.set(id, cell);
+          break;
+        }
         case 6 /* Private */:
         case 4 /* Workgroup */:
         default:
@@ -24386,11 +24424,33 @@ var Invocation = class {
   /** An input variable's value: a built-in, or the scalars at its location shaped into its type. */
   _input(id, type) {
     const m = this.module;
+    const t = m.types.get(type);
+    if (this.arrayedInputs && t?.kind === "array" && !m.decoration(id, 15 /* Patch */) && !this._patchBuiltin(id)) {
+      const vertices = this.inputs.vertices ?? [];
+      if (vertices.length < t.length && this.entry.model === 3 /* Geometry */) {
+        this.warnings.add(`${m.nameOf(id)}: ${t.length} input vertices are read, ${vertices.length} were found`);
+      }
+      return Array.from({ length: t.length }, (_, i) => {
+        const vertex = vertices[i];
+        return vertex ? this._inputFrom(id, t.element, vertex.builtins, vertex.locations, `vertex ${i}`) : m.zero(t.element);
+      });
+    }
+    return this._inputFrom(id, type, this.inputs.builtins, this.inputs.locations, "");
+  }
+  /** Built-in inputs that are the patch's rather than a vertex's, although arrays (the tessellation levels). */
+  _patchBuiltin(id) {
+    const b = this.module.decoration(id, 11 /* BuiltIn */)?.[0];
+    return b === 11 /* TessLevelOuter */ || b === 12 /* TessLevelInner */;
+  }
+  /** An input from one set of built-ins and locations: the invocation's, or one input vertex's. */
+  _inputFrom(id, type, builtins, locations, of) {
+    const m = this.module;
+    const where = of ? ` of ${of}` : "";
     const builtin = m.decoration(id, 11 /* BuiltIn */)?.[0];
     if (builtin !== void 0) {
-      const v = this.inputs.builtins.get(builtin);
+      const v = builtins.get(builtin);
       if (v === void 0) {
-        this.warnings.add(`${BUILTIN_NAMES[builtin] ?? `built-in ${builtin}`} has no value here: it reads as zero`);
+        this.warnings.add(`${BUILTIN_NAMES[builtin] ?? `built-in ${builtin}`}${where} has no value here: it reads as zero`);
         return m.zero(type);
       }
       return this._shape(type, flat2(v), { at: 0 });
@@ -24399,26 +24459,35 @@ var Invocation = class {
     if (t?.kind === "struct") {
       const base = m.decoration(id, 30 /* Location */)?.[0] ?? 0;
       return t.members.map((member, i) => {
+        const memberBuiltin = m.memberDecoration(type, i, 11 /* BuiltIn */)?.[0];
+        if (memberBuiltin !== void 0) {
+          const v = builtins.get(memberBuiltin);
+          if (v === void 0) {
+            if (memberBuiltin === 0 /* Position */) this.warnings.add(`gl_Position${where} has no value here: it reads as zero`);
+            return m.zero(member);
+          }
+          return this._shape(member, flat2(v), { at: 0 });
+        }
         const location2 = m.memberDecoration(type, i, 30 /* Location */)?.[0] ?? base + i;
-        return this._shape(member, this.inputs.locations.get(location2) ?? [], { at: 0 });
+        return this._shape(member, locations.get(location2) ?? [], { at: 0 });
       });
     }
     const location = m.decoration(id, 30 /* Location */)?.[0];
     if (location === void 0) return m.zero(type);
-    const scalars2 = this.inputs.locations.get(location);
-    if (!scalars2) {
-      this.warnings.add(`input ${m.nameOf(id)} (location ${location}) has no value here: it reads as zero`);
+    const scalars3 = locations.get(location);
+    if (!scalars3) {
+      this.warnings.add(`input ${m.nameOf(id)} (location ${location})${where} has no value here: it reads as zero`);
       return m.zero(type);
     }
     if (t?.kind === "array" || t?.kind === "matrix") {
       const count2 = t.kind === "array" ? t.length : t.count;
       const element = t.kind === "array" ? t.element : t.column;
-      return Array.from({ length: count2 }, (_, i) => this._shape(element, this.inputs.locations.get(location + i) ?? [], { at: 0 }));
+      return Array.from({ length: count2 }, (_, i) => this._shape(element, locations.get(location + i) ?? [], { at: 0 }));
     }
-    return this._shape(type, scalars2, { at: 0 });
+    return this._shape(type, scalars3, { at: 0 });
   }
   /** Scalars poured into a type in order (missing ones zero, a missing alpha one). */
-  _shape(type, scalars2, cursor) {
+  _shape(type, scalars3, cursor) {
     const m = this.module;
     const t = m.types.get(type);
     if (!t) return 0;
@@ -24427,17 +24496,17 @@ var Invocation = class {
       case "bool":
       case "int":
       case "float": {
-        const v = scalars2[cursor.at++] ?? 0;
+        const v = scalars3[cursor.at++] ?? 0;
         return s ? normalize(v, s) : v;
       }
       case "vector":
-        return Array.from({ length: t.count }, () => this._shape(t.element, scalars2, cursor));
+        return Array.from({ length: t.count }, () => this._shape(t.element, scalars3, cursor));
       case "matrix":
-        return Array.from({ length: t.count }, () => this._shape(t.column, scalars2, cursor));
+        return Array.from({ length: t.count }, () => this._shape(t.column, scalars3, cursor));
       case "array":
-        return Array.from({ length: t.length }, () => this._shape(t.element, scalars2, cursor));
+        return Array.from({ length: t.length }, () => this._shape(t.element, scalars3, cursor));
       case "struct":
-        return t.members.map((member) => this._shape(member, scalars2, cursor));
+        return t.members.map((member) => this._shape(member, scalars3, cursor));
       default:
         return null;
     }
@@ -24557,6 +24626,22 @@ var Invocation = class {
       case 252 /* Kill */:
       case 4416 /* TerminateInvocation */:
         this.status = "discarded";
+        return "ok";
+      case 218 /* EmitVertex */:
+      case 220 /* EmitStreamVertex */: {
+        const stream = inst.op === 220 /* EmitStreamVertex */ ? num3(this.value(frame, w[0])) : 0;
+        this.emitted.push({ primitive: this._primitive, stream, outputs: this.outputs() });
+        frame.pc++;
+        return "ok";
+      }
+      case 219 /* EndPrimitive */:
+      case 221 /* EndStreamPrimitive */:
+        this._primitive++;
+        frame.pc++;
+        return "ok";
+      case 224 /* ControlBarrier */:
+        if (this.barrier && !this.barrier.arrive(this)) return "blocked";
+        frame.pc++;
         return "ok";
       case 5380 /* DemoteToHelperInvocation */:
         this.helper = true;
@@ -26029,6 +26114,356 @@ async function prepareD3D12Session(ctx, target, state, cmd) {
     description: `pixel (${x}, ${y}), from triangle ${hit.primitive.toLocaleString()} of ${triangles.toLocaleString()} (${hit.front ? "front" : "back"} facing), whose vertices the interpreter ran the vertex shader for`,
     limits: { width: raster.viewport ? Math.abs(raster.viewport.width) : void 0, height: raster.viewport ? Math.abs(raster.viewport.height) : void 0 },
     start: () => new PixelQuad((dx, dy, derivatives) => start(fragmentInputs2(module, hit, x0 + dx, y0 + dy), derivatives), lane)
+  };
+}
+
+// src/renderer/spirv/group.ts
+var MAX_CATCH_UP2 = 1e7;
+var InvocationGroup = class {
+  lanes = [];
+  /** The lane being debugged. */
+  target;
+  /** Lanes that reached the barrier and wait there. */
+  _waiting = /* @__PURE__ */ new Set();
+  /** Lanes let through the barrier they wait at, until they take the release. */
+  _released = /* @__PURE__ */ new Set();
+  /**
+   * `create(index, group, shared)` makes lane `index`, with the group as its barrier and, for every lane
+   * but the first, the first lane's output cells to write into.
+   */
+  constructor(count2, target, create) {
+    for (let i = 0; i < count2; i++) this.lanes.push(create(i, this, this.lanes[0] ?? null));
+    this.target = Math.min(Math.max(0, target), count2 - 1);
+  }
+  get invocation() {
+    return this.lanes[this.target];
+  }
+  arrive(invocation) {
+    if (this._released.delete(invocation)) return true;
+    this._waiting.add(invocation);
+    return false;
+  }
+  /**
+   * Steps the debugged lane; a barrier brings the others up to it first. When it finishes, the others
+   * run to their end too, so the outputs it shows are the whole patch's.
+   */
+  step() {
+    const target = this.invocation;
+    let status = target.step();
+    if (status === "blocked") {
+      this._catchUp(target);
+      status = target.step();
+    }
+    if (target.finished) this.runAll();
+    return status;
+  }
+  /** Runs the debugged lane to its end. */
+  run() {
+    while (!this.invocation.finished) this.step();
+    return this.invocation.status;
+  }
+  /** Runs every lane to its end: what a tessellation evaluation shader's inputs are taken from. */
+  runAll() {
+    for (let rounds = 0; rounds < 1e3 && this.lanes.some((l) => !l.finished); rounds++) {
+      const lead = this.lanes.find((l) => !l.finished);
+      let guard = 0;
+      while (!lead.finished && guard++ < MAX_CATCH_UP2) {
+        if (lead.step() === "blocked") {
+          this._catchUp(lead);
+          break;
+        }
+      }
+    }
+  }
+  /** Every lane but `waiting` to the barrier or its end, then all of them through it. */
+  _catchUp(waiting) {
+    for (const lane of this.lanes) {
+      if (lane === waiting) continue;
+      let guard = 0;
+      while (!lane.finished && !this._waiting.has(lane) && guard++ < MAX_CATCH_UP2) {
+        if (lane.step() === "blocked" && !this._waiting.has(lane)) break;
+      }
+    }
+    for (const lane of this._waiting) this._released.add(lane);
+    this._waiting.clear();
+  }
+};
+
+// src/renderer/vulkan/primitive_debug.ts
+function flat3(v) {
+  if (Array.isArray(v)) return v.flatMap(flat3);
+  return [typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0];
+}
+function assemble(topology, count2, patchSize) {
+  const t = topology.replace(/^VK_PRIMITIVE_TOPOLOGY_/, "").replace(/ \(dynamic\)$/, "");
+  const run2 = (n) => (p) => Array.from({ length: n }, (_, k) => p * n + k);
+  switch (t) {
+    case "POINT_LIST":
+      return { primitives: count2, vertices: (p) => [p] };
+    case "LINE_LIST":
+      return { primitives: Math.floor(count2 / 2), vertices: run2(2) };
+    case "LINE_STRIP":
+      return { primitives: Math.max(0, count2 - 1), vertices: (p) => [p, p + 1] };
+    case "TRIANGLE_LIST":
+      return { primitives: Math.floor(count2 / 3), vertices: run2(3) };
+    case "TRIANGLE_STRIP":
+      return { primitives: Math.max(0, count2 - 2), vertices: (p) => [p, p + 1 + p % 2, p + 2 - p % 2] };
+    case "TRIANGLE_FAN":
+      return { primitives: Math.max(0, count2 - 2), vertices: (p) => [p + 1, p + 2, 0] };
+    case "LINE_LIST_WITH_ADJACENCY":
+      return { primitives: Math.floor(count2 / 4), vertices: run2(4) };
+    case "LINE_STRIP_WITH_ADJACENCY":
+      return { primitives: Math.max(0, count2 - 3), vertices: (p) => [p, p + 1, p + 2, p + 3] };
+    case "TRIANGLE_LIST_WITH_ADJACENCY":
+      return { primitives: Math.floor(count2 / 6), vertices: run2(6) };
+    case "PATCH_LIST":
+      return patchSize > 0 ? { primitives: Math.floor(count2 / patchSize), vertices: run2(patchSize) } : "the patch size is not known";
+    default:
+      return `a ${t.toLowerCase().replace(/_/g, " ")} topology is not assembled here`;
+  }
+}
+function patchSizeOf(state) {
+  const d = state.pipeline?.descriptor;
+  const baked = d && isObject(d.pTessellationState) ? d.pTessellationState.patchControlPoints : void 0;
+  return num(dynamicValue(state, "patchControlPoints", baked) ?? 0);
+}
+function outputsAsInputs(module, outputs, which = "all") {
+  const builtins = /* @__PURE__ */ new Map();
+  const locations = /* @__PURE__ */ new Map();
+  const put2 = (id, type, value) => {
+    const builtin = module.decoration(id, 11 /* BuiltIn */)?.[0];
+    if (builtin !== void 0) {
+      builtins.set(builtin, value);
+      return;
+    }
+    const t = module.types.get(type);
+    const base = module.decoration(id, 30 /* Location */)?.[0];
+    if (t?.kind === "struct") {
+      t.members.forEach((member, i) => {
+        const v = Array.isArray(value) ? value[i] : 0;
+        const memberBuiltin = module.memberDecoration(type, i, 11 /* BuiltIn */)?.[0];
+        if (memberBuiltin !== void 0) {
+          builtins.set(memberBuiltin, v);
+          return;
+        }
+        const location = module.memberDecoration(type, i, 30 /* Location */)?.[0] ?? (base === void 0 ? void 0 : base + i);
+        if (location !== void 0) locations.set(location, flat3(v));
+        void member;
+      });
+      return;
+    }
+    if (base === void 0) return;
+    if ((t?.kind === "array" || t?.kind === "matrix") && Array.isArray(value)) {
+      value.forEach((e, i) => locations.set(base + i, flat3(e)));
+      return;
+    }
+    locations.set(base, flat3(value));
+  };
+  for (const v of outputs) {
+    const builtin = module.decoration(v.id, 11 /* BuiltIn */)?.[0];
+    const patch = !!module.decoration(v.id, 15 /* Patch */) || builtin === 11 /* TessLevelOuter */ || builtin === 12 /* TessLevelInner */;
+    if (which === "all") {
+      put2(v.id, v.type, v.value);
+    } else if (which === "patch") {
+      if (patch) put2(v.id, v.type, v.value);
+    } else if (!patch) {
+      const t = module.types.get(v.type);
+      if (t?.kind !== "array" || !Array.isArray(v.value)) continue;
+      put2(v.id, t.element, v.value[which.vertex] ?? 0);
+    }
+  }
+  return { builtins, locations };
+}
+function recordIdentities(mesh) {
+  const primitive = mesh.outputs.find((o) => o.added && o.builtin === "PrimitiveId");
+  if (!primitive || !mesh.data) return null;
+  const invocation = mesh.outputs.find((o) => o.added && o.builtin === "InvocationId");
+  const coord = mesh.outputs.find((o) => o.added && o.builtin === "TessCoord");
+  const out = [];
+  let instance = 0;
+  let previous = null;
+  for (let r = 0; r < mesh.vertices; r++) {
+    const p = outputValues(mesh, primitive, r)[0] ?? 0;
+    const i = invocation ? outputValues(mesh, invocation, r)[0] ?? 0 : 0;
+    if (previous && (p < previous[0] || p === previous[0] && i < previous[1])) instance++;
+    previous = [p, i];
+    out.push({ instance, primitive: p, invocation: i, tessCoord: coord ? outputValues(mesh, coord, r) : null });
+  }
+  return out;
+}
+function geometryTargetOfRecord(mesh, record) {
+  const ids = recordIdentities(mesh);
+  if (!ids) throw new Error("the replay's GS Out does not say which primitive each record came from");
+  const id = ids[record];
+  if (!id) throw new Error(`the replay's GS Out has ${ids.length.toLocaleString()} records: there is no record ${record}`);
+  return { primitive: id.primitive, instance: id.instance, invocation: id.invocation };
+}
+function recordValues(mesh, record) {
+  return mesh.outputs.filter((o) => !o.added).map((o) => ({ name: o.name, location: o.location, builtin: o.builtin, value: outputValues(mesh, o, record) }));
+}
+async function preparePrimitiveSession(ctx, target, state, cmd, parts2) {
+  const { source, bindings, notes, program, both, model, captured } = parts2;
+  const entryPoint = source.entryPoint;
+  const stages = new Set(stateStages(state, ctx.db).map((s) => s.stage));
+  const input = meshInput(ctx.data, ctx.db, cmd, ctx.inputNames ?? /* @__PURE__ */ new Map());
+  notes.push(...input.notes);
+  const a = cmd.args ?? {};
+  const instances = Math.max(1, num(a.instanceCount) || 1);
+  const vs = stageOf(ctx, state, "vertex");
+  const vsBindings = commandBindings(ctx, state, vs.source);
+  const ran = /* @__PURE__ */ new Map();
+  const runVertex = (order, instance) => {
+    const key = `${order}:${instance}`;
+    const hit = ran.get(key);
+    if (hit) return hit;
+    if (order < 0 || order >= input.ids.length) throw new Error(`the primitive needs vertex ${order}, but the draw reads ${input.ids.length.toLocaleString()}`);
+    const inv = new Invocation(vs.module, { entryPoint: vs.source.entryPoint, model: 0 /* Vertex */, bindings: vsBindings, inputs: vertexInvocationInputs(input, a, order, instance) });
+    inv.run();
+    if (inv.status !== "returned") throw new Error(`vertex ${order} of the draw did not finish in the vertex shader: ${inv.error || inv.status}`);
+    const vertex = outputsAsInputs(vs.module, inv.outputs());
+    ran.set(key, vertex);
+    return vertex;
+  };
+  const shaped = (sizeFrom) => {
+    const topology = str(dynamicValue(state, "topology", isObject(state.pipeline?.descriptor?.pInputAssemblyState) ? state.pipeline.descriptor.pInputAssemblyState.topology : void 0)) || input.topology;
+    const shape2 = assemble(topology, input.ids.length, patchSizeOf(state));
+    if (typeof shape2 === "string") throw new Error(`${sizeFrom}: ${shape2}`);
+    return shape2;
+  };
+  const replay = async () => {
+    if (!ctx.meshOutput) return null;
+    try {
+      const mesh2 = await ctx.meshOutput(cmd.index);
+      return mesh2.measured ? mesh2 : null;
+    } catch {
+      return null;
+    }
+  };
+  const entry2 = captured.entryPoint(entryPoint, model);
+  const mode = (m) => entry2?.modes.get(m)?.[0];
+  if (target.stage === "geometry") {
+    if (stages.has("tess_eval")) throw new Error("this geometry shader's inputs are the tessellator's, which is not run here: debug the tessellation evaluation shader, or its DS Out");
+    const shape2 = shaped("the geometry shader's input primitives");
+    const invocations = Math.max(1, mode(0 /* Invocations */) ?? 1);
+    const { primitive, instance, invocation } = target;
+    if (primitive >= shape2.primitives) throw new Error(`the draw assembles ${shape2.primitives.toLocaleString()} primitives: there is no primitive ${primitive}`);
+    if (instance >= instances) throw new Error(`the draw has ${instances} instances: there is no instance ${instance}`);
+    if (invocation >= invocations) throw new Error(`the geometry shader runs ${invocations} invocations per primitive: there is no invocation ${invocation}`);
+    const orders2 = shape2.vertices(primitive);
+    const vertices2 = orders2.map((o) => runVertex(o, instance));
+    const inputs2 = {
+      locations: /* @__PURE__ */ new Map(),
+      vertices: vertices2,
+      builtins: /* @__PURE__ */ new Map([[7 /* PrimitiveId */, primitive], [8 /* InvocationId */, invocation], [4440 /* ViewIndex */, 0]])
+    };
+    let replayedEmitted;
+    const mesh2 = await replay();
+    const ids2 = mesh2 && mesh2.stage === "geometry" ? recordIdentities(mesh2) : null;
+    if (mesh2 && ids2) {
+      const records = ids2.map((id2, r) => ({ id: id2, r })).filter(({ id: id2 }) => id2.instance === instance && id2.primitive === primitive && id2.invocation === invocation);
+      const topology = entry2?.modes.has(27 /* OutputPoints */) ? "POINT_LIST" : entry2?.modes.has(28 /* OutputLineStrip */) ? "LINE_LIST" : "TRIANGLE_LIST";
+      replayedEmitted = { topology, records: records.map(({ r }) => recordValues(mesh2, r)) };
+    } else {
+      notes.push("The replay's GS Out was not available, so what the invocation emits is not compared with the GPU's.");
+    }
+    return {
+      target,
+      program,
+      stage: source,
+      bindings,
+      notes,
+      replayedEmitted,
+      description: `primitive ${primitive} of instance ${instance} (the draw's vertices ${orders2.join(", ")}), geometry invocation ${invocation}`,
+      limits: { primitives: shape2.primitives, instances, invocations },
+      ...both((m) => new Invocation(m, { entryPoint, model, bindings, inputs: inputs2 }))
+    };
+  }
+  if (target.stage === "tess_control") {
+    const shape2 = shaped("the draw's patches");
+    const outputs2 = Math.max(1, mode(26 /* OutputVertices */) ?? 1);
+    const { patch, instance, invocation } = target;
+    if (patch >= shape2.primitives) throw new Error(`the draw has ${shape2.primitives.toLocaleString()} patches: there is no patch ${patch}`);
+    if (instance >= instances) throw new Error(`the draw has ${instances} instances: there is no instance ${instance}`);
+    if (invocation >= outputs2) throw new Error(`the tessellation control shader runs ${outputs2} invocations per patch: there is no invocation ${invocation}`);
+    const orders2 = shape2.vertices(patch);
+    const vertices2 = orders2.map((o) => runVertex(o, instance));
+    const inputsOf = (i) => ({
+      locations: /* @__PURE__ */ new Map(),
+      vertices: vertices2,
+      builtins: /* @__PURE__ */ new Map([[8 /* InvocationId */, i], [7 /* PrimitiveId */, patch], [14 /* PatchVertices */, orders2.length], [4440 /* ViewIndex */, 0]])
+    });
+    notes.push(`The patch's ${outputs2} invocations run together, sharing their outputs: a barrier() runs the others up to it before this one goes on, and they finish when it does.`);
+    notes.push("The replay does not capture a tessellation control shader's outputs; the evaluation shader's DS Out is compared with the GPU's.");
+    return {
+      target,
+      program,
+      stage: source,
+      bindings,
+      notes,
+      description: `patch ${patch} of instance ${instance} (the draw's vertices ${orders2.join(", ")}), control invocation ${invocation}`,
+      limits: { patches: shape2.primitives, instances, invocations: outputs2 },
+      ...both((m) => new InvocationGroup(outputs2, invocation, (i, group2, shared) => new Invocation(m, {
+        entryPoint,
+        model,
+        bindings,
+        inputs: inputsOf(i),
+        sharedOutputs: shared?.outputCells,
+        barrier: group2
+      })))
+    };
+  }
+  if (stages.has("geometry")) throw new Error("a geometry shader follows the tessellation evaluation shader, so the replay captured the geometry shader's output, not which point of a patch each invocation was given");
+  const mesh = await replay();
+  if (!mesh) throw new Error("a tessellation evaluation invocation is found through the replay's DS Out, which was not available");
+  const ids = recordIdentities(mesh);
+  if (!ids || !ids.length || !ids[0].tessCoord) throw new Error("the replay's DS Out does not say which patch and point each record came from");
+  if (target.record >= ids.length) throw new Error(`the replay's DS Out has ${ids.length.toLocaleString()} records: there is no record ${target.record}`);
+  const id = ids[target.record];
+  const shape = shaped("the draw's patches");
+  const orders = shape.vertices(id.primitive);
+  const patchVertices = orders.map((o) => runVertex(o, id.instance));
+  const tcs = stageOf(ctx, state, "tess_control");
+  const tcsEntry = tcs.module.entryPoint(tcs.source.entryPoint, 1 /* TessellationControl */);
+  const outputs = Math.max(1, tcsEntry?.modes.get(26 /* OutputVertices */)?.[0] ?? 1);
+  const tcsBindings = commandBindings(ctx, state, tcs.source);
+  const group = new InvocationGroup(outputs, 0, (i, g, shared) => new Invocation(tcs.module, {
+    entryPoint: tcs.source.entryPoint,
+    model: 1 /* TessellationControl */,
+    bindings: tcsBindings,
+    inputs: {
+      locations: /* @__PURE__ */ new Map(),
+      vertices: patchVertices,
+      builtins: /* @__PURE__ */ new Map([[8 /* InvocationId */, i], [7 /* PrimitiveId */, id.primitive], [14 /* PatchVertices */, orders.length], [4440 /* ViewIndex */, 0]])
+    },
+    sharedOutputs: shared?.outputCells,
+    barrier: g
+  }));
+  group.runAll();
+  const failed = group.lanes.find((l) => l.status !== "returned");
+  if (failed) throw new Error(`the patch's tessellation control shader did not finish: ${failed.error || failed.status}`);
+  const controlOutputs = group.lanes[0].outputs();
+  const vertices = Array.from({ length: outputs }, (_, i) => outputsAsInputs(tcs.module, controlOutputs, { vertex: i }));
+  const patchInputs = outputsAsInputs(tcs.module, controlOutputs, "patch");
+  const builtins = new Map([
+    ...patchInputs.builtins,
+    [13 /* TessCoord */, id.tessCoord],
+    [7 /* PrimitiveId */, id.primitive],
+    [14 /* PatchVertices */, outputs],
+    [4440 /* ViewIndex */, 0]
+  ]);
+  const inputs = { locations: patchInputs.locations, vertices, builtins };
+  if (mesh.views && mesh.views.length > 1) notes.push("The draw is multiview: this is view 0's record, with gl_ViewIndex 0.");
+  const coord = id.tessCoord.map((c2) => +c2.toPrecision(6)).join(", ");
+  return {
+    target,
+    program,
+    stage: source,
+    bindings,
+    notes,
+    replayedOutputs: recordValues(mesh, target.record),
+    description: `DS Out record ${target.record}: patch ${id.primitive} of instance ${id.instance} at gl_TessCoord (${coord})`,
+    limits: { records: ids.length },
+    ...both((m) => new Invocation(m, { entryPoint, model, bindings, inputs }))
   };
 }
 
@@ -30278,8 +30713,26 @@ function displayTexels(tex, display = DEFAULT_DISPLAY) {
 }
 
 // src/renderer/shader_debug_setup.ts
+function isPrimitiveStage(stage) {
+  return stage === "geometry" || stage === "tess_control" || stage === "tess_eval";
+}
 var TRANSLATION_NOTE = "This steps GLSL that spirv-cross decompiled from the SPIR-V and glslang compiled back: it should compute the same values, but it is not the module the GPU ran, so the result is checked against the original.";
-var STAGE_MODEL2 = { vertex: 0 /* Vertex */, fragment: 4 /* Fragment */, compute: 5 /* GLCompute */ };
+var STAGE_MODEL2 = {
+  vertex: 0 /* Vertex */,
+  fragment: 4 /* Fragment */,
+  compute: 5 /* GLCompute */,
+  geometry: 3 /* Geometry */,
+  tess_control: 1 /* TessellationControl */,
+  tess_eval: 2 /* TessellationEvaluation */
+};
+var STAGE_NAMES = {
+  vertex: "vertex",
+  fragment: "fragment",
+  compute: "compute",
+  geometry: "geometry",
+  tess_control: "tessellation control",
+  tess_eval: "tessellation evaluation"
+};
 function bytesOf2(v) {
   if (!isObject(v) || typeof v.base64 !== "string") return null;
   try {
@@ -30290,10 +30743,11 @@ function bytesOf2(v) {
 }
 function stageOf(ctx, state, stage) {
   if (!state.pipeline && !state.shaders.length) throw new Error("no pipeline or shader object is bound at the command");
+  const name = STAGE_NAMES[stage];
   const source = stateStages(state, ctx.db).find((s) => s.stage === stage);
-  if (!source) throw new Error(state.pipeline ? `the pipeline has no ${stage} stage` : `no ${stage} shader object is bound at the command`);
+  if (!source) throw new Error(state.pipeline ? `the pipeline has no ${name} stage` : `no ${name} shader object is bound at the command`);
   const bytes = ctx.db.blobData.get(`${source.object.id}:${source.blobIndex}`);
-  if (!bytes) throw new Error(`the capture does not hold the ${stage} shader's SPIR-V`);
+  if (!bytes) throw new Error(`the capture does not hold the ${name} shader's SPIR-V`);
   return { source, bytes, module: new SpirvModule(bytes) };
 }
 function sameValue(x, y) {
@@ -30307,6 +30761,9 @@ function sameScalars(a, b) {
 function compareWithOriginal(translated, original, stage) {
   const keyed = (inv) => {
     const out = /* @__PURE__ */ new Map();
+    (inv.emittedVertices?.() ?? []).forEach((e, k) => {
+      for (const v of e.outputs) out.set(`e${k}:${v.location ?? `b${v.builtin}`}:${v.name}`, { label: `emitted vertex ${k} ${v.name}`, value: scalars(v.value) });
+    });
     const vars = stage === "compute" ? inv.resourceVariables().filter((v) => v.set !== void 0 && v.binding !== void 0) : inv.outputs();
     for (const v of vars) {
       if (stage === "compute") {
@@ -30691,16 +31148,16 @@ function fragmentInputs3(module, hit, px, py) {
   return { locations, builtins };
 }
 function scalarsOf(value, components) {
-  const flat3 = [];
+  const flat4 = [];
   const walk = (v) => {
     if (Array.isArray(v)) {
       for (const x of v) walk(x);
       return;
     }
-    flat3.push(typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0);
+    flat4.push(typeof v === "number" ? v : typeof v === "bigint" ? Number(v) : v === true ? 1 : 0);
   };
   walk(value);
-  return Array.from({ length: components }, (_, i) => flat3[i] ?? 0);
+  return Array.from({ length: components }, (_, i) => flat4[i] ?? 0);
 }
 function expandTopology(topology, vertices) {
   if (/TRIANGLE_STRIP/.test(topology)) {
@@ -30792,6 +31249,71 @@ function pixelRasterState(ctx, cmd, state) {
   if (isD3D12Pipeline(state.pipeline)) return d3d12RasterState(ctx, cmd, state);
   return rasterStateOf(state);
 }
+function vertexInvocationInputs(input, a, order, instance) {
+  const locations = /* @__PURE__ */ new Map();
+  input.attributes.forEach((attr, k) => {
+    const values = input.values(order, k, instance);
+    if (values) locations.set(attr.location, values);
+  });
+  const firstInstance = num(a.firstInstance);
+  const baseVertex = num(a.vertexOffset ?? a.firstVertex);
+  const vertexId = input.ids[order];
+  return {
+    locations,
+    builtins: /* @__PURE__ */ new Map([
+      [42 /* VertexIndex */, vertexId],
+      [5 /* VertexId */, vertexId],
+      [43 /* InstanceIndex */, firstInstance + instance],
+      [6 /* InstanceId */, instance],
+      [4424 /* BaseVertex */, baseVertex],
+      [4425 /* BaseInstance */, firstInstance],
+      [4426 /* DrawIndex */, 0],
+      [4440 /* ViewIndex */, 0]
+    ])
+  };
+}
+function interpretedOutput(outs, r) {
+  if (r.builtin === "Position") {
+    const direct = outs.find((o) => o.builtin === 0 /* Position */);
+    if (direct) return direct.value;
+    const block = outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]));
+    return block && Array.isArray(block.value) ? block.value[0] : void 0;
+  }
+  if (r.builtin === "Layer") return outs.find((o) => o.builtin === 9 /* Layer */)?.value;
+  if (r.builtin === "ViewportIndex") return outs.find((o) => o.builtin === 10 /* ViewportIndex */)?.value;
+  return r.location === void 0 ? void 0 : outs.find((o) => o.location === r.location)?.value;
+}
+function replayRows(outs, replayed) {
+  return replayed.map((r) => {
+    const values = scalars(interpretedOutput(outs, r) ?? void 0);
+    const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
+    return { name: r.name, interpreted: values, gpu: r.value, matches: diff < 1e-4 };
+  });
+}
+function emittedAsRecords(emitted, topology) {
+  const per = /POINT/.test(topology) ? 1 : /LINE/.test(topology) ? 2 : 3;
+  const out = [];
+  const strips = /* @__PURE__ */ new Map();
+  for (const e of emitted) {
+    if (e.stream !== 0) continue;
+    const strip = strips.get(e.primitive) ?? [];
+    strip.push(e);
+    strips.set(e.primitive, strip);
+  }
+  for (const strip of strips.values()) {
+    if (per === 1) out.push(...strip);
+    else if (per === 2) for (let i = 0; i + 1 < strip.length; i++) out.push(strip[i], strip[i + 1]);
+    else for (let i = 0; i + 2 < strip.length; i++) out.push(strip[i], strip[i + 1 + i % 2], strip[i + 2 - i % 2]);
+  }
+  return out;
+}
+function emittedComparison(session, inv) {
+  const replayed = session.replayedEmitted;
+  const emitted = inv.emittedVertices?.();
+  if (!replayed || !emitted) return null;
+  const mine = emittedAsRecords(emitted, replayed.topology);
+  return replayed.records.map((record, k) => ({ record: k, rows: mine[k] ? replayRows(mine[k].outputs, record) : record.map((r) => ({ name: r.name, interpreted: [], gpu: r.value, matches: false })) }));
+}
 async function prepareDebugSession(ctx, target) {
   const { data, db } = ctx;
   const cmd = data.commands[target.command];
@@ -30801,6 +31323,9 @@ async function prepareDebugSession(ctx, target) {
     throw new Error(`command ${target.command} (${cmd.method}) is not a ${target.stage === "compute" ? "dispatch" : "draw"}`);
   }
   const state = drawState(data, db, cmd);
+  if (isPrimitiveStage(target.stage) && data.api !== "vulkan") {
+    throw new Error(`${STAGE_NAMES[target.stage]} shaders are debugged on Vulkan captures only`);
+  }
   if (isMetalPipeline(state.pipeline)) return prepareMetalSession(ctx, target, state, cmd);
   if (isD3D12Pipeline(state.pipeline)) return prepareD3D12Session(ctx, target, state, cmd);
   const { source, bytes, module: captured } = stageOf(ctx, state, target.stage);
@@ -30817,6 +31342,9 @@ async function prepareDebugSession(ctx, target) {
     start: () => start(module),
     original: translated ? () => start(captured) : void 0
   });
+  if (target.stage === "geometry" || target.stage === "tess_control" || target.stage === "tess_eval") {
+    return preparePrimitiveSession(ctx, target, state, cmd, { source, captured, bindings, notes, program, both, model });
+  }
   if (target.stage === "compute") {
     const entry2 = captured.entryPoint(entryPoint, model);
     let localSize = [1, 1, 1];
@@ -30854,27 +31382,8 @@ async function prepareDebugSession(ctx, target) {
     notes.push(...input.notes);
     const order = target.vertex;
     if (order < 0 || order >= input.ids.length) throw new Error(`the draw reads ${input.ids.length.toLocaleString()} vertices: there is no vertex ${order}`);
-    const locations = /* @__PURE__ */ new Map();
-    input.attributes.forEach((attr, k) => {
-      const values = input.values(order, k, target.instance);
-      if (values) locations.set(attr.location, values);
-    });
-    const firstInstance = num(a.firstInstance);
-    const baseVertex = num(a.vertexOffset ?? a.firstVertex);
+    const inputs = vertexInvocationInputs(input, a, order, target.instance);
     const vertexId = input.ids[order];
-    const inputs = {
-      locations,
-      builtins: /* @__PURE__ */ new Map([
-        [42 /* VertexIndex */, vertexId],
-        [5 /* VertexId */, vertexId],
-        [43 /* InstanceIndex */, firstInstance + target.instance],
-        [6 /* InstanceId */, target.instance],
-        [4424 /* BaseVertex */, baseVertex],
-        [4425 /* BaseInstance */, firstInstance],
-        [4426 /* DrawIndex */, 0],
-        [4440 /* ViewIndex */, 0]
-      ])
-    };
     let replayedOutputs;
     if (ctx.meshOutput) {
       try {
@@ -30995,16 +31504,26 @@ function debugTools(store) {
   return [
     {
       name: "debug_shader",
-      description: "Runs one shader invocation of a capture in GPU Inspector's own interpreter, the way RenderDoc's shader debugger does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V, a Metal capture's Metal Shading Language, or a D3D12 capture's HLSL (compiled to SPIR-V by dxc, since there is no DXIL interpreter). A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a pixel, or a dispatch's compute invocation, on the resources the command had bound. A Vulkan fragment's inputs are rasterized from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal or D3D12 fragment's come from running the draw's own vertex shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values. A Metal library the application loaded precompiled has no source, and says so; so does a D3D12 shader built without -Zi whose PDB is not under symbolDirs.",
+      description: "Runs one shader invocation of a capture in GPU Inspector's own interpreter, the way RenderDoc's shader debugger does, for \"why is this pixel black / this vertex in the wrong place / this value NaN\": a Vulkan capture's SPIR-V, a Metal capture's Metal Shading Language, or a D3D12 capture's HLSL (compiled to SPIR-V by dxc, since there is no DXIL interpreter). A draw's vertex (its attributes decoded from the captured buffers), a draw's fragment at a pixel, or a dispatch's compute invocation, on the resources the command had bound. On Vulkan also a geometry shader invocation (an input primitive, its input vertices from running the vertex shader; what it emits is compared with the replay's GS Out), a tessellation control invocation (a patch, its invocations run together across barrier()), and a tessellation evaluation invocation named by a record of the replay's DS Out (which gives the patch and gl_TessCoord; the patch's control shader runs for its inputs). A Vulkan fragment's inputs are rasterized from the replayed vertex shader outputs, so that needs vkinsp_replay; a Metal or D3D12 fragment's come from running the draw's own vertex shader in the interpreter, so it needs nothing. Gives the outputs, the render target's pixel or the replay's vertex outputs to compare with, the values every source line computed in execution order (SPIR-V instructions when the shader has no line information), the first NaN or infinity, and what the interpreter could not do faithfully. `line` keeps only that line's values. A Metal library the application loaded precompiled has no source, and says so; so does a D3D12 shader built without -Zi whose PDB is not under symbolDirs.",
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw or dispatch command's index." },
-        stage: { type: "string", enum: ["vertex", "fragment", "compute"], description: "Default: compute for a dispatch, fragment for a draw." },
+        stage: { type: "string", enum: ["vertex", "fragment", "compute", "geometry", "tess_control", "tess_eval"], description: "Default: compute for a dispatch, fragment for a draw." },
+        primitive: { type: "integer", minimum: 0, description: "Geometry: the input primitive, within its instance (get_mesh_output's gl_PrimitiveIDIn). Default 0." },
+        patch: { type: "integer", minimum: 0, description: "Tessellation control: the patch, within its instance. Default 0." },
+        record: { type: "integer", minimum: 0, description: "Tessellation evaluation (required, default 0) or geometry: a record of get_mesh_output's DS Out / GS Out, which names the invocation that wrote it." },
         vertex: { type: "integer", minimum: 0, description: "Vertex: the vertex, in the order the draw read them (an indexed draw's index order). Default 0." },
-        instance: { type: "integer", minimum: 0, description: "Vertex: the instance. Default 0." },
+        instance: { type: "integer", minimum: 0, description: "Vertex, geometry and tessellation control: the instance. Default 0." },
         x: { type: "integer", minimum: 0, description: "Fragment: the pixel's column. Default: a pixel the draw covers." },
         y: { type: "integer", minimum: 0, description: "Fragment: the pixel's row." },
-        invocation: { type: "array", items: { type: "integer", minimum: 0 }, minItems: 3, maxItems: 3, description: "Compute: gl_GlobalInvocationID (Metal: thread_position_in_grid). Default [0, 0, 0]." },
+        invocation: {
+          type: ["array", "integer"],
+          items: { type: "integer", minimum: 0 },
+          minItems: 3,
+          maxItems: 3,
+          minimum: 0,
+          description: "Compute: gl_GlobalInvocationID as [x, y, z] (Metal: thread_position_in_grid), default [0, 0, 0]. Geometry and tessellation control: gl_InvocationID, default 0."
+        },
         line: { type: "integer", minimum: 1, description: "Only the values of this source line (each time it ran)." },
         trace: { type: "boolean", description: "Include the line-by-line values (default true)." },
         decompiled: { type: "boolean", description: "Vulkan: step GLSL that spirv-cross decompiles from the SPIR-V and glslang compiles back with line information, for a shader built without debug information (lines instead of instructions). It is not the module the GPU ran, so the original runs too and `original` says whether they agree. Needs the Vulkan SDK's spirv-cross and glslangValidator. Default false." }
@@ -31017,7 +31536,7 @@ function debugTools(store) {
         if (!cmd) throw new Error(`The capture has no command ${command}.`);
         const isDispatch = c2.data.sets.DISPATCH.has(cmd.method);
         if (!isDispatch && !c2.data.sets.DRAW.has(cmd.method)) throw new Error(`Command ${command} (${cmd.method}) is neither a draw nor a dispatch.`);
-        const stage = enumArg(args, "stage", ["vertex", "fragment", "compute"], isDispatch ? "compute" : "fragment");
+        const stage = enumArg(args, "stage", ["vertex", "fragment", "compute", "geometry", "tess_control", "tess_eval"], isDispatch ? "compute" : "fragment");
         if (!backendFor(c2.data.api).builtin) {
           return jsonResult({ capture: c2.id, command, stage, note: `The shader debugger interprets SPIR-V (Vulkan, and D3D12's HLSL compiled to it) and MSL; ${apiDisplayName(c2.data.api)} shaders are not among them.` });
         }
@@ -31049,6 +31568,21 @@ function debugTools(store) {
           target = { stage, command, invocation: [inv2[0] ?? 0, inv2[1] ?? 0, inv2[2] ?? 0] };
         } else if (stage === "vertex") {
           target = { stage, command, vertex: intArg(args, "vertex", 0, 0), instance: intArg(args, "instance", 0, 0) };
+        } else if (stage === "tess_eval") {
+          target = { stage, command, record: intArg(args, "record", 0, 0) };
+        } else if (stage === "tess_control") {
+          target = { stage, command, patch: intArg(args, "patch", 0, 0), instance: intArg(args, "instance", 0, 0), invocation: typeof args.invocation === "number" ? Math.max(0, Math.floor(args.invocation)) : 0 };
+        } else if (stage === "geometry") {
+          const record = optionalInt(args, "record");
+          if (record !== void 0) {
+            try {
+              target = { stage, command, ...geometryTargetOfRecord(await meshOutputs(c2)(command), record) };
+            } catch (e) {
+              return jsonResult({ capture: c2.id, command, stage, note: `Cannot debug: ${e.message}` });
+            }
+          } else {
+            target = { stage, command, primitive: intArg(args, "primitive", 0, 0), instance: intArg(args, "instance", 0, 0), invocation: typeof args.invocation === "number" ? Math.max(0, Math.floor(args.invocation)) : 0 };
+          }
         } else {
           let x = optionalInt(args, "x"), y = optionalInt(args, "y");
           if (x === void 0 || y === void 0) {
@@ -31158,16 +31692,25 @@ function debugTools(store) {
             note: "The pixel after the whole pass: blending and later draws come between. get_pixel_history has the value after this draw."
           };
         } else if (inv.status === "returned" && session.replayedOutputs) {
-          const outs = inv.outputs();
           compare2 = {
-            replayedVertexOutputs: session.replayedOutputs.map((r) => {
-              const mine = r.builtin === "Position" ? outs.find((o) => o.builtin === 0)?.value ?? outs.find((o) => Array.isArray(o.value) && Array.isArray(o.value[0]))?.value?.[0] : outs.find((o) => o.location === r.location)?.value;
-              const values = scalars(mine);
-              const diff = values.length ? Math.max(...r.value.map((x, i) => Math.abs(x - (values[i] ?? NaN)) / Math.max(1, Math.abs(x)))) : NaN;
-              return { name: r.name, gpu: r.value.map(tidy), matches: diff < 1e-4 };
-            })
+            [stage === "tess_eval" ? "replayedDsOut" : "replayedVertexOutputs"]: replayRows(inv.outputs(), session.replayedOutputs).map((r) => ({ name: r.name, gpu: r.gpu.map(tidy), matches: r.matches }))
+          };
+        } else if (inv.status === "returned" && session.replayedEmitted) {
+          const rows = emittedComparison(session, inv) ?? [];
+          const emitted2 = inv.emittedVertices?.().length ?? 0;
+          compare2 = {
+            emittedVertices: emitted2,
+            replayedRecords: session.replayedEmitted.records.length,
+            allMatch: rows.every((r) => r.rows.every((x) => x.matches)),
+            differences: rows.flatMap((r) => r.rows.filter((x) => !x.matches).map((x) => ({ record: r.record, name: x.name, interpreted: x.interpreted.map(tidy), gpu: x.gpu.map(tidy) }))).slice(0, 20)
           };
         }
+        const emitted = inv.emittedVertices?.();
+        const emittedOut = emitted?.length ? emitted.slice(0, 32).map((e) => ({
+          primitive: e.primitive,
+          stream: e.stream || void 0,
+          outputs: Object.fromEntries(e.outputs.map((o) => [o.name, program.valueText(o.type, o.value, 16)]))
+        })) : void 0;
         return jsonResult({
           capture: c2.id,
           command,
@@ -31180,7 +31723,8 @@ function debugTools(store) {
           error: inv.error || void 0,
           instructions: inv.steps,
           steppedBy: decompiled ? "source line of GLSL decompiled from the SPIR-V (spirv-cross, recompiled by glslang)" : d3d12 ? "source line of the HLSL the capture holds, compiled to SPIR-V by dxc (there is no DXIL interpreter, so nothing checks it against the DXIL the GPU ran)" : ctl.mode === "source" ? `source line (${program.languageName})` : "SPIR-V instruction (the shader has no line information)",
-          outputs,
+          outputs: emittedOut ? void 0 : outputs,
+          emitted: emittedOut,
           compare: compare2,
           original,
           firstNonFinite,

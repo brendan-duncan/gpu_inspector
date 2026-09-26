@@ -783,7 +783,10 @@ export class CapturePanel {
         fetchBlob: (objectId, index) => view.fetchShaderBlob(objectId, index),
       }, cmd),
       inputNames: (cmd) => view.vertexInputNames(cmd),
-      debugVertex: (command, row, stage) => view.debugShader(stage === "in" ? { stage: "vertex", command, vertex: row, instance: 0 } : { stage: "vertex", command, record: row }),
+      debugVertex: (command, row, stage, outputStage) => view.debugShader(stage === "in" ? { stage: "vertex", command, vertex: row, instance: 0 }
+        : outputStage === "geometry" ? { stage: "geometry", command, record: row }
+        : outputStage === "tessellation evaluation" ? { stage: "tess_eval", command, record: row }
+        : { stage: "vertex", command, record: row }),
     }, draw, options);
     const entry = this._addSubTab(view, "mesh", tab, `${tab.label}: ${view.label}`);
     // The label follows the draw the tab is stepped to.
@@ -2614,7 +2617,7 @@ export class CaptureView implements CaptureHost {
       else this._setStatus("this capture has no draws");
     }
     else if (name.startsWith("debugger")) {
-      // Testing aid (--debug-view=debugger[:vertex|pixel|compute[:<command>|last[:<lines>|end[:decompiled|@x,y,z]]]]):
+      // Testing aid (--debug-view=debugger[:vertex|pixel|compute|geometry|tess_control|tess_eval[:<command>|last[:<lines>|end[:decompiled|@x,y,z]]]]):
       // the shader debugger on the first draw (or dispatch), or the one named, stepped over that
       // many lines, to a line (`L158`), or run to the end, on the SPIR-V or on GLSL decompiled
       // from it. `@x,y,z` names
@@ -2636,7 +2639,10 @@ export class CaptureView implements CaptureHost {
         ? [named[0] || 0, named[1] || 0, named[2] || 0] : [0, 0, 0];
       if (!cmd) this._setStatus(`this capture has no ${compute ? "dispatches" : "draws"}`);
       else this.debugShader(compute ? { stage: "compute", command: cmd.index, invocation }
-        : kind === "vertex" ? { stage: "vertex", command: cmd.index } : { stage: "fragment", command: cmd.index }, options);
+        : kind === "vertex" ? { stage: "vertex", command: cmd.index }
+        : kind === "geometry" ? { stage: "geometry", command: cmd.index }
+        : kind === "tess_control" ? { stage: "tess_control", command: cmd.index }
+        : kind === "tess_eval" ? { stage: "tess_eval", command: cmd.index } : { stage: "fragment", command: cmd.index }, options);
     }
     else if (name.startsWith("overlay")) {
       // Testing aid (--debug-view=overlay[:<kind>[:<command>|#<n>|last]]): a draw overlay, on the

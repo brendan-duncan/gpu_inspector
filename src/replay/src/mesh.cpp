@@ -4,6 +4,7 @@
 #include <cstring>
 #include <string>
 
+#include "identity_patch.h"
 #include "util.h"
 
 namespace vkreplay
@@ -223,7 +224,31 @@ void Replayer::MeshStageCode(uint64_t objectId, VkShaderStageFlagBits stage, con
         if (topology.empty() && !controlCode.empty())
             topology = OutputTopology(controlCode.data(), controlCode.size());
     }
+    // Past the vertex stage, which invocation made each vertex too, for the shader debugger.
+    std::vector<IdentityOutput> identity;
+    if (stage != VK_SHADER_STAGE_VERTEX_BIT)
+    {
+        IdentityPatch added = AddIdentityOutputs(words.data(), words.size(), entry);
+        if (added.error.empty() && !added.words.empty())
+        {
+            words = std::move(added.words);
+            identity = std::move(added.outputs);
+        }
+    }
     layout = PatchForTransformFeedback(words.data(), words.size(), entry);
+    for (XfbOutput& o : layout.outputs)
+    {
+        for (const IdentityOutput& i : identity)
+        {
+            if (o.builtin.empty() && o.location == (int32_t)i.location)
+            {
+                o.name = i.name;
+                o.builtin = i.builtin;
+                o.location = -1;
+                o.added = true;
+            }
+        }
+    }
     layout.stage = label;
     layout.topology = topology;
     words = std::move(layout.words);

@@ -42,6 +42,7 @@ export const enum Op {
   BitCount = 205,
   DPdx = 207, DPdy = 208, Fwidth = 209, DPdxFine = 210, DPdyFine = 211, FwidthFine = 212, DPdxCoarse = 213, DPdyCoarse = 214,
   FwidthCoarse = 215,
+  EmitVertex = 218, EndPrimitive = 219, EmitStreamVertex = 220, EndStreamPrimitive = 221, ControlBarrier = 224, MemoryBarrier = 225,
   Phi = 245, LoopMerge = 246, SelectionMerge = 247, Label = 248, Branch = 249, BranchConditional = 250, Switch = 251,
   Kill = 252, Return = 253, ReturnValue = 254, Unreachable = 255,
   NoLine = 317, ModuleProcessed = 330, ExecutionModeId = 331, DecorateId = 332,
@@ -51,7 +52,7 @@ export const enum Op {
 
 export const enum Decoration {
   SpecId = 1, Block = 2, BufferBlock = 3, RowMajor = 4, ColMajor = 5, ArrayStride = 6, MatrixStride = 7, BuiltIn = 11,
-  NoPerspective = 13, Flat = 14, Centroid = 16, Location = 30, Component = 31, Binding = 33, DescriptorSet = 34, Offset = 35,
+  NoPerspective = 13, Flat = 14, Patch = 15, Centroid = 16, Location = 30, Component = 31, Binding = 33, DescriptorSet = 34, Offset = 35,
 }
 
 export const enum StorageClass {
@@ -60,7 +61,8 @@ export const enum StorageClass {
 }
 
 export const enum BuiltIn {
-  Position = 0, PointSize = 1, ClipDistance = 3, CullDistance = 4, VertexId = 5, InstanceId = 6, PrimitiveId = 7, Layer = 9,
+  Position = 0, PointSize = 1, ClipDistance = 3, CullDistance = 4, VertexId = 5, InstanceId = 6, PrimitiveId = 7, InvocationId = 8,
+  Layer = 9, ViewportIndex = 10, TessLevelOuter = 11, TessLevelInner = 12, TessCoord = 13, PatchVertices = 14,
   FragCoord = 15, PointCoord = 16, FrontFacing = 17, SampleId = 18, SamplePosition = 19, SampleMask = 20, FragDepth = 22,
   HelperInvocation = 23, NumWorkgroups = 24, WorkgroupSize = 25, WorkgroupId = 26, LocalInvocationId = 27,
   GlobalInvocationId = 28, LocalInvocationIndex = 29, VertexIndex = 42, InstanceIndex = 43, BaseVertex = 4424,
@@ -69,7 +71,8 @@ export const enum BuiltIn {
 
 export const BUILTIN_NAMES: Record<number, string> = {
   0: "gl_Position", 1: "gl_PointSize", 3: "gl_ClipDistance", 4: "gl_CullDistance", 5: "gl_VertexID", 6: "gl_InstanceID",
-  7: "gl_PrimitiveID", 9: "gl_Layer", 15: "gl_FragCoord", 16: "gl_PointCoord", 17: "gl_FrontFacing", 18: "gl_SampleID",
+  7: "gl_PrimitiveID", 8: "gl_InvocationID", 9: "gl_Layer", 10: "gl_ViewportIndex", 11: "gl_TessLevelOuter",
+  12: "gl_TessLevelInner", 13: "gl_TessCoord", 14: "gl_PatchVerticesIn", 15: "gl_FragCoord", 16: "gl_PointCoord", 17: "gl_FrontFacing", 18: "gl_SampleID",
   19: "gl_SamplePosition", 20: "gl_SampleMask", 22: "gl_FragDepth", 23: "gl_HelperInvocation", 24: "gl_NumWorkGroups",
   25: "gl_WorkGroupSize", 26: "gl_WorkGroupID", 27: "gl_LocalInvocationID", 28: "gl_GlobalInvocationID",
   29: "gl_LocalInvocationIndex", 42: "gl_VertexIndex", 43: "gl_InstanceIndex", 4424: "gl_BaseVertex", 4425: "gl_BaseInstance",
