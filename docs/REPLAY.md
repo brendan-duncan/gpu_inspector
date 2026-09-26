@@ -324,21 +324,34 @@ Limits:
 
 ## Mesh output
 
-`--mesh <command>` captures what a draw's vertex shader wrote, RenderDoc's VS Out. RenderDoc turns
-the vertex shader into a compute shader (`vk_postvs.cpp`); `mesh.cpp` uses transform feedback
-(`VK_EXT_transform_feedback`), which the replay enables where the GPU has it. The edit to the shader
-is much smaller:
+`--mesh <command>` captures what a draw's last stage before rasterization wrote: RenderDoc's VS Out,
+or GS Out and DS Out past a geometry or tessellation shader. RenderDoc turns the vertex shader into a
+compute shader (`vk_postvs.cpp`); `mesh.cpp` uses transform feedback (`VK_EXT_transform_feedback`),
+which the replay enables where the GPU has it. The edit to the shader is much smaller:
 
-- **The shader** (`xfb_patch.cpp`) gets the `TransformFeedback` capability, the `Xfb` execution
-  mode on its entry point, and `XfbBuffer`, `XfbStride` and `Offset` on each output it can capture:
-  `gl_Position`, and every located output of 32-bit floats or integers (scalars, vectors, matrices,
-  arrays, and the members of an output block). Point size, clip distances and 64-bit outputs are
-  left out.
+- **The shader** (`xfb_patch.cpp`) is the last stage before rasterization: the geometry shader if the
+  draw has one, else the tessellation evaluation shader, else the vertex shader, since transform
+  feedback records that stage's output. It gets the `TransformFeedback` capability, the `Xfb`
+  execution mode on its entry point, and `XfbBuffer`, `XfbStride` and `Offset` on each output it can
+  capture: `gl_Position`, `gl_Layer` and `gl_ViewportIndex`, and every located output of 32-bit
+  floats or integers (scalars, vectors, matrices, arrays, and the members of an output block). Point
+  size, clip distances and 64-bit outputs are left out.
+- **Past a geometry or tessellation stage** the primitives come out as lists: the topology reported
+  is the list that stage emits, from its execution modes (a geometry shader's output primitive; a
+  tessellator's domain, or points in point mode, from the evaluation shader or else the control
+  shader). A geometry shader's buffer is sized from its declared vertices per primitive; a
+  tessellator's has room for 1,024 vertices per input vertex.
+- **Multiview.** Transform feedback cannot be active in a multiview pass, so a multiview draw is
+  issued once per view, in a pass without a view mask, with `gl_ViewIndex` in every stage made that
+  view's constant (the built-in input becomes a private variable initialized to it). Each view is a
+  mesh of its own, with its `view` index.
+- **Layered passes.** The pass the draw is issued in has the framebuffer's layers, so a shader that
+  writes `gl_Layer` is valid there, and `gl_Layer` is among the outputs captured.
 - **The draw** is issued after the replay has executed its pass, like the overlays: the pass's
   state again, then the draw alone with a pipeline copy that uses the edited shader, has no fragment
   stage and discards rasterization. A draw with shader objects (`VK_EXT_shader_object`) binds a copy
-  of its vertex shader object made from the edited SPIR-V instead, no fragment shader, and rasterizer
-  discard as dynamic state; it is issued in dynamic rendering, which shader objects need, where a
+  of its last pre-rasterization shader object made from the edited SPIR-V instead, no fragment
+  shader, and rasterizer discard as dynamic state; it is issued in dynamic rendering, which shader objects need, where a
   pipeline copy is made for a render pass. The topology is the one the draw's dynamic state set.
 - **The buffer** is sized from the draw's arguments (three vertices per primitive for strips and
   fans, a million vertices for an indirect draw, 256 MB at most), and the counter buffer says how
@@ -358,14 +371,24 @@ mesh outputs: 1
 
 Checked with the validation layer on the triangle, a Unity frame (outputs of HLSLcc shaders, a sky
 sphere with 2,664 of its 5,040 vertices behind the eye, a fullscreen triangle spanning -1 to 3) and a
-multiview XR frame: no messages from the edited shaders or the feedback.
+multiview XR frame: no messages from the edited shaders or the feedback. The stages past the vertex
+one and the views, on test/triangle, with pipelines and with shader objects, all with no validation
+messages:
+- `--geometry`: each of the geometry shader's 72 vertices is the input triangle's, or the copy it
+  shifts right by 0.3w, exactly.
+- `--tessellation`: 216 vertices, six triangles a patch, each at the barycentric mix of its patch's
+  corners that its written `gl_TessCoord` names, to float rounding; with `--geometry` too, the 432
+  the geometry shader makes of them.
+- `--multiview`, with `--geometry` (`gl_ViewIndex` read in the vertex shader, the geometry shader
+  captured) and with `--tessellation`: view 1 is view 0 shifted by the 0.24w the shaders put
+  between them, exactly. On the Adreno XR frames each eye's projected mesh covers the same pixels as
+  that eye's overdraw.
+- `--layered`: 72 vertices, `gl_Layer` 0 for the first instance and 1 for the second.
 
 Limits:
-- Pipelines with tessellation or geometry stages are not captured (feedback would be the last
-  stage's outputs).
-- In a multiview pass the draw runs in a single-view pass, so a shader that reads `gl_ViewIndex`
-  gives the first view's vertices.
+- Mesh shader pipelines are not captured.
 - A GPU without `VK_EXT_transform_feedback` (most mobile GPUs, MoltenVK) cannot capture VS Out.
+- A tessellated draw that emits more than 1,024 vertices per input vertex is marked truncated.
 
 ## Pixel history
 
@@ -1236,6 +1259,7 @@ Every capture replayed so far, with its result:
 | test/triangle `--mixed` (the cube drawn with shader objects, then again with its pipeline, in one pass) | identical, no validation messages |
 | test/triangle `--multiview` (both views of a two-layer target in one pass, blitted side by side), with and without `--dynamic-rendering` | both layers identical, no validation messages |
 | test/triangle `--layered` (the same two-layer target through a layered framebuffer, the cube as two instances writing `gl_Layer`), with `--dynamic-rendering` and with `--shader-object` | both layers identical, no validation messages |
+| test/triangle `--geometry` and `--tessellation` (the cube through a geometry shader, and tessellated), together, with `--shader-object` and with `--multiview` | identical, no validation messages |
 | test/triangle `--dynamic-rendering` (the main pass in dynamic rendering, drawn with the cube's pipeline) | identical, no validation messages |
 | test/triangle `--second-device` / `--second-queue` (a 256x256 target cleared each frame on a second VkDevice, or on a second queue) | all 3 targets identical, no validation messages: the second device's objects replay on the one device |
 | test/triangle `--push-template` (the cube's uniform buffer and texture pushed through a descriptor update template) | identical, no validation messages: pushed again as plain writes from the snapshot |

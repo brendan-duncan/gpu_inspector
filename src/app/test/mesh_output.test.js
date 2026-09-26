@@ -96,3 +96,33 @@ test("strips and fans are unrolled into the lists transform feedback writes", ()
   assert.deepEqual([...positions.subarray(3, 6)], [1, 0, 0], "each listed vertex carries the position it came from");
   assert.equal(listPositions({ ...input("VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST"), position: -1 }).positions.length, 0, "no position, nothing to draw");
 });
+
+test("a multiview draw's meshes, one per view, are one draw holding every view", () => {
+  const stride = 16;
+  const record = (views) => {
+    const data = new Uint8Array(views.length * 3 * stride);
+    const dv = new DataView(data.buffer);
+    views.forEach((shift, v) => [0, 1, 2].forEach((i) => [i + shift, 0, 0.5, 1].forEach((x, k) => dv.setFloat32(((v * 3 + i) * stride) + k * 4, x, true))));
+    const draws = views.map((_, v) => ({
+      command: 9, method: "vkCmdDraw", frame: 0, commandBuffer: 7, passIndex: 0, measured: true, topology: "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST",
+      stage: "geometry", view: v, stride, vertices: 3, truncated: false,
+      outputs: [{ name: "gl_Position", offset: 0, components: 4, base: "float", builtin: "Position" }], payload: [v * 3 * stride, 3 * stride],
+    }));
+    const json = new TextEncoder().encode(JSON.stringify({ format: "gpu-inspector-mesh", version: 1, device: "Test GPU", problems: [], draws }));
+    const magic = new TextEncoder().encode("MESH 1\n");
+    const bytes = new Uint8Array(magic.length + 4 + json.length + data.length);
+    bytes.set(magic, 0);
+    new DataView(bytes.buffer).setUint32(magic.length, json.length, true);
+    bytes.set(json, magic.length + 4);
+    bytes.set(data, magic.length + 4 + json.length);
+    return bytes;
+  };
+  const file = parseMeshFile(record([0, 10]));
+  assert.equal(file.draws.length, 1);
+  const [draw] = file.draws;
+  assert.equal(draw.view, 0);
+  assert.equal(draw.stage, "geometry");
+  assert.deepEqual(draw.views.map((v) => v.view), [0, 1]);
+  assert.equal(clipPositions(draw.views[1])[0], 10);
+  assert.equal(clipPositions(draw)[0], 0);
+});

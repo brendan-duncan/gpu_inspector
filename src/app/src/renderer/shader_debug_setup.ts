@@ -863,7 +863,9 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
         const mesh = await ctx.meshOutput(target.command);
         // Transform feedback writes vertices in assembly order, instance after instance.
         const record = target.instance * input.ids.length + order;
-        if (mesh.measured && mesh.data && primitiveKind(mesh.topology) === primitiveKind(input.topology) && !/STRIP|FAN/.test(mesh.topology) && record < mesh.vertices) {
+        // Only a vertex shader's own records compare: past tessellation or a geometry shader they are that stage's.
+        if (mesh.measured && mesh.data && (mesh.stage ?? "vertex") === "vertex" && primitiveKind(mesh.topology) === primitiveKind(input.topology) &&
+          !/STRIP|FAN/.test(mesh.topology) && record < mesh.vertices) {
           const view = new DataView(mesh.data.buffer, mesh.data.byteOffset, mesh.data.byteLength);
           replayedOutputs = mesh.outputs.map((o) => ({
             name: o.name, location: o.location, builtin: o.builtin,
@@ -894,6 +896,7 @@ export async function prepareDebugSession(ctx: DebugContext, target: DebugTarget
   const { hit, triangles, reason } = coveringTriangle(raster, mesh, x, y);
   if (!hit) throw new Error(reason);
   if (triangles !== Math.floor(mesh.vertices / 3)) notes.push("The replay truncated the draw's vertices.");
+  if (mesh.views && mesh.views.length > 1) notes.push(`The draw is multiview: the fragment's inputs are view ${mesh.view ?? 0}'s.`);
   const viewport = raster.viewport;
   const { x0, y0, target: lane } = PixelQuad.place(x, y);
   // The render target's value at the pixel after the pass, for comparison.

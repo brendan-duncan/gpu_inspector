@@ -858,8 +858,10 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
     },
     {
       name: "get_mesh_output",
-      description: "What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out, for \"why can I not see this " +
-        "mesh\": a Vulkan capture is replayed on this machine's GPU with the draw's vertex shader writing transform feedback " +
+      description: "What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out (GS Out or DS Out past a geometry or " +
+        "tessellation shader: the last stage before rasterization is the one captured), for \"why can I not see this " +
+        "mesh\": a Vulkan capture is replayed on this machine's GPU with that stage writing transform feedback. A multiview draw (an XR " +
+        "frame's eyes) is replayed once per view, with gl_ViewIndex that view " +
         "(under a second, quicker for later draws of the same capture). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices " +
         "are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area " +
         "on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the " +
@@ -870,6 +872,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         command: { type: "integer", minimum: 0, description: "The draw command's index." },
         first: { type: "integer", minimum: 0, description: "The first vertex to list (default 0)." },
         count: { type: "integer", minimum: 0, maximum: 256, description: "Vertices to list (default 8)." },
+        view: { type: "integer", minimum: 0, description: "A multiview draw's view (default the first)." },
       }, ["command"]),
       readOnly: true,
       handler: async (args) => {
@@ -888,7 +891,13 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
         const run = await replayServers.run(tool, c.path, { kind: "mesh", commands: [index] });
         if (!run.data) return jsonResult({ capture: c.id, command: index, note: `The replay could not capture the draw's vertices: ${run.error ?? "no data"}` });
         const file = parseMeshFile(run.data);
-        const m = file.draws.find((d) => d.command === index);
+        const drawMesh = file.draws.find((d) => d.command === index);
+        const views = drawMesh?.views?.map((v) => v.view ?? 0);
+        const wanted = optionalInt(args, "view");
+        if (wanted !== undefined && drawMesh && !(drawMesh.views ?? []).some((v) => v.view === wanted)) {
+          throw new Error(`Draw ${index} has no view ${wanted}: ${views ? `its views are ${views.join(", ")}` : "it is not a multiview draw"}.`);
+        }
+        const m = wanted !== undefined ? drawMesh?.views?.find((v) => v.view === wanted) : drawMesh;
         if (!m || !m.measured) return jsonResult({ capture: c.id, command: index, method: cmd.method, note: `Not captured: ${m?.note ?? "the replay did not reach the draw"}` });
         const stats = clipStats(m);
         const first = intArg(args, "first", 0, 0);
@@ -900,7 +909,7 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           values.push(row);
         }
         return jsonResult({
-          capture: c.id, command: index, method: cmd.method, topology: m.topology, summary: meshSummary(m),
+          capture: c.id, command: index, method: cmd.method, stage: m.stage ?? "vertex", view: m.view, views, topology: m.topology, summary: meshSummary(m),
           vertices: m.vertices, bytesPerVertex: m.stride, truncated: m.truncated || undefined,
           outputs: m.outputs.map((o) => ({ name: o.name, builtin: o.builtin, location: o.location, type: `${o.components} ${o.base}`, offset: o.offset })),
           clipSpace: stats ? {
@@ -911,9 +920,9 @@ export function captureTools(store: CaptureStore): ToolDefinition[] {
           note: m.note,
           replayedOn: file.device || undefined,
           replayProblems: file.problems.length ? { count: file.problems.length, first: file.problems.slice(0, 10) } : undefined,
-          measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose vertex " +
-            "shader is edited to write its outputs to a transform feedback buffer, with rasterization discarded. Pipelines with tessellation " +
-            "or geometry stages are not captured.",
+          measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose last " +
+            "stage before rasterization (vertex, tessellation evaluation or geometry) is edited to write its outputs to a transform feedback " +
+            "buffer, with rasterization discarded. Mesh shader pipelines are not captured.",
         });
       },
     },

@@ -582,10 +582,17 @@ application with injected state. Route (a) is the general one and is the prerequ
 - [x] Mesh output view (`renderer/mesh_view.ts`, `vkinsp_replay --mesh`, `src/replay/src/mesh.cpp`):
       VS In from the captured buffers and VS Out through transform feedback, as a wireframe and a
       table, with `get_mesh_output` in the MCP server.
-- [ ] Mesh output, the rest: tessellation and geometry stage outputs, every view of a multiview
-      pass, GPUs without transform feedback (RenderDoc's compute-shader conversion), and a solid
-      shaded preview. A Metal draw's VS Out could come from the interpreter the shader debugger
-      already runs it in (`renderer/metal/shader_debug.ts`, `interpretedMeshOutput`).
+- [x] Mesh output in multiview passes and through the tessellation and geometry stages
+      (`src/replay/src/mesh.cpp`, `xfb_patch.cpp`): transform feedback on the last stage before
+      rasterization, with the list topology it emits (GS Out, DS Out), for pipelines and shader
+      objects; a multiview draw once per view with `gl_ViewIndex` made that view's constant in every
+      stage (feedback cannot run in a multiview pass); a layered pass's framebuffer layers, and
+      `gl_Layer` / `gl_ViewportIndex` captured. `test/triangle --geometry` and `--tessellation`
+      exercise it; every output checked exactly against what the shaders compute, and each Adreno
+      XR eye's projected mesh covers the pixels its overdraw counted. The mesh tab picks the view,
+      `get_mesh_output` takes `view`.
+- [ ] Mesh output, the rest: GPUs without transform feedback (RenderDoc's compute-shader
+      conversion), mesh shader pipelines, and a solid shaded preview.
 - [x] Shader debugger (`renderer/spirv/`, `renderer/shader_debugger_view.ts`, `debug_shader`): a
       SPIR-V interpreter for vertex, pixel and compute invocations, with variables, stepping and
       breakpoints.

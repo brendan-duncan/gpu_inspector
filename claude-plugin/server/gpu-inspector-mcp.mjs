@@ -15934,7 +15934,21 @@ function parseMeshFile(bytes) {
     }
     return { ...info, outputs: info.outputs ?? [], data };
   });
-  return { device: manifest.device ?? "", draws, problems: manifest.problems ?? [] };
+  const byCommand = /* @__PURE__ */ new Map();
+  const merged = [];
+  for (const d of draws) {
+    const first = d.view !== void 0 ? byCommand.get(d.command) : void 0;
+    if (first) {
+      first.views.push(d);
+      continue;
+    }
+    if (d.view !== void 0) {
+      d.views = [d];
+      byCommand.set(d.command, d);
+    }
+    merged.push(d);
+  }
+  return { device: manifest.device ?? "", draws: merged, problems: manifest.problems ?? [] };
 }
 function primitiveKind(topology) {
   if (/POINT/.test(topology)) return "points";
@@ -30866,7 +30880,7 @@ async function prepareDebugSession(ctx, target) {
       try {
         const mesh2 = await ctx.meshOutput(target.command);
         const record = target.instance * input.ids.length + order;
-        if (mesh2.measured && mesh2.data && primitiveKind(mesh2.topology) === primitiveKind(input.topology) && !/STRIP|FAN/.test(mesh2.topology) && record < mesh2.vertices) {
+        if (mesh2.measured && mesh2.data && (mesh2.stage ?? "vertex") === "vertex" && primitiveKind(mesh2.topology) === primitiveKind(input.topology) && !/STRIP|FAN/.test(mesh2.topology) && record < mesh2.vertices) {
           const view = new DataView(mesh2.data.buffer, mesh2.data.byteOffset, mesh2.data.byteLength);
           replayedOutputs = mesh2.outputs.map((o) => ({
             name: o.name,
@@ -30901,6 +30915,7 @@ async function prepareDebugSession(ctx, target) {
   const { hit, triangles, reason } = coveringTriangle(raster, mesh, x, y);
   if (!hit) throw new Error(reason);
   if (triangles !== Math.floor(mesh.vertices / 3)) notes.push("The replay truncated the draw's vertices.");
+  if (mesh.views && mesh.views.length > 1) notes.push(`The draw is multiview: the fragment's inputs are view ${mesh.view ?? 0}'s.`);
   const viewport = raster.viewport;
   const { x0, y0, target: lane } = PixelQuad.place(x, y);
   let targetPixel;
@@ -35076,12 +35091,13 @@ function captureTools(store) {
     },
     {
       name: "get_mesh_output",
-      description: `What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out, for "why can I not see this mesh": a Vulkan capture is replayed on this machine's GPU with the draw's vertex shader writing transform feedback (under a second, quicker for later draws of the same capture). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the draw assembled: an indexed draw's in index order, strips and fans as lists, every instance. read_vertices gives what the draw read (VS In).`,
+      description: `What a draw's vertex shader wrote, the way RenderDoc's mesh viewer gives VS Out (GS Out or DS Out past a geometry or tessellation shader: the last stage before rasterization is the one captured), for "why can I not see this mesh": a Vulkan capture is replayed on this machine's GPU with that stage writing transform feedback. A multiview draw (an XR frame's eyes) is replayed once per view, with gl_ViewIndex that view (under a second, quicker for later draws of the same capture). Gives every output captured (gl_Position and each located output, named from the shader), how many vertices are behind the eye (w <= 0), how many primitives lie entirely outside the view volume, how many triangles have no area on screen, NaN positions, the normalized device coordinates the rest span, and vertices' values. Vertices are the ones the draw assembled: an indexed draw's in index order, strips and fans as lists, every instance. read_vertices gives what the draw read (VS In).`,
       inputSchema: schema({
         capture: CAPTURE_PARAM,
         command: { type: "integer", minimum: 0, description: "The draw command's index." },
         first: { type: "integer", minimum: 0, description: "The first vertex to list (default 0)." },
-        count: { type: "integer", minimum: 0, maximum: 256, description: "Vertices to list (default 8)." }
+        count: { type: "integer", minimum: 0, maximum: 256, description: "Vertices to list (default 8)." },
+        view: { type: "integer", minimum: 0, description: "A multiview draw's view (default the first)." }
       }, ["command"]),
       readOnly: true,
       handler: async (args) => {
@@ -35100,7 +35116,13 @@ function captureTools(store) {
         const run2 = await replayServers.run(tool, c2.path, { kind: "mesh", commands: [index] });
         if (!run2.data) return jsonResult({ capture: c2.id, command: index, note: `The replay could not capture the draw's vertices: ${run2.error ?? "no data"}` });
         const file = parseMeshFile(run2.data);
-        const m = file.draws.find((d) => d.command === index);
+        const drawMesh = file.draws.find((d) => d.command === index);
+        const views = drawMesh?.views?.map((v) => v.view ?? 0);
+        const wanted = optionalInt(args, "view");
+        if (wanted !== void 0 && drawMesh && !(drawMesh.views ?? []).some((v) => v.view === wanted)) {
+          throw new Error(`Draw ${index} has no view ${wanted}: ${views ? `its views are ${views.join(", ")}` : "it is not a multiview draw"}.`);
+        }
+        const m = wanted !== void 0 ? drawMesh?.views?.find((v) => v.view === wanted) : drawMesh;
         if (!m || !m.measured) return jsonResult({ capture: c2.id, command: index, method: cmd.method, note: `Not captured: ${m?.note ?? "the replay did not reach the draw"}` });
         const stats = clipStats(m);
         const first = intArg(args, "first", 0, 0);
@@ -35115,6 +35137,9 @@ function captureTools(store) {
           capture: c2.id,
           command: index,
           method: cmd.method,
+          stage: m.stage ?? "vertex",
+          view: m.view,
+          views,
           topology: m.topology,
           summary: meshSummary(m),
           vertices: m.vertices,
@@ -35133,7 +35158,7 @@ function captureTools(store) {
           note: m.note,
           replayedOn: file.device || void 0,
           replayProblems: file.problems.length ? { count: file.problems.length, first: file.problems.slice(0, 10) } : void 0,
-          measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose vertex shader is edited to write its outputs to a transform feedback buffer, with rasterization discarded. Pipelines with tessellation or geometry stages are not captured."
+          measuredBy: "The pass's state is issued again after the replay has run it, then the draw alone with a copy of its pipeline whose last stage before rasterization (vertex, tessellation evaluation or geometry) is edited to write its outputs to a transform feedback buffer, with rasterization discarded. Mesh shader pipelines are not captured."
         });
       }
     },

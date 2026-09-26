@@ -12,7 +12,7 @@ import { Select } from "./widget/select.js";
 import { Span } from "./widget/span.js";
 import type { CaptureData } from "./capture_data.js";
 import { listPositions, meshInput, type MeshInput } from "./mesh_input.js";
-import { clipPositions, clipStats, meshSummary, outputValues, primitiveKind, type MeshOutput } from "./mesh_output.js";
+import { clipPositions, clipStats, meshSummary, outputStageLabel, outputValues, primitiveKind, type MeshOutput } from "./mesh_output.js";
 import { MeshControls } from "./mesh_controls.js";
 import { MeshPreview, type PreviewAttribute, type PreviewHit } from "./mesh_preview.js";
 import type { OverdrawPassKey } from "./overdraw.js";
@@ -87,6 +87,9 @@ export class MeshView {
   private _pager: Div | null = null;
   /** Whether the next mesh keeps the camera (stepping within a pass). */
   private _keepView = false;
+  /** A multiview draw's view shown, kept while stepping through the pass's draws. */
+  private _meshView = 0;
+  private _bar: Div | null = null;
 
   constructor(host: MeshViewHost, draw: CaptureCommand, options: MeshViewOptions = {}) {
     this.host = host;
@@ -128,7 +131,10 @@ export class MeshView {
     const stats = o ? clipStats(o) : null;
     return {
       draw: this._draw.index, stage: this._stage, running: this._outputRunning, error: this._outputError || null,
-      output: o ? { measured: o.measured, vertices: o.vertices, stride: o.stride, topology: o.topology, outputs: o.outputs.map((x) => x.name), note: o.note ?? null, stats } : null,
+      output: o ? {
+        measured: o.measured, vertices: o.vertices, stride: o.stride, topology: o.topology, outputs: o.outputs.map((x) => x.name), note: o.note ?? null, stats,
+        stage: o.stage ?? "vertex", view: o.view ?? null,
+      } : null,
       input: this._input ? { vertices: this._input.ids.length, attributes: this._input.attributes.map((a) => a.name), position: this._input.position, notes: this._input.notes } : null,
       preview: this._preview?.debugState() ?? null,
       controls: this._controls?.debugState() ?? null,
@@ -160,6 +166,7 @@ export class MeshView {
     new Div(this.root, { class: "capture-texture-head", text: `${pass ? `${this.host.passLabelOf(pass)} — ` : ""}#${draw.index} ${draw.method}` });
 
     const bar = new Div(this.root, { class: "mesh-view-bar" });
+    this._bar = bar;
     const stages: { stage: MeshStage; label: string }[] = [{ stage: "out", label: "VS Out" }, { stage: "in", label: "VS In" }];
     const stageSelect = new Select(bar, {
       options: stages.map((s) => s.label),
@@ -170,7 +177,8 @@ export class MeshView {
         this._rebuild();
       },
     });
-    stageSelect.tooltip = "VS In: the vertices the draw read. VS Out: what its vertex shader wrote (replayed), in clip space divided by w.";
+    stageSelect.tooltip = "VS In: the vertices the draw read. VS Out: what its last stage before rasterization wrote (replayed), in clip space divided by w: " +
+      "the vertex shader's, or past a tessellation or geometry shader, what that emitted (DS Out, GS Out).";
 
     const draws = pass ? this.host.drawsOfPass(pass) : [draw];
     const at = Math.max(0, draws.findIndex((c) => c.index === draw.index));
@@ -191,7 +199,14 @@ export class MeshView {
     const cameraBar = new Div(bar, { class: "mesh-view-camera" });
     if (this.host.debugVertex) {
       new Button(bar, { label: "Debug Vertex", class: "btn btn-sm", tooltip: "Debug the vertex shader on the vertex selected in the table (the first when none is)",
-        callback: () => this.host.debugVertex!(this._draw.index, this._selected ?? 0, this._stage) });
+        callback: () => {
+          // Past a tessellation or geometry stage a record is not one of the draw's vertices.
+          if (this._stage === "out" && this._output?.stage && this._output.stage !== "vertex") {
+            this._setNotes([`These records are what the ${this._output.stage} shader emitted, not the draw's vertices: VS In debugs the vertex shader on a vertex.`]);
+            return;
+          }
+          this.host.debugVertex!(this._draw.index, this._selected ?? 0, this._stage);
+        } });
     }
     this._status = new Span(bar, { class: "text-muted" });
     this._notes = new Div(this.root, { class: "mesh-view-notes text-muted" });
@@ -309,6 +324,22 @@ export class MeshView {
         if (token === this._token) this._outputRunning = false;
       }
     }
+    // A multiview draw: the view chosen, when the draw has it.
+    const views = this._output?.views;
+    if (views && views.length > 1 && this._bar) {
+      const at = Math.max(0, Math.min(views.length - 1, this._meshView));
+      this._output = views[at];
+      const select = new Select(this._bar, {
+        options: views.map((v) => `View ${v.view ?? 0}`),
+        index: at,
+        onChange: (_v: string, index: number) => {
+          this._meshView = index;
+          this._keepView = true;
+          this._rebuild();
+        },
+      });
+      select.tooltip = "A multiview draw is replayed once per view, with gl_ViewIndex that view";
+    }
     const o = this._output;
     if (!o) {
       this._setStatus(`Not captured: ${this._outputError}`);
@@ -324,6 +355,9 @@ export class MeshView {
     const stats = clipStats(o);
     const notes: string[] = [];
     if (o.note && o.measured) notes.push(o.note);
+    if (o.stage && o.stage !== "vertex") {
+      notes.push(`${outputStageLabel(o)}: what the ${o.stage} shader emitted, the last stage before rasterization, its primitives as a list.`);
+    }
     if (stats?.ndc) {
       const r = (k: number): string => `${stats.ndc!.min[k].toFixed(3)} to ${stats.ndc!.max[k].toFixed(3)}`;
       notes.push(`In front of the eye, the vertices span x ${r(0)}, y ${r(1)}, z ${r(2)} in normalized device coordinates (the view volume is -1 to 1, -1 to 1, 0 to 1).`);

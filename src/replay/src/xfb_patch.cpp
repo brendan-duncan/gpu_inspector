@@ -50,10 +50,32 @@ enum : uint32_t
     DecorationXfbStride = 37
 };
 constexpr uint32_t BuiltInPosition = 0;
+constexpr uint32_t BuiltInLayer = 9;
+constexpr uint32_t BuiltInViewportIndex = 10;
+constexpr uint32_t BuiltInViewIndex = 4440;
 constexpr uint32_t CapabilityTransformFeedback = 53;
+constexpr uint32_t ExecutionModeInvocations = 0;
+constexpr uint32_t ExecutionModePointMode = 10;
 constexpr uint32_t ExecutionModeXfb = 11;
+constexpr uint32_t ExecutionModeTriangles = 22;
+constexpr uint32_t ExecutionModeQuads = 24;
+constexpr uint32_t ExecutionModeIsolines = 25;
+constexpr uint32_t ExecutionModeOutputVertices = 26;
+constexpr uint32_t ExecutionModeOutputPoints = 27;
+constexpr uint32_t ExecutionModeOutputLineStrip = 28;
+constexpr uint32_t ExecutionModeOutputTriangleStrip = 29;
+constexpr uint32_t StorageClassInput = 1;
 constexpr uint32_t StorageClassOutput = 3;
+constexpr uint32_t StorageClassPrivate = 6;
 constexpr uint32_t ExecutionModelVertex = 0;
+constexpr uint32_t ExecutionModelTessellationEvaluation = 2;
+constexpr uint32_t ExecutionModelGeometry = 3;
+
+/** The captured builtins, other than the position, by the name the view shows them under. */
+const char* BuiltinName(uint32_t builtin)
+{
+    return builtin == BuiltInLayer ? "Layer" : builtin == BuiltInViewportIndex ? "ViewportIndex" : nullptr;
+}
 
 struct Type
 {
@@ -139,6 +161,7 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
     };
     std::vector<Entry> entries;
     std::set<uint32_t> xfbModes;
+    std::map<uint32_t, uint32_t> outputVertices, invocations;   // entry function -> geometry shader modes
     size_t afterCapabilities = 5, afterEntries = 0, afterAnnotations = 0, firstType = 0;
 
     for (size_t at = 5; at < count;)
@@ -175,6 +198,10 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
             case OpExecutionModeId:
                 if (op == OpExecutionMode && n >= 3 && w[2] == ExecutionModeXfb)
                     xfbModes.insert(w[1]);
+                if (op == OpExecutionMode && n >= 4 && w[2] == ExecutionModeOutputVertices)
+                    outputVertices[w[1]] = w[3];
+                if (op == OpExecutionMode && n >= 4 && w[2] == ExecutionModeInvocations)
+                    invocations[w[1]] = w[3];
                 afterEntries = at + n;
                 break;
             case OpName:
@@ -256,17 +283,26 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
         at += n;
     }
 
+    auto captured = [](uint32_t model) {
+        return model == ExecutionModelVertex || model == ExecutionModelTessellationEvaluation || model == ExecutionModelGeometry;
+    };
     const Entry* entry = nullptr;
     for (const Entry& e : entries)
-        if (e.model == ExecutionModelVertex && e.name == entryPoint)
+        if (captured(e.model) && e.name == entryPoint)
             entry = &e;
     for (const Entry& e : entries)
-        if (!entry && e.model == ExecutionModelVertex)
+        if (!entry && captured(e.model))
             entry = &e;
     if (!entry)
     {
-        patch.error = "the module has no vertex entry point";
+        patch.error = "the module has no vertex, tessellation evaluation or geometry entry point";
         return patch;
+    }
+    if (entry->model == ExecutionModelGeometry)
+    {
+        const uint32_t vertices = outputVertices.count(entry->function) ? outputVertices[entry->function] : 0;
+        const uint32_t times = invocations.count(entry->function) ? std::max(1u, invocations[entry->function]) : 1;
+        patch.maxVerticesOut = std::max(1u, vertices * times);
     }
     if (xfbModes.count(entry->function))
     {
@@ -351,8 +387,10 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
             for (uint32_t m = 0; m < st->second.members.size(); ++m)
             {
                 auto b = memberBuiltins.find({pointee, m});
-                // gl_PerVertex: only the position; point size and clip distances are left out.
-                if (builtinBlock && (b == memberBuiltins.end() || b->second != BuiltInPosition))
+                // gl_PerVertex: the position, and the layer and viewport where a block declares them;
+                // point size and clip distances are left out.
+                const char* other = b != memberBuiltins.end() ? BuiltinName(b->second) : nullptr;
+                if (builtinBlock && (b == memberBuiltins.end() || (b->second != BuiltInPosition && !other)))
                     continue;
                 if (!builtinBlock && !blocks.count(pointee))
                     continue;
@@ -360,7 +398,9 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
                 if (!f.ok)
                     continue;
                 std::string member = memberNames.count({pointee, m}) ? memberNames[{pointee, m}] : "member" + std::to_string(m);
-                if (builtinBlock)
+                if (builtinBlock && other)
+                    add(id, pointee, m, true, f, std::string("gl_") + other, other, -1);
+                else if (builtinBlock)
                     add(id, pointee, m, true, f, "gl_Position", "Position", -1);
                 else
                     add(id, pointee, m, true, f, instance.empty() ? member : instance + "." + member, "", locations.count(id) ? locations[id] : -1);
@@ -368,21 +408,24 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
             continue;
         }
         auto b = builtins.find(id);
-        if (b != builtins.end() && b->second != BuiltInPosition)
+        // gl_Position, and gl_Layer and gl_ViewportIndex, which say where a primitive is drawn.
+        const char* other = b != builtins.end() ? BuiltinName(b->second) : nullptr;
+        if (b != builtins.end() && b->second != BuiltInPosition && !other)
             continue;
         if (b == builtins.end() && !locations.count(id))
             continue;
         Flat f = flatten(pointee);
         if (!f.ok)
             continue;
+        const std::string builtin = b == builtins.end() ? "" : other ? other : "Position";
         const std::string name = names.count(id) && !names[id].empty() ? names[id]
-            : b != builtins.end()                                      ? "gl_Position"
+            : !builtin.empty()                                         ? "gl_" + builtin
                                                                        : "location" + std::to_string(locations[id]);
-        add(id, 0, 0, false, f, name, b != builtins.end() ? "Position" : "", b != builtins.end() ? -1 : locations[id]);
+        add(id, 0, 0, false, f, name, builtin, b != builtins.end() ? -1 : locations[id]);
     }
     if (plans.empty())
     {
-        patch.error = "the vertex shader has no outputs transform feedback can capture";
+        patch.error = "the shader has no outputs transform feedback can capture";
         return patch;
     }
     patch.stride = offset;
@@ -428,6 +471,98 @@ XfbPatch PatchForTransformFeedback(const uint32_t* words, size_t count, const st
         at += n;
     }
     return patch;
+}
+
+std::string OutputTopology(const uint32_t* words, size_t count)
+{
+    if (!words || count < 5 || words[0] != 0x07230203)
+        return "";
+    bool points = false, lines = false, triangles = false;
+    for (size_t at = 5; at < count;)
+    {
+        const uint32_t op = words[at] & 0xFFFF;
+        const uint32_t n = words[at] >> 16;
+        if (!n || at + n > count)
+            break;
+        if (op == OpExecutionMode && n >= 3)
+        {
+            const uint32_t mode = words[at + 2];
+            points = points || mode == ExecutionModePointMode || mode == ExecutionModeOutputPoints;
+            lines = lines || mode == ExecutionModeIsolines || mode == ExecutionModeOutputLineStrip;
+            triangles = triangles || mode == ExecutionModeTriangles || mode == ExecutionModeQuads || mode == ExecutionModeOutputTriangleStrip;
+        }
+        at += n;
+    }
+    // A tessellator in point mode emits points whatever its domain.
+    return points ? "VK_PRIMITIVE_TOPOLOGY_POINT_LIST" : lines ? "VK_PRIMITIVE_TOPOLOGY_LINE_LIST" : triangles ? "VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST" : "";
+}
+
+std::vector<uint32_t> PatchViewIndex(const uint32_t* words, size_t count, uint32_t view)
+{
+    std::vector<uint32_t> unchanged(words, words + count);
+    if (!words || count < 5 || words[0] != 0x07230203)
+        return unchanged;
+    // The variable, its pointee, and a private pointer to that pointee if the module has one.
+    std::set<uint32_t> viewIndex;
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> pointers;   // pointer -> (storage, pointee)
+    for (size_t at = 5; at < count;)
+    {
+        const uint32_t op = words[at] & 0xFFFF;
+        const uint32_t n = words[at] >> 16;
+        if (!n || at + n > count)
+            return unchanged;
+        const uint32_t* w = words + at;
+        if (op == OpDecorate && n >= 4 && w[2] == DecorationBuiltIn && w[3] == BuiltInViewIndex)
+            viewIndex.insert(w[1]);
+        if (op == OpTypePointer && n == 4)
+            pointers[w[1]] = {w[2], w[3]};
+        at += n;
+    }
+    if (viewIndex.empty())
+        return unchanged;
+    // SPIR-V before 1.4 lists only Input and Output variables on an entry point.
+    const bool listsPrivate = words[1] >= 0x00010400;
+    uint32_t bound = words[3];
+    std::vector<uint32_t> out(words, words + 5);
+    out.reserve(count + 16);
+    for (size_t at = 5; at < count;)
+    {
+        const uint32_t op = words[at] & 0xFFFF;
+        const uint32_t n = words[at] >> 16;
+        const uint32_t* w = words + at;
+        at += n;
+        if (op == OpDecorate && n >= 4 && viewIndex.count(w[1]) && w[2] == DecorationBuiltIn)
+            continue;
+        if (op == OpEntryPoint && !listsPrivate)
+        {
+            // The interface follows the name; the view index leaves it.
+            size_t used = 0;
+            LiteralString(w + 3, n - 3, used);
+            std::vector<uint32_t> kept(w + 1, w + 3 + used);
+            for (size_t i = 3 + used; i < n; ++i)
+                if (!viewIndex.count(w[i]))
+                    kept.push_back(w[i]);
+            out.push_back(((uint32_t)kept.size() + 1) << 16 | OpEntryPoint);
+            out.insert(out.end(), kept.begin(), kept.end());
+            continue;
+        }
+        if (op == OpVariable && n >= 4 && viewIndex.count(w[2]))
+        {
+            auto ptr = pointers.find(w[1]);
+            if (ptr == pointers.end() || ptr->second.first != StorageClassInput)
+                return unchanged;
+            const uint32_t pointee = ptr->second.second;
+            const uint32_t pointer = bound++;
+            const uint32_t constant = bound++;
+            Emit(out, OpTypePointer, {pointer, StorageClassPrivate, pointee});
+            Emit(out, OpConstant, {pointee, constant, view});
+            Emit(out, OpVariable, {pointer, w[2], StorageClassPrivate, constant});
+            continue;
+        }
+        out.insert(out.end(), w, w + n);
+    }
+    out[3] = bound;
+    return out;
 }
 
 } // namespace vkreplay

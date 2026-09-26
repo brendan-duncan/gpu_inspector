@@ -162,7 +162,7 @@ VkRenderPass Replayer::OverdrawRenderPass(VkFormat depthFormat, uint32_t viewMas
 
 VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkFormat depthFormat, ReissueMode mode)
 {
-    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode, _reissueRendering, _reissueViewMask);
+    const auto key = std::make_tuple(pipelineId, depthTested, depthFormat, mode, _reissueRendering, _reissueViewMask, _meshView);
     auto it = _overdrawPipelines.find(key);
     if (it != _overdrawPipelines.end())
         return it->second;
@@ -184,45 +184,59 @@ VkPipeline Replayer::OverdrawPipeline(uint64_t pipelineId, bool depthTested, VkF
         [&](PipelineCopy& p) {
             if (mode == ReissueMode::Xfb)
             {
-            // The vertex shader edited to write its outputs to the feedback buffer, and nothing rasterized.
+            // The last stage before rasterization edited to write its outputs to the feedback buffer
+            // (transform feedback records that stage's), and nothing rasterized. For one view of a
+            // multiview draw, every stage's gl_ViewIndex is that view.
                 XfbPatch& layout = _xfbLayouts[pipelineId];
-                for (const VkPipelineShaderStageCreateInfo& s : p.stages)
+                layout = XfbPatch{};
+                auto find = [&](VkShaderStageFlagBits stage) {
+                    return std::find_if(p.stages.begin(), p.stages.end(), [&](const VkPipelineShaderStageCreateInfo& s) { return s.stage == stage; });
+                };
+                auto last = p.stages.end();
+                for (VkShaderStageFlagBits stage : {VK_SHADER_STAGE_GEOMETRY_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, VK_SHADER_STAGE_VERTEX_BIT})
+                    if ((last = find(stage)) != p.stages.end())
+                        break;
+                if (last == p.stages.end())
                 {
-                    if (s.stage & (VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT | VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT | VK_SHADER_STAGE_GEOMETRY_BIT))
-                    {
-                        layout.error = "the pipeline has tessellation or geometry stages, and only a vertex shader's outputs are captured";
+                    layout.error = "the pipeline has no vertex shader (a mesh shader's outputs are not captured)";
+                    return false;
+                }
+                // A tessellator's output primitives may be named by the control shader alone.
+                std::vector<uint32_t> control;
+                if (auto tesc = find(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT); tesc != p.stages.end() && last->stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT)
+                    StageCode(pipelineId, std::string(StageName(tesc->stage)) + ":" + (tesc->pName ? tesc->pName : "main"), control);
+                const VkShaderStageFlagBits lastStage = last->stage;
+                for (VkPipelineShaderStageCreateInfo& s : p.stages)
+                {
+                    const bool feedback = s.stage == lastStage;
+                    if (s.stage == VK_SHADER_STAGE_FRAGMENT_BIT || (!feedback && _meshView < 0))
+                        continue;
+                    std::vector<uint32_t> words;
+                    XfbPatch unused;
+                    MeshStageCode(pipelineId, s.stage, s.pName ? s.pName : "main", feedback, feedback ? layout : unused, words, control);
+                    if (feedback && !layout.error.empty())
                         return false;
+                    if (words.empty())
+                        continue;   // another stage without captured code keeps its own module
+                    VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
+                    m.codeSize = words.size() * 4;
+                    m.pCode = words.data();
+                    VkShaderModule module = VK_NULL_HANDLE;
+                    const VkResult created = _fns.CreateShaderModule(_device, &m, nullptr, &module);
+                    if (created != VK_SUCCESS)
+                    {
+                        if (feedback)
+                        {
+                            layout.error = "the edited " + layout.stage + " shader was refused (" + std::to_string(created) + ")";
+                            return false;
+                        }
+                        continue;
                     }
+                    p.temporary.push_back(module);
+                    // Its entry point and specialization stay the application's.
+                    s.module = module;
+                    s.pNext = nullptr;
                 }
-                auto vs = std::find_if(p.stages.begin(), p.stages.end(), [](const VkPipelineShaderStageCreateInfo& s) { return s.stage == VK_SHADER_STAGE_VERTEX_BIT; });
-                const uint8_t* data = nullptr;
-                size_t size = 0;
-                const std::string entry = vs != p.stages.end() && vs->pName ? vs->pName : "main";
-                if (vs == p.stages.end() || !object || !_capture->Blob(*object, std::string(StageName(VK_SHADER_STAGE_VERTEX_BIT)) + ":" + entry, data, size))
-                {
-                    layout.error = "the capture has no vertex shader code for the pipeline";
-                    return false;
-                }
-                std::vector<uint32_t> words(size / 4);
-                std::memcpy(words.data(), data, words.size() * 4);
-                layout = PatchForTransformFeedback(words.data(), words.size(), entry);
-                if (!layout.error.empty())
-                    return false;
-                VkShaderModuleCreateInfo m{VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO};
-                m.codeSize = layout.words.size() * 4;
-                m.pCode = layout.words.data();
-                VkShaderModule module = VK_NULL_HANDLE;
-                const VkResult created = _fns.CreateShaderModule(_device, &m, nullptr, &module);
-                layout.words.clear();
-                layout.words.shrink_to_fit();
-                if (created != VK_SUCCESS)
-                {
-                    layout.error = "the edited vertex shader was refused (" + std::to_string(created) + ")";
-                    return false;
-                }
-                p.temporary.push_back(module);
-                vs->module = module;
-                vs->pNext = nullptr;
                 if (!p.hasRasterization)
                 {
                     p.rasterization = VkPipelineRasterizationStateCreateInfo{VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO};
@@ -426,8 +440,12 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
                 _reissueFragmentShader = id;
             if (stage == "VK_SHADER_STAGE_VERTEX_BIT")
                 _overlayVertexShader = id;
-            else if (stage.find("TESSELLATION") != std::string::npos || stage == "VK_SHADER_STAGE_GEOMETRY_BIT")
-                _overlayShaderGeometry = _overlayShaderGeometry || id;
+            else if (stage == "VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT")
+                _overlayTescShader = id;
+            else if (stage == "VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT")
+                _overlayTeseShader = id;
+            else if (stage == "VK_SHADER_STAGE_GEOMETRY_BIT")
+                _overlayGeometryShader = id;
         }
         if (graphics)
         {
@@ -467,8 +485,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         {
             // The draw the overlay is for gets its own copy when it comes; the rest draw depth only, or not at all.
             _overlayPipeline = IdOf(args->Get("pipeline"));
-            _overlayVertexShader = 0;
-            _overlayShaderGeometry = false;
+            _overlayVertexShader = _overlayTescShader = _overlayTeseShader = _overlayGeometryShader = 0;
             if (_overlayOnlyTarget)
                 return;
             VkPipeline pipeline = OverdrawPipeline(_overlayPipeline, depthTested, depthFormat, ReissueMode::DepthOnly);
@@ -479,8 +496,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
             return;
         }
         VkPipeline pipeline = OverdrawPipeline(IdOf(args->Get("pipeline")), depthTested, depthFormat);
-        _overlayVertexShader = 0;
-        _overlayShaderGeometry = false;
+        _overlayVertexShader = _overlayTescShader = _overlayTeseShader = _overlayGeometryShader = 0;
         _overdrawDrawable = pipeline != VK_NULL_HANDLE;
         _reissueCopy = pipeline;
         if (pipeline)
@@ -497,24 +513,25 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
     bool feedback = false;
     if (target && !_overlayPipeline && _overlayVertexShader && _overlayTargetMode == ReissueMode::Xfb)
     {
-        // Shader objects: the vertex shader's feedback copy alone, and nothing rasterized.
-        VkShaderEXT vs = VK_NULL_HANDLE;
-        if (_overlayShaderGeometry)
-            _xfbLayouts[_overlayVertexShader].error = "tessellation or geometry shader objects are bound, and only a vertex shader's outputs are captured";
-        else
-            vs = FeedbackShader(_overlayVertexShader);
+        // Shader objects: the last stage before rasterization in its feedback copy, the others as
+        // bound, and nothing rasterized.
+        const uint64_t last = _overlayGeometryShader ? _overlayGeometryShader : _overlayTeseShader ? _overlayTeseShader : _overlayVertexShader;
+        const VkShaderStageFlagBits lastStage = _overlayGeometryShader ? VK_SHADER_STAGE_GEOMETRY_BIT
+            : _overlayTeseShader                                    ? VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT
+                                                                    : VK_SHADER_STAGE_VERTEX_BIT;
+        VkShaderEXT copy = FeedbackShader(last, lastStage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT ? _overlayTescShader : 0);
         const auto setDiscard = _fns.CmdSetRasterizerDiscardEnable ? _fns.CmdSetRasterizerDiscardEnable : _fns.CmdSetRasterizerDiscardEnableEXT;
-        _overdrawDrawable = vs && setDiscard;
+        _overdrawDrawable = copy && setDiscard;
         _overlayIssued = true;  // drawn or not, nothing after it matters
-        _overlayDrawnPipeline = _overlayVertexShader;
+        _overlayDrawnPipeline = last;
         _overlayDrawnTopology = _overlayTopology;
         if (_overdrawDrawable)
         {
-            const VkShaderStageFlagBits stages[] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
-            const VkShaderEXT bound[] = {vs, VK_NULL_HANDLE};
+            const VkShaderStageFlagBits stages[] = {lastStage, VK_SHADER_STAGE_FRAGMENT_BIT};
+            const VkShaderEXT bound[] = {copy, VK_NULL_HANDLE};
             _fns.CmdBindShadersEXT(cb, 2, stages, bound);
             setDiscard(cb, VK_TRUE);
-            feedback = PrepareMeshBuffers();
+            feedback = PrepareMeshBuffers(last);
             if (!feedback)
                 _overdrawDrawable = false;
         }
@@ -540,7 +557,7 @@ void Replayer::ReissueCommand(VkCommandBuffer cb, uint32_t index, bool depthTest
         // The mesh output view: the draw writes its vertices into a buffer instead of rasterizing.
         if (pipeline && _overlayTargetMode == ReissueMode::Xfb)
         {
-            feedback = PrepareMeshBuffers();
+            feedback = PrepareMeshBuffers(_overlayPipeline);
             if (!feedback)
                 _overdrawDrawable = false;
         }
@@ -618,8 +635,7 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
     _overdrawDraws = 0;
     _overdrawSkippedDraws = 0;
     _overlayPipeline = 0;
-    _overlayVertexShader = 0;
-    _overlayShaderGeometry = false;
+    _overlayVertexShader = _overlayTescShader = _overlayTeseShader = _overlayGeometryShader = 0;
     _overlayTopology.clear();
     for (uint32_t i = group.first + 1; i < pass.beginIndex; ++i)
         if (!commands->items[i].Get("secondary"))
@@ -677,8 +693,7 @@ void Replayer::ReissuePass(VkCommandBuffer cb, const CommandGroup& group, const 
                 _reissueFragmentShader = 0;
                 _reissueCopy = VK_NULL_HANDLE;
                 _overlayPipeline = 0;
-                _overlayVertexShader = 0;
-                _overlayShaderGeometry = false;
+                _overlayVertexShader = _overlayTescShader = _overlayTeseShader = _overlayGeometryShader = 0;
                 for (uint32_t j = i + 1; j < commands->count && commands->items[j].Get("secondary"); ++j)
                     if (commands->items[j].Get("secondary")->Uint() == id)
                         ReissueCommand(cb, j, depthTested, depthFormat, true);

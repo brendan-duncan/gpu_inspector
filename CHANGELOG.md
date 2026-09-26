@@ -13,8 +13,12 @@
 - Vulkan overdraw measures every layer of a pass layered through `gl_Layer`, with a heatmap per layer.
 - Vulkan pixel history follows a pixel in any layer of a pass layered through `gl_Layer`, such as a cube map face.
 - `test/triangle --layered` renders the two-layer target through a layered framebuffer and `gl_Layer`.
+- The Vulkan mesh view shows what a geometry or tessellation shader emitted (GS Out, DS Out).
+- The Vulkan mesh view has a mesh per view of a multiview draw, and `get_mesh_output` takes `view`.
+- `test/triangle --geometry` and `--tessellation` draw the cube through those stages.
 
 ### Fixed
+- Vulkan mesh output of a draw writing `gl_Layer` no longer draws into a single-layer framebuffer.
 - Vulkan pixel history no longer crashes the replay on a multiview pass.
 - Vulkan pixel history binds a draw's own pipeline again after following it fragment by fragment.
 - Vulkan pixel history no longer sets dynamic state the bound pipeline holds statically.

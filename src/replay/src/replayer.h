@@ -469,8 +469,15 @@ struct MeshResult
     uint32_t frame = 0;
     uint32_t passIndex = 0;
     std::string method;
-    /** The pipeline's primitive topology, as vk.xml names it. */
+    /**
+     * The pipeline's primitive topology, as vk.xml names it; past a tessellation or geometry stage,
+     * the list topology that stage's primitives are recorded as.
+     */
     std::string topology;
+    /** The stage whose outputs these are: the last before rasterization ("vertex", "tessellation evaluation", "geometry"). */
+    std::string stage;
+    /** A multiview pass has a mesh per view, with gl_ViewIndex that view; -1 in a single-view pass. */
+    int32_t view = -1;
     uint32_t stride = 0;
     uint32_t vertices = 0;
     /** The buffer filled up: the draw wrote more than was captured. */
@@ -1087,12 +1094,21 @@ private:
     // Mesh output (mesh.cpp): one draw issued again with its vertex shader writing transform feedback.
     void RecordMesh(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex);
     /** At the draw a mesh is for, once its pipeline copy is bound: the feedback buffers; false without them. */
-    bool PrepareMeshBuffers();
+    bool PrepareMeshBuffers(uint64_t source);
+    /** One mesh of RecordMesh: the target draw, for one view of a multiview pass (-1 in any other). */
+    void RecordMeshView(VkCommandBuffer cb, const CommandGroup& group, const PassState& pass, uint32_t endIndex, uint32_t target, int32_t view);
     void CompleteMesh(bool submitted);
     /** The topology a pipeline's create info names, and whether it is dynamic. */
     std::string PipelineTopology(uint64_t pipelineId, bool& dynamic) const;
-    /** A vertex shader object's copy that writes transform feedback (its layout in _xfbLayouts); null when it cannot be made. */
-    VkShaderEXT FeedbackShader(uint64_t shaderId);
+    /**
+     * A vertex, tessellation evaluation or geometry shader object's copy that writes transform feedback
+     * (its layout in _xfbLayouts); null when it cannot be made. `tessellationControl` is the control
+     * shader bound beside an evaluation one, whose modes may give the topology.
+     */
+    VkShaderEXT FeedbackShader(uint64_t shaderId, uint64_t tessellationControl = 0);
+    /** The stage's code edited for the mesh: gl_ViewIndex made the recorded view, then transform feedback when `feedback`. */
+    void MeshStageCode(uint64_t objectId, VkShaderStageFlagBits stage, const std::string& entry, bool feedback, XfbPatch& layout,
+        std::vector<uint32_t>& words, const std::vector<uint32_t>& controlCode);
     bool PrepareDrawStats();
     void ResetDrawQueries(VkCommandBuffer cb);
     void DestroyDrawStats();
@@ -1353,7 +1369,7 @@ private:
     VkShaderModule _countModule = VK_NULL_HANDLE;
     VkShaderModule _backFaceModule = VK_NULL_HANDLE;
     /** Copies by pipeline, depth tested, depth format, mode, whether they draw in dynamic rendering, and the view mask. */
-    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool, uint32_t>, VkPipeline> _overdrawPipelines;
+    std::map<std::tuple<uint64_t, bool, VkFormat, ReissueMode, bool, uint32_t, int32_t>, VkPipeline> _overdrawPipelines;
     /** The views the pass being reissued renders into (overdraw of a multiview pass), 0 for one. */
     uint32_t _reissueViewMask = 0;
     /** The layers of the framebuffer the pass is reissued into (overdraw of a layered pass), without a view mask. */
@@ -1389,11 +1405,13 @@ private:
     uint64_t _overlayPipeline = 0;
     /**
      * VK_EXT_shader_object: the vertex shader object the reissued commands last bound in place of a
-     * pipeline, whether a tessellation or geometry shader object is bound beside it, and the topology
-     * the dynamic state last set (and had at the target draw, once it is issued).
+     * pipeline, the tessellation and geometry shader objects bound beside it, and the topology the
+     * dynamic state last set (and had at the target draw, once it is issued).
      */
     uint64_t _overlayVertexShader = 0;
-    bool _overlayShaderGeometry = false;
+    uint64_t _overlayTescShader = 0;
+    uint64_t _overlayTeseShader = 0;
+    uint64_t _overlayGeometryShader = 0;
     std::string _overlayTopology;
     std::string _overlayDrawnTopology;
     /** Set once the target draw has been issued: nothing after it is. */
@@ -1418,10 +1436,15 @@ private:
 
     // Mesh output
     bool _xfbAvailable = false;
-    /** The edited vertex shader of each pipeline copied for feedback: its record layout, or why it could not be edited. */
+    /**
+     * The edited last pre-rasterization stage of each pipeline copied for feedback (or of the shader
+     * object, by its id): its record layout, or why it could not be edited.
+     */
     std::map<uint64_t, XfbPatch> _xfbLayouts;
-    /** Vertex shader objects edited for feedback, by captured shader object; null where the edit failed. */
+    /** Shader objects edited for feedback, by captured shader object; null where the edit failed. */
     std::map<uint64_t, VkShaderEXT> _xfbShaders;
+    /** The view of a multiview draw the mesh is recorded for (gl_ViewIndex made that constant); -1 otherwise. */
+    int32_t _meshView = -1;
     /** The mesh being recorded, whose buffers the target draw binds. */
     PendingMesh* _meshTarget = nullptr;
     std::vector<PendingMesh> _pendingMeshes;

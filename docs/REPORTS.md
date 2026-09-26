@@ -394,7 +394,9 @@ Only a triangle list can be filled: lines and points are drawn as they are, and 
   the attributes named from the vertex shader. The preview draws the attribute that looks like a
   position.
 - **VS Out** — what the vertex shader wrote: `gl_Position` and every output, drawn in normalized
-  device coordinates inside the outline of the view volume. The status line counts what keeps a
+  device coordinates inside the outline of the view volume. Past a geometry or tessellation shader
+  it is what that stage emitted (GS Out, DS Out), and a multiview draw (an XR frame's eyes) has a
+  mesh per view, picked beside the camera controls. The status line counts what keeps a
   mesh from being seen: primitives outside the view volume, vertices behind the eye, triangles with
   no area and NaN positions. On **Vulkan** the capture is replayed with the vertex shader writing
   its outputs to a buffer (see [Capture replay](REPLAY.md#mesh-output)); on **Direct3D 12** the

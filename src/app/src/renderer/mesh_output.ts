@@ -1,7 +1,8 @@
-// A draw's mesh after its vertex shader (RenderDoc's VS Out): what `vkinsp_replay --mesh-data` writes
-// (src/replay/src/mesh.cpp), and what can be said about it at a glance. The replay captures every vertex
-// the draw assembled with transform feedback: an indexed draw's vertices in index order, strips and
-// fans as lists, every instance after the first.
+// A draw's mesh after its last stage before rasterization (RenderDoc's VS Out, or GS/DS Out past a
+// geometry or tessellation shader): what `vkinsp_replay --mesh-data` writes (src/replay/src/mesh.cpp),
+// and what can be said about it at a glance. The replay captures every vertex that stage emitted with
+// transform feedback: an indexed draw's vertices in index order, strips and fans as lists, every
+// instance after the first. A multiview draw has a mesh per view.
 
 /** One output the vertex shader wrote, at `offset` in each vertex's record. */
 export interface MeshOutputVariable {
@@ -23,8 +24,16 @@ export interface MeshOutput {
   passIndex: number;
   /** The replay captured it; false with a note saying why not. */
   measured: boolean;
-  /** The pipeline's topology (VK_PRIMITIVE_TOPOLOGY_*), " (dynamic)" when the draw may have set another. */
+  /**
+   * The pipeline's topology (VK_PRIMITIVE_TOPOLOGY_*), " (dynamic)" when the draw may have set another;
+   * past a tessellation or geometry stage, the list topology that stage's primitives come out as.
+   */
   topology: string;
+  /** The stage whose outputs these are: "vertex" (absent from older replays), "tessellation evaluation" or "geometry". */
+  stage?: string;
+  /** A multiview draw: the view this mesh is of (gl_ViewIndex), and on the first view's mesh, every view's. */
+  view?: number;
+  views?: MeshOutput[];
   stride: number;
   vertices: number;
   /** The draw wrote more vertices than were captured. */
@@ -65,7 +74,27 @@ export function parseMeshFile(bytes: Uint8Array): MeshFile {
     }
     return { ...info, outputs: info.outputs ?? [], data };
   });
-  return { device: manifest.device ?? "", draws, problems: manifest.problems ?? [] };
+  // A multiview draw's views follow one another: the first stands for the draw, holding them all.
+  const byCommand = new Map<number, MeshOutput>();
+  const merged: MeshOutput[] = [];
+  for (const d of draws) {
+    const first = d.view !== undefined ? byCommand.get(d.command) : undefined;
+    if (first) {
+      first.views!.push(d);
+      continue;
+    }
+    if (d.view !== undefined) {
+      d.views = [d];
+      byCommand.set(d.command, d);
+    }
+    merged.push(d);
+  }
+  return { device: manifest.device ?? "", draws: merged, problems: manifest.problems ?? [] };
+}
+
+/** RenderDoc's name for the outputs: VS Out, DS Out past tessellation, GS Out past a geometry shader. */
+export function outputStageLabel(m: MeshOutput | null): string {
+  return m?.stage === "geometry" ? "GS Out" : m?.stage === "tessellation evaluation" ? "DS Out" : "VS Out";
 }
 
 /** What a topology assembles, as the preview draws it. */

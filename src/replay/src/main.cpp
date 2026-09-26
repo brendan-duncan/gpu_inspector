@@ -909,6 +909,10 @@ bool WriteMeshData(const ReplayReport& report, const std::string& path)
             ",\"topology\":" + JsonString(m.topology) + ",\"stride\":" + std::to_string(m.stride) +
             ",\"vertices\":" + std::to_string(m.vertices) + ",\"truncated\":" + (m.truncated ? "true" : "false") +
             ",\"outputs\":[" + outputs + "]";
+        if (!m.stage.empty())
+            json += ",\"stage\":" + JsonString(m.stage);
+        if (m.view >= 0)
+            json += ",\"view\":" + std::to_string(m.view);
         if (!m.note.empty())
             json += ",\"note\":" + JsonString(m.note);
         if (size)
@@ -941,13 +945,16 @@ void PrintMeshes(const ReplayReport& report)
     for (const MeshResult& m : report.meshes)
     {
         std::printf("  [%u] %s", m.command, m.method.empty() ? "?" : m.method.c_str());
+        if (m.view >= 0)
+            std::printf(", view %d", m.view);
         if (!m.stride)
         {
             std::printf(": not captured: %s\n", m.note.c_str());
             continue;
         }
-        std::printf(" (command buffer %llu, pass %u, %s): %u vertices, %u bytes each%s%s%s\n", (unsigned long long)m.commandBuffer, m.passIndex,
-            m.topology.empty() ? "topology unknown" : m.topology.c_str(), m.vertices, m.stride, m.truncated ? ", truncated" : "",
+        std::printf(" (command buffer %llu, pass %u, %s%s%s): %u vertices, %u bytes each%s%s%s\n", (unsigned long long)m.commandBuffer, m.passIndex,
+            m.topology.empty() ? "topology unknown" : m.topology.c_str(), m.stage.empty() || m.stage == "vertex" ? "" : ", ",
+            m.stage == "vertex" ? "" : m.stage.c_str(), m.vertices, m.stride, m.truncated ? ", truncated" : "",
             m.note.empty() ? "" : "; ", m.note.c_str());
         for (const XfbOutput& o : m.outputs)
         {

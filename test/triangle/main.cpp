@@ -219,6 +219,13 @@ struct App
     // (VK_EXT_shader_object) and every piece of state set dynamically, instead of its pipeline.
     bool shaderObject = false;
     VkShaderEXT shaders[2]{};
+    // --geometry: the cube goes through a geometry shader that emits each triangle twice, the copy
+    // shifted right (cube.geom). --tessellation: each triangle is a patch the tessellator divides into
+    // six (cube.tesc, cube.tese). Stages past the vertex one, for the mesh output view.
+    bool geometry = false;
+    bool tessellation = false;
+    /** --shader-object with --geometry or --tessellation: the tessellation control, evaluation and geometry shader objects. */
+    VkShaderEXT moreShaders[3]{};
     // --mixed: --shader-object, and the cube drawn a second time where it already is (as --occluded)
     // with its pipeline, made for dynamic rendering: one pass holding both kinds of draw.
     bool mixed = false;
@@ -313,6 +320,8 @@ struct App
         PFN_vkCmdSetAlphaToCoverageEnableEXT alphaToCoverage;
         PFN_vkCmdSetColorBlendEnableEXT blendEnable;
         PFN_vkCmdSetColorWriteMaskEXT writeMask;
+        PFN_vkCmdSetPatchControlPointsEXT patchControlPoints;
+        PFN_vkCmdSetTessellationDomainOriginEXT domainOrigin;
     } so{};
     // --second-device / --second-queue: a second stream of work each frame, a 256x256 offscreen
     // target cleared in a render pass of its own, on a VkDevice of its own (same GPU) or on a second
@@ -757,6 +766,30 @@ struct App
             }
             devExts.push_back(VK_EXT_SHADER_VIEWPORT_INDEX_LAYER_EXTENSION_NAME);
         }
+        VkPhysicalDeviceFeatures features{};
+        if (geometry || tessellation)
+        {
+            // cube_layered.vert picks the layer in the vertex stage, which a later stage would have
+            // to do instead; libraries would split the stages differently again.
+            if (layered || pipelineLibrary)
+            {
+                fprintf(stderr, "--geometry and --tessellation do not combine with --layered or --pipeline-library\n");
+                exit(1);
+            }
+            VkPhysicalDeviceFeatures supported{};
+            vkGetPhysicalDeviceFeatures(gpu, &supported);
+            if ((geometry && !supported.geometryShader) || (tessellation && !supported.tessellationShader))
+            {
+                fprintf(stderr, "--geometry / --tessellation: the device has no geometry or tessellation shaders\n");
+                exit(1);
+            }
+            features.geometryShader = geometry;
+            features.tessellationShader = tessellation;
+            dci.pEnabledFeatures = &features;
+            // Both views of --multiview through these stages.
+            multiviewFeatures.multiviewGeometryShader = geometry && multiview;
+            multiviewFeatures.multiviewTessellationShader = tessellation && multiview;
+        }
         if (multiview)
         {
             // Core in 1.1. The modes it does not combine with change the targets it renders to, and
@@ -898,6 +931,8 @@ struct App
             so.alphaToCoverage = (PFN_vkCmdSetAlphaToCoverageEnableEXT)fn("vkCmdSetAlphaToCoverageEnableEXT");
             so.blendEnable = (PFN_vkCmdSetColorBlendEnableEXT)fn("vkCmdSetColorBlendEnableEXT");
             so.writeMask = (PFN_vkCmdSetColorWriteMaskEXT)fn("vkCmdSetColorWriteMaskEXT");
+            so.patchControlPoints = (PFN_vkCmdSetPatchControlPointsEXT)fn("vkCmdSetPatchControlPointsEXT");
+            so.domainOrigin = (PFN_vkCmdSetTessellationDomainOriginEXT)fn("vkCmdSetTessellationDomainOriginEXT");
             if (!so.create || !so.bind || !so.vertexInput || !so.writeMask || !so.viewport)
             {
                 fprintf(stderr, "--shader-object: the device has no VK_EXT_shader_object\n");
@@ -2132,15 +2167,25 @@ struct App
         // Pipeline
         VkShaderModule vs = LoadShader(multiview ? "cube_mv.vert.spv" : layered ? "cube_layered.vert.spv" : "cube.vert.spv");
         VkShaderModule fs = LoadShader(heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv");
-        VkPipelineShaderStageCreateInfo stages[2]{};
-        stages[0].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-        stages[0].module = vs;
-        stages[0].pName = "main";
-        stages[1].sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
-        stages[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-        stages[1].module = fs;
-        stages[1].pName = "main";
+        // The vertex and fragment stages, then --tessellation's and --geometry's.
+        VkPipelineShaderStageCreateInfo stages[5]{};
+        uint32_t stageCount = 0;
+        auto addStage = [&](VkShaderStageFlagBits stage, VkShaderModule module) {
+            VkPipelineShaderStageCreateInfo& s = stages[stageCount++];
+            s.sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO;
+            s.stage = stage;
+            s.module = module;
+            s.pName = "main";
+        };
+        addStage(VK_SHADER_STAGE_VERTEX_BIT, vs);
+        addStage(VK_SHADER_STAGE_FRAGMENT_BIT, fs);
+        if (tessellation)
+        {
+            addStage(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, LoadShader("cube.tesc.spv"));
+            addStage(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT, LoadShader("cube.tese.spv"));
+        }
+        if (geometry)
+            addStage(VK_SHADER_STAGE_GEOMETRY_BIT, LoadShader("cube.geom.spv"));
         VkVertexInputBindingDescription vib{0, sizeof(Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
         VkVertexInputAttributeDescription via[3] = {
             {0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(Vertex, pos)},
@@ -2153,7 +2198,9 @@ struct App
         vi.vertexAttributeDescriptionCount = 3;
         vi.pVertexAttributeDescriptions = via;
         VkPipelineInputAssemblyStateCreateInfo ia{VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO};
-        ia.topology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        ia.topology = tessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
+        VkPipelineTessellationStateCreateInfo tess{VK_STRUCTURE_TYPE_PIPELINE_TESSELLATION_STATE_CREATE_INFO};
+        tess.patchControlPoints = 3;
         VkPipelineViewportStateCreateInfo vp{VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO};
         vp.viewportCount = 1;
         vp.scissorCount = 1;
@@ -2190,10 +2237,11 @@ struct App
         dsci.dynamicStateCount = 2;
         dsci.pDynamicStates = dyn;
         VkGraphicsPipelineCreateInfo gpci{VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO};
-        gpci.stageCount = 2;
+        gpci.stageCount = stageCount;
         gpci.pStages = stages;
         gpci.pVertexInputState = &vi;
         gpci.pInputAssemblyState = &ia;
+        gpci.pTessellationState = tessellation ? &tess : nullptr;
         gpci.pViewportState = &vp;
         gpci.pRasterizationState = &rs;
         gpci.pMultisampleState = &ms;
@@ -2264,16 +2312,35 @@ struct App
             CHECK(vkCreateGraphicsPipelines(device, VK_NULL_HANDLE, 1, &gpci, nullptr, &pipeline));
         }
         Name(VK_OBJECT_TYPE_PIPELINE, (uint64_t)pipeline, "Cube pipeline");
-        vkDestroyShaderModule(device, vs, nullptr);
-        vkDestroyShaderModule(device, fs, nullptr);
+        for (uint32_t i = 0; i < stageCount; ++i)
+            vkDestroyShaderModule(device, stages[i].module, nullptr);
         if (shaderObject)
         {
             // The same code as linked shader objects, with the pipeline layout's set layout and push constants.
             std::vector<char> vcode = ReadFile(ExeDir() + (multiview ? "cube_mv.vert.spv" : layered ? "cube_layered.vert.spv" : "cube.vert.spv"));
             std::vector<char> fcode = ReadFile(ExeDir() + (heavy ? "heavy.frag.spv" : alphaTest ? "alpha.frag.spv" : "cube.frag.spv"));
             VkPushConstantRange range{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(float)};
-            VkShaderCreateInfoEXT sci[2]{};
-            for (int i = 0; i < 2; ++i)
+            // Linked in stage order: vertex, [tessellation control, evaluation], [geometry], fragment.
+            std::vector<std::vector<char>> code;
+            std::vector<VkShaderStageFlagBits> order{VK_SHADER_STAGE_VERTEX_BIT};
+            code.push_back(vcode);
+            if (tessellation)
+            {
+                order.push_back(VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT);
+                code.push_back(ReadFile(ExeDir() + "cube.tesc.spv"));
+                order.push_back(VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT);
+                code.push_back(ReadFile(ExeDir() + "cube.tese.spv"));
+            }
+            if (geometry)
+            {
+                order.push_back(VK_SHADER_STAGE_GEOMETRY_BIT);
+                code.push_back(ReadFile(ExeDir() + "cube.geom.spv"));
+            }
+            order.push_back(VK_SHADER_STAGE_FRAGMENT_BIT);
+            code.push_back(fcode);
+            const uint32_t count = (uint32_t)order.size();
+            std::vector<VkShaderCreateInfoEXT> sci(count);
+            for (uint32_t i = 0; i < count; ++i)
             {
                 sci[i].sType = VK_STRUCTURE_TYPE_SHADER_CREATE_INFO_EXT;
                 sci[i].flags = VK_SHADER_CREATE_LINK_STAGE_BIT_EXT;
@@ -2284,16 +2351,33 @@ struct App
                 sci[i].pushConstantRangeCount = 1;
                 sci[i].pPushConstantRanges = &range;
             }
-            sci[0].stage = VK_SHADER_STAGE_VERTEX_BIT;
-            sci[0].nextStage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            sci[0].codeSize = vcode.size();
-            sci[0].pCode = vcode.data();
-            sci[1].stage = VK_SHADER_STAGE_FRAGMENT_BIT;
-            sci[1].codeSize = fcode.size();
-            sci[1].pCode = fcode.data();
-            CHECK(so.create(device, 2, sci, nullptr, shaders));
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                sci[i].stage = order[i];
+                sci[i].nextStage = i + 1 < count ? order[i + 1] : 0;
+                sci[i].codeSize = code[i].size();
+                sci[i].pCode = code[i].data();
+            }
+            std::vector<VkShaderEXT> made(count);
+            CHECK(so.create(device, count, sci.data(), nullptr, made.data()));
+            for (uint32_t i = 0; i < count; ++i)
+            {
+                const VkShaderStageFlagBits stage = order[i];
+                VkShaderEXT& slot = stage == VK_SHADER_STAGE_VERTEX_BIT ? shaders[0]
+                    : stage == VK_SHADER_STAGE_FRAGMENT_BIT             ? shaders[1]
+                    : stage == VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT ? moreShaders[0]
+                    : stage == VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT ? moreShaders[1]
+                                                                        : moreShaders[2];
+                slot = made[i];
+            }
             Name(VK_OBJECT_TYPE_SHADER_EXT, (uint64_t)shaders[0], "Cube vertex shader");
             Name(VK_OBJECT_TYPE_SHADER_EXT, (uint64_t)shaders[1], "Cube fragment shader");
+            if (moreShaders[0])
+                Name(VK_OBJECT_TYPE_SHADER_EXT, (uint64_t)moreShaders[0], "Cube tessellation control shader");
+            if (moreShaders[1])
+                Name(VK_OBJECT_TYPE_SHADER_EXT, (uint64_t)moreShaders[1], "Cube tessellation evaluation shader");
+            if (moreShaders[2])
+                Name(VK_OBJECT_TYPE_SHADER_EXT, (uint64_t)moreShaders[2], "Cube geometry shader");
         }
     }
 
@@ -2695,6 +2779,19 @@ struct App
             // Shader objects: the shaders, and all the state a pipeline would have carried.
             const VkShaderStageFlagBits stageBits[2] = {VK_SHADER_STAGE_VERTEX_BIT, VK_SHADER_STAGE_FRAGMENT_BIT};
             so.bind(cb, 2, stageBits, shaders);
+            // A stage whose feature is on has to be bound, if only to nothing.
+            if (geometry || tessellation)
+            {
+                const VkShaderStageFlagBits more[3] = {VK_SHADER_STAGE_TESSELLATION_CONTROL_BIT, VK_SHADER_STAGE_TESSELLATION_EVALUATION_BIT,
+                    VK_SHADER_STAGE_GEOMETRY_BIT};
+                const uint32_t first = tessellation ? 0 : 2;
+                so.bind(cb, 3 - first, more + first, moreShaders + first);
+            }
+            if (tessellation)
+            {
+                so.patchControlPoints(cb, 3);
+                so.domainOrigin(cb, VK_TESSELLATION_DOMAIN_ORIGIN_UPPER_LEFT);
+            }
             so.viewport(cb, 1, &viewport);
             so.scissor(cb, 1, &scissor);
             so.rasterizerDiscard(cb, VK_FALSE);
@@ -2705,7 +2802,7 @@ struct App
             so.depthCompare(cb, VK_COMPARE_OP_LESS);
             so.depthBias(cb, VK_FALSE);
             so.stencilTest(cb, VK_FALSE);
-            so.topology(cb, VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
+            so.topology(cb, tessellation ? VK_PRIMITIVE_TOPOLOGY_PATCH_LIST : VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
             so.primitiveRestart(cb, VK_FALSE);
             VkVertexInputBindingDescription2EXT binding{VK_STRUCTURE_TYPE_VERTEX_INPUT_BINDING_DESCRIPTION_2_EXT};
             binding.binding = 0;
@@ -3013,6 +3110,9 @@ struct App
         for (VkShaderEXT s : shaders)
             if (s)
                 so.destroy(device, s, nullptr);
+        for (VkShaderEXT s : moreShaders)
+            if (s)
+                so.destroy(device, s, nullptr);
         vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
         vkDestroyDescriptorPool(device, descriptorPool, nullptr);
         vkDestroyDescriptorSetLayout(device, setLayout, nullptr);
@@ -3127,6 +3227,10 @@ int RunApp(int argc, char** argv)
             app.multiview = true;
         else if (!strcmp(argv[i], "--layered"))
             app.layered = true;
+        else if (!strcmp(argv[i], "--geometry"))
+            app.geometry = true;
+        else if (!strcmp(argv[i], "--tessellation"))
+            app.tessellation = true;
         else if (!strcmp(argv[i], "--dynamic-rendering"))
             app.dynamicRenderingPass = true;
         else if (!strcmp(argv[i], "--device-local-descriptors"))

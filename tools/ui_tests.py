@@ -534,6 +534,37 @@ def triangle_mesh(state, log):
         expect(preview.get("webgl") is True and preview.get("edges") == 36, f"the preview did not draw the cube's 12 triangles: {preview}")
 
 
+def triangle_mesh_geometry(state, log):
+    c = capture(state)
+    m = c.get("meshTab") or {}
+    o = m.get("output") or {}
+    preview = m.get("preview") or {}
+    # test/triangle --geometry: the geometry shader emits each of the cube's 12 triangles twice, so
+    # the tab's GS Out is that shader's 72 vertices (transform feedback on the last stage before
+    # rasterization, src/replay/src/overdraw.cpp), drawn as 24 triangles.
+    return check_connected(state, log) + check_capture_basic(state, log) + \
+        expect(bool(m), "--debug-view=mesh opened no mesh tab") + \
+        expect(not m.get("error"), f"the mesh replay failed: {m.get('error')}") + \
+        expect(o.get("stage") == "geometry", f"the output is not the geometry shader's: {o.get('stage')}") + \
+        expect(o.get("measured") is True and o.get("vertices") == 72, f"the geometry shader's 72 vertices were not captured: {o}") + \
+        expect(preview.get("edges") == 72, f"the preview did not draw the 24 triangles: {preview}")
+
+
+def triangle_mesh_multiview(state, log):
+    c = capture(state)
+    m = c.get("meshTab") or {}
+    o = m.get("output") or {}
+    # test/triangle --multiview --tessellation: a multiview draw is replayed once per view with
+    # gl_ViewIndex that view (transform feedback cannot run in a multiview pass), and the tab opens on
+    # view 0's DS Out: 12 patches of six triangles. The pass has no pipeline statistics (see multiview).
+    return check_connected(state, log) + check_capture_basic(state, log, timings=False) + \
+        expect(bool(m), "--debug-view=mesh opened no mesh tab") + \
+        expect(not m.get("error"), f"the mesh replay failed: {m.get('error')}") + \
+        expect(o.get("stage") == "tessellation evaluation", f"the output is not the tessellation evaluation shader's: {o.get('stage')}") + \
+        expect(o.get("view") == 0, f"the tab did not open on view 0: {o.get('view')}") + \
+        expect(o.get("measured") is True and o.get("vertices") == 216, f"the tessellated cube's 216 vertices were not captured: {o}")
+
+
 def triangle_mesh_input(state, log):
     c = capture(state)
     m = c.get("meshTab") or {}
@@ -1820,6 +1851,11 @@ def triangle_cases(triangle):
                           triangle_stencil_overlay, delay_ms=24000))
         cases.append(Case("mesh", launch + ["--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
                           triangle_mesh, delay_ms=20000))
+        cases.append(Case("mesh-geometry", launch + ["--args=--geometry", "--debug-capture", "--debug-view=mesh:out", "--debug-settle=8000"],
+                          triangle_mesh_geometry, delay_ms=20000))
+        cases.append(Case("mesh-multiview", launch + ["--args=--multiview --tessellation", "--debug-capture", "--debug-view=mesh:out",
+                                                      "--debug-settle=8000"],
+                          triangle_mesh_multiview, delay_ms=20000))
         cases.append(Case("overlay", launch + ["--args=--occluded", "--debug-capture", "--debug-view=overlay:depth:last",
                                                "--debug-settle=8000"],
                           triangle_overlay, delay_ms=20000))
