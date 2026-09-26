@@ -1,4 +1,4 @@
-## Unreleased
+## v0.25.0
 
 ### Added
 - Vulkan overdraw, draw overlays, pixel history and **Measure shader** (`measure_shader_cost`) include draws bound with shader objects.
