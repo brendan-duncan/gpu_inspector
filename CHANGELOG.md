@@ -1,3 +1,9 @@
+## v0.26.0
+
+### Fixed
+- The released installers contain the Android layer, so launching on a device no longer fails with "Android layer not found".
+- A layer package on the device signed with another key is uninstalled and replaced rather than failing the launch.
+
 ## v0.25.0
 
 ### Added

@@ -13967,7 +13967,15 @@ var AndroidTarget = class {
       }
       if (installed !== info.versionName) {
         this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
-        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
+        const install = () => adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
+        try {
+          await install();
+        } catch (e) {
+          if (!/INSTALL_FAILED_UPDATE_INCOMPATIBLE/.test(e instanceof Error ? e.message : String(e))) throw e;
+          this.opts.onLog(`the installed ${info.package} was signed with another key: uninstalling it first`);
+          await adb(adbPath, serial, ["uninstall", info.package], INSTALL_TIMEOUT_MS);
+          await install();
+        }
       }
       await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
       return `${info.package} ${info.versionName} (${apkAbi})`;

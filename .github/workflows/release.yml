@@ -14,7 +14,49 @@ permissions:
   contents: write
 
 jobs:
+  # The Android layer, its layer APK and the plugins' Android libraries (tools/build_android.py),
+  # built once and handed to every platform's build below: the device runs the same library
+  # whichever host the installer is for, and one build gives all three the same layer version, so
+  # a device is not sent the layer again when the host changes.
+  android:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # For apksigner and for keytool, which creates the debug key the APK is signed with.
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ninja-build
+
+      # The SDK and the NDK are the runner's own (ANDROID_HOME, ANDROID_NDK_HOME).
+      - name: Build the Android layer
+        run: python tools/build_android.py
+
+      # Several paths, so the artifact is rooted at what they share: build/.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: android-layer
+          if-no-files-found: error
+          path: |
+            build/android/lib
+            build/android/gpu_inspector_layer.apk
+            build/android/gpu_inspector_layer.apk.json
+            build/plugins/*/android
+
   build:
+    needs: android
     strategy:
       fail-fast: false
       matrix:
@@ -161,6 +203,20 @@ jobs:
         if: runner.os == 'Linux'
         run: python tools/gen_hud_shaders.py --check-sources
 
+      # Where tools/build_android.py leaves them in a checkout, which is where
+      # tools/stage_layer.mjs takes them from. Listed so a package without them fails here
+      # rather than shipping unable to launch on Android: the staging step only logs their absence.
+      - uses: actions/download-artifact@v4
+        with:
+          name: android-layer
+          path: build
+      - name: Check the Android layer
+        shell: bash
+        run: >
+          ls -l build/android/lib/*/libVkLayer_inspector_capture.so
+          build/android/gpu_inspector_layer.apk build/android/gpu_inspector_layer.apk.json
+          build/plugins/gles/android/lib/*/libglesinsp_capture.so
+
       # Builds only; the release job below publishes once every platform has built.
       - name: Build installer
         if: runner.os != 'macOS'
@@ -219,8 +275,10 @@ jobs:
     if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     steps:
+      # The installers only: the Android layer's artifact is inside them already.
       - uses: actions/download-artifact@v4
         with:
+          pattern: installer-*
           path: assets
           merge-multiple: true
 

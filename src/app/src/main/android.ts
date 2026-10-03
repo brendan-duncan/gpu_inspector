@@ -419,7 +419,18 @@ export class AndroidTarget {
         this.opts.onLog(`installing the layer package ${info.package} (${installed ? `replacing ${installed}` : "not installed"})`);
         // --force-queryable: Android 11+ package visibility would otherwise hide the layer
         // package from the target, and the loader would not find the library.
-        await adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk], INSTALL_TIMEOUT_MS);
+        const install = (): Promise<string> => adb(adbPath, serial, ["install", "-r", "-d", "--force-queryable", layer.apk!], INSTALL_TIMEOUT_MS);
+        try {
+          await install();
+        } catch (e) {
+          // Signed with another key, which Android will not replace: the package is signed with the
+          // debug key of the machine that built it, so one from a source build and one from a
+          // release, or from two releases, differ. It holds nothing but the library, so it goes.
+          if (!/INSTALL_FAILED_UPDATE_INCOMPATIBLE/.test(e instanceof Error ? e.message : String(e))) throw e;
+          this.opts.onLog(`the installed ${info.package} was signed with another key: uninstalling it first`);
+          await adb(adbPath, serial, ["uninstall", info.package], INSTALL_TIMEOUT_MS);
+          await install();
+        }
       }
       await shell(adbPath, serial, `settings put global gpu_debug_layer_app ${info.package}`);
       return `${info.package} ${info.versionName} (${apkAbi})`;

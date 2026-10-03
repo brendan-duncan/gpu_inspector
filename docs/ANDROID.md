@@ -13,9 +13,7 @@ The host can be Windows, Linux or macOS.
 
 | What | Where it comes from |
 |---|---|
-| Android SDK with `platform-tools` (adb), `build-tools` and a `platforms/android-*` | Android Studio's SDK Manager, or `sdkmanager` from the command-line tools |
-| Android NDK, r26 or newer | SDK Manager, or `sdkmanager "ndk;26.3.11579264"` |
-| A Java runtime, to sign the layer APK | `JAVA_HOME`, `java` on `PATH`, or the JDK bundled with Android Studio |
+| adb, from the Android SDK's `platform-tools` | Android Studio's SDK Manager, or `sdkmanager` from the command-line tools |
 | A device running Android 9 or newer, with USB debugging on | |
 | A **debuggable** build of the application | Android only loads layers into debuggable applications, or on rooted devices |
 
@@ -23,12 +21,21 @@ A Unity player built as a **Development Build** is debuggable, which is the usua
 
 ## Build the Android layer
 
-The released installers do not contain the Android layer — it needs the NDK — so build it once
-from a [source checkout](BUILDING.md):
+The released installers contain the Android layer for arm64-v8a devices, so an installed GPU
+Inspector needs nothing built. A [source checkout](BUILDING.md) builds its own, and so does
+anyone after another ABI, such as x86_64 for an emulator:
 
 ```
 python tools/build_android.py            # arm64-v8a; add --abi arm64-v8a,x86_64 for an emulator
 ```
+
+That needs more of the SDK:
+
+| What | Where it comes from |
+|---|---|
+| `build-tools` and a `platforms/android-*` | Android Studio's SDK Manager, or `sdkmanager` |
+| Android NDK, r26 or newer | SDK Manager, or `sdkmanager "ndk;26.3.11579264"` |
+| A Java runtime, to sign the layer APK | `JAVA_HOME`, `java` on `PATH`, or the JDK bundled with Android Studio |
 
 It finds the SDK and NDK in `ANDROID_HOME`, `ANDROID_NDK_HOME` or the default install location,
 and produces:
@@ -37,8 +44,8 @@ and produces:
 - `build/android/gpu_inspector_layer.apk` — a package with no code of its own, carrying only the
   library
 
-An installed GPU Inspector can use them too: set `INSPECTOR_ANDROID_LAYER_DIR` to the directory
-holding `lib/<abi>/` and the APK.
+An installed GPU Inspector can use them in place of its own: set `INSPECTOR_ANDROID_LAYER_DIR` to
+the directory holding `lib/<abi>/` and the APK.
 
 ## Launching
 
@@ -56,6 +63,8 @@ holding `lib/<abi>/` and the APK.
 The inspector then installs the layer APK when the device does not already have this version
 (Android 10 and newer; on Android 9 it copies the library into the application's data directory
 instead), turns on Android's GPU debug layer settings for that package, starts it, and connects.
+A layer package signed with another key — each build machine signs with its own debug key, so a
+release's differs from a source build's — is uninstalled first, since Android will not replace it.
 The **Log** tab shows the layer's logcat output. Closing the session turns the debug layer
 settings off again.
 
