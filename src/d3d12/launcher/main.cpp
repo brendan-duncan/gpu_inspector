@@ -1005,13 +1005,17 @@ private:
      * Injecting into a child that never renders costs it the load of a library that then sits
      * still: the listener comes up on D3D12CreateDevice (hooks_device.cpp), so a child with no
      * device of its own takes no port and never shows up as something to attach to.
+     *
+     * The image name counts as part of the command line, since a process started with its
+     * application name given apart need not repeat it there: a package launch follows the game
+     * behind an entry like GameLaunchHelper.exe by its name (LaunchPackage).
      */
     void Consider(DWORD pid, const std::wstring& image)
     {
         HANDLE query = OpenProcess(PROCESS_QUERY_INFORMATION | PROCESS_VM_READ, FALSE, pid);
         if (!query)
             return;
-        const std::wstring line = RemoteCommandLine(query);
+        const std::wstring line = RemoteCommandLine(query) + L" " + image;
         CloseHandle(query);
         bool wanted = _all;
         for (const std::wstring& pattern : _patterns)
@@ -1624,7 +1628,7 @@ constexpr DWORD kDebuggerWaitMs = 30000;
  * application's entry, every process the entry starts is followed.
  */
 int LaunchPackage(const PackageApp& app, const std::wstring& exe, const std::wstring& arguments,
-    const std::vector<std::wstring>& dlls, const std::vector<std::wstring>& follow, bool followChildren, int pollMs)
+    const std::vector<std::wstring>& dlls, const std::vector<std::wstring>& followPatterns, bool followChildren, int pollMs)
 {
     Note(L"%s belongs to the package %s: starting it through the app model as %s", exe.c_str(), app.fullName.c_str(), app.aumid.c_str());
     if (const DWORD running = RunningPackageProcess(app.fullName))
@@ -1633,10 +1637,15 @@ int LaunchPackage(const PackageApp& app, const std::wstring& exe, const std::wst
         return kExitFailed;
     }
     const bool viaEntry = _wcsicmp(Normalized(exe).c_str(), app.executable.c_str()) != 0;
+    // Only the game: following every child of the entry would also take the updaters and consoles
+    // a game keeps starting (Flight Simulator's nvngx_update.exe, a conhost.exe each), every one
+    // held while a library goes in.
+    std::vector<std::wstring> follow = followPatterns;
     if (viaEntry && !followChildren)
     {
-        Note(L"the package starts %s, not %s: every process it starts is captured as well", app.executable.c_str(), exe.c_str());
-        followChildren = true;
+        const std::wstring image = exe.substr(exe.find_last_of(L"\\/") + 1);
+        Note(L"the package starts %s, not %s: the processes it starts named %s are captured as well", app.executable.c_str(), exe.c_str(), image.c_str());
+        follow.push_back(image);
     }
 
     HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
