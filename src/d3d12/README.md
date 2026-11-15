@@ -33,6 +33,8 @@ and every swap chain passes through — `D3D12CreateDevice`, `CreateDXGIFactory`
   `taskkill /T`, exit status) sees one process tree. A target the library cannot be injected into
   (a 32-bit executable, a protected process) is still started, with the reason on stderr, so a
   Vulkan application launched the same way keeps working.
+* **Or the app model starts it** (below, "Packaged applications"), when the executable is inside an
+  installed package: a Microsoft Store or Xbox app game cannot be started with `CreateProcess`.
 * **Or the launcher waits for the application to start** (`--watch`, below), for an application the
   inspector does not start itself.
 * **Or it follows the target's own children** (`--follow <text>`), for an application that renders
@@ -111,6 +113,35 @@ boundary" below).
 
 `compile_check.cmd <file.cpp>` compiles one source of the library on its own (no link), for
 checking a file against the headers without building the whole library.
+
+## Packaged applications
+
+An executable inside an installed package (MSIX: the Microsoft Store, the Xbox app's games under
+`C:\XboxGames`) has to run with its package identity, which only the app model gives it, and the
+process the app model starts is not the caller's child. So when the launcher finds an
+`AppxManifest.xml` in the executable's directory or one above it, and the package it names is
+installed, it starts the application the way Visual Studio and PIX do:
+
+1. `IPackageDebugSettings::EnableDebugging` registers a debugger for the package:
+   `dxinsp_package_debugger.exe --package-debugger <pipe>` (the launcher built without a console;
+   the app model refuses a command line over 260 characters, so everything else goes down the pipe).
+2. `IApplicationActivationManager::ActivateApplication` starts `<family>!<application id>`. The app
+   model creates the process suspended and runs the debugger with `-p <pid> -tid <tid>` appended.
+3. The debugger connects to the pipe and says which process it holds; the launcher puts that process
+   into its job (kill on close, so stopping the session ends the game as it ends a launched
+   application) and answers with the libraries, their settings (every variable of its own whose name
+   holds `INSP_`) and what to follow. The debugger injects as a launch does, resumes the thread and
+   stands in for the process, following its children, with its notes going back down the pipe.
+4. The launcher turns the hook off as soon as a debugger has attached, waits for the application
+   and every debugger, and exits with the application's exit code.
+
+A debugger that finds no pipe was left registered by a launcher that died first: it turns the hook
+off and lets the application go untouched. A package with a process already running is refused,
+since that process has its device. An Xbox app game's entry is `GameLaunchHelper.exe`, which starts
+the game proper; when the executable given is not the entry, every child of the entry is followed.
+The application gets the inspector's library settings but not the rest of the session's
+environment or working directory, which the app model decides. `--no-package` starts such an
+executable directly instead.
 
 ## Waiting for an application to start
 

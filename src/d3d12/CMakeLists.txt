@@ -124,8 +124,16 @@ target_compile_definitions(dxinsp_launch PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _C
 # winmm: a millisecond timer while --watch polls for a process to start. psapi: EnumProcesses,
 # which is a fraction of the cost of a toolhelp snapshot when a poll has to be that quick
 # (launcher/main.cpp).
-target_link_libraries(dxinsp_launch PRIVATE winmm psapi)
+target_link_libraries(dxinsp_launch PRIVATE winmm psapi ole32 uuid advapi32)
 set_target_properties(dxinsp_launch PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+
+# The same launcher without a console, which is what the app model runs as a packaged
+# application's debugger (launcher/main.cpp, "Package"): a console program would open a window.
+add_executable(dxinsp_package_debugger WIN32 launcher/main.cpp)
+target_compile_definitions(dxinsp_package_debugger PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS UNICODE _UNICODE)
+target_link_options(dxinsp_package_debugger PRIVATE /ENTRY:wmainCRTStartup)
+target_link_libraries(dxinsp_package_debugger PRIVATE winmm psapi ole32 uuid advapi32)
+set_target_properties(dxinsp_package_debugger PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
 
 # The shader tool shares the reflection code with the library; it needs the log and the generated
 # enum tables the code refers to, nothing else of the library.

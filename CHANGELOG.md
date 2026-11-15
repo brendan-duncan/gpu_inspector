@@ -1,3 +1,8 @@
+## Unreleased
+
+### Added
+- Windows launches an executable inside a Microsoft Store or Xbox app package through the app model, with the capture libraries injected before its first instruction.
+
 ## v0.26.0
 
 ### Fixed

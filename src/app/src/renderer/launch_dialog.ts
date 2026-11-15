@@ -314,9 +314,10 @@ export class LaunchDialog extends Dialog {
           + "A child that never makes a device takes no port, so the only cost is loading the library into it; "
           + "whichever child renders shows up to attach to. Leave the pattern below empty to take them all, or "
           + "fill it in with !text to leave some alone. Windows and Direct3D 12 only \u2014 a Vulkan child already "
-          + "inherits the layer's environment from its parent. It follows by descent, so it cannot reach a "
-          + "packaged (Microsoft Store, Xbox app) application, which Windows starts for you under its own "
-          + "activation host: wait for one of those by name with the \"Direct3D 12 application to wait for\" target." });
+          + "inherits the layer's environment from its parent. A packaged (Microsoft Store, Xbox app) "
+          + "application is started through Windows' app model, and when the executable given is not the "
+          + "package's own entry (an Xbox app game behind GameLaunchHelper.exe) every process it starts is "
+          + "captured whether or not this is ticked." });
       this._followChildrenRow = row.element;
       if (hostPlatform !== "win32") row.element.style.display = "none";
     }

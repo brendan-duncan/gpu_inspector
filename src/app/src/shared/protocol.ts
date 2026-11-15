@@ -1121,10 +1121,10 @@ export interface LaunchConfig {
    * nobody can name in advance (a game behind its own launcher). A child that never makes a
    * device takes no port, so this costs nothing but the load.
    *
-   * It reaches a child by descent, so it cannot reach a packaged (MSIX/UWP) application: the app
-   * model starts that one for the caller, and the process that appears descends from the
-   * activation host rather than from whatever asked for it. The "waitD3D12" target catches those,
-   * since it goes by image name.
+   * An `exe` inside an installed package (Microsoft Store, Xbox app) is started through the app
+   * model rather than by the launcher (src/d3d12/launcher/main.cpp, "Package"), and the children are
+   * followed from the process the app model creates; when `exe` is not the package's entry, they
+   * are followed whatever this says.
    */
   followChildren?: boolean;
   capture: QueuedCapture;

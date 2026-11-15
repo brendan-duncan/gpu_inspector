@@ -77,7 +77,7 @@ if (process.platform === "darwin") {
     } else {
       console.log(`no dxinsp_replay.exe in ${d3d12Src}: the package will not export D3D12 captures to C++`);
     }
-    for (const f of ["dxinsp_capture.dll", "dxinsp_launch.exe", "dxinsp_shader.exe"]) {
+    for (const f of ["dxinsp_capture.dll", "dxinsp_launch.exe", "dxinsp_package_debugger.exe", "dxinsp_shader.exe"]) {
       if (fs.existsSync(path.join(d3d12Src, f))) {
         fs.copyFileSync(path.join(d3d12Src, f), path.join(dst, f));
         console.log(`staged ${f} from ${d3d12Src}`);

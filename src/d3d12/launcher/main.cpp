@@ -28,10 +28,15 @@
 // Exclusions still apply, so --follow-children --follow !--type=renderer is "everything but those".
 //
 // Following is by descent: a child counts when one of its ancestors is the target. That is the
-// shape of the problem for a launcher that starts the game itself, and it is also why it cannot
-// reach a packaged (MSIX/UWP) application, which the app model starts for the caller -- the
-// process that appears descends from the activation host, not from whoever asked for it. Those
-// are caught with --watch, which goes by image name and does not care whose child it is.
+// shape of the problem for a launcher that starts the game itself.
+//
+// **Package.** An <exe> inside an installed package (MSIX: the Microsoft Store, the Xbox app's
+// games under C:\XboxGames) cannot be started with CreateProcess -- it would run without its
+// package identity -- and the process the app model starts for us is not our child. So the
+// launcher registers itself as the package's debugger (IPackageDebugSettings, as Visual Studio and
+// PIX do) and activates the application; the app model creates the process suspended and runs
+// `dxinsp_launch --package-debugger ... -p <pid> -tid <tid>`, which injects as a launch does and
+// resumes it (LaunchPackage, PackageDebugger). --no-package starts such an <exe> directly instead.
 //
 // This is how PIX and RenderDoc get into Chrome; Chromium's
 // own --gpu-launcher hook, which would start the GPU process through this launcher, is not a
@@ -60,19 +65,26 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 #include <windows.h>
+#include <appmodel.h>
+#include <objbase.h>
 #include <psapi.h>
+#include <shobjidl.h>
 #include <timeapi.h>
 #include <tlhelp32.h>
 #include <winternl.h>
 
 #include <algorithm>
+#include <chrono>
+#include <condition_variable>
 #include <cstdio>
 #include <cwchar>
 #include <cwctype>
 #include <functional>
 #include <map>
+#include <mutex>
 #include <set>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -87,14 +99,58 @@ constexpr int kExitTimedOut = 3;
 /** How long a matching process may have been running before its device is probably already made. */
 constexpr unsigned long long kLateMs = 1000;
 
+/**
+ * Package debugger mode (PackageDebugger): the app model started us, so nobody reads our stderr, and
+ * the notes go down this pipe to the launcher that asked for the package instead, which prints them.
+ */
+HANDLE g_notePipe = nullptr;
+/** Notes come from the pipe threads of package mode as well as the main thread. */
+std::mutex g_noteLock;
+
+std::string Utf8(const std::wstring& s)
+{
+    if (s.empty())
+        return std::string();
+    int n = WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0, nullptr, nullptr);
+    std::string out((size_t)n, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, s.data(), (int)s.size(), out.data(), n, nullptr, nullptr);
+    return out;
+}
+
+std::wstring Wide(const std::string& s)
+{
+    if (s.empty())
+        return std::wstring();
+    int n = MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), nullptr, 0);
+    std::wstring out((size_t)n, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, s.data(), (int)s.size(), out.data(), n);
+    return out;
+}
+
+/** One line on stderr as it stands, "dxinsp: " and all (a note forwarded from a package debugger). */
+void NoteLine(const std::wstring& line)
+{
+    std::lock_guard<std::mutex> lock(g_noteLock);
+    fwprintf(stderr, L"%s\n", line.c_str());
+    fflush(stderr);
+}
+
 void Note(const wchar_t* fmt, ...)
 {
+    wchar_t buf[4096];
     va_list ap;
     va_start(ap, fmt);
-    fwprintf(stderr, L"dxinsp: ");
-    vfwprintf(stderr, fmt, ap);
-    fwprintf(stderr, L"\n");
+    _vsnwprintf_s(buf, _countof(buf), _TRUNCATE, fmt, ap);
     va_end(ap);
+    std::lock_guard<std::mutex> lock(g_noteLock);
+    if (g_notePipe)
+    {
+        const std::string line = "dxinsp: " + Utf8(buf) + "\n";
+        DWORD written = 0;
+        WriteFile(g_notePipe, line.data(), (DWORD)line.size(), &written, nullptr);
+        return;
+    }
+    fwprintf(stderr, L"dxinsp: %s\n", buf);
     fflush(stderr);
 }
 
@@ -1126,6 +1182,712 @@ int Watch(const WatchOptions& o)
     return (int)code;
 }
 
+// ---------------------------------------------------------------------------------------------
+// Package mode: a packaged (MSIX, Microsoft Store, Xbox app) application
+
+/** An installed package's application, as the app model knows it. */
+struct PackageApp
+{
+    /** Microsoft.FlightSimulator_1.39.12.0_x64__8wekyb3d8bbwe */
+    std::wstring fullName;
+    /** The application user model ID ActivateApplication takes: <family name>!<application id>. */
+    std::wstring aumid;
+    /** The application's own executable, the manifest's Executable under the install directory. */
+    std::wstring executable;
+};
+
+/** The file read as UTF-8 (a manifest), empty when it cannot be. */
+std::wstring ReadTextFile(const std::wstring& path)
+{
+    HANDLE f = CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (f == INVALID_HANDLE_VALUE)
+        return std::wstring();
+    std::string bytes;
+    char buf[65536];
+    DWORD read = 0;
+    while (ReadFile(f, buf, sizeof(buf), &read, nullptr) && read > 0)
+        bytes.append(buf, read);
+    CloseHandle(f);
+    if (bytes.size() >= 3 && (unsigned char)bytes[0] == 0xEF && (unsigned char)bytes[1] == 0xBB && (unsigned char)bytes[2] == 0xBF)
+        bytes.erase(0, 3);
+    return Wide(bytes);
+}
+
+/** The XML start tags named `name` (unprefixed), each from "<" to its ">". */
+std::vector<std::wstring> XmlTags(const std::wstring& doc, const std::wstring& name)
+{
+    std::vector<std::wstring> tags;
+    const std::wstring open = L"<" + name;
+    for (size_t at = doc.find(open); at != std::wstring::npos; at = doc.find(open, at + 1))
+    {
+        const size_t after = at + open.size();
+        if (after >= doc.size() || !(iswspace(doc[after]) || doc[after] == L'/' || doc[after] == L'>'))
+            continue;   // <Applications>, say, when <Application was asked for
+        const size_t end = doc.find(L'>', after);
+        if (end == std::wstring::npos)
+            break;
+        tags.push_back(doc.substr(at, end - at + 1));
+    }
+    return tags;
+}
+
+/** An attribute of a start tag, its five predefined entities decoded; empty when it is absent. */
+std::wstring XmlAttribute(const std::wstring& tag, const std::wstring& name)
+{
+    for (size_t at = tag.find(name); at != std::wstring::npos; at = tag.find(name, at + 1))
+    {
+        if (at == 0 || !iswspace(tag[at - 1]))
+            continue;
+        size_t p = at + name.size();
+        while (p < tag.size() && iswspace(tag[p]))
+            ++p;
+        if (p >= tag.size() || tag[p] != L'=')
+            continue;
+        ++p;
+        while (p < tag.size() && iswspace(tag[p]))
+            ++p;
+        if (p >= tag.size() || (tag[p] != L'"' && tag[p] != L'\''))
+            continue;
+        const wchar_t quote = tag[p++];
+        const size_t end = tag.find(quote, p);
+        if (end == std::wstring::npos)
+            return std::wstring();
+        std::wstring raw = tag.substr(p, end - p), out;
+        static const std::pair<const wchar_t*, wchar_t> kEntities[] = {
+            {L"&amp;", L'&'}, {L"&quot;", L'"'}, {L"&apos;", L'\''}, {L"&lt;", L'<'}, {L"&gt;", L'>'}};
+        for (size_t i = 0; i < raw.size();)
+        {
+            bool decoded = false;
+            if (raw[i] == L'&')
+            {
+                for (const auto& [text, c] : kEntities)
+                {
+                    if (raw.compare(i, wcslen(text), text) == 0)
+                    {
+                        out += c;
+                        i += wcslen(text);
+                        decoded = true;
+                        break;
+                    }
+                }
+            }
+            if (!decoded)
+                out += raw[i++];
+        }
+        return out;
+    }
+    return std::wstring();
+}
+
+/** The path with every junction and link resolved, so two spellings of one directory compare equal. */
+std::wstring FinalPath(const std::wstring& path)
+{
+    HANDLE h = CreateFileW(path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+        nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
+    if (h == INVALID_HANDLE_VALUE)
+        return Normalized(path);
+    wchar_t buf[MAX_PATH * 4];
+    DWORD n = GetFinalPathNameByHandleW(h, buf, (DWORD)_countof(buf), FILE_NAME_NORMALIZED);
+    CloseHandle(h);
+    if (n == 0 || n >= _countof(buf))
+        return Normalized(path);
+    return std::wstring(buf, n);
+}
+
+/**
+ * The installed package `exe` belongs to. A packaged application cannot be started by
+ * CreateProcess the way an ordinary one is -- it would run without its package identity, which
+ * a Store game needs for its licence, its storage and its own launcher -- so a launch of one goes
+ * through the app model instead (LaunchPackage).
+ *
+ * The package is found from the AppxManifest.xml in the executable's directory or one above it:
+ * its Identity names the package family, which with the manifest's directory picks the installed
+ * package, and the Application whose Executable is `exe` (or else the first) is what is activated.
+ * Returns 1 with `app` filled in, 0 when `exe` is not in a package, and -1 with `why` set when there
+ * is a manifest but no installed package to go with it (an unregistered build layout, say).
+ */
+int FindPackageApp(const std::wstring& exe, PackageApp& app, std::wstring& why)
+{
+    std::wstring dir = Normalized(exe);
+    std::wstring manifest;
+    for (;;)
+    {
+        const size_t slash = dir.find_last_of(L'\\');
+        if (slash == std::wstring::npos || slash < 3)
+            return 0;
+        dir.erase(slash);
+        const std::wstring candidate = dir + L"\\AppxManifest.xml";
+        if (GetFileAttributesW(candidate.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            manifest = candidate;
+            break;
+        }
+    }
+    const std::wstring doc = ReadTextFile(manifest);
+    const std::vector<std::wstring> identity = XmlTags(doc, L"Identity");
+    const std::vector<std::wstring> applications = XmlTags(doc, L"Application");
+    if (identity.empty() || applications.empty())
+    {
+        why = manifest + L" names no package identity or no application";
+        return -1;
+    }
+    std::wstring name = XmlAttribute(identity[0], L"Name");
+    std::wstring publisher = XmlAttribute(identity[0], L"Publisher");
+    PACKAGE_ID id{};
+    id.name = name.data();
+    id.publisher = publisher.data();
+    wchar_t family[PACKAGE_FAMILY_NAME_MAX_LENGTH + 1];
+    UINT32 familyLength = (UINT32)_countof(family);
+    if (PackageFamilyNameFromId(&id, &familyLength, family) != ERROR_SUCCESS)
+    {
+        why = manifest + L": no package family name for " + name;
+        return -1;
+    }
+
+    UINT32 count = 0, bufferLength = 0;
+    LONG rc = GetPackagesByPackageFamily(family, &count, nullptr, &bufferLength, nullptr);
+    if ((rc != ERROR_SUCCESS && rc != ERROR_INSUFFICIENT_BUFFER) || count == 0)
+    {
+        why = std::wstring(L"the package ") + family + L" is not installed for this user (" + manifest + L")";
+        return -1;
+    }
+    std::vector<PWSTR> fullNames(count);
+    std::vector<wchar_t> buffer(bufferLength);
+    if (GetPackagesByPackageFamily(family, &count, fullNames.data(), &bufferLength, buffer.data()) != ERROR_SUCCESS || count == 0)
+    {
+        why = std::wstring(L"the installed packages of ") + family + L" cannot be listed";
+        return -1;
+    }
+    // The family can have more than one package installed (another version, another
+    // architecture): the one installed where the manifest is is the one meant. The Xbox app's
+    // games are reached through a junction, so the directories are compared resolved.
+    const std::wstring wantedDir = FinalPath(dir);
+    std::wstring chosen;
+    for (UINT32 i = 0; i < count && chosen.empty(); ++i)
+    {
+        UINT32 pathLength = 0;
+        if (GetPackagePathByFullName(fullNames[i], &pathLength, nullptr) != ERROR_INSUFFICIENT_BUFFER)
+            continue;
+        std::wstring path(pathLength, L'\0');
+        if (GetPackagePathByFullName(fullNames[i], &pathLength, path.data()) != ERROR_SUCCESS)
+            continue;
+        path.resize(wcslen(path.c_str()));
+        if (_wcsicmp(FinalPath(path).c_str(), wantedDir.c_str()) == 0)
+            chosen = fullNames[i];
+    }
+    if (chosen.empty())
+    {
+        chosen = fullNames[0];
+        Note(L"none of the installed packages of %s is installed at %s; using %s", family, dir.c_str(), chosen.c_str());
+    }
+
+    const std::wstring wantedExe = Normalized(exe);
+    const std::wstring* picked = &applications[0];
+    for (const std::wstring& a : applications)
+    {
+        const std::wstring executable = Normalized(dir + L"\\" + XmlAttribute(a, L"Executable"));
+        if (_wcsicmp(executable.c_str(), wantedExe.c_str()) == 0)
+        {
+            picked = &a;
+            break;
+        }
+    }
+    app.fullName = chosen;
+    app.aumid = std::wstring(family) + L"!" + XmlAttribute(*picked, L"Id");
+    app.executable = Normalized(dir + L"\\" + XmlAttribute(*picked, L"Executable"));
+    return 1;
+}
+
+/** Turns the app model's debugger hook for the package on (with `debugger`'s command line) or off (null). */
+HRESULT SetPackageDebugging(const std::wstring& fullName, const std::wstring* debugger)
+{
+    IPackageDebugSettings* settings = nullptr;
+    HRESULT hr = CoCreateInstance(CLSID_PackageDebugSettings, nullptr, CLSCTX_ALL, IID_PPV_ARGS(&settings));
+    if (FAILED(hr))
+        return hr;
+    hr = debugger ? settings->EnableDebugging(fullName.c_str(), debugger->c_str(), nullptr)
+                  : settings->DisableDebugging(fullName.c_str());
+    settings->Release();
+    return hr;
+}
+
+/** A running process of the package, 0 when none is: it made its device long ago, so it cannot be captured. */
+DWORD RunningPackageProcess(const std::wstring& fullName)
+{
+    std::vector<DWORD> pids(4096);
+    DWORD bytes = 0;
+    if (!EnumProcesses(pids.data(), (DWORD)(pids.size() * sizeof(DWORD)), &bytes))
+        return 0;
+    for (size_t i = 0; i < bytes / sizeof(DWORD); ++i)
+    {
+        HANDLE process = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pids[i]);
+        if (!process)
+            continue;
+        wchar_t name[PACKAGE_FULL_NAME_MAX_LENGTH + 1];
+        UINT32 length = (UINT32)_countof(name);
+        const bool same = GetPackageFullName(process, &length, name) == ERROR_SUCCESS && _wcsicmp(name, fullName.c_str()) == 0;
+        CloseHandle(process);
+        if (same)
+            return pids[i];
+    }
+    return 0;
+}
+
+/**
+ * The launcher's library settings, for a process that does not inherit our environment: every
+ * variable whose name holds "INSP_" (DXINSP_PORT, D3D11INSP_LOG, a plugin's), which is what the
+ * inspector gives the launcher for the libraries to read (d3d12.ts, plugins.ts).
+ */
+std::vector<std::wstring> LibrarySettingsFromEnvironment()
+{
+    std::vector<std::wstring> entries;
+    wchar_t* block = GetEnvironmentStringsW();
+    if (!block)
+        return entries;
+    for (const wchar_t* e = block; *e; e += wcslen(e) + 1)
+    {
+        const std::wstring entry = e;
+        const size_t eq = entry.find(L'=', 1);
+        if (eq == std::wstring::npos)
+            continue;
+        std::wstring name = entry.substr(0, eq);
+        std::transform(name.begin(), name.end(), name.begin(), [](wchar_t c) { return (wchar_t)towupper(c); });
+        if (name.find(L"INSP_") != std::wstring::npos)
+            entries.push_back(entry);
+    }
+    FreeEnvironmentStringsW(block);
+    return entries;
+}
+
+/** The package whose debugger hook is on, so a Ctrl+C or a closed console still turns it off. */
+std::wstring g_debuggedPackage;
+
+BOOL WINAPI DisableDebuggingOnExit(DWORD)
+{
+    if (!g_debuggedPackage.empty())
+    {
+        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        SetPackageDebugging(g_debuggedPackage, nullptr);
+    }
+    return FALSE;
+}
+
+/**
+ * The launcher's end of the pipe its package debuggers talk down. Each debugger (PackageDebugger)
+ * says which process it holds; that process goes into our job before the debugger lets it go, and
+ * everything else it writes is a note to print. A debugger keeps its end open for as long as the
+ * process (and, following, its tree) runs, which is how the launcher knows when the application
+ * has finished.
+ */
+class PackagePipe
+{
+public:
+    explicit PackagePipe(HANDLE job) : _job(job)
+    {
+        _name = L"\\\\.\\pipe\\dxinsp-package-" + std::to_wstring(GetCurrentProcessId()) + L"-" + std::to_wstring(GetTickCount64());
+    }
+
+    /** What each debugger is told before "go": its libraries, their settings, what to follow. */
+    void SetConfig(std::string config) { _config = std::move(config); }
+
+    const std::wstring& name() const { return _name; }
+
+    /** Makes the first instance (so no debugger can come before the pipe exists) and serves from then on. */
+    bool Start()
+    {
+        HANDLE first = Instance();
+        if (first == INVALID_HANDLE_VALUE)
+            return false;
+        std::thread([this, first] { Serve(first); }).detach();
+        return true;
+    }
+
+    /** Waits until a debugger has said which process it holds, or `ms` pass; whether one did. */
+    bool WaitForAttach(DWORD ms)
+    {
+        std::unique_lock<std::mutex> lock(_lock);
+        return _changed.wait_for(lock, std::chrono::milliseconds(ms), [this] { return _attached > 0; });
+    }
+
+    /** Waits until every debugger has hung up. */
+    void WaitForDebuggers()
+    {
+        std::unique_lock<std::mutex> lock(_lock);
+        _changed.wait(lock, [this] { return _open == 0; });
+    }
+
+private:
+    HANDLE Instance()
+    {
+        return CreateNamedPipeW(_name.c_str(), PIPE_ACCESS_DUPLEX, PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
+            PIPE_UNLIMITED_INSTANCES, 4096, 4096, 0, nullptr);
+    }
+
+    void Serve(HANDLE pipe)
+    {
+        for (;;)
+        {
+            const bool connected = ConnectNamedPipe(pipe, nullptr) || GetLastError() == ERROR_PIPE_CONNECTED;
+            // The next instance before this one is served, so a second debugger never finds none.
+            HANDLE next = Instance();
+            if (connected)
+            {
+                {
+                    std::lock_guard<std::mutex> lock(_lock);
+                    ++_open;
+                }
+                std::thread([this, pipe] { Converse(pipe); }).detach();
+            }
+            else
+            {
+                CloseHandle(pipe);
+            }
+            if (next == INVALID_HANDLE_VALUE)
+                return;
+            pipe = next;
+        }
+    }
+
+    void Converse(HANDLE pipe)
+    {
+        std::string pending;
+        char buf[4096];
+        DWORD read = 0;
+        while (ReadFile(pipe, buf, sizeof(buf), &read, nullptr) && read > 0)
+        {
+            pending.append(buf, read);
+            for (size_t nl; (nl = pending.find('\n')) != std::string::npos;)
+            {
+                std::string line = pending.substr(0, nl);
+                pending.erase(0, nl + 1);
+                if (!line.empty() && line.back() == '\r')
+                    line.pop_back();
+                if (line.rfind("attach ", 0) == 0)
+                    Attach(pipe, (DWORD)strtoul(line.c_str() + 7, nullptr, 10));
+                else if (!line.empty())
+                    NoteLine(Wide(line));
+            }
+        }
+        DisconnectNamedPipe(pipe);
+        CloseHandle(pipe);
+        std::lock_guard<std::mutex> lock(_lock);
+        --_open;
+        _changed.notify_all();
+    }
+
+    /**
+     * Puts the process into the launcher's job, so that stopping the session (which ends the
+     * launcher, the job's last handle) ends the application and everything it started, as it does
+     * for an application the launcher started itself. The process is still suspended, so its
+     * children are all born in the job.
+     */
+    void Attach(HANDLE pipe, DWORD pid)
+    {
+        HANDLE process = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, FALSE, pid);
+        if (!process || !AssignProcessToJobObject(_job, process))
+            Note(L"pid %lu could not be put in the launcher's job (error %lu): stopping the session will not end it", pid, GetLastError());
+        if (process)
+            CloseHandle(process);
+        const std::string reply = _config + "go\n";
+        DWORD written = 0;
+        WriteFile(pipe, reply.data(), (DWORD)reply.size(), &written, nullptr);
+        std::lock_guard<std::mutex> lock(_lock);
+        ++_attached;
+        _changed.notify_all();
+    }
+
+    std::wstring _name;
+    std::string _config;
+    HANDLE _job;
+    std::mutex _lock;
+    std::condition_variable _changed;
+    int _open = 0;
+    int _attached = 0;
+};
+
+/** How long after activation the app model has to run our debugger before we say something is wrong. */
+constexpr DWORD kDebuggerWaitMs = 30000;
+
+/**
+ * Starts a packaged application through the app model, the library going in before its first
+ * instruction. This is how Visual Studio and PIX start one: IPackageDebugSettings::EnableDebugging
+ * registers a debugger command line for the package, and the next activation creates the
+ * application's process suspended and runs that command with "-p <pid> -tid <thread id>" appended.
+ * Our debugger is this launcher again (PackageDebugger), which injects exactly as a launch does
+ * into a process it created suspended, and resumes the thread. The hook is turned off again as soon
+ * as the process is caught, so the package starts normally the next time.
+ *
+ * The application's process is not our child, so its output never reaches us and its environment
+ * is not ours: the debugger hands the libraries their settings as a watch does, and its own notes
+ * come back through a pipe (PackagePipe). A Store game's entry is often a launcher of its own
+ * (the Xbox app's GameLaunchHelper.exe) that starts the game proper; when `exe` is not the
+ * application's entry, every process the entry starts is followed.
+ */
+int LaunchPackage(const PackageApp& app, const std::wstring& exe, const std::wstring& arguments,
+    const std::vector<std::wstring>& dlls, const std::vector<std::wstring>& follow, bool followChildren, int pollMs)
+{
+    Note(L"%s belongs to the package %s: starting it through the app model as %s", exe.c_str(), app.fullName.c_str(), app.aumid.c_str());
+    if (const DWORD running = RunningPackageProcess(app.fullName))
+    {
+        Note(L"the package is already running (pid %lu); close it first: an application that has made its device cannot be captured", running);
+        return kExitFailed;
+    }
+    const bool viaEntry = _wcsicmp(Normalized(exe).c_str(), app.executable.c_str()) != 0;
+    if (viaEntry && !followChildren)
+    {
+        Note(L"the package starts %s, not %s: every process it starts is captured as well", app.executable.c_str(), exe.c_str());
+        followChildren = true;
+    }
+
+    HRESULT hr = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
+    if (FAILED(hr))
+    {
+        Note(L"COM could not be initialized (0x%08lx)", (unsigned long)hr);
+        return kExitFailed;
+    }
+    HANDLE job = CreateJobObjectW(nullptr, nullptr);
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION limits{};
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    if (job)
+        SetInformationJobObject(job, JobObjectExtendedLimitInformation, &limits, sizeof(limits));
+    PackagePipe pipe(job);
+
+    bool debugging = false;
+    if (dlls.empty())
+    {
+        Note(L"no --dll given: the application runs without the D3D12 capture library");
+    }
+    else if (!pipe.Start())
+    {
+        Note(L"the pipe for the package debugger could not be made (error %lu); the application runs without the capture libraries", GetLastError());
+    }
+    else
+    {
+        // The debugger, preferably the windowless build of this launcher, or the app model opens
+        // a console window for it.
+        wchar_t self[MAX_PATH * 2];
+        const DWORD selfLength = GetModuleFileNameW(nullptr, self, (DWORD)_countof(self));
+        std::wstring debugger(self, selfLength);
+        const std::wstring windowless = debugger.substr(0, debugger.find_last_of(L'\\') + 1) + L"dxinsp_package_debugger.exe";
+        if (GetFileAttributesW(windowless.c_str()) != INVALID_FILE_ATTRIBUTES)
+            debugger = windowless;
+        // The app model refuses a debugger command line over 260 characters, so everything else
+        // goes down the pipe (PackagePipe::Attach).
+        const std::wstring command = Quote(debugger) + L" --package-debugger " + Quote(pipe.name());
+        std::string config;
+        for (const std::wstring& dll : dlls)
+            config += "dll " + Utf8(dll) + "\n";
+        for (const std::wstring& entry : LibrarySettingsFromEnvironment())
+            config += "env " + Utf8(entry) + "\n";
+        for (const std::wstring& f : follow)
+            config += "follow " + Utf8(f) + "\n";
+        if (followChildren)
+            config += "follow-children\n";
+        config += "poll " + std::to_string(pollMs) + "\n";
+        pipe.SetConfig(config);
+        hr = SetPackageDebugging(app.fullName, &command);
+        if (FAILED(hr))
+        {
+            Note(L"the package's debugger could not be set (0x%08lx); the application runs without the capture libraries", (unsigned long)hr);
+        }
+        else
+        {
+            debugging = true;
+            g_debuggedPackage = app.fullName;
+            SetConsoleCtrlHandler(DisableDebuggingOnExit, TRUE);
+        }
+    }
+
+    IApplicationActivationManager* activation = nullptr;
+    hr = CoCreateInstance(CLSID_ApplicationActivationManager, nullptr, CLSCTX_LOCAL_SERVER, IID_PPV_ARGS(&activation));
+    DWORD pid = 0;
+    if (SUCCEEDED(hr))
+    {
+        CoAllowSetForegroundWindow(activation, nullptr);
+        hr = activation->ActivateApplication(app.aumid.c_str(), arguments.empty() ? nullptr : arguments.c_str(), AO_NONE, &pid);
+        activation->Release();
+    }
+    if (FAILED(hr))
+    {
+        Note(L"activating %s failed (0x%08lx)", app.aumid.c_str(), (unsigned long)hr);
+        if (debugging)
+            SetPackageDebugging(app.fullName, nullptr);
+        CoUninitialize();
+        return kExitFailed;
+    }
+    Note(L"activated %s: pid %lu", app.aumid.c_str(), pid);
+    if (debugging)
+    {
+        if (!pipe.WaitForAttach(kDebuggerWaitMs))
+        {
+            Note(L"warning: the app model never ran the package debugger, so nothing was injected and nothing will be captured");
+        }
+        SetPackageDebugging(app.fullName, nullptr);
+        g_debuggedPackage.clear();
+    }
+
+    DWORD code = 0;
+    HANDLE process = OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+    if (process)
+    {
+        WaitForSingleObject(process, INFINITE);
+        GetExitCodeProcess(process, &code);
+        CloseHandle(process);
+    }
+    // The debugger stays for as long as the tree it follows: the game behind a launcher entry
+    // outlives the entry.
+    if (debugging)
+        pipe.WaitForDebuggers();
+    Note(L"pid %lu exited with code %lu", pid, code);
+    CoUninitialize();
+    return (int)code;
+}
+
+/**
+ * The package debugger: run by the app model with the application's process created suspended (see
+ * LaunchPackage). Injects the libraries, lets the main thread go and stands in for the application
+ * (following its children when asked) for the launcher at the other end of `pipeName`.
+ *
+ * When the pipe is not there the launcher that set the hook up died before it could take it off
+ * again (killed, say), and this activation is the user starting the application normally: the hook
+ * is taken off and the application let go untouched.
+ */
+int PackageDebugger(const std::wstring& pipeName, DWORD pid, DWORD tid)
+{
+    HANDLE thread = tid ? OpenThread(THREAD_SUSPEND_RESUME, FALSE, tid) : nullptr;
+    HANDLE pipe = CreateFileW(pipeName.c_str(), GENERIC_READ | GENERIC_WRITE, 0, nullptr, OPEN_EXISTING, 0, nullptr);
+    if (pipe == INVALID_HANDLE_VALUE)
+    {
+        HANDLE query = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+        wchar_t fullName[PACKAGE_FULL_NAME_MAX_LENGTH + 1];
+        UINT32 length = (UINT32)_countof(fullName);
+        if (query && GetPackageFullName(query, &length, fullName) == ERROR_SUCCESS &&
+            SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED)))
+        {
+            SetPackageDebugging(fullName, nullptr);
+        }
+        if (query)
+            CloseHandle(query);
+        if (thread)
+            ResumeThread(thread);
+        return 0;
+    }
+    g_notePipe = pipe;
+
+    // The launcher answers once the process is in its job, with what the command line has no room
+    // for (the app model takes 260 characters of it): one setting a line, then "go".
+    std::vector<std::wstring> dlls, env, follow;
+    bool followChildren = false;
+    int pollMs = (int)kFollowPollMs;
+    {
+        const std::string hello = "attach " + std::to_string(pid) + "\n";
+        DWORD io = 0;
+        WriteFile(pipe, hello.data(), (DWORD)hello.size(), &io, nullptr);
+        std::string pending;
+        char buf[4096];
+        bool done = false;
+        while (!done && ReadFile(pipe, buf, sizeof(buf), &io, nullptr) && io > 0)
+        {
+            pending.append(buf, io);
+            for (size_t nl; !done && (nl = pending.find('\n')) != std::string::npos;)
+            {
+                const std::string line = pending.substr(0, nl);
+                pending.erase(0, nl + 1);
+                const size_t space = line.find(' ');
+                const std::string key = line.substr(0, space);
+                const std::wstring value = space == std::string::npos ? std::wstring() : Wide(line.substr(space + 1));
+                if (key == "go")
+                    done = true;
+                else if (key == "dll")
+                    dlls.push_back(value);
+                else if (key == "env")
+                    env.push_back(value);
+                else if (key == "follow")
+                    follow.push_back(value);
+                else if (key == "follow-children")
+                    followChildren = true;
+                else if (key == "poll")
+                    pollMs = _wtoi(value.c_str());
+            }
+        }
+    }
+
+    const DWORD rights = PROCESS_CREATE_THREAD | PROCESS_QUERY_INFORMATION | PROCESS_VM_OPERATION |
+        PROCESS_VM_READ | PROCESS_VM_WRITE | PROCESS_SUSPEND_RESUME | SYNCHRONIZE;
+    HANDLE process = OpenProcess(rights, FALSE, pid);
+    if (!process)
+    {
+        Note(L"pid %lu cannot be opened (error %lu); it runs without the capture libraries", pid, GetLastError());
+        if (thread)
+            ResumeThread(thread);
+        CloseHandle(pipe);
+        return kExitFailed;
+    }
+    const std::wstring path = ImagePath(process);
+    const std::wstring image = path.substr(path.find_last_of(L'\\') + 1);
+    std::vector<Library> libs = Resolve(dlls);
+    const std::vector<wchar_t> settings = SettingsBlock(env);
+
+    BOOL wow64 = FALSE;
+    if (IsWow64Process(process, &wow64) && wow64)
+    {
+        Note(L"%s (pid %lu): not an x64 process (only x64 targets are injected); it runs without the capture libraries", image.c_str(), pid);
+        libs.clear();
+    }
+    // What would make the library's LoadLibraryW fail, said before it does.
+    HANDLE token = nullptr;
+    if (OpenProcessToken(process, TOKEN_QUERY, &token))
+    {
+        DWORD container = 0, size = 0;
+        if (GetTokenInformation(token, TokenIsAppContainer, &container, sizeof(container), &size) && container)
+        {
+            Note(L"%s runs in an app container: the capture libraries' directory has to be readable by it "
+                 L"(icacls <dir> /grant *S-1-15-2-1:(OI)(CI)RX)", image.c_str());
+        }
+        CloseHandle(token);
+    }
+    PROCESS_MITIGATION_BINARY_SIGNATURE_POLICY signature{};
+    if (GetProcessMitigationPolicy(process, ProcessSignaturePolicy, &signature, sizeof(signature)) && signature.MicrosoftSignedOnly)
+    {
+        Note(L"%s only loads libraries Microsoft signed, so the capture libraries cannot go in", image.c_str());
+    }
+
+    // The app model created the process with this thread suspended. Suspended once more, so the
+    // count says whether it really was; a process that is already running is injected the way a
+    // watch injects one.
+    const DWORD previous = thread ? SuspendThread(thread) : (DWORD)-1;
+    if (previous == (DWORD)-1 || previous == 0)
+    {
+        if (thread && previous == 0)
+            ResumeThread(thread);
+        Note(L"%s (pid %lu) was not suspended when the debugger started; injecting into it running", image.c_str(), pid);
+        if (!libs.empty())
+            InjectRunning(libs, pid, image, settings, nullptr);
+    }
+    else
+    {
+        for (const Library& lib : libs)
+        {
+            std::wstring why;
+            if (Inject(process, pid, lib.path, lib.offset, settings, nullptr, why))
+                Note(L"injected %s into pid %lu (%s)", lib.path.c_str(), pid, image.c_str());
+            else
+                Note(L"injecting %s into pid %lu (%s) failed: %s; it runs without it", lib.path.c_str(), pid, image.c_str(), why.c_str());
+        }
+        if (followChildren)
+            Note(L"following every child of pid %lu every %d ms", pid, pollMs);
+        ResumeThread(thread);   // ours
+        ResumeThread(thread);   // the app model's
+    }
+    if (thread)
+        CloseHandle(thread);
+    const DWORD code = WaitForTarget(process, pid, libs, follow, followChildren, settings, (DWORD)(pollMs > 0 ? pollMs : (int)kFollowPollMs));
+    CloseHandle(process);
+    g_notePipe = nullptr;
+    CloseHandle(pipe);
+    return (int)code;
+}
+
 int Usage()
 {
     fwprintf(stderr, L"usage: dxinsp_launch.exe --dll <dxinsp_capture.dll> [--cwd <dir>] [--follow <text>]...\n");
@@ -1137,6 +1899,8 @@ int Usage()
     fwprintf(stderr, L"       <text>, such as --follow --type=gpu-process for a browser's GPU process;\n");
     fwprintf(stderr, L"       --follow !<text> leaves a child holding <text> alone instead.\n");
     fwprintf(stderr, L"       --follow-children takes every child, which --follow !<text> can then narrow.\n");
+    fwprintf(stderr, L"       An <exe> inside an installed package (Microsoft Store, Xbox app) is started through the\n");
+    fwprintf(stderr, L"       app model with the libraries injected by its debugger hook; --no-package starts it directly.\n");
     fwprintf(stderr, L"       --dll may be given more than once: each library is injected in turn (a plugin's\n");
     fwprintf(stderr, L"       capture library beside the D3D12 one), its GpuInspectorInitialize export run.\n");
     return kExitUsage;
@@ -1152,6 +1916,10 @@ int wmain(int argc, wchar_t** argv)
     std::vector<std::wstring> follow;
     bool followChildren = false;
     bool watching = false;
+    bool noPackage = false;
+    // Package debugger mode (PackageDebugger): what the app model's debugger hook runs.
+    std::wstring packagePipe;
+    DWORD debugPid = 0, debugTid = 0;
     int followPollMs = (int)kFollowPollMs;
     int i = 1;
     for (; i < argc; ++i)
@@ -1179,6 +1947,15 @@ int wmain(int argc, wchar_t** argv)
             watch.pollMs = _wtoi(argv[++i]);
             followPollMs = watch.pollMs;
         }
+        else if (a == L"--no-package")
+            noPackage = true;
+        else if (a == L"--package-debugger" && i + 1 < argc)
+            packagePipe = argv[++i];
+        // What the app model appends to a package debugger's command line.
+        else if (!packagePipe.empty() && a == L"-p" && i + 1 < argc)
+            debugPid = (DWORD)wcstoul(argv[++i], nullptr, 10);
+        else if (!packagePipe.empty() && a == L"-tid" && i + 1 < argc)
+            debugTid = (DWORD)wcstoul(argv[++i], nullptr, 10);
         else if (a == L"--once")
             watch.once = true;
         else if (a == L"--")
@@ -1229,14 +2006,34 @@ int wmain(int argc, wchar_t** argv)
         return Watch(watch);
     }
 
+    if (!packagePipe.empty())
+    {
+        if (!debugPid)
+            return Usage();
+        return PackageDebugger(packagePipe, debugPid, debugTid);
+    }
+
     if (i >= argc)
         return Usage();
     std::wstring exe = argv[i];
     std::wstring commandLine = Quote(exe);
+    std::wstring arguments;
     for (int k = i + 1; k < argc; ++k)
     {
         commandLine += L' ';
         commandLine += Quote(argv[k]);
+        arguments += (arguments.empty() ? L"" : L" ") + Quote(argv[k]);
+    }
+
+    if (!noPackage)
+    {
+        PackageApp app;
+        std::wstring why;
+        const int packaged = FindPackageApp(exe, app, why);
+        if (packaged > 0)
+            return LaunchPackage(app, exe, arguments, dlls, follow, followChildren, followPollMs);
+        if (packaged < 0)
+            Note(L"%s; starting %s directly", why.c_str(), exe.c_str());
     }
 
     STARTUPINFOW si{};
