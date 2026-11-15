@@ -69,8 +69,9 @@ jobs:
           - os: ubuntu-22.04
             target: linux
           # Builds the Metal capture library rather than the Vulkan layer, and produces both
-          # architectures from the one (arm64) runner.
-          - os: macos-14
+          # architectures from the one (arm64) runner. macos-14 was retired; the deployment target
+          # in CMakeLists.txt, not the runner, sets the oldest macOS the build runs on.
+          - os: macos-15
             target: mac
     runs-on: ${{ matrix.os }}
     # Electron's and electron-builder's downloads (the Electron zips with their checksums, the
