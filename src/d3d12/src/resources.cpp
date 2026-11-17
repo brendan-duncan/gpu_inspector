@@ -69,6 +69,42 @@ uint32_t SubresourceCount(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc,
     return MipCount(desc) * ArrayCount(desc) * planeCount;
 }
 
+bool CopyableFootprint(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc, uint32_t subresource, UINT64 baseOffset,
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint, UINT* numRows, UINT64* rowSize, UINT64* bytes)
+{
+    footprint = {};
+    if (numRows)
+        *numRows = 0;
+    if (rowSize)
+        *rowSize = 0;
+    if (bytes)
+        *bytes = 0;
+    if (!device)
+        return false;
+    D3D12_RESOURCE_DESC plain = desc;
+    plain.Flags &= ~D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+    UINT rows = 0;
+    UINT64 row = 0, total = 0;
+    {
+        ScopedInternal internal;
+        device->GetCopyableFootprints(&plain, subresource, 1, baseOffset, &footprint, &rows, &row, &total);
+    }
+    // A refusal sets every output to all ones.
+    if (total == UINT64_MAX || !total || footprint.Footprint.Format == (DXGI_FORMAT)UINT32_MAX ||
+        footprint.Footprint.Format == DXGI_FORMAT_UNKNOWN)
+    {
+        footprint = {};
+        return false;
+    }
+    if (numRows)
+        *numRows = rows;
+    if (rowSize)
+        *rowSize = row;
+    if (bytes)
+        *bytes = total;
+    return true;
+}
+
 void SubresourceOf(const D3D12_RESOURCE_DESC& desc, uint32_t subresource, uint32_t& mip, uint32_t& slice, uint32_t& plane)
 {
     uint32_t mips = MipCount(desc);

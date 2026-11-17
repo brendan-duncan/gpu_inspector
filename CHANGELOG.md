@@ -3,6 +3,11 @@
 ### Added
 - Windows launches an executable inside a Microsoft Store or Xbox app package through the app model, with the capture libraries injected before its first instruction.
 
+### Fixed
+- An application whose start-up holds the Windows loader for a long time, such as Flight Simulator 2024, no longer crashes when the library goes into it, and gets in about twice as fast.
+- Capturing a Direct3D 12 frame no longer ends an application whose compute lists read textures in a pixel-shader state, such as Flight Simulator 2024 with DXGI_ERROR_INVALID_CALL; those read-backs are skipped with a note.
+- Capturing a Direct3D 12 frame no longer removes the device when it reads a block-compressed texture that allows unordered access through castable formats, as Flight Simulator 2024's GPU-compressed textures do.
+
 ## v0.26.0
 
 ### Fixed

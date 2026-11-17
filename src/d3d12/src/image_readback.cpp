@@ -302,11 +302,7 @@ void ReadBackImage(uint64_t objectId, uint32_t mip, uint32_t layer)
     D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
     UINT numRows = 0;
     UINT64 rowSize = 0, total = 0;
-    {
-        ScopedInternal internal;
-        device->GetCopyableFootprints(&desc, subresource, 1, 0, &footprint, &numRows, &rowSize, &total);
-    }
-    if (!total)
+    if (!CopyableFootprint(device, desc, subresource, 0, footprint, &numRows, &rowSize, &total))
         return Fail(objectId, mip, layer, "the subresource has no copyable layout");
     DeviceReadback* rb = ReadbackFor(device, total);
     if (!rb)

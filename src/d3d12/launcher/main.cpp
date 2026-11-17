@@ -238,11 +238,20 @@ bool IsX64Image(const std::wstring& exe, std::wstring& why)
  * remote thread has made no progress for kPulseWaitMs the application is let go for a burst and
  * stopped again. Bursts start at kFirstBurstUs and double, so the application is given the least
  * running time that gets the lock released rather than a fixed slice of it.
+ *
+ * Up to kMaxBurstUs while the wait is short, and up to kLongBurstUs once it has gone on for
+ * kLongWaitMs. A wait that long means the application is still in its own start-up, holding the
+ * loader lock through its static libraries' initialization (Flight Simulator 2024 does so for half
+ * a minute), and an application inside its loader has not reached its device yet. Short bursts
+ * there only slowed it down: at 4 ms against the 5 ms hold it ran at under half speed, so a start-up
+ * that takes ten seconds took thirty.
  */
 constexpr DWORD kPulseWaitMs = 5;
 constexpr unsigned kFirstBurstUs = 200;
 constexpr unsigned kMaxBurstUs = 4000;
-constexpr DWORD kRemoteThreadTimeoutMs = 30000;
+constexpr unsigned kLongBurstUs = 100000;
+constexpr ULONGLONG kLongWaitMs = 2000;
+constexpr DWORD kRemoteThreadTimeoutMs = 120000;
 
 using NtProcessFn = LONG(NTAPI*)(HANDLE);
 
@@ -373,9 +382,15 @@ private:
 /**
  * Runs `entry` in the target and waits for it. With a `freezer`, the application is held around the
  * remote thread and let go in bursts while it blocks (above).
+ *
+ * `stillRunning` is set when the wait gave up on a thread that exists: it may yet run, so whatever
+ * it uses in the target has to stay there. Freeing its code under it is what crashed Flight
+ * Simulator 2024 (an execute fault at the start of the freed block, once the loader let it go).
  */
-bool RunRemote(HANDLE process, LPTHREAD_START_ROUTINE entry, LPVOID arg, DWORD* exitCode, std::wstring& why, Freezer* freezer)
+bool RunRemote(HANDLE process, LPTHREAD_START_ROUTINE entry, LPVOID arg, DWORD* exitCode, std::wstring& why,
+    Freezer* freezer, bool* stillRunning)
 {
+    *stillRunning = false;
     DWORD tid = 0;
     HANDLE thread = CreateRemoteThread(process, nullptr, 0, entry, arg, 0, &tid);
     if (!thread)
@@ -386,7 +401,8 @@ bool RunRemote(HANDLE process, LPTHREAD_START_ROUTINE entry, LPVOID arg, DWORD* 
     // The thread just made is one of the target's own: the hold has to leave it out.
     if (freezer)
         freezer->HoldAllBut(tid);
-    const ULONGLONG deadline = GetTickCount64() + kRemoteThreadTimeoutMs;
+    const ULONGLONG begun = GetTickCount64();
+    const ULONGLONG deadline = begun + kRemoteThreadTimeoutMs;
     unsigned burstUs = kFirstBurstUs;
     for (;;)
     {
@@ -396,11 +412,13 @@ bool RunRemote(HANDLE process, LPTHREAD_START_ROUTINE entry, LPVOID arg, DWORD* 
         if (!freezer || GetTickCount64() >= deadline)
         {
             CloseHandle(thread);
-            why = L"the remote thread did not finish";
+            *stillRunning = true;
+            why = L"the remote thread did not finish within " + std::to_wstring(kRemoteThreadTimeoutMs / 1000) + L" seconds";
             return false;
         }
         freezer->Burst(burstUs);
-        burstUs = burstUs < kMaxBurstUs ? burstUs * 2 : kMaxBurstUs;
+        const unsigned cap = GetTickCount64() - begun >= kLongWaitMs ? kLongBurstUs : kMaxBurstUs;
+        burstUs = burstUs < cap ? std::min(burstUs * 2, cap) : cap;
     }
     if (exitCode)
         GetExitCodeThread(thread, exitCode);
@@ -660,8 +678,18 @@ bool Inject(HANDLE process, DWORD pid, const std::wstring& dllPath, uintptr_t of
     FlushInstructionCache(process, code.address, stub.size());
 
     DWORD ignored = 0;
-    if (!RunRemote(process, (LPTHREAD_START_ROUTINE)code.address, nullptr, &ignored, why, freezer))
+    bool stillRunning = false;
+    if (!RunRemote(process, (LPTHREAD_START_ROUTINE)code.address, nullptr, &ignored, why, freezer, &stillRunning))
+    {
+        if (stillRunning)
+        {
+            // The thread may run later, and reads all four blocks when it does: they stay, a few
+            // hundred bytes left behind rather than an execute fault in the application.
+            path.address = remoteSettings.address = result.address = code.address = nullptr;
+            why += L"; it was left to finish on its own, so the library may still load, too late for a device made meanwhile";
+        }
         return false;
+    }
 
     StubResult got{};
     DWORD readError = 0;

@@ -83,6 +83,17 @@ private:
 /** The number of subresources of a description (mips x array size x planes for the format on this device). */
 uint32_t SubresourceCount(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc, uint32_t* planes = nullptr);
 
+/**
+ * The placed footprint of one subresource for a copy into a buffer, as GetCopyableFootprints
+ * gives it; false when the runtime has none. It refuses a description that is only valid with the
+ * castable formats the resource was created with (a block-compressed texture that allows unordered
+ * access, which Flight Simulator 2024 compresses into on the GPU) and then fills the footprint with
+ * 0xffffffff; a copy recorded with that makes the list's Close fail and the device go. The layout
+ * does not depend on the flag, so it is asked for without.
+ */
+bool CopyableFootprint(ID3D12Device* device, const D3D12_RESOURCE_DESC& desc, uint32_t subresource, UINT64 baseOffset,
+    D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint, UINT* numRows = nullptr, UINT64* rowSize = nullptr, UINT64* bytes = nullptr);
+
 /** The mip and array slice of a subresource index, given the description. */
 void SubresourceOf(const D3D12_RESOURCE_DESC& desc, uint32_t subresource, uint32_t& mip, uint32_t& slice, uint32_t& plane);
 

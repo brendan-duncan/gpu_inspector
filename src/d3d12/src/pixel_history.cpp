@@ -527,8 +527,7 @@ void FollowPixel(MeasuredPass& pass, CommandRecorder* rec, const ListOps& ops)
             return fallback;
         D3D12_RESOURCE_DESC desc = texture->GetDesc();
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT footprint{};
-        device->GetCopyableFootprints(&desc, 0, 1, 0, &footprint, nullptr, nullptr, nullptr);
-        return footprint.Footprint.Format != DXGI_FORMAT_UNKNOWN ? footprint.Footprint.Format : fallback;
+        return CopyableFootprint(device, desc, 0, 0, footprint) ? footprint.Footprint.Format : fallback;
     };
     const TexelFormat color = ColorTexel(h.colors[h.target].format);
     if (!color.name)

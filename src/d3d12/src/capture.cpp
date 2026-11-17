@@ -83,6 +83,36 @@ inline bool NeedsCopyBarrier(D3D12_RESOURCE_STATES state)
     return state != D3D12_RESOURCE_STATE_COMMON && !(state & D3D12_RESOURCE_STATE_COPY_SOURCE);
 }
 
+/**
+ * Whether a list of `type` may name `state` in a transition barrier. A compute list may not name the
+ * states only graphics work uses, and a copy list nothing but COMMON and the copy states. A barrier
+ * out of such a state recorded anyway makes the application's Close fail with E_INVALIDARG, and the
+ * next Present with DXGI_ERROR_INVALID_CALL: Flight Simulator 2024 builds compute lists that read
+ * textures a pixel shader also reads, and capturing one ended the game.
+ */
+bool BarrierAllowed(D3D12_COMMAND_LIST_TYPE type, D3D12_RESOURCE_STATES state)
+{
+    switch (type)
+    {
+    case D3D12_COMMAND_LIST_TYPE_COMPUTE:
+    {
+        constexpr UINT graphicsOnly = D3D12_RESOURCE_STATE_INDEX_BUFFER | D3D12_RESOURCE_STATE_RENDER_TARGET |
+            D3D12_RESOURCE_STATE_DEPTH_WRITE | D3D12_RESOURCE_STATE_DEPTH_READ | D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE |
+            D3D12_RESOURCE_STATE_STREAM_OUT | D3D12_RESOURCE_STATE_RESOLVE_DEST | D3D12_RESOURCE_STATE_RESOLVE_SOURCE |
+            D3D12_RESOURCE_STATE_SHADING_RATE_SOURCE;
+        return !(state & graphicsOnly);
+    }
+    case D3D12_COMMAND_LIST_TYPE_COPY:
+        return !(state & ~(UINT)(D3D12_RESOURCE_STATE_COPY_DEST | D3D12_RESOURCE_STATE_COPY_SOURCE));
+    default:
+        return true;
+    }
+}
+
+/** What a read-back says when its list could not copy the resource (BarrierAllowed). */
+constexpr const char* kStateNotOnListType =
+    "its state is one this list's type cannot move it out of (a graphics state in a compute list), so it was not copied";
+
 void Transition(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource,
     D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
 {
@@ -1518,12 +1548,18 @@ void EndPassQueries(DeviceCapture& dc, ID3D12GraphicsCommandList* list, uint32_t
         list->EndQuery(dc.timestampHeap.get(), D3D12_QUERY_TYPE_TIMESTAMP, timestampQuery + 1);
 }
 
-/** Records the copy of one subresource into a placed footprint of the staging buffer, with the barriers its state needs. */
-void CopySubresource(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES state,
+/**
+ * Records the copy of one subresource into a placed footprint of the staging buffer, with the
+ * barriers its state needs. False, with nothing recorded, when the list's type may not move the
+ * resource out of its state (BarrierAllowed).
+ */
+bool CopySubresource(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, uint32_t subresource, D3D12_RESOURCE_STATES state,
     ID3D12Resource* staging, const D3D12_PLACED_SUBRESOURCE_FOOTPRINT& footprint)
 {
     ScopedInternal internal;
     const bool barrier = NeedsCopyBarrier(state);
+    if (barrier && !BarrierAllowed(list->GetType(), state))
+        return false;
     if (barrier)
         Transition(list, resource, subresource, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
     D3D12_TEXTURE_COPY_LOCATION dst{};
@@ -1537,6 +1573,7 @@ void CopySubresource(ID3D12GraphicsCommandList* list, ID3D12Resource* resource, 
     list->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
     if (barrier)
         Transition(list, resource, subresource, D3D12_RESOURCE_STATE_COPY_SOURCE, state);
+    return true;
 }
 
 }  // namespace
@@ -1719,22 +1756,25 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
             std::vector<D3D12_PLACED_SUBRESOURCE_FOOTPRINT> footprints(slices);
             std::vector<uint32_t> sourceSubresources(slices);
             uint64_t total = 0;
+            bool laidOut = true;
+            for (uint32_t s = 0; s < slices; ++s)
             {
-                ScopedInternal internal;
-                for (uint32_t s = 0; s < slices; ++s)
+                const uint32_t slice = volume ? 0 : t.firstSlice + s;
+                const uint32_t sub = resolve ? s : (volume ? t.mip : t.mip + slice * desc.MipLevels) + planeOffset;
+                sourceSubresources[s] = sub;
+                UINT64 bytes = 0;
+                if (!CopyableFootprint(rec->device(), sourceDesc, sub, total, footprints[s], nullptr, nullptr, &bytes))
                 {
-                    const uint32_t slice = volume ? 0 : t.firstSlice + s;
-                    const uint32_t sub = resolve ? s : (volume ? t.mip : t.mip + slice * desc.MipLevels) + planeOffset;
-                    sourceSubresources[s] = sub;
-                    UINT numRows = 0;
-                    UINT64 rowSize = 0, bytes = 0;
-                    rec->device()->GetCopyableFootprints(&sourceDesc, sub, 1, total, &footprints[s], &numRows, &rowSize, &bytes);
-                    footprints[s].Offset = total;   // relative to the span; rebased once it is allocated
-                    total += Align(bytes, kStagingAlignment);
-                    if (volume)
-                        break;   // one subresource holds every depth slice
+                    laidOut = false;
+                    break;
                 }
+                footprints[s].Offset = total;   // relative to the span; rebased once it is allocated
+                total += Align(bytes, kStagingAlignment);
+                if (volume)
+                    break;   // one subresource holds every depth slice
             }
+            if (!laidOut)
+                return fail("the runtime gave no copyable layout for it");
             uint64_t spanOffset = 0;
             ID3D12Resource* staging = nullptr;
             if (!i.AllocateStaging(*dc, rec->type(), total, e.chunk, spanOffset, &staging))
@@ -1771,9 +1811,10 @@ void CaptureManager::EndPass(CommandRecorder* rec, bool synthetic)
                     CopySubresource(list, resolve, s, D3D12_RESOURCE_STATE_COPY_SOURCE, staging, fp);
                     Transition(list, resolve, s, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RESOLVE_DEST);
                 }
-                else
+                else if (!CopySubresource(list, t.resource, origSub, state, staging, fp))
                 {
-                    CopySubresource(list, t.resource, origSub, state, staging, fp);
+                    e.failed = true;
+                    e.note = kStateNotOnListType;
                 }
                 StagedRegion r;
                 r.offset = fp.Offset;
@@ -2023,7 +2064,8 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
     // GENERIC_READ; one nothing transitioned is COMMON, which a copy promotes.
     const uint64_t copyOffset = e.offset, copySize = e.size, stagingOffset = e.stagingOffset;
     const D3D12_HEAP_TYPE heapType = info.heapType;
-    auto copy = [buffer, staging, copyOffset, copySize, stagingOffset, heapType](ID3D12GraphicsCommandList* list) {
+    const uint32_t entryId = e.id;
+    auto copy = [buffer, staging, copyOffset, copySize, stagingOffset, heapType, entryId, &i](ID3D12GraphicsCommandList* list) {
         ScopedInternal internal;
         D3D12_RESOURCE_STATES state = D3D12_RESOURCE_STATE_GENERIC_READ;
         if (heapType != D3D12_HEAP_TYPE_UPLOAD)
@@ -2038,6 +2080,16 @@ uint32_t CaptureManager::QueueBufferCapture(CommandRecorder* rec, ID3D12Resource
         if (state == D3D12_RESOURCE_STATE_RAYTRACING_ACCELERATION_STRUCTURE)
             return;
         const bool barrier = NeedsCopyBarrier(state);
+        if (barrier && !BarrierAllowed(list->GetType(), state))
+        {
+            std::lock_guard lock(i.mutex);
+            if (entryId && entryId <= i.buffers.size())
+            {
+                i.buffers[entryId - 1].failed = true;
+                i.buffers[entryId - 1].note = kStateNotOnListType;
+            }
+            return;
+        }
         if (barrier)
             Transition(list, buffer, 0, state, D3D12_RESOURCE_STATE_COPY_SOURCE);
         list->CopyBufferRegion(staging, stagingOffset, buffer, copyOffset, copySize);
@@ -2202,22 +2254,19 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     };
     std::vector<Copy> copies;
     uint64_t total = 0;
+    for (uint32_t m = 0; m < e.mips; ++m)
     {
-        ScopedInternal internal;
-        for (uint32_t m = 0; m < e.mips; ++m)
+        const uint32_t perMip = volume ? 1 : e.layers;
+        for (uint32_t l = 0; l < perMip; ++l)
         {
-            const uint32_t perMip = volume ? 1 : e.layers;
-            for (uint32_t l = 0; l < perMip; ++l)
-            {
-                Copy c;
-                c.subresource = m + l * desc.MipLevels;
-                UINT numRows = 0;
-                UINT64 rowSize = 0, bytes = 0;
-                rec->device()->GetCopyableFootprints(&desc, c.subresource, 1, total, &c.footprint, &numRows, &rowSize, &bytes);
-                c.footprint.Offset = total;
-                total += Align(bytes, kStagingAlignment);
-                copies.push_back(c);
-            }
+            Copy c;
+            c.subresource = m + l * desc.MipLevels;
+            UINT64 bytes = 0;
+            if (!CopyableFootprint(rec->device(), desc, c.subresource, total, c.footprint, nullptr, nullptr, &bytes))
+                return finish("the runtime gave no copyable layout for it");
+            c.footprint.Offset = total;
+            total += Align(bytes, kStagingAlignment);
+            copies.push_back(c);
         }
     }
     uint64_t spanOffset = 0;
@@ -2241,14 +2290,28 @@ uint32_t CaptureManager::QueueTextureCapture(CommandRecorder* rec, ID3D12Resourc
     if (!id)
         return 0;
 
-    auto copy = [texture, staging, copies](ID3D12GraphicsCommandList* list) {
+    auto copy = [texture, staging, copies, id, &i](ID3D12GraphicsCommandList* list) {
         for (const Copy& c : copies)
         {
             bool known = false;
             D3D12_RESOURCE_STATES state = ResourceTracker::Get().StateIn(list, texture, c.subresource, &known);
             if (!known)
-                state = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
-            CopySubresource(list, texture, c.subresource, state, staging, c.footprint);
+            {
+                // A compute list can only have bound it for a compute shader.
+                state = list->GetType() == D3D12_COMMAND_LIST_TYPE_COMPUTE
+                    ? D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE
+                    : D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE | D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE;
+            }
+            if (!CopySubresource(list, texture, c.subresource, state, staging, c.footprint))
+            {
+                std::lock_guard lock(i.mutex);
+                if (id <= i.textures.size() && i.textures[id - 1].captureId == id)
+                {
+                    i.textures[id - 1].failed = true;
+                    i.textures[id - 1].note = kStateNotOnListType;
+                }
+                return;
+            }
         }
     };
     if (initial)
